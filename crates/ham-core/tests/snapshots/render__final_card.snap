@@ -1,0 +1,13 @@
+---
+source: crates/ham-core/tests/render.rs
+expression: "final_card(&done().view(), &card())"
+---
+Run       R1 complete (delivered)
+Outcome   Cline reported done
+Model     Claude Sonnet 5.5 (global.anthropic.claude-sonnet-5-5)
+PR        https://example/pr/7
+Zip       /downloads/python-calc-R1-abc1234.zip (sha256 abababababab, 2048 bytes)
+Link      https://s3.example/presigned (expires 2026-09-25T03:00:00Z)
+Clone     ham clone R1
+Push      ham push R1 <git-url>
+Tokens    123456  USD 1.25

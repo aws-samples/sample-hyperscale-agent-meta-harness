@@ -1,0 +1,3109 @@
+{
+  "components": {
+    "schemas": {
+      "Admission": {
+        "description": "Whether new messages are admitted. It closes once, in the seal (or at finalize or cancel), and never opens again.",
+        "enum": [
+          "open",
+          "closed"
+        ],
+        "type": "string"
+      },
+      "ApiError": {
+        "description": "Error body for every non-2xx response.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "description": "The exact reason shown in `ham`.",
+            "type": "string"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ArtifactKind": {
+        "oneOf": [
+          {
+            "const": "zip",
+            "description": "The deliverable zip of a complete run.",
+            "type": "string"
+          },
+          {
+            "const": "partial",
+            "description": "The zip of a held run.",
+            "type": "string"
+          },
+          {
+            "const": "bundle",
+            "description": "One task's bundle (`ham pull --artifact bundle:<taskId>`).",
+            "type": "string"
+          },
+          {
+            "const": "evidence",
+            "description": "The evidence tree without `src/` and the bundle.",
+            "type": "string"
+          },
+          {
+            "const": "log",
+            "description": "One agent's goal log (`ham pull --artifact log:<agentId>`).",
+            "type": "string"
+          }
+        ]
+      },
+      "ArtifactView": {
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ArtifactKind"
+          },
+          "s3Uri": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifactId",
+          "kind",
+          "s3Uri",
+          "sha256",
+          "sizeBytes"
+        ],
+        "type": "object"
+      },
+      "Attachment": {
+        "additionalProperties": false,
+        "description": "One attachment of the `attachments` member of `StartDirectRunRequest` (protocol 1.38.0). `name` is a plain file name: a letter or a digit,\nthen letters, digits, `.`, `_` or `-`, at most [`MAX_ATTACHMENT_NAME_BYTES`] bytes, with no directory part; `INDEX.md` and `INDEX.json` are reserved, whatever the letter case. `content` is UTF-8 text with\nno NUL byte and at least one byte; `size` is its length in bytes and `sha256` is the lowercase hex SHA-256 of those bytes.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "sha256",
+          "size",
+          "content"
+        ],
+        "type": "object"
+      },
+      "Authority": {
+        "description": "Who wrote an event: the deterministic harness or an (untrusted) agent.",
+        "enum": [
+          "harness",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "BudgetLimit": {
+        "description": "User-set run budget (`--budget tokens|usd`); there is no default.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "tokens",
+                "type": "string"
+              },
+              "limit": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "limit"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "usd",
+                "type": "string"
+              },
+              "limit": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "kind",
+              "limit"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "BuildOptions": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.build` (protocol 1.48.0): the user's switches for the session's build defaults. The request type refuses an unknown\nmember and a value that is not a boolean before anything is stored, so there is no separate check.",
+        "properties": {
+          "cargoNoDebugInfo": {
+            "description": "`false` leaves cargo's own debug-information setting: the harness sets neither `CARGO_PROFILE_DEV_DEBUG` nor `CARGO_PROFILE_TEST_DEBUG`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cargoNoIncremental": {
+            "description": "`false` leaves cargo's own incremental setting: the harness does not set `CARGO_INCREMENTAL`.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "excludeTargetDir": {
+            "description": "`false` leaves `target/` out of the exclude list: a `target/` folder the repository does not ignore is committed with the rest.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "CatalogRow": {
+        "properties": {
+          "baseModelId": {
+            "type": "string"
+          },
+          "burndownClass": {
+            "type": "string"
+          },
+          "cacheSupport": {
+            "type": "boolean"
+          },
+          "contextTokens": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "engine": {
+            "$ref": "#/components/schemas/Engine"
+          },
+          "gateCheatRate": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "iamResourceArns": {
+            "description": "IAM resource ARNs; three-part for global profiles.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "integerArgsOk": {
+            "type": "boolean"
+          },
+          "leaseClass": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/Lifecycle"
+          },
+          "maxOutputTokens": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "measuredTddPassRate": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "parallelTools": {
+            "type": "boolean"
+          },
+          "profileId": {
+            "description": "Prefixed inference profile ID (never a bare model ID).",
+            "type": "string"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/Protocol"
+          },
+          "region": {
+            "description": "The pinned Region for this row.",
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "retentionAllowedModes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "roleMaxTokens": {
+            "additionalProperties": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "The output-token cap per role slug on a Cline row, written to the fork's\n`providers.json`; absent on OpenCode rows.",
+            "type": "object"
+          },
+          "routeFamily": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RouteFamily"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "smokeRecordId": {
+            "type": "string"
+          },
+          "smokedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tddQualification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TddQualification"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The TDD qualification on the row's engine; absent until the catalog job records one."
+          },
+          "toolStreaming": {
+            "type": "boolean"
+          },
+          "toolUse": {
+            "type": "boolean"
+          },
+          "usdPerAgentHour": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "profileId",
+          "baseModelId",
+          "regions",
+          "lifecycle",
+          "protocol",
+          "region",
+          "engine",
+          "toolUse",
+          "toolStreaming",
+          "parallelTools",
+          "integerArgsOk",
+          "contextTokens",
+          "maxOutputTokens",
+          "burndownClass",
+          "cacheSupport",
+          "leaseClass",
+          "iamResourceArns",
+          "retentionAllowedModes",
+          "smokeRecordId",
+          "smokedAt"
+        ],
+        "type": "object"
+      },
+      "ComputeMode": {
+        "description": "`run.compute`: which kind of machine the session runs on.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "The stage decides (its policy word). The default; the member is not sent.",
+            "type": "string"
+          },
+          {
+            "const": "microvm",
+            "description": "The microVM: 2 vCPU, 8 GiB, a 1 GB checkout mount.",
+            "type": "string"
+          },
+          {
+            "const": "instances",
+            "description": "One EC2 machine per session in the stage's account (AgentCore Instances), with the stage's CPUs and disk.",
+            "type": "string"
+          }
+        ]
+      },
+      "ComputeOptions": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.compute` (protocol 1.45.0): the user's choice of machine. The request type refuses an unknown word and an unknown\nmember before anything is stored (a 400 `bad-request` that never repeats the value), so there is no separate check.",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/ComputeMode"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "ConfirmHeld": {
+        "additionalProperties": false,
+        "description": "The held (or delivery-unknown) message a new message confirms, and the session the user saw. The server refuses when\nthe message is no longer held (or unknown) or the session is no longer the current one, and then sends nothing.",
+        "properties": {
+          "epoch": {
+            "description": "The current session (the epoch) the user was shown.",
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "ContinueFrom": {
+        "additionalProperties": false,
+        "description": "The source of a follow-up run. `run_id` is the finished run; `head_sha` is the commit it delivered (40 lowercase hex).\n\nOn the wire from `ham`, `headSha` may be left out (the user asked for \"the head this run delivered\"); when it is present it must equal the\nsource run's delivered head, or the start is refused (409): the client continues from the commit it showed, or not at all. In the stored\nrequest, and everywhere after control-api, `headSha` is present.",
+        "properties": {
+          "headSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "type": "object"
+      },
+      "ContinueSettings": {
+        "additionalProperties": false,
+        "description": "The user's nudge file (`~/.config/ham/continue.md`): the text agentd sends as a follow-up prompt when Cline\nends a turn without saying it is done, and how many times it may. `ham` splits the file's optional frontmatter\n(`max_nudges`) from its body; `sha256` is over `text`.",
+        "properties": {
+          "maxNudges": {
+            "description": "0 turns the nudge off; the harness stops after this many nudges.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "sha256",
+          "maxNudges"
+        ],
+        "type": "object"
+      },
+      "CostLine": {
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/Engine"
+          },
+          "modelId": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          },
+          "usd": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "modelId",
+          "engine",
+          "usage",
+          "usd"
+        ],
+        "type": "object"
+      },
+      "DownloadUrlResponse": {
+        "properties": {
+          "expiresAt": {
+            "description": "The presigned URL's true expiry.",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
+      "Engine": {
+        "description": "Coding-agent engine: the name of its profile engine/profiles/<name>.toml (production: cline, opencode).",
+        "pattern": "^[a-z][a-z0-9-]{0,31}$",
+        "type": "string"
+      },
+      "EngineConfig": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.engineConfig` (protocol 1.39.0): the user's settings for one engine, as typed values. Strict like [`crate::direct::Skill`]:\na member this build does not know is refused. [`check_engine_config`] decides what `settings` may hold.",
+        "properties": {
+          "engine": {
+            "description": "The engine the settings are for (`cline` today); selects the key table.",
+            "type": "string"
+          },
+          "schema": {
+            "description": "The key-table version; [`ENGINE_CONFIG_SCHEMA`].",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "settings": {
+            "additionalProperties": true,
+            "description": "A JSON object of tables and keys, for example `{\"reasoning\": {\"effort\": \"high\"}}`; the key table of the engine decides which are allowed.\nIt is written with every object's keys in sorted order, whatever order it was read in.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "engine",
+          "schema",
+          "settings"
+        ],
+        "type": "object"
+      },
+      "Envelope": {
+        "additionalProperties": false,
+        "description": "One event in the run log (DynamoDB `EVT#<runId>#<shard>`, sort key `eventId`).",
+        "properties": {
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authority": {
+            "$ref": "#/components/schemas/Authority"
+          },
+          "eventId": {
+            "description": "ULID, the event's sort key.",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/Payload"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "description": "Per-agent sequence number.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "taskId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ts": {
+            "description": "RFC 3339 UTC timestamp.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/EventType"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "eventId",
+          "runId",
+          "seq",
+          "ts",
+          "type",
+          "authority",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "EventType": {
+        "description": "Event types in architecture table order.",
+        "enum": [
+          "run.created",
+          "session.started",
+          "turn.started",
+          "turn.progress",
+          "tool.summary",
+          "turn.ended",
+          "agent.flag_blocked",
+          "permission.requested",
+          "gate.result",
+          "evaluator.verdict",
+          "merge.result",
+          "goal.status",
+          "goal.blocked",
+          "delivery.pr",
+          "delivery.ready",
+          "run.completed",
+          "run.aborted",
+          "route.changed",
+          "run.waiting",
+          "hidden.admission",
+          "session.capabilities"
+        ],
+        "type": "string"
+      },
+      "EventsPage": {
+        "description": "`GET .../events?shard=&after=`: one shard, events after the cursor in ULID order.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            "type": "array"
+          },
+          "nextAfter": {
+            "description": "Cursor for the next read; the last `eventId` returned.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
+      "ExcludedModel": {
+        "description": "A model the generator excluded, with the exact reason (for example the ValidationException text).",
+        "properties": {
+          "profileId": {
+            "type": "string"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Protocol"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "profileId",
+          "region",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "ExecutionEnd": {
+        "description": "How a `run` execution ended without the run finishing, in Step Functions' own status words\n(the Execution Status Change event's `detail.status`): an operator's or `ham cancel`'s\nStopExecution (`ABORTED`), an uncaught error (`FAILED`) or the machine's timeout (`TIMED_OUT`).\nA finished run ends `SUCCEEDED` through MarkComplete or RunBlocked.",
+        "enum": [
+          "ABORTED",
+          "FAILED",
+          "TIMED_OUT"
+        ],
+        "type": "string"
+      },
+      "GoalOptions": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.goal`: the user's goal-loop switch and limits. The first member has the shape of `research` (`{\"enabled\": bool}`), so a\nclient has one pattern for the switches of a run; the others (protocol 1.42.0) are optional numbers and a switch, each left out when unset.",
+        "properties": {
+          "commandGraceS": {
+            "description": "Protocol 1.42.0: seconds the tree may stay unchanged while a command is seen running before the run ends (60 to 86,400; the stage default is\n7,200, two hours). While a command runs, the polling calls are not counted against the two limits above. 0 switches the look for running\ncommands off.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "finalMessage": {
+            "description": "Protocol 1.42.0: `false` ends such a run at once, as before; absent and `true` give Cline one last turn to write its final message first.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "newCalls": {
+            "description": "Protocol 1.46.0: the calls between two changed files that bring something new and are not counted (1 to 1,000; the stage default is 100).\n0 counts every call, as before.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outsideCheckoutNote": {
+            "description": "Protocol 1.48.0: `false` leaves the sentence about work outside the checkout out of the goal prompts (the goal text and the prompt\nthat restarts a quiet loop); absent and `true` keep it. Stage default: on.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "roundCalls": {
+            "description": "Protocol 1.42.0: tool calls in a row with an unchanged tree and no new text that end the run (5 to 1,000; the stage default is 30).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "roundMinCalls": {
+            "description": "Protocol 1.42.0: the least number of tool calls inside the window for the window to count (1 to 100; the stage default is 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "roundWindowS": {
+            "description": "Protocol 1.42.0: seconds of an unchanged tree that end the run when at least `roundMinCalls` tool calls came in them (10 to 14,400; the\nstage default is 1,200, 20 minutes).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "GoalPhase": {
+        "description": "Sub-state of `active`: planning, the TDD work phases, then VERIFY and delivery.",
+        "enum": [
+          "planning",
+          "red",
+          "green",
+          "refactor",
+          "gating",
+          "evaluating",
+          "integrating",
+          "delivering"
+        ],
+        "type": "string"
+      },
+      "GoalStatus": {
+        "description": "Goal status of a run: `active`, `paused`, `stalled`, `blocked`, `usage_limited`, `budget_limited`, `complete` or `cleared`. `complete` and\n`cleared` are terminal.\n\n`paused` is a stop on purpose: the run reached the total time it was given, or the person or the harness stopped it, and the work\nis saved and delivered. `stalled` is a stop the service had to make because the run lost its progress: the session stopped answering, a\nrestore failed, several sessions in a row produced nothing, or Cline went silent. Both name a reason and a way to resume\n([`ResumeMode`]) on the run.",
+        "oneOf": [
+          {
+            "enum": [
+              "active",
+              "paused",
+              "blocked",
+              "usage_limited",
+              "budget_limited",
+              "complete",
+              "cleared"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "stalled",
+            "description": "See the type's text. Appended last so the declaration order of the older words does not move.",
+            "type": "string"
+          }
+        ]
+      },
+      "InputAccepted": {
+        "description": "The reply to [`InputAnswer`]: 202 `queued` or `re-queued`, 200 `already-queued`. Queued means the answer is in the run's control queue,\nnot that Cline has taken it: the `input-received` event says so.",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "state": {
+            "description": "`queued`, `already-queued` or `re-queued`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "requestId",
+          "state"
+        ],
+        "type": "object"
+      },
+      "InputAnswer": {
+        "additionalProperties": false,
+        "description": "`POST /v1/runs/{runId}/input`: the user's answer to a question of a direct run (owner only). The request id is\nthe nonce: the same answer again is idempotent, another answer to the same request is 409 `already-answered`. Rules by action:\n`continue_with_prompt` needs `text`; `new_session_with_prompt` takes `text` optionally; `try_model` needs `model` and takes `text`\noptionally; `finish` takes neither. The origin is not a member: control-api writes `user`.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/InstructAction"
+          },
+          "model": {
+            "description": "`try_model` only: a route id from the question's `models`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requestId": {
+            "description": "The `requestId` of the open `needs-input` event (a ULID).",
+            "type": "string"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "requestId",
+          "action"
+        ],
+        "type": "object"
+      },
+      "InstructAction": {
+        "description": "What the user (or, later, the analyzer) asks the machine to do. Wire words: `continue_with_prompt`, `new_session_with_prompt`,\n`try_model`, `finish`. One control carries all four so a person and the analyzer share one path.",
+        "enum": [
+          "continue_with_prompt",
+          "new_session_with_prompt",
+          "try_model",
+          "finish"
+        ],
+        "type": "string"
+      },
+      "Lifecycle": {
+        "enum": [
+          "ACTIVE",
+          "LEGACY"
+        ],
+        "type": "string"
+      },
+      "ListArtifactsResponse": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "ListReposResponse": {
+        "description": "`GET /v1/repos`: the allowlist `ham doctor` prints.",
+        "properties": {
+          "repos": {
+            "items": {
+              "$ref": "#/components/schemas/RepoAllowView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "repos"
+        ],
+        "type": "object"
+      },
+      "ListRunsResponse": {
+        "properties": {
+          "nextToken": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "type": "object"
+      },
+      "MessageMode": {
+        "description": "When a message is delivered.",
+        "oneOf": [
+          {
+            "const": "next",
+            "description": "At the end of the current turn, as its own user turn (the default).",
+            "type": "string"
+          },
+          {
+            "const": "now",
+            "description": "Now: agentd cancels the current turn, waits for it to settle and prompts on the same session.",
+            "type": "string"
+          }
+        ]
+      },
+      "MessageResponse": {
+        "description": "One message: `GET /v1/runs/{runId}/messages/{messageId}` and the answer of a withdrawal.",
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/MessageView"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "MessageState": {
+        "description": "The status of a message, as the server holds it. HTTP 202 on the send means `pending` and nothing more: Cline has not\nread the message yet. `delivered` means agentd sent the prompt to the engine, not that the engine acted on it.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Durably accepted and eligible: it will be claimed at the end of the turn (`next`) or now (`now`).",
+            "type": "string"
+          },
+          {
+            "const": "held",
+            "description": "Pending when the session changed: it waits for the user to confirm it again and never makes the run wait.",
+            "type": "string"
+          },
+          {
+            "const": "dispatching",
+            "description": "agentd won the claim and is submitting it.",
+            "type": "string"
+          },
+          {
+            "const": "delivered",
+            "description": "agentd reported sending the prompt; `deliveredTurn` names the turn.",
+            "type": "string"
+          },
+          {
+            "const": "withdrawn",
+            "description": "The user withdrew it before it was claimed.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The run could not take it; `reason` says why.",
+            "type": "string"
+          },
+          {
+            "const": "superseded",
+            "description": "A confirmed copy replaced it (the only way into this state).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "agentd could not submit it (it was never sent); `detail` says why.",
+            "type": "string"
+          },
+          {
+            "const": "delivery-unknown",
+            "description": "It was claimed, then the worker was lost before the outcome was known: it may have reached Cline. It is never sent again by itself.",
+            "type": "string"
+          }
+        ]
+      },
+      "MessageStep": {
+        "description": "One step of a message's history: the state it entered and when.",
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RejectReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/MessageState"
+          },
+          "turn": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "at"
+        ],
+        "type": "object"
+      },
+      "MessageView": {
+        "description": "A message as the owner sees it: everything the client needs to draw the pending row, nothing only the server needs (not the principal,\nthe payload digest, the claiming worker or the item version).",
+        "properties": {
+          "acceptedAt": {
+            "type": "string"
+          },
+          "confirms": {
+            "description": "The id of the held message this one confirms.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deliveredTurn": {
+            "description": "The turn that carried it, once delivered.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "Why a message failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epoch": {
+            "description": "The session (the engine's session id) the message was written against; absent before the first session started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epochNo": {
+            "description": "The number of that session within the run (1, 2, 3 ...): \"written to session 2, now session 3\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/MessageStep"
+            },
+            "type": "array"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MessageMode"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RejectReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seq": {
+            "description": "The order the server admitted it in (1 is the first message of the run).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MessageState"
+          },
+          "supersededBy": {
+            "description": "The id of the confirmed copy that replaced this one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "seq",
+          "mode",
+          "state",
+          "text",
+          "epochNo",
+          "acceptedAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "MessagesPage": {
+        "description": "`GET /v1/runs/{runId}/messages`: every message of the run in the order admitted (at most [`MAX_RUN_MESSAGES`]), with what the client\nneeds to confirm a held one: the current session and whether the run still takes messages.",
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
+          },
+          "epoch": {
+            "description": "The current session (the epoch); absent before the first session started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "epochNo": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageView"
+            },
+            "type": "array"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "watermark": {
+            "description": "How many messages the run has admitted so far.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runId",
+          "messages",
+          "admission",
+          "epochNo",
+          "watermark"
+        ],
+        "type": "object"
+      },
+      "ModelList": {
+        "description": "`GET /v1/direct/models` (protocol 1.31.0; served only by the `direct` stage) and `ham models --json`: every\nmodel of the static list (`engine/catalog/models.json`) and which one is the default. `POST /v1/direct/runs` accepts a\n`model` that is the `id` of a row with `selectable` true.",
+        "properties": {
+          "default": {
+            "description": "The `id` of the default model (Claude Sonnet 5.5 unless the list says otherwise).",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "default",
+          "models"
+        ],
+        "type": "object"
+      },
+      "ModelRow": {
+        "description": "One model of the [`ModelList`].",
+        "properties": {
+          "alias": {
+            "description": "The short name `ham` accepts for the model (`--model sonnet`); the server accepts only the `id`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "contextTokens": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default": {
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The Bedrock inference profile or model id: what a request's `model` names.",
+            "type": "string"
+          },
+          "maxOutputTokens": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "description": "One line to read before choosing the model; absent for most rows.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/Protocol"
+          },
+          "region": {
+            "type": "string"
+          },
+          "selectable": {
+            "description": "A passing smoke record exists; `false` rows are listed but refused.",
+            "type": "boolean"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "vendor",
+          "protocol",
+          "region",
+          "contextTokens",
+          "maxOutputTokens",
+          "selectable",
+          "default"
+        ],
+        "type": "object"
+      },
+      "ModelsResponse": {
+        "properties": {
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/ExcludedModel"
+            },
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "excluded"
+        ],
+        "type": "object"
+      },
+      "NeedsInputBrief": {
+        "description": "The one-line form of an open question in the run list.",
+        "properties": {
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "reason",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Payload": {
+        "description": "Event body: inline JSON up to [`MAX_INLINE_PAYLOAD_BYTES`], or a claim check on an S3 object.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "inline",
+                "type": "string"
+              },
+              "value": true
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "claimCheck",
+                "type": "string"
+              },
+              "s3Uri": {
+                "pattern": "^s3://[^/]+/.+$",
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "sizeBytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "s3Uri",
+              "sha256",
+              "sizeBytes"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Protocol": {
+        "description": "Bedrock inference protocol of a catalog row.",
+        "oneOf": [
+          {
+            "enum": [
+              "converse",
+              "converse-relay",
+              "mantle-responses"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "mantle-chat",
+            "description": "Mantle Chat Completions on the Cline fork.",
+            "type": "string"
+          }
+        ]
+      },
+      "RejectReason": {
+        "description": "Why a message was rejected. Every reason but `engine-busy` and `continuation-limit` is the server's alone.",
+        "oneOf": [
+          {
+            "const": "run-sealed",
+            "description": "The run was sealed: it ended or was ending when the message was about to be sent.",
+            "type": "string"
+          },
+          {
+            "const": "run-cancelled",
+            "description": "The user stopped the run; a Cancel wins over a message.",
+            "type": "string"
+          },
+          {
+            "const": "engine-busy",
+            "description": "agentd could not take the message into its queue.",
+            "type": "string"
+          },
+          {
+            "const": "no-message-control",
+            "description": "The run's Agent registered no message control (a run on an older image).",
+            "type": "string"
+          },
+          {
+            "const": "continuation-limit",
+            "description": "The allowance of message-driven turns after \"done\" is used up.",
+            "type": "string"
+          },
+          {
+            "const": "limit",
+            "description": "A limit (the cap on messages or bytes of one run).",
+            "type": "string"
+          }
+        ]
+      },
+      "RepoAdminAction": {
+        "enum": [
+          "allow",
+          "deny"
+        ],
+        "type": "string"
+      },
+      "RepoAdminRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/admin/repos`.",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RepoAdminAction"
+          },
+          "target": {
+            "$ref": "#/components/schemas/RepoTarget"
+          }
+        },
+        "required": [
+          "action",
+          "target"
+        ],
+        "type": "object"
+      },
+      "RepoAdminResponse": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RepoAdminAction"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepoAllowView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry after an `allow`; absent after a `deny`."
+          },
+          "target": {
+            "$ref": "#/components/schemas/RepoTarget"
+          }
+        },
+        "required": [
+          "action",
+          "target"
+        ],
+        "type": "object"
+      },
+      "RepoAllowView": {
+        "description": "One repository allowlist entry.",
+        "properties": {
+          "addedAt": {
+            "type": "string"
+          },
+          "addedBy": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/RepoTarget"
+          }
+        },
+        "required": [
+          "target",
+          "addedBy",
+          "addedAt"
+        ],
+        "type": "object"
+      },
+      "RepoTarget": {
+        "description": "Repository target: cc:<name>, a CodeCommit repository in the deployment's account and home Region. Only `cc:` targets are served: the gh:<owner>/<name> and gl:<group>/<project> forms parse and are refused, because GitHub and GitLab delivery are not supported.",
+        "pattern": "^(cc:[A-Za-z0-9._-]{1,100}|gh:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}|gl:[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)+)$",
+        "type": "string"
+      },
+      "ResearchOptions": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.research` (protocol 1.38.0): the user's switch. Absent means the stage default, which is on (the card shows\nit); `ham run --no-research` sends `{\"enabled\": false}`. `run-session` copies the answer into the run's policy row.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "ResumeMode": {
+        "description": "How a `paused` or `stalled` run can go on. The service stores it beside the status and the reason.",
+        "oneOf": [
+          {
+            "const": "same_run",
+            "description": "The same run id goes on in a new session. Reserved: no run is given this word yet (a run that stopped has been delivered, and a\ndelivery is made once per run), so clients treat it as a follow-up request to the same route.",
+            "type": "string"
+          },
+          {
+            "const": "follow_up",
+            "description": "A new run starts from the code this run delivered and carries the same request (`POST /v1/runs/{runId}/resume`).",
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "Nothing to resume: no code was delivered, or the cause still holds.",
+            "type": "string"
+          }
+        ]
+      },
+      "ReviewMode": {
+        "description": "`run.review_round`: whether the round runs.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "The round runs under the conditions above. The default.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "No round.",
+            "type": "string"
+          }
+        ]
+      },
+      "ReviewOptions": {
+        "additionalProperties": false,
+        "description": "`StartDirectRunRequest.review` (protocol 1.44.0): the user's switch for the review round and, when the user has a review file, its body.",
+        "properties": {
+          "guardS": {
+            "description": "Seconds the run must have left for the round to start (60 to 28,800); absent: the stage's own, 20 minutes.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ReviewMode"
+          },
+          "sha256": {
+            "description": "SHA-256 of `text` (lowercase hex); present exactly when `text` is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The body of `~/.config/ham/review.md`, with `{{base}}` and `{{facts}}` left as typed. Absent: agentd uses [`DEFAULT_REVIEW_PROMPT`].",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "RoleRefusal": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "RouteFamily": {
+        "description": "Mantle route family from the live probe.",
+        "enum": [
+          "/v1",
+          "/openai/v1"
+        ],
+        "type": "string"
+      },
+      "RuleFile": {
+        "description": "One file of a `--rules <dir>` upload.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "content"
+        ],
+        "type": "object"
+      },
+      "RunAbortedPayload": {
+        "description": "`run.aborted` (harness) and the Run item's `aborted`: the run's `run` execution\nended ABORTED, FAILED or TIMED_OUT before the run finished, so the run-ended reaper cleared the\nrun and stopped its workers, sessions and leases. `error` and `cause` are the execution's,\nsingle-line and bounded ([`RunAbortedPayload::new`]); `stoppedAt` is the execution's stop time.",
+        "properties": {
+          "cause": {
+            "maxLength": 1024,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionEnd"
+          },
+          "stoppedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "stoppedAt"
+        ],
+        "type": "object"
+      },
+      "RunControlResponse": {
+        "description": "Response to pause, resume and cancel.",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GoalStatus"
+          }
+        },
+        "required": [
+          "runId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "RunCost": {
+        "description": "A run's token cost by model and engine: the engine-reported usage of its turns\npriced with control-api's pinned price table. The authoritative check is the Bedrock invocation\nlog keyed `<run>.<agent>`: `ham-cost-reconcile` requires the two to agree within 2%.",
+        "properties": {
+          "lines": {
+            "description": "One line per model and engine, in model order.",
+            "items": {
+              "$ref": "#/components/schemas/CostLine"
+            },
+            "type": "array"
+          },
+          "pricesVersion": {
+            "description": "The pinned price table's version.",
+            "type": "string"
+          },
+          "turnsWithoutUsage": {
+            "description": "Turns that ended without engine-reported usage: their tokens are in no line.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unpricedModels": {
+            "description": "Models with usage but no row in the price table: their tokens count and price at zero.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pricesVersion",
+          "lines",
+          "turnsWithoutUsage"
+        ],
+        "type": "object"
+      },
+      "RunDetail": {
+        "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetLimit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunCost"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`costUsd` by model and engine; absent until a turn of the run reports usage."
+          },
+          "costUsd": {
+            "format": "double",
+            "type": "number"
+          },
+          "links": {
+            "$ref": "#/components/schemas/RunLinks",
+            "default": {}
+          },
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunSummary"
+          },
+          "tokensUsed": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "summary",
+          "tokensUsed",
+          "costUsd"
+        ],
+        "type": "object"
+      },
+      "RunKind": {
+        "description": "Who started a run, and so what ends it. A Run item without a kind is one `POST /v1/runs`\ncreated: its run machine ends it.",
+        "enum": [
+          "probe"
+        ],
+        "type": "string"
+      },
+      "RunLinks": {
+        "description": "Links come only from harness-authored delivery events (invariant 4).",
+        "properties": {
+          "prUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "zipArtifactId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "aborted": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunAbortedPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why a cleared run ended when its `run` execution ended ABORTED, FAILED or TIMED_OUT before\nthe run finished."
+          },
+          "continueFrom": {
+            "description": "Protocol 1.38.0: the id of the run this follow-up run continues from (`ham continue`), the run whose delivered head it started\non. Absent for an ordinary run and for every run that was stored before the member existed. It is the id alone: the request's\n`continueFrom` object (with the head control-api resolved) stays in the stored start request. `RunDetail` carries it in its `summary`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Run item's kind: `probe` for a run `hamh-dispatch` wrote, absent otherwise."
+          },
+          "needsInput": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NeedsInputBrief"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.37.0: set on an `active` direct run whose Cline is waiting for the user (the open blocking question), so the run list can\nshow it. control-api fills it from a tail read of the direct agent's events; a failed read leaves it absent."
+          },
+          "ownerPrincipalArn": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/GoalPhase"
+          },
+          "resumeMode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How a `paused` or `stalled` run can go on. Absent for every other status."
+          },
+          "runId": {
+            "type": "string"
+          },
+          "session": {
+            "description": "The number of the run's last session (slice); 1 for a run that never renewed its session. Absent for a run written before the\nmember existed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/GoalStatus"
+          },
+          "statusReason": {
+            "description": "Why a `paused` or `stalled` run stopped, as the Run item stores it (`code: sentence`). Absent for every other status.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "$ref": "#/components/schemas/RunTarget"
+          }
+        },
+        "required": [
+          "runId",
+          "status",
+          "phase",
+          "target",
+          "createdAt",
+          "ownerPrincipalArn"
+        ],
+        "type": "object"
+      },
+      "RunTarget": {
+        "description": "How a run starts: from an existing repository, a new repository, or an empty S3 base.",
+        "oneOf": [
+          {
+            "properties": {
+              "mode": {
+                "const": "repo",
+                "type": "string"
+              },
+              "repo": {
+                "$ref": "#/components/schemas/RepoTarget"
+              }
+            },
+            "required": [
+              "mode",
+              "repo"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "new-repo",
+                "type": "string"
+              },
+              "repo": {
+                "$ref": "#/components/schemas/RepoTarget"
+              }
+            },
+            "required": [
+              "mode",
+              "repo"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "s3-only",
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SendMessageRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/runs/{runId}/messages` (owner only; protocol 1.38.0). The client mints the message id (a ULID): it is the idempotency key,\nso a retry with the same id and the same payload returns the stored message and uses no slot, and the same id with another payload is\n409 `idempotency-conflict`. A confirmation (`confirms`) must repeat the text and mode of the message it replaces.",
+        "properties": {
+          "confirms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfirmHeld"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MessageMode",
+            "default": "next"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "text"
+        ],
+        "type": "object"
+      },
+      "SendMessageResponse": {
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/MessageView"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/SendOutcome"
+          }
+        },
+        "required": [
+          "outcome",
+          "message"
+        ],
+        "type": "object"
+      },
+      "SendOutcome": {
+        "description": "Whether a send stored a new message or found the one a retry repeats.",
+        "oneOf": [
+          {
+            "const": "accepted",
+            "description": "HTTP 202: durably accepted as `pending`.",
+            "type": "string"
+          },
+          {
+            "const": "already-accepted",
+            "description": "HTTP 200: the id was seen before with the same payload; `message` is its current state.",
+            "type": "string"
+          }
+        ]
+      },
+      "Skill": {
+        "additionalProperties": false,
+        "description": "One skill of the `skills` member of `StartDirectRunRequest` (protocol 1.38.0). `name` is the folder name and the `name` in the frontmatter of\n`SKILL.md`: lowercase letters, digits and single hyphens, 1 to [`MAX_SKILL_NAME_BYTES`] bytes.",
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFile"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "files"
+        ],
+        "type": "object"
+      },
+      "SkillFile": {
+        "additionalProperties": false,
+        "description": "One file of a [`Skill`]. `path` is relative to the skill's folder, `/`-separated, with no `.` or `..` part. `content` is UTF-8 text with no\nNUL byte; `size` is its length in bytes and `sha256` is the lowercase hex SHA-256 of those bytes.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size",
+          "content"
+        ],
+        "type": "object"
+      },
+      "StartDirectRunRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/direct/runs` (with an `Idempotency-Key` header; protocol 1.29.0): the run passes the user's prompt,\nunchanged, to Cline on ONE model, with the user's rules and no planner, roles, gates or evaluator of the harness. Served\nonly by the `direct` stage. A member that is not here is refused, not ignored.",
+        "properties": {
+          "attachments": {
+            "description": "Protocol 1.38.0: files of the user's own that Cline reads as context, written by agentd read-only into\n`context/attachments/` outside the work tree. No limit on the number of items or their size; [`crate::direct::check_attachments`] is the one\nvalidator of `ham`, control-api and agentd. The request as a whole is held to [`crate::direct::MAX_REQUEST_BYTES`]. Empty (the default, and what an old client sends) is left out of the stored request.",
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            },
+            "type": "array"
+          },
+          "baseRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "build": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuildOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.48.0: the user's switches for the build defaults of the session (cargo without debug information, cargo without\nincremental state, `target/` on the exclude list). Absent means all three are on; `ham` sends only the members the user turned off\n(`false`), so a user who never sets one sends the request of an older client. The request type refuses an unknown member before anything is\nstored."
+          },
+          "compute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ComputeOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.45.0: the user's choice of machine for the session, `microvm` or `instances`. Absent means the stage's own policy\n(what `auto` means too); `ham` sends the member only for the two explicit words, so a user who never sets `run.compute` sends the request\nof an older client. The request type refuses an unknown word before anything is stored. The choice made at session start is recorded on\nthe Agent item and does not change for the run."
+          },
+          "continueFrom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContinueFrom"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted only with the `s3-only` target and no\n`baseRef`; control-api stores the delivered head it resolved in `headSha`."
+          },
+          "engineConfig": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EngineConfig"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.39.0 (the configuration program): the user's settings for the engine, typed values read from the engine's TOML file on the Mac\n(`~/.config/ham/engines/<engine>.toml`); comments never leave the Mac. [`crate::direct::check_engine_config`] is the one check that `ham`,\ncontrol-api (400 `invalid-engine-config`) and agentd all call. Absent (the default, and what every client without an engine file sends) is\nleft out of the stored request, so a request that keeps the defaults is byte for byte the request of protocol 1.38.0."
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoalOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.38.0: the user's goal-loop switch. Absent means the stage default, which is on; `ham ... --goal off`\nsends `{\"enabled\": false}` and agentd then places nothing for the engine's goal plugin and starts no loop. `--goal on` sends\n`{\"enabled\": true}`, which is the stage default said out loud."
+          },
+          "inputWaitS": {
+            "description": "Protocol 1.37.0: how many seconds the session may wait for the user's answer when Cline fails or gives up. Absent means 0: no\nwait, the run ends at the stop as before (scripts, the release gate and old clients send none). An interactive `ham` sends\n[`crate::direct::DEFAULT_CLIENT_INPUT_WAIT_S`] (1,800). 1 to [`crate::direct::MAX_INPUT_WAIT_S`]; 0 is never sent.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxRunS": {
+            "description": "The most seconds the run may use in all, across the sessions it renews itself into. Absent (the default, and what every client\nwithout the setting sends) means [`crate::direct::DEFAULT_MAX_RUN_S`] and is left out of the stored request. [`crate::direct::max_run_s_ok`]\nis the one check: [`crate::direct::MIN_MAX_RUN_S`] to [`crate::direct::MAX_MAX_RUN_S`]; control-api answers 400 outside it.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "An `id` of the static model list (`engine/catalog/models.json`); anything else is 422 `unknown-model`.",
+            "type": "string"
+          },
+          "nudge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContinueSettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The user's nudge file; absent, agentd uses its built-in text and count."
+          },
+          "prompt": {
+            "description": "Sent to Cline as typed: no trimming, no wrapping.",
+            "type": "string"
+          },
+          "reportStepS": {
+            "description": "Protocol 1.41.0: the seconds one command of the clean-checkout test report may run, from the user's `run.report_command_minutes`.\nAbsent (the default, and what every client without the setting sends) leaves the stage's own limit, 300 s unless the stage says\notherwise, and is left out of the stored request. [`crate::direct::report_step_s_ok`] is the one check: 1 to\n[`crate::direct::MAX_REPORT_STEP_S`]; control-api answers 400 outside it and agentd checks again.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reportTests": {
+            "description": "Protocol 1.38.0: `false` switches the clean-checkout test report off for this run. Absent (the default) and `true` leave it on;\nonly `false` is ever sent or stored, so a request that keeps the default is byte for byte the request of an older client.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "research": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.38.0: the user's research switch. Absent means the stage default, which is on; `ham run --no-research` sends\n`{\"enabled\": false}`. `run-session` writes the answer into the run's policy row, which the research route reads on every call."
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.44.0: the user's switch for the review round and, when the user has a review file, its body. Absent means the stage\ndefault, which is on; `ham` sends the member only when `run.review_round` is `off` or `~/.config/ham/review.md` exists.\n[`crate::direct::check_review`] is the one check of `ham`, control-api (400 `invalid-review`) and agentd."
+          },
+          "rules": {
+            "default": [],
+            "description": "The user's rules, a flat list of `.md` files (`ham_core::rules` validates them); they become Cline's global rules.",
+            "items": {
+              "$ref": "#/components/schemas/RuleFile"
+            },
+            "type": "array"
+          },
+          "skills": {
+            "description": "Protocol 1.38.0: the skills the engine may load on demand, folders of files that agentd writes beside the rules (outside the\nrepository). At most [`crate::direct::MAX_SKILLS`] skills, with no limit on the files of a skill or their size; [`crate::direct::check_skills`]\nis the one validator of `ham`, control-api and agentd. The request as a whole is held to [`crate::direct::MAX_REQUEST_BYTES`]. Empty\n(the default, and what an old client sends) is left out of the stored request, so an agentd image that predates the member can still parse it.",
+            "items": {
+              "$ref": "#/components/schemas/Skill"
+            },
+            "type": "array"
+          },
+          "target": {
+            "$ref": "#/components/schemas/RunTarget"
+          },
+          "thirdParty": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThirdPartyMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.38.0: what a delivered copy of a stored third-party file does. Absent means `block` (the run ends\nwithout a zip); `ham ... --allow-third-party` sends `allow`, which `run-session` passes to the bundle validator. `block` (what another\nclient may send) is the same as no member."
+          }
+        },
+        "required": [
+          "prompt",
+          "target",
+          "model"
+        ],
+        "type": "object"
+      },
+      "StartRunResponse": {
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GoalStatus"
+          }
+        },
+        "required": [
+          "runId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "TddQualification": {
+        "description": "`python-calc` red-then-green runs of one model on one engine through the deployed stack,\nand the roles it may drive.",
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/Engine"
+          },
+          "fixture": {
+            "type": "string"
+          },
+          "imageDigest": {
+            "description": "The deployment's `imageDigest` the runs used.",
+            "type": "string"
+          },
+          "passed": {
+            "description": "Runs whose gates were green and whose evaluator returned `met`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "record": {
+            "description": "The evidence record the runs were read from.",
+            "type": "string"
+          },
+          "refused": {
+            "description": "Role slugs it does not, each with its reason (`not-tdd-qualified:<passed>/<runs>`).",
+            "items": {
+              "$ref": "#/components/schemas/RoleRefusal"
+            },
+            "type": "array"
+          },
+          "roles": {
+            "description": "Role slugs the model qualifies for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "runs": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fixture",
+          "engine",
+          "passed",
+          "runs",
+          "imageDigest",
+          "record",
+          "runIds",
+          "roles",
+          "refused"
+        ],
+        "type": "object"
+      },
+      "ThirdPartyMode": {
+        "description": "What a delivered file that equals a file the run stored through the research route does (`StartDirectRunRequest.third_party`, and\n`ValidateRequest.third_party` of the bundle validator). Protocol 1.38.0: the default is `block`, which ends the run\nwithout a zip; `ham ... --allow-third-party` sends `allow`, which lets the run pass and reports the copy as a finding. `ham` sends\nonly `allow`; `block` (the default, and what another client may send) is left off the bundle validator's payload, so a run that keeps the\ndefault is byte for byte the run of an older client.",
+        "oneOf": [
+          {
+            "const": "block",
+            "description": "The copy is a violation: the run is not delivered.",
+            "type": "string"
+          },
+          {
+            "const": "allow",
+            "description": "The copy is reported as a finding and the run passes (the owner's per-run setting).",
+            "type": "string"
+          }
+        ]
+      },
+      "Usage": {
+        "description": "Token accounting for one turn.",
+        "properties": {
+          "cacheReadInputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cacheWriteInputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "cacheReadInputTokens",
+          "cacheWriteInputTokens"
+        ],
+        "type": "object"
+      },
+      "WhoAmIResponse": {
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "principalArn": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principalArn",
+          "account"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "sigv4": {
+        "description": "AWS Signature Version 4 (API Gateway AWS_IAM authorization).",
+        "in": "header",
+        "name": "Authorization",
+        "type": "apiKey",
+        "x-amazon-apigateway-authtype": "awsSigv4"
+      }
+    }
+  },
+  "info": {
+    "title": "Hyperscale Agent Meta Harness public API",
+    "version": "1.56.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/admin/repos": {
+      "post": {
+        "operationId": "adminRepos",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepoAdminRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoAdminResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Allow or deny a repository (ham-admin repos; operator principal only)"
+      }
+    },
+    "/v1/direct/models": {
+      "get": {
+        "operationId": "listDirectModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "The models a direct run may name, the default marked (direct stage only)"
+      }
+    },
+    "/v1/direct/runs": {
+      "post": {
+        "operationId": "startDirectRun",
+        "parameters": [
+          {
+            "description": "Client-generated key; a repeat with the same key returns the original run.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[!-~]{1,128}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartDirectRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRunResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Start a direct run: the prompt, one model and the user's rules go to Cline unchanged (direct stage only)"
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Catalog with exclusions"
+      }
+    },
+    "/v1/repos": {
+      "get": {
+        "operationId": "listRepos",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListReposResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "The repository allowlist (ham doctor)"
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "nextToken",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRunsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "List the caller's runs"
+      }
+    },
+    "/v1/runs/{runId}": {
+      "get": {
+        "operationId": "getRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Read one run"
+      }
+    },
+    "/v1/runs/{runId}/artifacts": {
+      "get": {
+        "operationId": "listArtifacts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListArtifactsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Artifact list"
+      }
+    },
+    "/v1/runs/{runId}/artifacts/{artifactId}/download-url": {
+      "post": {
+        "operationId": "createDownloadUrl",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadUrlResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Presigned URL with its true expiry"
+      }
+    },
+    "/v1/runs/{runId}/cancel": {
+      "post": {
+        "operationId": "cancelRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunControlResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Cancel a run"
+      }
+    },
+    "/v1/runs/{runId}/events": {
+      "get": {
+        "operationId": "getEvents",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shard",
+            "required": true,
+            "schema": {
+              "maximum": 31,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Last eventId already read (ULID).",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Cursor read of one event shard"
+      }
+    },
+    "/v1/runs/{runId}/input": {
+      "post": {
+        "operationId": "answerInput",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputAnswer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InputAccepted"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Answer the question a direct run's Cline is waiting on: a new prompt, a fresh session, another model, or finish (direct stage only)"
+      }
+    },
+    "/v1/runs/{runId}/messages": {
+      "get": {
+        "operationId": "listMessages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagesPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "The run's messages with their statuses, the current session and whether the run still takes messages (direct stage only)"
+      },
+      "post": {
+        "operationId": "sendMessage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendMessageResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Send a message to a running Cline: delivered at the end of its turn (next) or by an interrupt (now), with a status the server keeps; the id is the client's idempotency key (direct stage only)"
+      }
+    },
+    "/v1/runs/{runId}/messages/{messageId}": {
+      "get": {
+        "operationId": "getMessage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "messageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "One message and its status (direct stage only)"
+      }
+    },
+    "/v1/runs/{runId}/messages/{messageId}/withdraw": {
+      "post": {
+        "operationId": "withdrawMessage",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "messageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Withdraw a message nobody has claimed yet (pending or held; direct stage only)"
+      }
+    },
+    "/v1/whoami": {
+      "get": {
+        "operationId": "whoAmI",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoAmIResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Caller identity"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/v1"
+    }
+  ]
+}

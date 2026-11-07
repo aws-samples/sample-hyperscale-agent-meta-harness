@@ -1,0 +1,21 @@
+{
+  "metrics": { "latencyMs": 1512 },
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "The request asks for rate limiting in the order service, with tests. The name should say that.",
+              "signature": "c2lnbmF0dXJlLWZvci10ZXN0cw=="
+            }
+          }
+        },
+        { "text": "<title>Ratenbegrenzung im Bestell-Service samt Tests" }
+      ]
+    }
+  },
+  "stopReason": "stop_sequence",
+  "usage": { "inputTokens": 469, "outputTokens": 213, "totalTokens": 682 }
+}

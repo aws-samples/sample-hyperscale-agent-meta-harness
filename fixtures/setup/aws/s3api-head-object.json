@@ -1,0 +1,10 @@
+{
+    "AcceptRanges": "bytes",
+    "LastModified": "2026-10-29T17:06:00+00:00",
+    "ContentLength": "{length}",
+    "ETag": "\"{etag}\"",
+    "VersionId": "{version}",
+    "ContentType": "binary/octet-stream",
+    "ServerSideEncryption": "aws:kms",
+    "Metadata": {}
+}

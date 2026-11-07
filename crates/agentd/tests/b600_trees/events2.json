@@ -1,0 +1,45 @@
+{
+"files":[
+".gitignore",
+"compose.yaml",
+"go.mod",
+"go.sum",
+"scripts/test-e2e.sh",
+"scripts/test-integration.sh",
+"scripts/test-unit.sh"
+],
+"compose":"services:\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_USER: app\n      POSTGRES_DB: app\n      POSTGRES_HOST_AUTH_METHOD: trust\n    ports:\n      - \"127.0.0.1:5432:5432\"\n    healthcheck:\n      test: [\"CMD\", \"pg_isready\", \"-U\", \"app\"]\n      interval: 2s\n      timeout: 5s\n      retries: 30\n  broker:\n    image: rabbitmq:3.13\n    environment:\n      RABBITMQ_DEFAULT_USER: app\n      RABBITMQ_DEFAULT_PASS: ${BROKER_PASSWORD:?set BROKER_PASSWORD}\n    ports:\n      - \"127.0.0.1:5672:5672\"\n    healthcheck:\n      test: [\"CMD\", \"rabbitmq-diagnostics\", \"-q\", \"ping\"]\n      interval: 2s\n      timeout: 5s\n      retries: 30\n",
+"log":[
+"RUN | bash scripts/test-unit.sh | exit 127 | pass unknown fail unknown | x",
+"RUN | bash scripts/test-integration.sh | exit 127 | pass unknown fail unknown | x",
+"RUN | bash scripts/test-e2e.sh | exit 127 | pass unknown fail unknown | x",
+"RUN | bash scripts/check.sh | exit 127 | pass unknown fail unknown | x",
+"RUN | go test ./internal/config -run TestLoadDefaultsAndEnvironment -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test ./internal/config -count=1 -v | exit 0 | pass 1 fail 0 | x",
+"RUN | go test ./internal/orders -run TestOrderContracts -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test ./internal/orders ./internal/config -count=1 -v | exit 0 | pass 11 fail 0 | x",
+"RUN | go test ./internal/httpapi -run TestHTTPHandlers -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test ./internal/httpapi -run TestHTTPHandlers -count=1 -v | exit 0 | pass 36 fail 0 | x",
+"RUN | go test ./internal/worker -run TestMessageHandling -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test ./internal/worker -run TestMessageHandling -count=1 -v | exit 0 | pass 8 fail 0 | x",
+"RUN | go test -tags=integration ./internal/postgres -run TestStoreIntegration -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test -tags=integration ./internal/postgres -run TestStoreIntegration -count=1 -v | exit 0 | pass 6 fail 0 | x",
+"RUN | go test -tags=integration ./internal/broker -run TestBrokerIntegration -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test -tags=integration ./internal/broker -run TestBrokerIntegration -count=1 -v | exit 0 | pass 5 fail 0 | x",
+"RUN | go test -tags=e2e ./internal/app -run TestOrderLifecycleE2E -count=1 | exit 1 | pass unknown fail unknown | x",
+"RUN | go test -tags=e2e ./internal/app -run TestOrderLifecycleE2E -count=1 -v | exit 0 | pass 1 fail 0 | x",
+"RUN | go test ./tests/contracts -run 'TestComposeContract|TestScriptContracts|TestTierEntrypoints' -count=1 -v | exit 1 | pass 1 fail 5 | x",
+"RUN | go test ./tests/contracts -count=1 -v | exit 1 | pass 1 fail 5 | x",
+"RUN | go test ./tests/contracts -count=1 -v | exit 0 | pass 8 fail 0 | x",
+"RUN | bash scripts/test-unit.sh | exit 0 | pass unknown fail unknown | x",
+"RUN | bash scripts/test-integration.sh | exit 0 | pass unknown fail unknown | x",
+"RUN | bash scripts/test-e2e.sh | exit 0 | pass unknown fail unknown | x",
+"RUN | python3 scanner_kit.py | exit 0 | pass unknown fail unknown | x"
+],
+"goal":[
+"1. `bash scripts/test-unit.sh` -> exit 0; HTTP and worker fake-based tests and configuration/compose/script contracts pass; nonempty JUnit XML is written under test-results/unit/ using gotestsum v1.13.0.",
+"2. `bash scripts/test-integration.sh` -> exit 0 with real PostgreSQL and RabbitMQ configured through DATABASE_URL and BROKER_URL; tagged store and publish/consume tests pass; nonempty JUnit XML is written under test-results/integration/.",
+"3. `bash scripts/test-e2e.sh` -> exit 0 with both real services; an in-process API and worker accept a public HTTP POST, and public GET polling reaches processed; duplicate delivery stays idempotent; nonempty JUnit XML is written under test",
+"4. `bash scripts/check.sh` -> exit 0; Go 1.27 builds both commands, formatting, vet, race-enabled unit tests, repository contracts and all three JUnit reports are checked."
+]
+}

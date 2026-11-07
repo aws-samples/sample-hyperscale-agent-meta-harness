@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 24" width="112" height="192" shape-rendering="crispEdges" role="img">
+  <title>The ham mascot, rocket flame and smoke</title>
+  <desc>The ham mascot, an original pixel drawing of an orange character with a rounded head, two large white eyes with black pupils that look up, a plain dark shirt with small orange arms, and tan shorts with a notch between the legs. It has no mouth and no lettering. A short flame burns under each foot, yellow in the core, orange at the edge and red at the tip, with grey smoke below the flames, as if it were a rocket.</desc>
+  <path fill="#ff8700" d="M3 0h8v1h-8zM2 1h10v1h-10zM1 2h2v1h-2zM5 2h4v1h-4zM11 2h2v1h-2zM1 3h1v2h-1zM6 3h2v2h-2zM12 3h1v2h-1zM1 5h2v1h-2zM5 5h4v1h-4zM11 5h2v1h-2zM1 6h12v1h-12zM0 7h1v3h-1zM13 7h1v3h-1z"/>
+  <path fill="#000000" d="M3 2h2v2h-2zM9 2h2v2h-2z"/>
+  <path fill="#ffffff" d="M2 3h1v1h-1zM5 3h1v1h-1zM8 3h1v1h-1zM11 3h1v1h-1zM2 4h4v1h-4zM8 4h4v1h-4zM3 5h2v1h-2zM9 5h2v1h-2z"/>
+  <path fill="#5f5f5f" d="M1 7h12v4h-12z"/>
+  <path fill="#af875f" d="M1 11h12v1h-12zM1 12h5v1h-5zM8 12h5v1h-5zM1 13h4v1h-4zM9 13h4v1h-4z"/>
+  <path fill="#ffd700" d="M2 14h2v2h-2zM10 14h2v2h-2z"/>
+  <path fill="#ff5f00" d="M1 14h1v2h-1zM4 14h1v2h-1zM9 14h1v2h-1zM12 14h1v2h-1zM2 16h2v1h-2zM10 16h2v1h-2z"/>
+  <path fill="#d70000" d="M2 17h2v1h-2zM10 17h2v1h-2z"/>
+  <path fill="#6c6c6c" d="M1 18h1v1h-1zM4 18h1v1h-1zM9 18h1v1h-1zM12 18h1v1h-1z"/>
+  <path fill="#8a8a8a" d="M2 18h2v1h-2zM10 18h2v1h-2zM1 19h2v1h-2zM4 19h1v1h-1zM9 19h2v1h-2zM12 19h1v1h-1zM0 20h2v1h-2zM4 20h2v1h-2zM8 20h2v1h-2zM11 20h1v1h-1zM13 20h1v1h-1zM1 21h1v1h-1zM5 21h1v1h-1zM8 21h1v1h-1zM12 21h1v1h-1zM3 22h1v1h-1zM9 22h1v1h-1z"/>
+  <path fill="#b2b2b2" d="M3 19h1v1h-1zM11 19h1v1h-1zM2 20h2v1h-2zM10 20h1v1h-1zM12 20h1v1h-1zM2 21h3v1h-3zM9 21h3v1h-3zM2 22h1v1h-1zM4 22h1v1h-1zM10 22h2v1h-2zM3 23h1v1h-1z"/>
+  <path fill="#d0d0d0" d="M10 23h1v1h-1z"/>
+</svg>

@@ -1,0 +1,20 @@
+{
+  "outcome": "accepted",
+  "message": {
+    "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+    "seq": 1,
+    "mode": "next",
+    "state": "pending",
+    "text": "Please also add a README section on the retry rules.",
+    "epoch": "sess-3",
+    "epochNo": 3,
+    "acceptedAt": "2026-10-16T14:02:11Z",
+    "updatedAt": "2026-10-16T14:02:11Z",
+    "history": [
+      {
+        "state": "pending",
+        "at": "2026-10-16T14:02:11Z"
+      }
+    ]
+  }
+}

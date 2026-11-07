@@ -1,0 +1,384 @@
+From 82b73e10fcff2e4510203211354859efd5a72bbf Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Fri, 25 Sep 2026 02:47:00 +0000
+Subject: [PATCH 04/11] fix(cli): fail loud on an ACP model pin instead of
+ falling back
+
+Fork patch 0005. Under --acp, CLINE_MODEL at session/new and the model set
+through session/set_config_option or session/set_model were resolved against
+the bundled catalog; any other id was replaced without an error by the provider
+default (minimax.minimax-m2.5 on Bedrock) or, for set_config_option, taken
+unchecked.
+
+- A pinned id in the catalog is kept.
+- On Bedrock, an id outside the catalog is kept when the vendor can route it
+  (inference-profile ARNs, application inference profiles, aws-mantle/<id>),
+  checked with resolveBedrockMantleRoute, now exported from @cline/llms.
+- Anything else fails with invalidParams naming the id, for example the empty
+  Mantle id "aws-mantle/". A rejected change keeps the current model.
+- The provider default applies only when nothing is pinned.
+- A pinned id outside the catalog is listed in availableModels and the model
+  config option, so currentValue is one of the options.
+---
+ apps/cli/src/acp/acpAgent.model-pin.test.ts | 181 ++++++++++++++++++++
+ apps/cli/src/acp/acpAgent.ts                |  99 +++++++++--
+ sdk/packages/llms/src/index.ts              |   4 +
+ 3 files changed, 270 insertions(+), 14 deletions(-)
+ create mode 100644 apps/cli/src/acp/acpAgent.model-pin.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.model-pin.test.ts b/apps/cli/src/acp/acpAgent.model-pin.test.ts
+new file mode 100644
+index 0000000..5d46ac9
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.model-pin.test.ts
+@@ -0,0 +1,181 @@
++import type { AgentSideConnection } from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++// Catalog stand-in: the provider default is minimax.minimax-m2.5, as on Bedrock,
++// so a silent fallback would show up as that id.
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => ({
++				"minimax.minimax-m2.5": { name: "MiniMax M2.5" },
++				"us.anthropic.claude-sonnet-5": { name: "Claude Sonnet 5" },
++			})),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "minimax.minimax-m2.5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++
++const FALLBACK = "minimax.minimax-m2.5";
++const MANTLE_ID = "aws-mantle/qwen.qwen3-coder-next";
++const UNROUTABLE_ID = "aws-mantle/"; // criteria k2.unroutableId
++const ARN =
++	"arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0";
++
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++type SessionView = { currentModelId: string };
++
++function sessionOf(agent: AcpAgent, id: string): SessionView {
++	return (
++		agent as unknown as { sessions: Map<string, SessionView> }
++	).sessions.get(id) as SessionView;
++}
++
++function modelOption(configOptions: unknown): {
++	currentValue?: string;
++	options?: Array<{ value: string }>;
++} {
++	return (configOptions as Array<{ id: string }>).find(
++		(o) => o.id === "model",
++	) as {
++		currentValue?: string;
++		options?: Array<{ value: string }>;
++	};
++}
++
++describe("ACP model pin fails loud (fork patch 0005)", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_API_KEY = "unused";
++		delete process.env.CLINE_MODEL;
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("keeps an aws-mantle/ id that is not in the catalog at session/new", async () => {
++		process.env.CLINE_MODEL = MANTLE_ID;
++		const created = await new AcpAgent(conn).newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		expect(created.models?.currentModelId).toBe(MANTLE_ID);
++		const option = modelOption(created.configOptions);
++		expect(option.currentValue).toBe(MANTLE_ID);
++		expect(option.options?.map((o) => o.value)).toContain(MANTLE_ID);
++	});
++
++	it("keeps an inference-profile ARN at session/new", async () => {
++		process.env.CLINE_MODEL = ARN;
++		const created = await new AcpAgent(conn).newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		expect(created.models?.currentModelId).toBe(ARN);
++	});
++
++	it("rejects an unroutable id at session/new with an error naming it", async () => {
++		process.env.CLINE_MODEL = UNROUTABLE_ID;
++		await expect(
++			new AcpAgent(conn).newSession({ cwd: process.cwd(), mcpServers: [] }),
++		).rejects.toMatchObject({
++			code: -32602,
++			message: expect.stringContaining(`"${UNROUTABLE_ID}"`),
++		});
++	});
++
++	it("never substitutes the provider default for a pinned id", async () => {
++		for (const id of [MANTLE_ID, ARN, "us.anthropic.claude-sonnet-5"]) {
++			process.env.CLINE_MODEL = id;
++			const created = await new AcpAgent(conn).newSession({
++				cwd: process.cwd(),
++				mcpServers: [],
++			});
++			expect(created.models?.currentModelId).toBe(id);
++			expect(created.models?.currentModelId).not.toBe(FALLBACK);
++		}
++	});
++
++	it("uses the provider default only when no model is pinned", async () => {
++		const created = await new AcpAgent(conn).newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		expect(created.models?.currentModelId).toBe(FALLBACK);
++	});
++
++	it("accepts an aws-mantle/ id through session/set_config_option", async () => {
++		const agent = new AcpAgent(conn);
++		const created = await agent.newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		await agent.setSessionConfigOption({
++			sessionId: created.sessionId,
++			configId: "model",
++			value: "aws-mantle/xai.grok-4.3",
++		});
++		expect(sessionOf(agent, created.sessionId).currentModelId).toBe(
++			"aws-mantle/xai.grok-4.3",
++		);
++	});
++
++	it("rejects an unroutable id through session/set_config_option and keeps the current model", async () => {
++		process.env.CLINE_MODEL = MANTLE_ID;
++		const agent = new AcpAgent(conn);
++		const created = await agent.newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		await expect(
++			agent.setSessionConfigOption({
++				sessionId: created.sessionId,
++				configId: "model",
++				value: UNROUTABLE_ID,
++			}),
++		).rejects.toMatchObject({
++			code: -32602,
++			message: expect.stringContaining(`"${UNROUTABLE_ID}"`),
++		});
++		expect(sessionOf(agent, created.sessionId).currentModelId).toBe(MANTLE_ID);
++	});
++
++	it("rejects an unroutable id through session/set_model", async () => {
++		const agent = new AcpAgent(conn);
++		const created = await agent.newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		await expect(
++			agent.unstable_setSessionModel({
++				sessionId: created.sessionId,
++				modelId: UNROUTABLE_ID,
++			}),
++		).rejects.toMatchObject({ code: -32602 });
++	});
++
++	it("rejects an unknown id for a closed-catalog provider, naming it", async () => {
++		process.env.CLINE_PROVIDER = "anthropic";
++		process.env.CLINE_MODEL = "claude-imaginary-9";
++		await expect(
++			new AcpAgent(conn).newSession({ cwd: process.cwd(), mcpServers: [] }),
++		).rejects.toMatchObject({
++			code: -32602,
++			message: expect.stringContaining('"claude-imaginary-9"'),
++		});
++	});
++});
+diff --git a/apps/cli/src/acp/acpAgent.ts b/apps/cli/src/acp/acpAgent.ts
+index 6f041e1..66e12c7 100644
+--- a/apps/cli/src/acp/acpAgent.ts
++++ b/apps/cli/src/acp/acpAgent.ts
+@@ -199,11 +199,12 @@ export class AcpAgent implements Agent {
+ 		// Model ids are provider-scoped, so the default must come from the
+ 		// provider's own catalog: `cline-pass` uses `cline-pass/…` ids that mean
+ 		// nothing to `cline`, and vice versa.
+-		const defaultModelId = await resolveDefaultModelId(
+-			providerId,
+-			process.env.CLINE_MODEL,
+-			providerModels,
+-		);
++		// A pinned model (CLINE_MODEL) is kept or refused, never replaced by the
++		// provider default; the default applies only when nothing is pinned.
++		const pinnedModelId = process.env.CLINE_MODEL?.trim();
++		const defaultModelId = pinnedModelId
++			? resolvePinnedModelId(providerId, pinnedModelId, providerModels)
++			: await resolveDefaultModelId(providerId, undefined, providerModels);
+ 
+ 		this.sessions.set(sessionId, {
+ 			id: sessionId,
+@@ -222,6 +223,13 @@ export class AcpAgent implements Agent {
+ 				description: info.description,
+ 			}),
+ 		);
++		if (!Object.hasOwn(providerModels, defaultModelId)) {
++			availableModels.push({
++				modelId: defaultModelId,
++				name: defaultModelId,
++				description: undefined,
++			});
++		}
+ 
+ 		const organizationOption =
+ 			await this.getOrganizationConfigOption(providerId);
+@@ -442,11 +450,20 @@ export class AcpAgent implements Agent {
+ 		if (!session) {
+ 			throw new Error(`unknown session: ${params.sessionId}`);
+ 		}
+-		session.currentModelId = params.modelId;
++		const providerModels = await Llms.getModelsForProvider(
++			session.currentProviderId,
++			CHAT_MODEL_QUERY_OPTIONS,
++		);
++		const modelId = resolvePinnedModelId(
++			session.currentProviderId,
++			params.modelId,
++			providerModels,
++		);
++		session.currentModelId = modelId;
+ 		if (session.sessionManager && session.activeSessionId) {
+ 			await session.sessionManager.updateSessionModel?.(
+ 				session.activeSessionId,
+-				params.modelId,
++				modelId,
+ 			);
+ 		}
+ 		return {};
+@@ -521,11 +538,20 @@ export class AcpAgent implements Agent {
+ 			}
+ 
+ 			case "model": {
+-				session.currentModelId = value;
++				const providerModels = await Llms.getModelsForProvider(
++					session.currentProviderId,
++					CHAT_MODEL_QUERY_OPTIONS,
++				);
++				const modelId = resolvePinnedModelId(
++					session.currentProviderId,
++					value,
++					providerModels,
++				);
++				session.currentModelId = modelId;
+ 				if (session.sessionManager && session.activeSessionId) {
+ 					await session.sessionManager.updateSessionModel?.(
+ 						session.activeSessionId,
+-						value,
++						modelId,
+ 					);
+ 				}
+ 				break;
+@@ -815,6 +841,45 @@ export class AcpAgent implements Agent {
+ 	}
+ }
+ 
++/**
++ * Resolve a model id the client pinned. A catalog id is kept. Bedrock routes
++ * ids outside its catalog (inference-profile ARNs, application inference
++ * profiles, `aws-mantle/<id>`), so any id the Bedrock vendor can route is kept
++ * too. Anything else fails with an error that names the id, so a session never
++ * runs on a model the client did not choose.
++ */
++function resolvePinnedModelId(
++	providerId: string,
++	requested: unknown,
++	providerModels: Record<string, unknown>,
++): string {
++	if (typeof requested !== "string" || !requested.trim()) {
++		throw RequestError.invalidParams(
++			undefined,
++			`Model "${String(requested)}" is not a model id`,
++		);
++	}
++	const modelId = requested.trim();
++	if (Object.hasOwn(providerModels, modelId)) {
++		return modelId;
++	}
++	if (providerId === "bedrock") {
++		try {
++			Llms.resolveBedrockMantleRoute(modelId);
++		} catch (error) {
++			throw RequestError.invalidParams(
++				undefined,
++				`Model "${requested}" cannot be routed by provider bedrock: ${describeAgentError(error)}`,
++			);
++		}
++		return modelId;
++	}
++	throw RequestError.invalidParams(
++		undefined,
++		`Model "${requested}" is not available for provider ${providerId}`,
++	);
++}
++
+ async function resolveDefaultModelId(
+ 	providerId: string,
+ 	preferredModelId: string | undefined,
+@@ -890,11 +955,17 @@ function buildModelConfigOption(
+ 		name: "Model",
+ 		category: "model",
+ 		currentValue: currentModelId,
+-		options: Object.entries(providerModels).map(([modelId, info]) => ({
+-			value: modelId,
+-			name: info.name ?? modelId,
+-			description: info.description,
+-		})),
++		options: [
++			...Object.entries(providerModels).map(([modelId, info]) => ({
++				value: modelId,
++				name: info.name ?? modelId,
++				description: info.description,
++			})),
++			// A pinned id outside the catalog stays selectable and visible.
++			...(currentModelId && !Object.hasOwn(providerModels, currentModelId)
++				? [{ value: currentModelId, name: currentModelId }]
++				: []),
++		],
+ 	};
+ }
+ 
+diff --git a/sdk/packages/llms/src/index.ts b/sdk/packages/llms/src/index.ts
+index e2c7db8..d94cd1e 100644
+--- a/sdk/packages/llms/src/index.ts
++++ b/sdk/packages/llms/src/index.ts
+@@ -139,6 +139,10 @@ export {
+ 	type ResolveProviderRequestHeadersInput,
+ 	resolveProviderRequestHeaders,
+ } from "./providers/request-headers";
++export {
++	BEDROCK_MANTLE_MODEL_PREFIX,
++	resolveBedrockMantleRoute,
++} from "./providers/vendors/bedrock";
+ export {
+ 	type ClineProvider,
+ 	type ClineProviderOptions,
+-- 
+2.47.3
+

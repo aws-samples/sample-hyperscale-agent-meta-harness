@@ -1,0 +1,31 @@
+# Secret-scan configuration: the default rules of gitleaks plus one allowlist of paths.
+#
+# Test sources and fixtures hold stand-in credentials: made-up key ids, tokens and key blocks in the shape of real ones, because the tests need that shape. The default
+# rules read them as credentials, in the files of today and in older commits alike, and a scan of the whole history reads every commit with this file. The allowlist is
+# written in the older [allowlist] form because every gitleaks release reads it: the 8.18 releases ignore the newer table form, and the releases that read the
+# newer form refuse a file that holds both forms. This form cannot be limited to rules, so it is limited to paths, each anchored at the start of the path:
+#   - test sources: crates/<crate>/tests/, scripts/tests/ and engine/cline/patches/tdd/ (patches that only add tests);
+#   - fixtures/, which include route records whose `key` is a Bedrock model id that the generic key rule reads as a high-entropy key;
+#   - six single files of older commits that held a made-up value: a patch about the placeholder key of the engine, an older exploratory script, the smoke scripts, a unit-test helper
+#     in the delivery crate and the list of fingerprints below, whose comment lines look like keys.
+# Every other path, the sources of the crates, the infrastructure code, the documents and the scripts, is scanned with all the default rules.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test sources and fixtures hold stand-in credentials; Bedrock Mantle endpoints (bedrock-mantle.<region>.api.aws) are public host names"
+paths = [
+  '''^crates/[^/]+/tests/''',
+  '''^scripts/tests/''',
+  '''^engine/cline/patches/tdd/''',
+  '''^engine/cline/patches/0007-fix-cli-never-send-the-ACP-placeholder-key-as-a-bear\.patch$''',
+  '''^fixtures/''',
+  '''^probes/[^/]+\.py$''',
+  '''^scripts/[a-z-]+smoke\.sh$''',
+  '''^crates/delivery/src/github\.rs$''',
+  '''^\.gitleaksignore$''',
+]
+# In a list of hosts the generic key rule reads the `api` of one Mantle host as a keyword and the next host as its key. Allowed only when the secret is exactly a Mantle host name.
+regexes = [
+  '''^bedrock-mantle\.[a-z]{2}(?:-gov)?-[a-z]{4,9}-[0-9]{1,2}\.api\.aws$''',
+]

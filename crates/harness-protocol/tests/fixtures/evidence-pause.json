@@ -1,0 +1,30 @@
+{
+ "schemaVersion": 1,
+ "kind": "pause",
+ "createdAt": "2026-09-25T01:12:35Z",
+ "host": "build-host-0000000000000001.region-a.example.test",
+ "account": "800000000022",
+ "region": "us-west-2",
+ "stage": "none",
+ "codeSha": "503e7a1",
+ "sourceTree": null,
+ "deploymentDigest": null,
+ "imageDigest": null,
+ "criteriaSha256": "88a18a0f6cbaa1ed6958a6edeab52e73d0d3a1e42c595008380370c20bbabfd3",
+ "result": "pass",
+ "inputs": {
+  "cause": "the build host was restarted to grow its root volume",
+  "ownerMessage": "the build host was restarted for its disk; continue the work there"
+ },
+ "measurements": {
+  "pauseStart": "2026-09-25T00:06Z",
+  "firstFailure": "ssh: connection closed by the remote host",
+  "resumed": "2026-09-25T00:08:22Z",
+  "jobsInFlight": 0,
+  "rootVolumeAfter": "/dev/nvme0n1p1 5.8T, 137G used (3%), 1% inodes",
+  "newVolume": false,
+  "resumeAccessCheck": "ACCESS-PASS"
+ },
+ "runIds": [],
+ "notes": "No job was running at the reboot, so nothing needed restart. The disk grew in place (root EBS to 5.9 TB), so the disk guard moved no directories."
+}

@@ -1,0 +1,217 @@
+{
+  "allowList": [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "HPND",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Unlicense",
+    "Zlib",
+    "EPL-2.0",
+    "LGPL-2.1",
+    "LGPL-2.1+",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later"
+  ],
+  "ecosystem": "Maven",
+  "frameworks": [
+    {
+      "cleanLines": [
+        {
+          "g10": "none off the allowlist",
+          "g9": "8 failing in 3 of 84 packages (tomcat-embed-core 3, jackson-databind 3)",
+          "g9WithOverrides": "0 failing advisories in 84 packages",
+          "line": "4.1.x",
+          "overrides": {
+            "jackson-bom.version": "3.1.7",
+            "tomcat.version": "11.0.25"
+          },
+          "version": "4.1.1"
+        },
+        {
+          "g9": "8 failing in 3 of 85 packages (tomcat-embed-core 3, jackson-databind 3)",
+          "g9WithOverrides": "0 failing advisories in 85 packages",
+          "line": "4.0.x",
+          "overrides": {
+            "jackson-2-bom.version": "2.21.7",
+            "jackson-bom.version": "3.1.7",
+            "tomcat.version": "11.0.25"
+          },
+          "version": "4.0.8"
+        },
+        {
+          "g9": "10 failing in 4 of 75 packages (jackson-databind 3, tomcat-embed-core 3)",
+          "g9WithOverrides": "2 failing in 1 of 75 packages (spring-webmvc 2)",
+          "line": "3.5.x",
+          "overrides": {
+            "jackson-bom.version": "2.21.7",
+            "netty.version": "4.1.137.Final",
+            "postgresql.version": "42.7.12",
+            "tomcat.version": "10.1.59"
+          },
+          "version": "3.5.16"
+        },
+        {
+          "g9": "31 failing in 9 of 75 packages (tomcat-embed-core 13, jackson-databind 5)",
+          "g9WithOverrides": "10 failing in 6 of 75 packages (spring-webmvc 4, spring-boot-starter-actuator 2)",
+          "line": "3.4.x",
+          "overrides": {
+            "jackson-bom.version": "2.18.11",
+            "netty.version": "4.1.137.Final",
+            "postgresql.version": "42.7.12",
+            "tomcat.version": "10.1.59"
+          },
+          "version": "3.4.13"
+        },
+        {
+          "g9": "36 failing in 10 of 75 packages (tomcat-embed-core 19, jackson-databind 5)",
+          "g9WithOverrides": "17 failing in 9 of 75 packages (jackson-databind 5, jackson-core 3)",
+          "line": "3.3.x",
+          "overrides": {
+            "netty.version": "4.1.137.Final",
+            "postgresql.version": "42.7.12",
+            "tomcat.version": "10.1.59"
+          },
+          "version": "3.3.13"
+        },
+        {
+          "g9": "43 failing in 11 of 75 packages (tomcat-embed-core 23, jackson-databind 5)",
+          "line": "3.3.4 (rehearsal pin)",
+          "version": "3.3.4"
+        }
+      ],
+      "coordinate": "org.springframework.boot:spring-boot-starter-parent",
+      "name": "Spring Boot",
+      "note": "Newest patch per line: mvn dependency:list of the web, validation, actuator and test starters; g9WithOverrides sets pom properties."
+    }
+  ],
+  "generated": "2026-10-07",
+  "hints": [
+    {
+      "claims": {
+        "org.springframework.boot:*": [
+          "4.0.8",
+          "4.1.1"
+        ],
+        "org.springframework:*": [
+          "7.0.9"
+        ]
+      },
+      "gate": "G9",
+      "match": [
+        "org.springframework.boot:*",
+        "org.springframework:*"
+      ],
+      "text": "Start on Boot 4.1.1 or 4.0.8: 0 failing advisories with the Tomcat and Jackson notes' pom properties. No 3.x line resolves clean: Boot 3.5.16 manages spring-webmvc 6.2.19, and GHSA-j9f9-w8pj-32f8, GHSA-pc63-qcmh-9cmg have no 6.2.x fix; Boot 4 manages 7.0.9.",
+      "verdict": "clean-line"
+    },
+    {
+      "claims": {
+        "org.apache.tomcat.embed:*": [
+          "11.0.25"
+        ]
+      },
+      "gate": "G9",
+      "match": [
+        "org.apache.tomcat.embed:*",
+        "org.apache.tomcat:*"
+      ],
+      "text": "The released BOM ships a Tomcat with failing advisories. Pom property tomcat.version=11.0.25 on Boot 4.1.1 and 4.0.8 (Tomcat 11). No Tomcat override makes a 3.x line clean (see the Spring note).",
+      "verdict": "clean-line"
+    },
+    {
+      "claims": {
+        "com.fasterxml.jackson.core:*": [
+          "2.21"
+        ],
+        "tools.jackson.core:*": [
+          "3.1.7"
+        ]
+      },
+      "gate": "G9",
+      "match": [
+        "com.fasterxml.jackson.core:*",
+        "tools.jackson.core:*"
+      ],
+      "text": "Pom properties. Boot 4.1.1 (Jackson 3): jackson-bom.version=3.1.7. Boot 4.0.8: jackson-bom.version=3.1.7; a Boot 4 tree that also holds Jackson 2 needs jackson-2-bom.version=2.21.7.",
+      "verdict": "clean-line"
+    },
+    {
+      "claims": {
+        "io.netty:*": [
+          "4.2.17.Final"
+        ]
+      },
+      "gate": "G9",
+      "match": [
+        "io.netty:*"
+      ],
+      "text": "WebFlux brings Netty. Boot 4.1.1: no override needed. Boot 4.0.8: no override needed.",
+      "verdict": "clean-line"
+    },
+    {
+      "claims": {
+        "org.postgresql:postgresql": [
+          "42.7.13"
+        ]
+      },
+      "gate": "G9",
+      "match": [
+        "org.postgresql:postgresql"
+      ],
+      "text": "Boot 4.1.1: no override needed. Boot 4.0.8: no override needed.",
+      "verdict": "clean-line"
+    }
+  ],
+  "profile": "jvm",
+  "promptGuidance": [
+    {
+      "text": "Spring Boot: start on 4.1.1 or 4.0.8 (Spring Framework 7.0.9). Boot 3.3, 3.4 and 3.5 fail G9 even with pom overrides: Boot 3.5.16 manages Spring Framework 6.2.19, and GHSA-j9f9-w8pj-32f8, GHSA-pc63-qcmh-9cmg (spring-webmvc) have no 6.2.x fix.",
+      "topic": "framework-line"
+    },
+    {
+      "text": "Boot 4.1.1 starters: spring-boot-starter-webmvc (spring-boot-starter-web is deprecated); spring-boot-starter-flyway (FlywayAutoConfiguration is in spring-boot-flyway, not flyway-core) and org.flywaydb:flyway-database-postgresql for PostgreSQL.",
+      "topic": "starters"
+    },
+    {
+      "text": "Boot 4.1.1 JPA test slice (spring-boot-starter-data-jpa-test): org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest and org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase; Boot 3 had both in spring-boot-test-autoconfigure.",
+      "topic": "test-packages"
+    },
+    {
+      "text": "Boot 4.1.1 web test slice (spring-boot-starter-webmvc-test): org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest and org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc. No MockBean: use org.springframework.test.context.bean.override.mockito.MockitoBean.",
+      "topic": "test-packages"
+    },
+    {
+      "text": "Boot 4: org.springframework.boot.resttestclient.TestRestTemplate with org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate needs spring-boot-resttestclient plus org.springframework.boot:spring-boot-restclient (no version; test scope unless main code already has it).",
+      "topic": "test-packages"
+    },
+    {
+      "text": "Without spring-boot-restclient the context fails with NoClassDefFoundError RestTemplateBuilder: spring-boot-resttestclient 4.1.1 and 4.0.8 do not depend on it.",
+      "topic": "test-packages"
+    },
+    {
+      "text": "Testcontainers 2.0.5 (Boot 4.1.1 and 4.0.8 manage it): org.testcontainers:testcontainers-postgresql and org.testcontainers:testcontainers-junit-jupiter. Boot 4 gives the 1.x names postgresql and junit-jupiter (last 1.21.4) no version.",
+      "topic": "testcontainers"
+    }
+  ],
+  "schema": 1,
+  "sources": [
+    "https://api.osv.dev/v1/query",
+    "https://api.osv.dev/v1/vulns/",
+    "https://repo1.maven.org/maven2/"
+  ],
+  "unverified": [
+    "Whether Boot 3.3 and 3.4 are still maintained (no support-policy page was fetched).",
+    "Gradle: the trees were resolved with Maven; Gradle's resolver was not run.",
+    "Whether a shipped build (a fat jar, an image, a shaded or vendored copy) of a project with an EPL-2.0 or LGPL-2.1 dependency meets those licenses' conditions: G10 reads the POM's license and cannot see shading.",
+    "Boot 4 test modules named only by a string or service file: class references only."
+  ]
+}

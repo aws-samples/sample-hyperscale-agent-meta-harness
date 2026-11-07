@@ -1,0 +1,13 @@
+{
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "controlId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+  "control": {
+    "kind": "instruct",
+    "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+    "action": "new_session_with_prompt",
+    "text": "Run the sleeps in the background and poll the log file instead of waiting on the command.",
+    "origin": "user"
+  },
+  "createdAt": "2026-10-15T13:42:38Z"
+}

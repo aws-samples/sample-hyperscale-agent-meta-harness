@@ -1,0 +1,20 @@
+---
+source: crates/ham/tests/transcript.rs
+expression: t
+---
+progress feed only: not the full conversation
+you      Add percent_change(a, b) to calc.py with tests.
+notice   Permission for read_files:
+         {"files":[{"path":"/mnt/workspace/01M0000000000000000TEST... was
+         allowed.
+tool     read_files: {"files":[{"path":"/mnt/workspace/01M000000000000000… done
+tool     editor: {"path":"/mnt/workspace/01M0000000000000000TESTYN6/a1/re… done
+notice   Permission for editor:
+         {"path":"/mnt/workspace/01M0000000000000000TESTYN6/a1/rep... was
+         allowed.
+notice   Permission for editor: {"old_text":"def test_ratio_by_zero_raises() ->
+         None:\n  ... was allowed.
+tool     editor: {"old_text":"def test_ratio_by_zero_raises() -> None:\n … done
+notice   Permission for editor: {"old_text":"def ratio(a: float, b: float) ->
+         float:\n   ... was allowed.
+tool     editor: {"old_text":"def ratio(a: float, b: float) -> float:\n  … done

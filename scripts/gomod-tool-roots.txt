@@ -1,0 +1,8 @@
+# gomod-tool-roots.txt: the Go tool roots the module store of stage direct holds beside the approved library roots, one `module@version` per
+# line, passed to `scripts/gomod-store.sh fill --tools`. A tool root is a module whose main package an agent runs with `go run
+# <module>@<version>`; the filler lists it as a Go `tool` so that the store holds everything building it needs. This file is reviewed by hand
+# (it is not generated from the approved list): a line is added only for a command a sample prompt names (fixtures/ntier/events/prompt.md runs
+# `go run gotest.tools/gotestsum@v1.13.0`). The prompt's earlier pin, v1.12.0, does not build on Go 1.27.1 (golang.org/x/tools v0.19.0,
+# internal/tokeninternal: "invalid array length -delta * delta"); it stays listed because the store is create-only and was filled with it.
+gotest.tools/gotestsum@v1.12.0
+gotest.tools/gotestsum@v1.13.0

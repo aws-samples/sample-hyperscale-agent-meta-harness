@@ -1,0 +1,15 @@
+# OpenCode, declared so a later engine uses the same module; this release builds and runs Cline only and nothing fetches this
+# asset. The pin equals engine/lock.toml [opencode]; `engine-fetch check` fails when they differ.
+schema = "1"
+name = "opencode"
+kind = "release-asset"
+license = "MIT"
+recipe = "none"
+version = "1.18.32"
+description = "OpenCode 1.18.32 linux-arm64 release asset (declared, not built)"
+
+[assets.linux-arm64]
+url = "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-arm64.tar.gz"
+sha256 = "568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840"
+member = "opencode"
+member_sha256 = "7c6e67883fcb230b7d4cb1bfea821756ed8b320c1fb44e9c36c8e7fc8725826b"

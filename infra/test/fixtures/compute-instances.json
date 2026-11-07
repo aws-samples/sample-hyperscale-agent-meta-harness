@@ -1,0 +1,79 @@
+{
+  "comment": "The one table of HAMH_COMPUTE_INSTANCES words. infra/test/instances.test.ts runs it through resolveComputeInstances (lib/config.ts) and scripts/tests/test_deploy_direct.py runs it through resolve_compute_instances (scripts/lib/deploy.py), so the two parsers cannot drift apart. It is the table of HAMH_TOOLS_MODE words (infra/test/fixtures/tools-mode.json) with the same rule: a setting of null is a variable that is not set, and only the six ASCII whitespace characters are trimmed.",
+  "default": "off",
+  "accept": [
+    {
+      "setting": null,
+      "mode": "off"
+    },
+    {
+      "setting": "",
+      "mode": "off"
+    },
+    {
+      "setting": "   ",
+      "mode": "off"
+    },
+    {
+      "setting": "off",
+      "mode": "off"
+    },
+    {
+      "setting": "OFF",
+      "mode": "off"
+    },
+    {
+      "setting": " off ",
+      "mode": "off"
+    },
+    {
+      "setting": "on",
+      "mode": "on"
+    },
+    {
+      "setting": "ON",
+      "mode": "on"
+    },
+    {
+      "setting": "On",
+      "mode": "on"
+    },
+    {
+      "setting": " on ",
+      "mode": "on"
+    },
+    {
+      "setting": "\ton\n",
+      "mode": "on"
+    },
+    {
+      "setting": "\u000bOFF\f",
+      "mode": "off"
+    }
+  ],
+  "reject": [
+    "auto",
+    "true",
+    "false",
+    "1",
+    "0",
+    "yes",
+    "no",
+    "enabled",
+    "disabled",
+    "of",
+    "onn",
+    "o n",
+    "off,on",
+    "on;off",
+    "tools",
+    "\u001con",
+    "\u0085off",
+    "\ufeffon",
+    "\u00a0on",
+    "\u2003off",
+    "instances",
+    "microvm",
+    "enabled-instances"
+  ]
+}

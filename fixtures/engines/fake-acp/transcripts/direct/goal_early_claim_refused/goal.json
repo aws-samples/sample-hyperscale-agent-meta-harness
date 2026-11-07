@@ -1,0 +1,36 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "text": "Done already.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "complete": "too early",
+      "refuse": true,
+      "iterations": 3
+    },
+    {
+      "text": "Still checking.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "edit": {
+        "path": "README.md",
+        "text": "percent_change\n"
+      },
+      "iterations": 2
+    },
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

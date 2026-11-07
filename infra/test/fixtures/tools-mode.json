@@ -1,0 +1,22 @@
+{
+  "comment": "The one table of HAMH_TOOLS_MODE words. infra/test/tools-mode.test.ts runs it through resolveToolsMode (lib/config.ts) and scripts/tests/test_deploy_direct.py runs it through resolve_tools_mode (scripts/lib/deploy.py), so the two parsers cannot drift apart. A setting of null is a variable that is not set. Only the six ASCII whitespace characters (space, tab, line feed, carriage return, form feed, vertical tab) are trimmed: Python's strip() and JavaScript's trim() differ on U+001C to U+001F, U+0085 and U+FEFF, so neither resolver uses them.",
+  "default": "off",
+  "accept": [
+    { "setting": null, "mode": "off" },
+    { "setting": "", "mode": "off" },
+    { "setting": "   ", "mode": "off" },
+    { "setting": "off", "mode": "off" },
+    { "setting": "OFF", "mode": "off" },
+    { "setting": " off ", "mode": "off" },
+    { "setting": "on", "mode": "on" },
+    { "setting": "ON", "mode": "on" },
+    { "setting": "On", "mode": "on" },
+    { "setting": " on ", "mode": "on" },
+    { "setting": "\ton\n", "mode": "on" },
+    { "setting": "\u000bOFF\f", "mode": "off" }
+  ],
+  "reject": [
+    "auto", "true", "false", "1", "0", "yes", "no", "enabled", "disabled", "of", "onn", "o n", "off,on", "on;off", "tools",
+    "\u001con", "\u0085off", "\ufeffon", "\u00a0on", "\u2003off"
+  ]
+}

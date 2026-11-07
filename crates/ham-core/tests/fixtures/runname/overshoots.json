@@ -1,0 +1,162 @@
+[
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Chunk nightly invoice CSV export Lambda by month",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go CLI tool converting CSV to JSON lines",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice export Lambda into monthly CSVs",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c08",
+    "name": "Nightly export Lambda writes monthly CSVs and manifest",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c13",
+    "name": "Agrega pruebas unitarias y corrige redondeo de impuestos",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c02",
+    "name": "REST endpoint GET orders by id from DynamoDB",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c08",
+    "name": "Split nightly billing export Lambda into monthly CSVs",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c13",
+    "name": "Agrega pruebas unitarias y corrige redondeo de impuestos",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123 per style guide",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  }
+]

@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stands in for pasta. Podman starts pasta to give the rootless bridge netns an uplink, and pasta needs /dev/net/tun, which the VM kernel
+# does not have. Containers need no uplink here (their images are local and their ports are published by rootlessport), but
+# Podman wants a live process behind the pid file it passes with --pid, so this keeps one sleeping process there and starts no second one.
+pidf=
+while [ $# -gt 0 ]; do
+  case "$1" in --pid) pidf=$2; shift ;; esac
+  shift
+done
+if [ -n "$pidf" ]; then
+  if [ -s "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then exit 0; fi
+  setsid sleep 2147483647 </dev/null >/dev/null 2>&1 &
+  echo $! >"$pidf"
+fi
+exit 0

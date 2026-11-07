@@ -1,0 +1,103 @@
+{
+ "model": "GLM 5.3",
+ "vendor": "Z.AI",
+ "bedrockBaseModelId": "zai.glm-5.3",
+ "profileId": "us.zai.glm-5.3",
+ "alsoVerified": [
+  "global.zai.glm-5.3"
+ ],
+ "protocol": "converse",
+ "mantle": false,
+ "account": "700000000011",
+ "accountAlias": "acct-a01",
+ "profile": "ham-acct-a01",
+ "regions": {
+  "us-east-1": "pass",
+  "us-west-2": "pass"
+ },
+ "date": "2026-10-13",
+ "window": "an afternoon hour of the date",
+ "forkBinary": {
+  "version": "3.0.71",
+  "sha256": "3a409282471b11817212c83ff11295727903dcb52fd5122056b87bdb3a6fec1f",
+  "forkTreeCommit": "5c728348e19dceb21018dff0b0cc94d80a995818"
+ },
+ "limits": {
+  "contextTokensMeasured": 1048576,
+  "contextTokensDoc": "1M",
+  "maxOutputTokens": 128000,
+  "requestBodyMaxApproxMB": 5,
+  "temperatureMax": 1,
+  "explicitCacheMinTokens": 1024
+ },
+ "results": {
+  "converseText": "pass",
+  "converseStream": "pass",
+  "toolUse": "pass",
+  "toolRoundTrip": "pass",
+  "parallelTools": "pass",
+  "toolChoiceAnyAndTool": "pass",
+  "stopReasons": [
+   "end_turn",
+   "tool_use",
+   "max_tokens"
+  ],
+  "stopSequenceReportsEndTurn": true,
+  "usageFields": [
+   "inputTokens",
+   "outputTokens",
+   "totalTokens",
+   "cacheReadInputTokens",
+   "cacheWriteInputTokens"
+  ],
+  "cachePointSystemAndMessages": "pass",
+  "cachePointInToolConfig": "rejected: This model doesn't support the cachePoint field. Remove cachePoint and try again.",
+  "reasoning": {
+   "canDisable": false,
+   "acceptedEfforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+   ],
+   "rejected": [
+    "none",
+    "minimal",
+    "thinking.disabled"
+   ],
+   "unsetDefaultBehavesLike": "max",
+   "field": "additionalModelRequestFields.reasoning_effort"
+  },
+  "toolUseIdsRepeatAcrossTurns": true,
+  "clineAcp": {
+   "helloTask": "pass",
+   "heavyTask": "pass",
+   "stopReason": "end_turn",
+   "toolCallsHello": 2,
+   "toolCallsHeavy": 6,
+   "outputOk": true,
+   "usageEventsOnly": "final session/prompt result",
+   "errors": []
+  },
+  "throttles": 0
+ },
+ "defects": [
+  "D1 reasoning effort not sent and thinking cannot be lowered (catalog says none supported)",
+  "D2 repeated toolCallId call_0 across turns",
+  "D3 no explicit cache points",
+  "D4 default effort ~max (13k output tokens on a toy task)"
+ ],
+ "needsPatch": true,
+ "patchBlocking": false,
+ "existingS6SmokeRecord": "s6:us.zai.glm-5.3:us-east-1:converse (2026-10-06T21:38:52Z); s6:global.zai.glm-5.3:us-east-1:converse",
+ "evidence": "kept outside this repository",
+ "requestIds": {
+  "text": "4eaaf76c-0134-4aaa-b966-a20dc49055de",
+  "stream": "2c6b800d-63d0-48d7-8a98-97a265c8fd76",
+  "toolTurn1": "28f816f0-9da9-44d7-9751-ce9b06bc54d1",
+  "toolTurn2": "9ce1aab4-6631-4362-8c9f-e6adbd07b8a5",
+  "ctxLimit": "3feb067c-8806-4a12-a056-058a31db9132",
+  "cachePointToolsReject": "see raw/e1-cache.json"
+ }
+}

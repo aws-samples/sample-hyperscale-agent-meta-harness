@@ -1,0 +1,800 @@
+From 53f4bf70babc578835f529a322c1f5d101e229bc Mon Sep 17 00:00:00 2001
+From: marulimo <73472959+marulimo@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 02:21:42 +0000
+Subject: [PATCH 03/11] fix(llms): advance Bedrock prompt-cache checkpoints
+ through tool-result continuations
+
+Fork patch 0003 carries upstream cline/cline#14481 (commits 964e2353c,
+afb402e98, 5fa67cec1, head 5fa67cec by marulimo), source half:
+
+- applyBedrockCachePointToLastCacheableMessage puts the Converse cachePoint
+  marker on the last user message, or on the last tool-result message during a
+  tool continuation, so the cached prefix advances with the tool loop.
+- With no tools active, Bedrock drops tool history, so the marker stays on the
+  last user message.
+- usePromptCache === false turns Bedrock cache points off.
+
+Drop this patch when #14481 merges upstream.
+---
+ .changeset/warm-tools-cache.md                |   5 +
+ sdk/packages/llms/src/providers/ai-sdk.ts     |  11 +-
+ .../llms/src/providers/gateway.test.ts        |  88 ++++++
+ .../routing/bedrock-cache-point.test.ts       | 252 +++++++++++++++++-
+ .../providers/routing/bedrock-cache-point.ts  |  49 +++-
+ .../routing/bedrock-cache-point.wire.test.ts  | 227 ++++++++++++++++
+ 6 files changed, 617 insertions(+), 15 deletions(-)
+ create mode 100644 .changeset/warm-tools-cache.md
+ create mode 100644 sdk/packages/llms/src/providers/routing/bedrock-cache-point.wire.test.ts
+
+diff --git a/.changeset/warm-tools-cache.md b/.changeset/warm-tools-cache.md
+new file mode 100644
+index 0000000..6f07f26
+--- /dev/null
++++ b/.changeset/warm-tools-cache.md
+@@ -0,0 +1,5 @@
++---
++"claude-dev": patch
++---
++
++Advance Bedrock prompt-cache checkpoints through tool-result continuations, and stop adding Bedrock cache points when "Use prompt caching" is explicitly turned off.
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.ts b/sdk/packages/llms/src/providers/ai-sdk.ts
+index b4dfa9e..ae0ab37 100644
+--- a/sdk/packages/llms/src/providers/ai-sdk.ts
++++ b/sdk/packages/llms/src/providers/ai-sdk.ts
+@@ -65,7 +65,7 @@ import {
+ 	shouldApplyPromptCache,
+ } from "./routing/anthropic-compatible";
+ import {
+-	applyBedrockCachePointToLastUserMessage,
++	applyBedrockCachePointToLastCacheableMessage,
+ 	shouldApplyBedrockCachePoint,
+ } from "./routing/bedrock-cache-point";
+ import {
+@@ -389,6 +389,7 @@ function buildAiSdkRequestMessages(
+ 	request: GatewayStreamRequest,
+ 	context: GatewayProviderContext,
+ 	systemPrompt?: string,
++	options?: { includeToolMessages?: boolean },
+ ) {
+ 	const aiMessages = toAiSdkMessages(request.messages, systemPrompt, {
+ 		includeReasoning: shouldIncludeReasoningHistory(request, context),
+@@ -402,7 +403,9 @@ function buildAiSdkRequestMessages(
+ 	}) as Array<Record<string, unknown>>;
+ 
+ 	if (shouldApplyBedrockCachePoint(request, context)) {
+-		applyBedrockCachePointToLastUserMessage(aiMessages);
++		applyBedrockCachePointToLastCacheableMessage(aiMessages, {
++			includeToolMessages: options?.includeToolMessages,
++		});
+ 		return aiMessages;
+ 	}
+ 
+@@ -2297,6 +2300,10 @@ function createAiSdkProvider(
+ 					request,
+ 					context,
+ 					messagesSystemPrompt,
++					{
++						includeToolMessages:
++							tools !== undefined && Object.keys(tools).length > 0,
++					},
+ 				);
+ 				const portableReasoning = reconcilePortableReasoning(
+ 					resolvePortableReasoning(request, { adapter: kind, context }),
+diff --git a/sdk/packages/llms/src/providers/gateway.test.ts b/sdk/packages/llms/src/providers/gateway.test.ts
+index fbff5b9..73c69a2 100644
+--- a/sdk/packages/llms/src/providers/gateway.test.ts
++++ b/sdk/packages/llms/src/providers/gateway.test.ts
+@@ -5603,6 +5603,94 @@ describe("sdk-gateway", () => {
+ 		).not.toHaveProperty("cache_control");
+ 	});
+ 
++	it("advances Bedrock cache points through tool-result continuations", async () => {
++		mockSuccessfulStream();
++		const gateway = createGateway({
++			providerConfigs: [
++				{
++					providerId: "bedrock",
++					apiKey: "bedrock-key",
++					models: [
++						{
++							id: "anthropic.claude-sonnet-4-6",
++							name: "Claude Sonnet 4.6 (Bedrock-style ID)",
++						},
++					],
++				},
++			],
++		});
++		const createdAt = Date.now();
++		const messages: AgentMessage[] = [
++			{
++				id: "user_1",
++				role: "user",
++				content: [{ type: "text", text: "Read the file" }],
++				createdAt,
++			},
++			{
++				id: "assistant_1",
++				role: "assistant",
++				content: [
++					{
++						type: "tool-call",
++						toolCallId: "call-1",
++						toolName: "read_file",
++						input: { path: "example.txt" },
++					},
++				],
++				createdAt,
++			},
++			{
++				id: "user_2",
++				role: "user",
++				content: [
++					{
++						type: "tool-result",
++						toolCallId: "call-1",
++						toolName: "read_file",
++						output: "file contents",
++					},
++				],
++				createdAt,
++			},
++		];
++
++		await collect(
++			await gateway.stream({
++				providerId: "bedrock",
++				modelId: "anthropic.claude-sonnet-4-6",
++				messages,
++				tools: [
++					{
++						name: "read_file",
++						description: "Read a file",
++						inputSchema: {
++							type: "object",
++							properties: { path: { type: "string" } },
++							required: ["path"],
++						},
++					},
++				],
++			}),
++		);
++
++		const streamMessages = streamTextSpy.mock.calls.at(-1)?.[0]?.messages as
++			| Array<Record<string, unknown>>
++			| undefined;
++		expect(streamMessages).toBeDefined();
++		expect(streamMessages?.[0]).toMatchObject({
++			role: "user",
++		});
++		expect(streamMessages?.[0]).not.toHaveProperty("providerOptions");
++		expect(streamMessages?.at(-1)).toMatchObject({
++			role: "tool",
++			providerOptions: {
++				bedrock: { cachePoint: { type: "default" } },
++			},
++		});
++		expect(JSON.stringify(streamMessages)).not.toContain("cache_control");
++	});
++
+ 	it("supports provider config metadata overrides for anthropic prompt-cache strategy", async () => {
+ 		streamTextSpy.mockReturnValue({
+ 			fullStream: makeStreamParts([
+diff --git a/sdk/packages/llms/src/providers/routing/bedrock-cache-point.test.ts b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.test.ts
+index dcec3ff..81f3576 100644
+--- a/sdk/packages/llms/src/providers/routing/bedrock-cache-point.test.ts
++++ b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.test.ts
+@@ -5,7 +5,7 @@ import type {
+ } from "@cline/shared";
+ import { describe, expect, it } from "vitest";
+ import {
+-	applyBedrockCachePointToLastUserMessage,
++	applyBedrockCachePointToLastCacheableMessage,
+ 	BEDROCK_ROUTING_METADATA,
+ 	resolveBedrockCachePointRoute,
+ 	shouldApplyBedrockCachePoint,
+@@ -14,6 +14,7 @@ import {
+ function makeContext(options?: {
+ 	metadata?: GatewayProviderManifest["metadata"];
+ 	family?: string;
++	providerOptions?: Record<string, unknown>;
+ }): GatewayProviderContext {
+ 	return {
+ 		provider: {
+@@ -31,6 +32,7 @@ function makeContext(options?: {
+ 		},
+ 		config: {
+ 			providerId: "bedrock",
++			options: options?.providerOptions,
+ 		},
+ 	};
+ }
+@@ -84,9 +86,27 @@ describe("bedrock cache-point routing", () => {
+ 			),
+ 		).toBe(true);
+ 	});
++
++	it("respects only an explicit prompt-cache opt-out", () => {
++		const request = makeRequest("global.anthropic.claude-sonnet-4-6");
++
++		expect(
++			shouldApplyBedrockCachePoint(
++				request,
++				makeContext({ providerOptions: { usePromptCache: false } }),
++			),
++		).toBe(false);
++		expect(
++			shouldApplyBedrockCachePoint(
++				request,
++				makeContext({ providerOptions: { usePromptCache: true } }),
++			),
++		).toBe(true);
++		expect(shouldApplyBedrockCachePoint(request, makeContext())).toBe(true);
++	});
+ });
+ 
+-describe("applyBedrockCachePointToLastUserMessage", () => {
++describe("applyBedrockCachePointToLastCacheableMessage", () => {
+ 	it("attaches a message-level cachePoint marker to the last user message", () => {
+ 		const messages: Array<Record<string, unknown>> = [
+ 			{ role: "user", content: [{ type: "text", text: "first" }] },
+@@ -94,7 +114,7 @@ describe("applyBedrockCachePointToLastUserMessage", () => {
+ 			{ role: "user", content: [{ type: "text", text: "second" }] },
+ 		];
+ 
+-		applyBedrockCachePointToLastUserMessage(messages);
++		applyBedrockCachePointToLastCacheableMessage(messages);
+ 
+ 		expect(messages[0]).not.toHaveProperty("providerOptions");
+ 		expect(messages[1]).not.toHaveProperty("providerOptions");
+@@ -112,7 +132,7 @@ describe("applyBedrockCachePointToLastUserMessage", () => {
+ 			},
+ 		];
+ 
+-		applyBedrockCachePointToLastUserMessage(messages);
++		applyBedrockCachePointToLastCacheableMessage(messages);
+ 
+ 		expect(messages[0].providerOptions).toEqual({
+ 			other: { keep: true },
+@@ -125,8 +145,230 @@ describe("applyBedrockCachePointToLastUserMessage", () => {
+ 			{ role: "assistant", content: [{ type: "text", text: "answer" }] },
+ 		];
+ 
+-		applyBedrockCachePointToLastUserMessage(messages);
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[0]).not.toHaveProperty("providerOptions");
++	});
++
++	it("attaches the marker to a tool-result continuation", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "assistant",
++				content: [{ type: "tool-call", toolCallId: "call-1" }],
++			},
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[0]).not.toHaveProperty("providerOptions");
++		expect(messages[1]).not.toHaveProperty("providerOptions");
++		expect(messages[2].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++	});
++
++	it("advances the marker through two tool-result continuations", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "assistant",
++				content: [{ type: "tool-call", toolCallId: "call-1" }],
++			},
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++			{
++				role: "assistant",
++				content: [{ type: "tool-call", toolCallId: "call-2" }],
++			},
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-2" }],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		for (const message of messages.slice(0, -1)) {
++			expect(message).not.toHaveProperty("providerOptions");
++		}
++		expect(messages.at(-1)?.providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++	});
++
++	it("marks a tool message containing multiple tool results", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "assistant",
++				content: [
++					{ type: "tool-call", toolCallId: "call-1" },
++					{ type: "tool-call", toolCallId: "call-2" },
++				],
++			},
++			{
++				role: "tool",
++				content: [
++					{ type: "tool-result", toolCallId: "call-1" },
++					{ type: "tool-result", toolCallId: "call-2" },
++				],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[2].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++	});
++
++	it("prefers a new human user message after a tool continuation", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++			{ role: "user", content: [{ type: "text", text: "continue" }] },
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
+ 
+ 		expect(messages[0]).not.toHaveProperty("providerOptions");
++		expect(messages[1]).not.toHaveProperty("providerOptions");
++		expect(messages[2].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++	});
++
++	it("places the marker after tool results split from the same Cline user message", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "context" }] },
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[0]).not.toHaveProperty("providerOptions");
++		expect(messages[1].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++	});
++
++	it("skips tool messages that contain no tool results", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++			{
++				role: "tool",
++				content: [
++					{
++						type: "tool-approval-response",
++						approvalId: "approval-1",
++						approved: true,
++					},
++				],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[1].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++		expect(messages[2]).not.toHaveProperty("providerOptions");
++	});
++
++	it("is a no-op for assistant-only and empty message lists", () => {
++		const assistantOnly: Array<Record<string, unknown>> = [
++			{ role: "assistant", content: [{ type: "text", text: "answer" }] },
++		];
++		const empty: Array<Record<string, unknown>> = [];
++
++		applyBedrockCachePointToLastCacheableMessage(assistantOnly);
++		applyBedrockCachePointToLastCacheableMessage(empty);
++
++		expect(assistantOnly[0]).not.toHaveProperty("providerOptions");
++		expect(empty).toEqual([]);
++	});
++
++	it("preserves other namespaces and existing bedrock options", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{
++				role: "user",
++				content: [{ type: "text", text: "hello" }],
++				providerOptions: {
++					other: { keep: true },
++					bedrock: { someKey: 1 },
++				},
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		expect(messages[0].providerOptions).toEqual({
++			other: { keep: true },
++			bedrock: { someKey: 1, cachePoint: { type: "default" } },
++		});
++	});
++
++	it("adds exactly one marker per call", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages);
++
++		const markedMessages = messages.filter((message) => {
++			const providerOptions = message.providerOptions as
++				| Record<string, unknown>
++				| undefined;
++			const bedrock = providerOptions?.bedrock as
++				| Record<string, unknown>
++				| undefined;
++			return bedrock?.cachePoint !== undefined;
++		});
++		expect(markedMessages).toHaveLength(1);
++	});
++
++	it("falls back to the last user message when tool messages are disabled", () => {
++		const messages: Array<Record<string, unknown>> = [
++			{ role: "user", content: [{ type: "text", text: "start" }] },
++			{
++				role: "assistant",
++				content: [{ type: "tool-call", toolCallId: "call-1" }],
++			},
++			{
++				role: "tool",
++				content: [{ type: "tool-result", toolCallId: "call-1" }],
++			},
++		];
++
++		applyBedrockCachePointToLastCacheableMessage(messages, {
++			includeToolMessages: false,
++		});
++
++		expect(messages[0].providerOptions).toEqual({
++			bedrock: { cachePoint: { type: "default" } },
++		});
++		expect(messages[1]).not.toHaveProperty("providerOptions");
++		expect(messages[2]).not.toHaveProperty("providerOptions");
+ 	});
+ });
+diff --git a/sdk/packages/llms/src/providers/routing/bedrock-cache-point.ts b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.ts
+index e2a1087..66370df 100644
+--- a/sdk/packages/llms/src/providers/routing/bedrock-cache-point.ts
++++ b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.ts
+@@ -48,6 +48,9 @@ export function shouldApplyBedrockCachePoint(
+ 	request: GatewayStreamRequest,
+ 	context: GatewayProviderContext,
+ ): boolean {
++	if (context.config.options?.usePromptCache === false) {
++		return false;
++	}
+ 	return resolveBedrockCachePointRoute(request, context) !== undefined;
+ }
+ 
+@@ -58,22 +61,52 @@ export function createBedrockCachePointProviderOptions() {
+ }
+ 
+ /**
+- * Attach a message-level cache-point marker to the last user message. The
+- * Bedrock message converter appends the `cachePoint` block after that
+- * message's content, caching the whole prefix (tools, system, and history)
+- * up to it — mirroring the Anthropic writer's checkpoint placement.
++ * Attach a message-level cache-point marker to the last user message, or to
++ * the last tool-result message during a tool continuation. The Bedrock
++ * message converter appends the `cachePoint` block after that message's
++ * content, so the cached prefix advances with the tool loop. When no tools
++ * are available, Bedrock drops tool history, so the marker stays on the last
++ * user message instead.
+  */
+-export function applyBedrockCachePointToLastUserMessage(
++export function applyBedrockCachePointToLastCacheableMessage(
+ 	messages: Array<Record<string, unknown>>,
++	options?: { includeToolMessages?: boolean },
+ ): void {
++	const includeToolMessages = options?.includeToolMessages ?? true;
+ 	for (let i = messages.length - 1; i >= 0; i--) {
+ 		const message = messages[i];
+-		if (message?.role !== "user") {
++		const hasToolResult =
++			includeToolMessages &&
++			message?.role === "tool" &&
++			Array.isArray(message.content) &&
++			message.content.some(
++				(part) =>
++					part !== null &&
++					typeof part === "object" &&
++					(part as Record<string, unknown>).type === "tool-result",
++			);
++		if (message?.role !== "user" && !hasToolResult) {
+ 			continue;
+ 		}
++		const providerOptions =
++			message.providerOptions !== null &&
++			typeof message.providerOptions === "object" &&
++			!Array.isArray(message.providerOptions)
++				? (message.providerOptions as Record<string, unknown>)
++				: {};
++		const existingBedrock = providerOptions.bedrock;
++		const bedrockOptions =
++			existingBedrock !== null &&
++			typeof existingBedrock === "object" &&
++			!Array.isArray(existingBedrock)
++				? (existingBedrock as Record<string, unknown>)
++				: {};
+ 		message.providerOptions = {
+-			...(message.providerOptions as Record<string, unknown> | undefined),
+-			...createBedrockCachePointProviderOptions(),
++			...providerOptions,
++			bedrock: {
++				...bedrockOptions,
++				...createBedrockCachePointProviderOptions().bedrock,
++			},
+ 		};
+ 		return;
+ 	}
+diff --git a/sdk/packages/llms/src/providers/routing/bedrock-cache-point.wire.test.ts b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.wire.test.ts
+new file mode 100644
+index 0000000..bd7d981
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/routing/bedrock-cache-point.wire.test.ts
+@@ -0,0 +1,227 @@
++import type { AgentMessage } from "@cline/shared";
++import { describe, expect, it, vi } from "vitest";
++import { createGateway } from "../gateway";
++
++async function captureBedrockRequest(options: {
++	usePromptCache?: boolean;
++	tools?: boolean;
++}): Promise<Record<string, unknown>> {
++	let requestBody: Record<string, unknown> | undefined;
++	const fetchMock = vi.fn(
++		async (
++			_input: Parameters<typeof fetch>[0],
++			init?: Parameters<typeof fetch>[1],
++		) => {
++			requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
++			return new Response(JSON.stringify({ message: "request captured" }), {
++				status: 400,
++				headers: { "content-type": "application/json" },
++			});
++		},
++	);
++	const gateway = createGateway({
++		providerConfigs: [
++			{
++				providerId: "bedrock",
++				apiKey: "test",
++				fetch: fetchMock as typeof fetch,
++				options: {
++					region: "us-east-1",
++					...(options.usePromptCache === undefined
++						? {}
++						: { usePromptCache: options.usePromptCache }),
++				},
++				models: [
++					{
++						id: "anthropic.claude-sonnet-4-6",
++						name: "Claude Sonnet 4.6",
++					},
++				],
++			},
++		],
++	});
++	const messages: AgentMessage[] = [
++		{
++			id: "user-1",
++			role: "user",
++			content: [{ type: "text", text: "Read the first file" }],
++			createdAt: 1,
++		},
++		{
++			id: "assistant-1",
++			role: "assistant",
++			content: [
++				{
++					type: "tool-call",
++					toolCallId: "call-1",
++					toolName: "read_file",
++					input: { path: "first.txt" },
++				},
++			],
++			createdAt: 2,
++		},
++		{
++			id: "user-2",
++			role: "user",
++			content: [
++				{
++					type: "tool-result",
++					toolCallId: "call-1",
++					toolName: "read_file",
++					output: "first result",
++				},
++			],
++			createdAt: 3,
++		},
++		{
++			id: "assistant-2",
++			role: "assistant",
++			content: [
++				{
++					type: "tool-call",
++					toolCallId: "call-2",
++					toolName: "read_file",
++					input: { path: "second.txt" },
++				},
++			],
++			createdAt: 4,
++		},
++		{
++			id: "user-3",
++			role: "user",
++			content: [
++				{
++					type: "tool-result",
++					toolCallId: "call-2",
++					toolName: "read_file",
++					output: "second result",
++				},
++			],
++			createdAt: 5,
++		},
++	];
++
++	const stream = await gateway.stream({
++		providerId: "bedrock",
++		modelId: "anthropic.claude-sonnet-4-6",
++		messages,
++		...(options.tools === false
++			? {}
++			: {
++					tools: [
++						{
++							name: "read_file",
++							description: "Read a file",
++							inputSchema: {
++								type: "object",
++								properties: { path: { type: "string" } },
++								required: ["path"],
++							},
++						},
++					],
++				}),
++	});
++	try {
++		for await (const _event of stream) {
++			// Drain the stream so the mocked request is sent.
++		}
++	} catch {
++		// The controlled 400 response is expected after request capture.
++	}
++
++	expect(fetchMock).toHaveBeenCalledTimes(1);
++	if (!requestBody) {
++		throw new Error("Expected the mocked fetch to capture a request body");
++	}
++	return requestBody;
++}
++
++describe("bedrock cache-point wire format", () => {
++	it("places one cache point after the latest tool result", async () => {
++		const requestBody = await captureBedrockRequest({});
++		const bedrockMessages = requestBody.messages as Array<{
++			role: string;
++			content: Array<Record<string, unknown>>;
++		}>;
++		const lastMessage = bedrockMessages.at(-1);
++		expect(lastMessage?.role).toBe("user");
++		expect(lastMessage?.content).toEqual([
++			{
++				toolResult: {
++					toolUseId: "call-2",
++					content: [{ text: "second result" }],
++				},
++			},
++			{ cachePoint: { type: "default" } },
++		]);
++		expect(
++			bedrockMessages
++				.slice(0, -1)
++				.flatMap((message) => message.content)
++				.some((part) => "cachePoint" in part),
++		).toBe(false);
++		expect(bedrockMessages.every((message) => message.content.length > 0)).toBe(
++			true,
++		);
++		expect(JSON.stringify(requestBody)).not.toContain("cache_control");
++	});
++
++	it("keeps one cache point on the user message when tools are unavailable", async () => {
++		const requestBody = await captureBedrockRequest({ tools: false });
++		const bedrockMessages = requestBody.messages as Array<{
++			role: string;
++			content: Array<Record<string, unknown>>;
++		}>;
++		expect(bedrockMessages).toEqual([
++			{
++				role: "user",
++				content: [
++					{ text: "Read the first file" },
++					{ cachePoint: { type: "default" } },
++				],
++			},
++		]);
++		const cachePointCount = bedrockMessages
++			.flatMap((message) => message.content)
++			.filter((part) => "cachePoint" in part).length;
++		expect(cachePointCount).toBe(1);
++	});
++
++	it("omits cache points when prompt caching is explicitly disabled", async () => {
++		const requestBody = await captureBedrockRequest({
++			usePromptCache: false,
++		});
++		const bedrockMessages = requestBody.messages as Array<{
++			role: string;
++			content: Array<Record<string, unknown>>;
++		}>;
++		const cachePointCount = bedrockMessages
++			.flatMap((message) => message.content)
++			.filter((part) => "cachePoint" in part).length;
++
++		expect(cachePointCount).toBe(0);
++		expect(JSON.stringify(requestBody)).not.toContain("cache_control");
++	});
++
++	it("keeps one cache point after the latest tool result when explicitly enabled", async () => {
++		const requestBody = await captureBedrockRequest({ usePromptCache: true });
++		const bedrockMessages = requestBody.messages as Array<{
++			role: string;
++			content: Array<Record<string, unknown>>;
++		}>;
++		const cachePointCount = bedrockMessages
++			.flatMap((message) => message.content)
++			.filter((part) => "cachePoint" in part).length;
++
++		expect(cachePointCount).toBe(1);
++		expect(bedrockMessages.at(-1)?.content.at(-2)).toEqual({
++			toolResult: {
++				toolUseId: "call-2",
++				content: [{ text: "second result" }],
++			},
++		});
++		expect(bedrockMessages.at(-1)?.content.at(-1)).toEqual({
++			cachePoint: { type: "default" },
++		});
++	});
++});
+-- 
+2.47.3
+

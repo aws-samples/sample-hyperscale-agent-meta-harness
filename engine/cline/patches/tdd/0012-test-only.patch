@@ -1,0 +1,424 @@
+From ceecb8adad72b0fafe1e51772626bbc2d4415f77 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Wed, 14 Oct 2026 02:12:31 +0000
+X-Harness-Test-Only: commit=ceecb8adad72b0fafe1e51772626bbc2d4415f77 parent=8fa0bdbe380f4761ff91700fad1a50a8d9476572 tree=1f5b3ac7da892e60cfb6e88aa25e30c295f865b9
+Subject: [PATCH] test(llms): GLM 5.3 on Bedrock Converse takes
+ reasoning_effort (red first)
+
+Failing tests for fork patch 0012: the rule that sends additionalModelRequestFields.reasoning_effort for
+us.zai.glm-5.3, global.zai.glm-5.3 and zai.glm-5.3, the Converse wire body through the real
+@ai-sdk/amazon-bedrock adapter, and the catalog override of the model's reasoning efforts.
+---
+ .../src/catalog/catalog-overrides.test.ts     |  46 ++++
+ .../routing/bedrock-glm-effort.test.ts        | 250 ++++++++++++++++++
+ .../bedrock-glm-reasoning.wire.test.ts        |  89 +++++++
+ 3 files changed, 385 insertions(+)
+ create mode 100644 sdk/packages/llms/src/catalog/catalog-overrides.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/routing/bedrock-glm-effort.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/vendors/bedrock-glm-reasoning.wire.test.ts
+
+diff --git a/sdk/packages/llms/src/catalog/catalog-overrides.test.ts b/sdk/packages/llms/src/catalog/catalog-overrides.test.ts
+new file mode 100644
+index 0000000..71c4883
+--- /dev/null
++++ b/sdk/packages/llms/src/catalog/catalog-overrides.test.ts
+@@ -0,0 +1,46 @@
++// Corrections the fork applies on top of the generated catalog, so a catalog
++// regeneration (models.dev) does not undo them. Each one is live-verified.
++import { describe, expect, it } from "vitest";
++import { GENERATED_PROVIDER_MODELS } from "./catalog.generated";
++import { getGeneratedModelsForProvider } from "./catalog.generated-access";
++
++const GLM_53_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
++
++describe("fork catalog overrides", () => {
++	it.each([
++		"us.zai.glm-5.3",
++		"global.zai.glm-5.3",
++	])("lists the efforts Bedrock accepts for %s and no off switch", (modelId) => {
++		const model = getGeneratedModelsForProvider("bedrock")[modelId];
++		expect(model?.reasoningOptions).toEqual([
++			{ type: "effort", values: GLM_53_EFFORTS },
++		]);
++	});
++
++	it("changes nothing else about those entries", () => {
++		for (const modelId of ["us.zai.glm-5.3", "global.zai.glm-5.3"]) {
++			const raw = GENERATED_PROVIDER_MODELS.providers.bedrock?.[modelId];
++			const model = getGeneratedModelsForProvider("bedrock")[modelId];
++			expect(model).toMatchObject({
++				id: modelId,
++				contextWindow: raw?.contextWindow,
++				maxTokens: raw?.maxTokens,
++				capabilities: raw?.capabilities,
++				pricing: raw?.pricing,
++				family: "glm",
++			});
++		}
++	});
++
++	it("leaves other Bedrock models on their generated reasoning options", () => {
++		const models = getGeneratedModelsForProvider("bedrock");
++		for (const [modelId, raw] of Object.entries(
++			GENERATED_PROVIDER_MODELS.providers.bedrock ?? {},
++		)) {
++			if (modelId === "us.zai.glm-5.3" || modelId === "global.zai.glm-5.3") {
++				continue;
++			}
++			expect(models[modelId]?.reasoningOptions).toEqual(raw.reasoningOptions);
++		}
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/routing/bedrock-glm-effort.test.ts b/sdk/packages/llms/src/providers/routing/bedrock-glm-effort.test.ts
+new file mode 100644
+index 0000000..70df690
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/routing/bedrock-glm-effort.test.ts
+@@ -0,0 +1,250 @@
++// Provider-option rule for GLM 5.3 on Bedrock Converse (`us.zai.glm-5.3`,
++// `global.zai.glm-5.3`). The model cannot turn reasoning off and takes its
++// effort as `additionalModelRequestFields.reasoning_effort` (low, medium, high,
++// xhigh, max; live Bedrock rejects none and minimal). Before this rule the
++// only GLM rule wrote a top-level `reasoning: {exclude: true}` that Bedrock
++// ignores, so the model ran at its default (about max) effort and the portable
++// level was dropped by the AI SDK with a warning.
++import type {
++	GatewayProviderContext,
++	GatewayStreamRequest,
++	ModelReasoningOption,
++} from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { BEDROCK_ROUTING_METADATA } from "./bedrock-cache-point";
++import {
++	hasNativeReasoningControls,
++	reconcilePortableReasoning,
++	resolvePortableReasoning,
++} from "./portable-reasoning";
++import { composeAiSdkProviderOptions } from "./provider-options";
++
++// The ladder live Bedrock accepts for GLM 5.3 (audit 2026-10-13).
++const LADDER: readonly ModelReasoningOption[] = [
++	{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] },
++];
++// What the upstream generated catalog advertised before the override.
++const UPSTREAM_LADDER: readonly ModelReasoningOption[] = [
++	{ type: "effort", values: ["none", "low", "high", "max"] },
++];
++
++function context(
++	modelId: string,
++	reasoningOptions: readonly ModelReasoningOption[] | undefined = LADDER,
++): GatewayProviderContext {
++	return {
++		provider: {
++			id: "bedrock",
++			name: "bedrock",
++			defaultModelId: modelId,
++			models: [
++				{ id: modelId, name: modelId, providerId: "bedrock", capabilities: [] },
++			],
++			metadata: BEDROCK_ROUTING_METADATA,
++		},
++		model: {
++			id: modelId,
++			name: modelId,
++			providerId: "bedrock",
++			capabilities: ["tools", "reasoning"],
++			reasoningOptions,
++			metadata: { family: "glm" },
++		},
++		config: { providerId: "bedrock" },
++	};
++}
++
++function request(
++	modelId: string,
++	reasoning: GatewayStreamRequest["reasoning"],
++): GatewayStreamRequest {
++	return {
++		providerId: "bedrock",
++		modelId,
++		reasoning,
++		messages: [
++			{
++				id: "m1",
++				role: "user",
++				content: [{ type: "text", text: "hi" }],
++				createdAt: 0,
++			},
++		],
++	};
++}
++
++function bedrockOptions(
++	modelId: string,
++	reasoning: GatewayStreamRequest["reasoning"],
++	options?: readonly ModelReasoningOption[],
++): Record<string, unknown> {
++	const composed = composeAiSdkProviderOptions(
++		request(modelId, reasoning),
++		context(modelId, options),
++		"bedrock",
++	);
++	return (composed.bedrock ?? {}) as Record<string, unknown>;
++}
++
++const IDS = ["us.zai.glm-5.3", "global.zai.glm-5.3"] as const;
++
++describe("GLM 5.3 on Bedrock Converse reasoning effort", () => {
++	for (const modelId of IDS) {
++		for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
++			it(`sends reasoning_effort ${effort} for ${modelId}`, () => {
++				const bedrock = bedrockOptions(modelId, { enabled: true, effort });
++				expect(bedrock.additionalModelRequestFields).toEqual({
++					reasoning_effort: effort,
++				});
++			});
++		}
++
++		it(`never writes the no-op top-level reasoning key for ${modelId}`, () => {
++			// With the upstream ladder (a "none" level) the generic GLM rule wrote
++			// reasoning: {exclude: true} or {enabled: true} into the bedrock bucket.
++			for (const ladder of [LADDER, UPSTREAM_LADDER]) {
++				for (const reasoning of [
++					undefined,
++					{ enabled: false },
++					{ enabled: true },
++					{ enabled: true, effort: "high" as const },
++				]) {
++					const composed = composeAiSdkProviderOptions(
++						request(modelId, reasoning),
++						context(modelId, ladder),
++						"bedrock",
++					);
++					expect(composed.bedrock).not.toHaveProperty("reasoning");
++					expect(composed.openaiCompatible ?? {}).not.toHaveProperty(
++						"reasoning",
++					);
++				}
++			}
++		});
++
++		it(`maps a disable request to the lowest effort for ${modelId} (the model cannot turn reasoning off)`, () => {
++			// With the corrected ladder a disable is normalized away, with the
++			// upstream ladder it arrives as enabled:false; both give low.
++			expect(
++				bedrockOptions(modelId, { enabled: false })
++					.additionalModelRequestFields,
++			).toEqual({ reasoning_effort: "low" });
++			expect(
++				bedrockOptions(modelId, { enabled: false }, UPSTREAM_LADDER)
++					.additionalModelRequestFields,
++			).toEqual({ reasoning_effort: "low" });
++		});
++
++		it(`sends the default effort low when no reasoning is requested for ${modelId}`, () => {
++			expect(
++				bedrockOptions(modelId, undefined).additionalModelRequestFields,
++			).toEqual({ reasoning_effort: "low" });
++		});
++
++		it(`sends medium when reasoning is enabled without a level for ${modelId}`, () => {
++			expect(
++				bedrockOptions(modelId, { enabled: true }).additionalModelRequestFields,
++			).toEqual({ reasoning_effort: "medium" });
++		});
++
++		it(`drops the portable level so the AI SDK does not warn for ${modelId}`, () => {
++			const req = request(modelId, { enabled: true, effort: "high" });
++			const ctx = context(modelId);
++			const composed = composeAiSdkProviderOptions(req, ctx, "bedrock");
++			const portable = resolvePortableReasoning(req, {
++				adapter: "bedrock",
++				context: ctx,
++			});
++			expect(portable).toBe("high");
++			expect(reconcilePortableReasoning(portable, composed)).toBeUndefined();
++		});
++	}
++
++	it("maps minimal to low, with the corrected and the upstream ladder", () => {
++		for (const ladder of [LADDER, UPSTREAM_LADDER, undefined]) {
++			expect(
++				bedrockOptions(
++					"us.zai.glm-5.3",
++					{ enabled: true, effort: "minimal" },
++					ladder,
++				).additionalModelRequestFields,
++			).toEqual({ reasoning_effort: "low" });
++		}
++	});
++
++	it("matches exactly the bare, us. and global. ids", () => {
++		// Other geo prefixes and padded ids are not GLM 5.3 profiles; they keep
++		// the generic shape and gain no reasoning_effort.
++		for (const modelId of [
++			"eu.zai.glm-5.3",
++			"apac.zai.glm-5.3",
++			"us-gov.zai.glm-5.3",
++			" us.zai.glm-5.3",
++			"us.zai.glm-5.3 ",
++			"us.zai.glm-5.30",
++		]) {
++			const composed = composeAiSdkProviderOptions(
++				request(modelId, { enabled: true, effort: "high" }),
++				context(modelId),
++				"bedrock",
++			);
++			expect(composed.bedrock ?? {}).not.toHaveProperty(
++				"additionalModelRequestFields",
++			);
++		}
++	});
++
++	it("counts only a nested reasoning_effort as a native reasoning control", () => {
++		expect(
++			hasNativeReasoningControls({
++				bedrock: { additionalModelRequestFields: { reasoning_effort: "low" } },
++			}),
++		).toBe(true);
++		expect(
++			hasNativeReasoningControls({
++				bedrock: { additionalModelRequestFields: { top_k: 5 } },
++			}),
++		).toBe(false);
++		expect(
++			hasNativeReasoningControls({
++				bedrock: { additionalModelRequestFields: {} },
++			}),
++		).toBe(false);
++	});
++
++	it("applies to the bare profile-only id too", () => {
++		expect(
++			bedrockOptions("zai.glm-5.3", { enabled: true, effort: "xhigh" })
++				.additionalModelRequestFields,
++		).toEqual({ reasoning_effort: "xhigh" });
++	});
++
++	it("leaves every other GLM route on its existing shape", () => {
++		// Mantle-routed GLM, other GLM versions and other providers keep the
++		// generic routed shape (or nothing) and never gain reasoning_effort.
++		for (const [providerId, modelId] of [
++			["bedrock", "aws-mantle/zai.glm-5"],
++			["bedrock", "us.zai.glm-5.2"],
++			["openrouter", "z-ai/glm-5.3"],
++			["openai-compatible", "glm-5.3"],
++		] as const) {
++			const req: GatewayStreamRequest = {
++				...request(modelId, { enabled: false }),
++				providerId,
++			};
++			const ctx = {
++				...context(modelId, undefined),
++				provider: { ...context(modelId).provider, id: providerId },
++				config: { providerId },
++			};
++			const composed = composeAiSdkProviderOptions(
++				req,
++				ctx,
++				providerId === "bedrock" ? "bedrock" : "openai-compatible",
++			);
++			for (const bucket of Object.values(composed)) {
++				expect(bucket).not.toHaveProperty("additionalModelRequestFields");
++			}
++		}
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/vendors/bedrock-glm-reasoning.wire.test.ts b/sdk/packages/llms/src/providers/vendors/bedrock-glm-reasoning.wire.test.ts
+new file mode 100644
+index 0000000..6846ff1
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/vendors/bedrock-glm-reasoning.wire.test.ts
+@@ -0,0 +1,89 @@
++// Wire contract for GLM 5.3 on Bedrock Converse, through the real
++// `@ai-sdk/amazon-bedrock` adapter and the generated model catalog (no model
++// override): the Converse body carries `additionalModelRequestFields
++// .reasoning_effort` with a level Bedrock accepts and no top-level `reasoning`
++// key. Live Bedrock (acct-a01, 2026-10-13) accepts low, medium, high, xhigh and
++// max, rejects none and minimal, and defaults to about max when nothing is sent.
++import type { GatewayStreamRequest } from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { createGateway } from "../gateway";
++
++interface WireBody {
++	path: string | undefined;
++	body: Record<string, unknown>;
++}
++
++async function wire(
++	modelId: string,
++	reasoning: GatewayStreamRequest["reasoning"],
++): Promise<WireBody> {
++	let path: string | undefined;
++	let body: Record<string, unknown> = {};
++	const fetchStub = (async (input, init) => {
++		path = decodeURIComponent(new URL(String(input)).pathname);
++		body = JSON.parse((init?.body as string) ?? "{}");
++		return new Response(JSON.stringify({ message: "stub" }), {
++			status: 400,
++			headers: { "content-type": "application/json" },
++		});
++	}) as typeof fetch;
++	const gateway = createGateway({
++		providerConfigs: [
++			{
++				providerId: "bedrock",
++				apiKey: "test-bearer-key",
++				fetch: fetchStub,
++				options: { region: "us-east-1", authentication: "apikey" },
++			},
++		],
++	});
++	for await (const _event of await gateway.stream({
++		providerId: "bedrock",
++		modelId,
++		reasoning,
++		maxTokens: 64,
++		messages: [
++			{
++				id: "m1",
++				role: "user",
++				content: [{ type: "text", text: "hi" }],
++				createdAt: 0,
++			},
++		],
++	})) {
++		// drain
++	}
++	return { path, body };
++}
++
++describe("GLM 5.3 Bedrock Converse wire contract", () => {
++	it.each([
++		"us.zai.glm-5.3",
++		"global.zai.glm-5.3",
++	])("sends each level Bedrock accepts unchanged for %s", async (modelId) => {
++		for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
++			const { path, body } = await wire(modelId, { enabled: true, effort });
++			expect(path).toBe(`/model/${modelId}/converse-stream`);
++			expect(body.additionalModelRequestFields).toEqual({
++				reasoning_effort: effort,
++			});
++			expect(body).not.toHaveProperty("reasoning");
++		}
++	});
++
++	it("sends low when the caller asks for reasoning off, never none", async () => {
++		const { body } = await wire("us.zai.glm-5.3", { enabled: false });
++		expect(body.additionalModelRequestFields).toEqual({
++			reasoning_effort: "low",
++		});
++		expect(body).not.toHaveProperty("reasoning");
++	});
++
++	it("sends the low default when the caller says nothing about reasoning", async () => {
++		const { body } = await wire("us.zai.glm-5.3", undefined);
++		expect(body.additionalModelRequestFields).toEqual({
++			reasoning_effort: "low",
++		});
++		expect(body).not.toHaveProperty("reasoning");
++	});
++});
+-- 
+2.47.3

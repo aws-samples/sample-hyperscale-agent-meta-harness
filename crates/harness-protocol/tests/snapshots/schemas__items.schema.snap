@@ -1,0 +1,2299 @@
+---
+source: crates/harness-protocol/tests/schemas.rs
+expression: value
+---
+{
+  "$defs": {
+    "Admission": {
+      "description": "Whether new messages are admitted. It closes once, in the seal (or at finalize or cancel), and never opens again.",
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "AgentItem": {
+      "description": "`RUN#<runId>` / `AGENT#<agentId>`.",
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "capacityProviderId": {
+          "description": "The AgentCore capacity provider of an `instances` session (its id, `<name>-<10 characters>`): what `DeleteCapacityProviderSession` needs\nbeside `runtime_session_id` to end the session and its billing. Absent for the microVM.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compute": {
+          "description": "The machine kind this agent's session runs on: `microvm` or `instances` (`direct::ComputeMode::word`). Written\nonce, when the session starts, from the user's choice and the stage's policy; a retry reads it back and never decides again. Absent on an\nitem written before: the microVM.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "creds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredsBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credential binding for `/internal/creds`; written by the dispatcher when it mints."
+        },
+        "engine": {
+          "$ref": "#/$defs/Engine"
+        },
+        "enginePolicyVersion": {
+          "description": "The engine-policy version whose route picked the session's engine; absent when the engine\ncame from the run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "engineVersion": {
+          "type": "string"
+        },
+        "features": {
+          "description": "The features of the worker image this agent runs: `transcript.v1` when agentd writes the stored conversation\n(`transcript::TRANSCRIPT_FEATURE`), written at registration beside `harnessControls`. The transcript route answers `unsupported`\nfor a run whose Agent lists none. Absent on an item written before.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "generation": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generationStartedAt": {
+          "description": "When the current generation started (the dispatcher's clock); its remaining lifetime is\nthe runtime's `maxLifetime` less the time since.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harnessControls": {
+          "description": "The harness's own controls this agent takes: `message.next` and `message.now` (`messages::MESSAGE_NEXT_CONTROL`,\n`MESSAGE_NOW_CONTROL`), written at registration. control-api refuses a message to a run whose Agent lists none (409\n`no-message-control`: a run on an image that cannot take one). Absent on an item written before.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "heartbeatAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "nonceCiphertext": {
+          "description": "Written only with the rotation to a new slice; absent on every other item.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pool": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runtimeArn": {
+          "type": "string"
+        },
+        "runtimeEndpoint": {
+          "description": "The endpoint (the qualifier) every call on this agent's session uses; absent: `live`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimeSessionId": {
+          "type": "string"
+        },
+        "runtimeVersion": {
+          "description": "The runtime version of the agent's run (evidence).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionGeneration": {
+          "description": "The microVM generation on this agent's sessions: 1 at the first turn, one more at\nevery planned handoff, lost-turn recovery or fresh session.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/AgentStatus"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "transport": {
+          "$ref": "#/$defs/Transport"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "agentId",
+        "taskId",
+        "attempt",
+        "runtimeArn",
+        "runtimeSessionId",
+        "generation",
+        "engine",
+        "engineVersion",
+        "transport",
+        "modelId",
+        "pool",
+        "status",
+        "version"
+      ],
+      "type": "object"
+    },
+    "AgentStatus": {
+      "enum": [
+        "starting",
+        "running",
+        "idle",
+        "stopped",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ApprovalDecision": {
+      "description": "Answer to a relayed permission request (`--approvals relay`).",
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "ArtifactItem": {
+      "description": "`RUN#<runId>` / `ART#<artifactId>`; immutable.",
+      "properties": {
+        "artifactId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "s3Uri": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "artifactId",
+        "kind",
+        "s3Uri",
+        "sha256",
+        "sizeBytes"
+      ],
+      "type": "object"
+    },
+    "ArtifactKind": {
+      "oneOf": [
+        {
+          "const": "zip",
+          "description": "The deliverable zip of a complete run.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "The zip of a held run.",
+          "type": "string"
+        },
+        {
+          "const": "bundle",
+          "description": "One task's bundle (`ham pull --artifact bundle:<taskId>`).",
+          "type": "string"
+        },
+        {
+          "const": "evidence",
+          "description": "The evidence tree without `src/` and the bundle.",
+          "type": "string"
+        },
+        {
+          "const": "log",
+          "description": "One agent's goal log (`ham pull --artifact log:<agentId>`).",
+          "type": "string"
+        }
+      ]
+    },
+    "Authority": {
+      "description": "Who wrote an event: the deterministic harness or an (untrusted) agent.",
+      "enum": [
+        "harness",
+        "agent"
+      ],
+      "type": "string"
+    },
+    "BudgetLimit": {
+      "description": "User-set run budget (`--budget tokens|usd`); there is no default.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "tokens",
+              "type": "string"
+            },
+            "limit": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "usd",
+              "type": "string"
+            },
+            "limit": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "limit"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ControlItem": {
+      "description": "`RUN#<runId>` / `CTRL#<agentId>#<controlId>`: a steer, cancel or approval answer queued for one\nagent. `/internal/events` hands each out once: the response that delivers it first\nsets `deliveredAt` by a conditional update.",
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "control": {
+          "$ref": "#/$defs/PendingControl"
+        },
+        "controlId": {
+          "description": "A ULID.",
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "deliveredAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "agentId",
+        "controlId",
+        "control",
+        "createdAt"
+      ],
+      "type": "object"
+    },
+    "CredsBinding": {
+      "description": "What `/internal/creds` checks before it re-mints: the current nonce (stored only as\nSHA-256), the revocation flag, and the tags and session policy it must reproduce exactly.",
+      "properties": {
+        "completionKeySha256": {
+          "description": "Lowercase hex SHA-256 of the run's completion key: the secret that only agentd holds and that worker-api\nrequires on `/internal/events` and `/internal/turn-complete`, so that the engine, which holds the same session credentials, cannot\ncomplete a turn or write events itself. The key is derived from the run's first nonce ([`CredsBinding::completion_key`]) and is\nnever stored; this is the hash of it. Absent on an item written before this version: such a run is accepted as it was.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "nonceSha256": {
+          "description": "Lowercase hex SHA-256 of the current refresh nonce.",
+          "type": "string"
+        },
+        "revoked": {
+          "type": "boolean"
+        },
+        "sessionPolicy": {
+          "description": "The inline STS session policy (JSON) that narrows Bedrock to the leased models.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Session tags besides run, agent and engine (which the Agent item already holds).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "nonceSha256",
+        "revoked",
+        "tenant",
+        "mode",
+        "sessionPolicy"
+      ],
+      "type": "object"
+    },
+    "Engine": {
+      "description": "Coding-agent engine: the name of its profile engine/profiles/<name>.toml (production: cline, opencode).",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "type": "string"
+    },
+    "Envelope": {
+      "additionalProperties": false,
+      "description": "One event in the run log (DynamoDB `EVT#<runId>#<shard>`, sort key `eventId`).",
+      "properties": {
+        "agentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authority": {
+          "$ref": "#/$defs/Authority"
+        },
+        "eventId": {
+          "description": "ULID, the event's sort key.",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/Payload"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seq": {
+          "description": "Per-agent sequence number.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taskId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts": {
+          "description": "RFC 3339 UTC timestamp.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EventType"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "eventId",
+        "runId",
+        "seq",
+        "ts",
+        "type",
+        "authority",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "EventItem": {
+      "description": "`EVT#<runId>#<shard>` / `<eventId>`.",
+      "properties": {
+        "envelope": {
+          "$ref": "#/$defs/Envelope"
+        }
+      },
+      "required": [
+        "envelope"
+      ],
+      "type": "object"
+    },
+    "EventType": {
+      "description": "Event types in architecture table order.",
+      "enum": [
+        "run.created",
+        "session.started",
+        "turn.started",
+        "turn.progress",
+        "tool.summary",
+        "turn.ended",
+        "agent.flag_blocked",
+        "permission.requested",
+        "gate.result",
+        "evaluator.verdict",
+        "merge.result",
+        "goal.status",
+        "goal.blocked",
+        "delivery.pr",
+        "delivery.ready",
+        "run.completed",
+        "run.aborted",
+        "route.changed",
+        "run.waiting",
+        "hidden.admission",
+        "session.capabilities"
+      ],
+      "type": "string"
+    },
+    "ExecutionEnd": {
+      "description": "How a `run` execution ended without the run finishing, in Step Functions' own status words\n(the Execution Status Change event's `detail.status`): an operator's or `ham cancel`'s\nStopExecution (`ABORTED`), an uncaught error (`FAILED`) or the machine's timeout (`TIMED_OUT`).\nA finished run ends `SUCCEEDED` through MarkComplete or RunBlocked.",
+      "enum": [
+        "ABORTED",
+        "FAILED",
+        "TIMED_OUT"
+      ],
+      "type": "string"
+    },
+    "GoalItem": {
+      "description": "`RUN#<runId>` / `GOAL#root` or `GOAL#<taskId>`.",
+      "properties": {
+        "acceptanceSha256": {
+          "type": "string"
+        },
+        "emptyTurnStreak": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evaluatorVerdicts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/VerdictRef"
+          },
+          "type": "array"
+        },
+        "execFailureStreak": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ladderRung": {
+          "default": 0,
+          "description": "Escalation ladder rung within the blocked audit (0-2).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastBlockerFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objective": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/GoalPhase"
+        },
+        "requirements": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sameBlockerStreak": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "specSha256": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "taskId": {
+          "description": "`None` for the run-level goal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeUsedS": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokenBudget": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tokensUsed": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turnCount": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wallClockBudgetS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runId",
+        "objective",
+        "requirements",
+        "specSha256",
+        "acceptanceSha256",
+        "status",
+        "phase",
+        "version"
+      ],
+      "type": "object"
+    },
+    "GoalPhase": {
+      "description": "Sub-state of `active`: planning, the TDD work phases, then VERIFY and delivery.",
+      "enum": [
+        "planning",
+        "red",
+        "green",
+        "refactor",
+        "gating",
+        "evaluating",
+        "integrating",
+        "delivering"
+      ],
+      "type": "string"
+    },
+    "GoalStatus": {
+      "description": "Goal status of a run: `active`, `paused`, `stalled`, `blocked`, `usage_limited`, `budget_limited`, `complete` or `cleared`. `complete` and\n`cleared` are terminal.\n\n`paused` is a stop on purpose: the run reached the total time it was given, or the person or the harness stopped it, and the work\nis saved and delivered. `stalled` is a stop the service had to make because the run lost its progress: the session stopped answering, a\nrestore failed, several sessions in a row produced nothing, or Cline went silent. Both name a reason and a way to resume\n([`ResumeMode`]) on the run.",
+      "oneOf": [
+        {
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "usage_limited",
+            "budget_limited",
+            "complete",
+            "cleared"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "stalled",
+          "description": "See the type's text. Appended last so the declaration order of the older words does not move.",
+          "type": "string"
+        }
+      ]
+    },
+    "IdempotencyItem": {
+      "description": "`IDEM#<principalArn>#<key>` / `META`: one `POST /v1/runs` `Idempotency-Key` claim.\nField names avoid `ownerPrincipalArn` and `createdAt`, so the claim stays out of the sparse GSI1.",
+      "properties": {
+        "claimedAt": {
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "type": "string"
+        },
+        "principalArn": {
+          "type": "string"
+        },
+        "requestSha256": {
+          "description": "SHA-256 of the canonical request; a reuse of the key with another request is refused.",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "principalArn",
+        "idempotencyKey",
+        "runId",
+        "requestSha256",
+        "claimedAt"
+      ],
+      "type": "object"
+    },
+    "InstructAction": {
+      "description": "What the user (or, later, the analyzer) asks the machine to do. Wire words: `continue_with_prompt`, `new_session_with_prompt`,\n`try_model`, `finish`. One control carries all four so a person and the analyzer share one path.",
+      "enum": [
+        "continue_with_prompt",
+        "new_session_with_prompt",
+        "try_model",
+        "finish"
+      ],
+      "type": "string"
+    },
+    "InstructOrigin": {
+      "description": "Who answered. control-api always writes `user`; `analyzer` is written only inside agentd.",
+      "enum": [
+        "user",
+        "analyzer"
+      ],
+      "type": "string"
+    },
+    "MessageCtlItem": {
+      "description": "`RUN#<runId>` / `MSGCTL`: the one item every message transition of a run goes through. Each change reads it and writes it back under a\ncondition on `version`, so the admission of a message, a claim, a withdrawal, a session report and the seal are linearized: a late\nmessage and the seal cannot both win. It is a sibling of the Run item (not a member of it) because the Run item is replaced whole by\nits writers.",
+      "properties": {
+        "admission": {
+          "$ref": "#/$defs/Admission"
+        },
+        "bytesTotal": {
+          "description": "Bytes of message text admitted so far, superseded messages included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "closedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "closedReason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RejectReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "epoch": {
+          "description": "The current session (the engine's session id).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "epochNo": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "The incarnation of agentd that may claim (a ULID); absent until the first session report.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "open": {
+          "description": "The messages that are `pending`, `held` or `dispatching`, in `seq` order.",
+          "items": {
+            "$ref": "#/$defs/OpenMessage"
+          },
+          "type": "array"
+        },
+        "rateCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rateMinute": {
+          "description": "The clock minute (Unix minutes) `rate_count` counts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "retired": {
+          "description": "The incarnations of agentd this run has replaced, oldest first (at most [`MAX_RETIRED_GENERATIONS`]). A report or call from one is\nrefused with `stale-generation`; an incarnation the server has not seen replaces the current one, unless its ULID is older than the\ncurrent one's by more than [`GENERATION_CLOCK_SKEW_MS`]. Within that margin the order of the ULIDs does not decide, so a\nreplacement VM whose clock is a little behind the old one's is still the new agentd.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "Messages admitted so far; the last one's `seq`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionNumber": {
+          "default": 0,
+          "description": "The number of the current session within the current incarnation ([`SessionReport::number`]).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "version",
+        "admission",
+        "epochNo",
+        "seq",
+        "bytesTotal",
+        "rateMinute",
+        "rateCount",
+        "open"
+      ],
+      "type": "object"
+    },
+    "MessageItem": {
+      "description": "`RUN#<runId>` / `MSG#<messageId>`: the full record of one message. control-api creates it; worker-api and the ledger change its state\nunder a condition on the state it read. The members avoid `ownerPrincipalArn` and `createdAt` together, so the message stays out of the\nsparse GSI1 that lists runs.",
+      "properties": {
+        "acceptedAt": {
+          "type": "string"
+        },
+        "attempt": {
+          "default": 0,
+          "description": "How many times the message has been claimed (0 before the first claim).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "claimedBy": {
+          "description": "The generation of agentd that holds the claim, while `dispatching`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirms": {
+          "description": "The message this one confirms.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deliveredTurn": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "epoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "epochNo": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/MessageStep"
+          },
+          "type": "array"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/MessageMode"
+        },
+        "payloadSha256": {
+          "type": "string"
+        },
+        "principalArn": {
+          "description": "The exact principal ARN of the caller who sent it (the run's owner), kept on every message for audit.",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RejectReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MessageState"
+        },
+        "supersededBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "messageId",
+        "seq",
+        "principalArn",
+        "text",
+        "mode",
+        "epochNo",
+        "state",
+        "payloadSha256",
+        "acceptedAt",
+        "updatedAt",
+        "history",
+        "version"
+      ],
+      "type": "object"
+    },
+    "MessageMode": {
+      "description": "When a message is delivered.",
+      "oneOf": [
+        {
+          "const": "next",
+          "description": "At the end of the current turn, as its own user turn (the default).",
+          "type": "string"
+        },
+        {
+          "const": "now",
+          "description": "Now: agentd cancels the current turn, waits for it to settle and prompts on the same session.",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageNotice": {
+      "description": "A pending message as agentd is told about it: no text (the claim returns that). It is handed out in every events response while the\nmessage is pending in the current session; the hand-out changes nothing, so it can repeat, and agentd treats a repeat as the same message.",
+      "properties": {
+        "acceptedAt": {
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "epoch": {
+          "description": "The session it is pending in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/MessageMode"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "messageId",
+        "seq",
+        "mode",
+        "bytes",
+        "acceptedAt"
+      ],
+      "type": "object"
+    },
+    "MessageState": {
+      "description": "The status of a message, as the server holds it. HTTP 202 on the send means `pending` and nothing more: Cline has not\nread the message yet. `delivered` means agentd sent the prompt to the engine, not that the engine acted on it.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Durably accepted and eligible: it will be claimed at the end of the turn (`next`) or now (`now`).",
+          "type": "string"
+        },
+        {
+          "const": "held",
+          "description": "Pending when the session changed: it waits for the user to confirm it again and never makes the run wait.",
+          "type": "string"
+        },
+        {
+          "const": "dispatching",
+          "description": "agentd won the claim and is submitting it.",
+          "type": "string"
+        },
+        {
+          "const": "delivered",
+          "description": "agentd reported sending the prompt; `deliveredTurn` names the turn.",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "The user withdrew it before it was claimed.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "The run could not take it; `reason` says why.",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "description": "A confirmed copy replaced it (the only way into this state).",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "agentd could not submit it (it was never sent); `detail` says why.",
+          "type": "string"
+        },
+        {
+          "const": "delivery-unknown",
+          "description": "It was claimed, then the worker was lost before the outcome was known: it may have reached Cline. It is never sent again by itself.",
+          "type": "string"
+        }
+      ]
+    },
+    "MessageStep": {
+      "description": "One step of a message's history: the state it entered and when.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RejectReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MessageState"
+        },
+        "turn": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "at"
+      ],
+      "type": "object"
+    },
+    "OpenMessage": {
+      "description": "One open message in [`MessageCtlItem::open`]: what the hand-out, the seal and the cap need without reading the message items.",
+      "properties": {
+        "acceptedAt": {
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "epoch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/MessageMode"
+        },
+        "seq": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/MessageState"
+        }
+      },
+      "required": [
+        "messageId",
+        "seq",
+        "mode",
+        "state",
+        "bytes",
+        "acceptedAt"
+      ],
+      "type": "object"
+    },
+    "OwnerRateItem": {
+      "description": "`MSGRATE#<principalArn>` / `<unix minute, 12 digits>`: how many messages an owner was admitted in one clock minute across runs. DynamoDB\nremoves it after `ttl`.",
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minute": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "principalArn": {
+          "type": "string"
+        },
+        "ttl": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "principalArn",
+        "minute",
+        "count",
+        "ttl"
+      ],
+      "type": "object"
+    },
+    "Payload": {
+      "description": "Event body: inline JSON up to [`MAX_INLINE_PAYLOAD_BYTES`], or a claim check on an S3 object.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "claimCheck",
+              "type": "string"
+            },
+            "s3Uri": {
+              "pattern": "^s3://[^/]+/.+$",
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sizeBytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "s3Uri",
+            "sha256",
+            "sizeBytes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PendingControl": {
+      "description": "Controls waiting for the agent, delivered in the events response.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "steer",
+              "type": "string"
+            },
+            "now": {
+              "type": "boolean"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text",
+            "now"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ApprovalDecision"
+            },
+            "kind": {
+              "const": "approvalAnswer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "approvalId",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Protocol 1.37.0: a person's (later the analyzer's) answer to a `needs-input` question of a\ndirect run. The `ControlItem`'s `control_id` is the request id, which is the nonce: one answer per request.",
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/InstructAction"
+            },
+            "kind": {
+              "const": "instruct",
+              "type": "string"
+            },
+            "model": {
+              "description": "`try_model` only: a route id of this run (the `models` list of the question).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "origin": {
+              "$ref": "#/$defs/InstructOrigin",
+              "default": "user",
+              "description": "control-api always writes `user`."
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "text": {
+              "description": "`continue_with_prompt` needs it; `new_session_with_prompt` and `try_model` take it optionally; `finish` takes none.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/MessageNotice",
+          "description": "Protocol 1.38.0: a message of the user is pending in the current session. worker-api adds one to the `pending` list of\nevery events response while the message is pending; it is a notice (no text), it is never stored as a control item and handing it out\nchanges nothing, so it repeats until agentd claims the message (`POST /internal/message-claim`). An agentd built before 1.38.0 sets the\nitem aside (`lenient_pending`) and acts on the rest of the list.",
+          "properties": {
+            "kind": {
+              "const": "message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RejectReason": {
+      "description": "Why a message was rejected. Every reason but `engine-busy` and `continuation-limit` is the server's alone.",
+      "oneOf": [
+        {
+          "const": "run-sealed",
+          "description": "The run was sealed: it ended or was ending when the message was about to be sent.",
+          "type": "string"
+        },
+        {
+          "const": "run-cancelled",
+          "description": "The user stopped the run; a Cancel wins over a message.",
+          "type": "string"
+        },
+        {
+          "const": "engine-busy",
+          "description": "agentd could not take the message into its queue.",
+          "type": "string"
+        },
+        {
+          "const": "no-message-control",
+          "description": "The run's Agent registered no message control (a run on an older image).",
+          "type": "string"
+        },
+        {
+          "const": "continuation-limit",
+          "description": "The allowance of message-driven turns after \"done\" is used up.",
+          "type": "string"
+        },
+        {
+          "const": "limit",
+          "description": "A limit (the cap on messages or bytes of one run).",
+          "type": "string"
+        }
+      ]
+    },
+    "RepoAllowItem": {
+      "description": "Repository allowlist entry, changed only by `ham-admin repos`.",
+      "properties": {
+        "addedAt": {
+          "type": "string"
+        },
+        "addedBy": {
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/RepoTarget"
+        }
+      },
+      "required": [
+        "target",
+        "addedBy",
+        "addedAt"
+      ],
+      "type": "object"
+    },
+    "RepoTarget": {
+      "description": "Repository target: cc:<name>, a CodeCommit repository in the deployment's account and home Region. Only `cc:` targets are served: the gh:<owner>/<name> and gl:<group>/<project> forms parse and are refused, because GitHub and GitLab delivery are not supported.",
+      "pattern": "^(cc:[A-Za-z0-9._-]{1,100}|gh:[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}|gl:[A-Za-z0-9_][A-Za-z0-9._-]*(?:/[A-Za-z0-9_][A-Za-z0-9._-]*)+)$",
+      "type": "string"
+    },
+    "ResumeMode": {
+      "description": "How a `paused` or `stalled` run can go on. The service stores it beside the status and the reason.",
+      "oneOf": [
+        {
+          "const": "same_run",
+          "description": "The same run id goes on in a new session. Reserved: no run is given this word yet (a run that stopped has been delivered, and a\ndelivery is made once per run), so clients treat it as a follow-up request to the same route.",
+          "type": "string"
+        },
+        {
+          "const": "follow_up",
+          "description": "A new run starts from the code this run delivered and carries the same request (`POST /v1/runs/{runId}/resume`).",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Nothing to resume: no code was delivered, or the cause still holds.",
+          "type": "string"
+        }
+      ]
+    },
+    "ResumePath": {
+      "description": "How a turn's session found its workspace,\nas the dispatcher recorded it before the invocation.",
+      "oneOf": [
+        {
+          "const": "fresh",
+          "description": "A new session: the worktree comes from the turn's base bundle.",
+          "type": "string"
+        },
+        {
+          "const": "same",
+          "description": "The same microVM generation as the previous turn: nothing restarted.",
+          "type": "string"
+        },
+        {
+          "const": "fast",
+          "description": "A new microVM on the same session ID found session storage with `HEAD == baseSha` and a\nclean tree.",
+          "type": "string"
+        },
+        {
+          "const": "slow",
+          "description": "A new microVM on the same session ID found no worktree, another head or a dirty tree, so\nthe worktree is restored from the last committed bundle.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleDelivery": {
+      "description": "How a rule reaches the engine.",
+      "oneOf": [
+        {
+          "enum": [
+            "systemPrompt"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "native",
+          "description": "The engine loads the file itself.",
+          "type": "string"
+        },
+        {
+          "const": "compiled",
+          "description": "Written into agentd's compiled rules file.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/RuleDelivery"
+        },
+        "layer": {
+          "$ref": "#/$defs/RuleLayer"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "description": "A repository-relative path, a rule name, or `system prompt`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "source",
+        "sha256",
+        "delivery"
+      ],
+      "type": "object"
+    },
+    "RuleLayer": {
+      "description": "Precedence, highest first.",
+      "oneOf": [
+        {
+          "const": "harness",
+          "description": "Harness invariants, carried by the supplied system prompt.",
+          "type": "string"
+        },
+        {
+          "const": "tenant",
+          "description": "Tenant and run rules sent with the run.",
+          "type": "string"
+        },
+        {
+          "const": "repository",
+          "description": "`AGENTS.md`, `CLAUDE.md`, `.clinerules/**`, `.cline/rules/**`, `.roo/rules-<role>/**`,\n`.cursorrules` in the repository.",
+          "type": "string"
+        },
+        {
+          "const": "role",
+          "description": "The role's customInstructions.",
+          "type": "string"
+        }
+      ]
+    },
+    "RulesManifest": {
+      "additionalProperties": false,
+      "description": "The per-session rules manifest: every rule in precedence order and how it was delivered.",
+      "properties": {
+        "compiledSha256": {
+          "description": "SHA-256 of the compiled rules file, when one was written.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/RuleEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "RunAbortedPayload": {
+      "description": "`run.aborted` (harness) and the Run item's `aborted`: the run's `run` execution\nended ABORTED, FAILED or TIMED_OUT before the run finished, so the run-ended reaper cleared the\nrun and stopped its workers, sessions and leases. `error` and `cause` are the execution's,\nsingle-line and bounded ([`RunAbortedPayload::new`]); `stoppedAt` is the execution's stop time.",
+      "properties": {
+        "cause": {
+          "maxLength": 1024,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "maxLength": 256,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionEnd"
+        },
+        "stoppedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "stoppedAt"
+      ],
+      "type": "object"
+    },
+    "RunItem": {
+      "description": "`RUN#<runId>` / `META`.",
+      "properties": {
+        "aborted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunAbortedPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the run's `run` execution ended when it ended ABORTED, FAILED or TIMED_OUT before the\nrun finished: the run-ended reaper writes it with the run's `cleared` status."
+        },
+        "baseRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BudgetLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "continueFrom": {
+          "description": "Protocol 1.38.0: the id of the run a follow-up run continues from, written when control-api creates the run from a start\nrequest that carries `continueFrom`. Absent for an ordinary run and for an item written before the member existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "deploymentDigest": {
+          "description": "The stage's `deployment-digest` SSM parameter when the run was created.\nAbsent before the first deploy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enginePolicyVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxRunS": {
+          "description": "The total seconds the run may use across its slices, copied from the start request; absent means the default.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ownerPrincipalArn": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/GoalPhase"
+        },
+        "promptSha256": {
+          "type": "string"
+        },
+        "resumeMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumeMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a `paused` or `stalled` run can go on. Written with `status_reason`."
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runtimeEndpoint": {
+          "description": "The endpoint every call on the run's python sessions uses as the qualifier: `v<N>`, the\nendpoint deploy.sh keeps on `runtimeVersion`, so a repoint of `live` leaves an in-flight run\non its version; `live` when that endpoint was missing at the first dispatch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimeVersion": {
+          "description": "The python worker runtime version the run's first dispatch found on the `live` endpoint\n(evidence; never a qualifier).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slice": {
+          "description": "The number of the run's last slice (the session the run ended in, or is in now); absent for a run of one session written before the\nmember existed. `start-session` writes it when it starts a slice.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sourceTree": {
+          "description": "The stage's `deployed-source-tree` SSM parameter when the run was created (drill evidence).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        },
+        "statusReason": {
+          "description": "Why the run is `paused` or `stalled`, as a short code, a colon and a plain sentence (`total_time: the run used the 24 hours it\nwas given`). Written by `finalize` with the status; absent for every other status and for an item written before the member existed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/RunTarget"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "ownerPrincipalArn",
+        "promptSha256",
+        "target",
+        "status",
+        "phase",
+        "enginePolicyVersion",
+        "createdAt",
+        "version"
+      ],
+      "type": "object"
+    },
+    "RunTarget": {
+      "description": "How a run starts: from an existing repository, a new repository, or an empty S3 base.",
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "repo",
+              "type": "string"
+            },
+            "repo": {
+              "$ref": "#/$defs/RepoTarget"
+            }
+          },
+          "required": [
+            "mode",
+            "repo"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "new-repo",
+              "type": "string"
+            },
+            "repo": {
+              "$ref": "#/$defs/RepoTarget"
+            }
+          },
+          "required": [
+            "mode",
+            "repo"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "s3-only",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Transport": {
+      "description": "`agentd`-to-engine transport: ACP (transport A) or the Cline CLI per turn (transport B).",
+      "enum": [
+        "acp",
+        "cli"
+      ],
+      "type": "string"
+    },
+    "TurnClass": {
+      "description": "Turn-end class from the classifier (harness-core).",
+      "oneOf": [
+        {
+          "enum": [
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "The engine reported completion; the harness runs gates.",
+          "type": "string"
+        },
+        {
+          "const": "idle",
+          "description": "No tool call and no change; the harness runs gates.",
+          "type": "string"
+        },
+        {
+          "const": "empty",
+          "description": "The turn produced nothing (counts toward `emptyTurnStreak`).",
+          "type": "string"
+        },
+        {
+          "const": "exec_failure",
+          "description": "The engine or its tools failed to execute (counts toward `execFailureStreak`).",
+          "type": "string"
+        },
+        {
+          "const": "flag_blocked",
+          "description": "The worker called `flag_blocked`.",
+          "type": "string"
+        },
+        {
+          "const": "throttled",
+          "description": "Bedrock throttling or quota beyond the retry window.",
+          "type": "string"
+        }
+      ]
+    },
+    "TurnItem": {
+      "description": "`RUN#<runId>` / `TURN#<agentId>#<n>`.",
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "attempt": {
+          "description": "The attempt on this route when the fault ended the turn (1 is the first).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "baseSha": {
+          "description": "The committed head the turn starts from (the previous turn's `lastCommitSha`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundleUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "description": "The context window dispatch resolved for the turn,\nwritten with the item so a retried dispatch sends the same window (1.25.0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Engine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enginePolicyVersion": {
+          "description": "The engine-policy version whose route picked `engine`; absent when the engine came from the\nrun or the ladder member (1.25.0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gateResultUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invokedAt": {
+          "description": "Set by the dispatcher once InvokeAgentRuntime accepted the turn (a retry never re-invokes).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ladderVersion": {
+          "description": "The `ROUTELADDER` version the run froze.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastCommitSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lostAt": {
+          "description": "Set by the sweeper when the turn stayed in flight without a heartbeat for 600 s:\nthe session died, so the next dispatch recovers it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxOutputTokens": {
+          "description": "The output-token cap dispatch resolved for the turn,\nwritten with the item so a retried dispatch sends the same cap and a\ncatalog change never moves a running agent (1.24.0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxSilentGapS": {
+          "description": "The longest silence, in seconds, between two engine updates in the turn (agentd's metric).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modelId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "n": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "region": {
+          "description": "The Region the engine called the model in, when the goal step chose a route (1.22.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resumeHead": {
+          "description": "The HEAD the dispatcher's workspace probe found in session storage (`none` without one).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resumeReason": {
+          "description": "Why a new generation started or took the slow path, for example `planned-handoff`,\n`session-lost`, `storage-reset`, `head-mismatch` or `dirty-worktree`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "description": "The turn's role slug, written by the dispatcher.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "routeLevel": {
+          "description": "The ladder level the turn ran at: 1 same route, 2 another route, 3 another model.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rulesDigest": {
+          "description": "SHA-256 of the compiled rules manifest used on this turn.",
+          "type": "string"
+        },
+        "rulesManifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RulesManifest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The turn's rules manifest, written with `rulesDigest` at turn-complete."
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runtimeEndpoint": {
+          "description": "The endpoint (the qualifier) the turn was invoked at.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimeSessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimeVersion": {
+          "description": "The runtime version the turn was invoked on (evidence).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionGeneration": {
+          "description": "The agent's microVM generation this turn runs in.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "snapshotUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "description": "The millisecond (Unix epoch) the first attempt of dispatch created this item (1.25.0). The\nturn's `context.changed` takes the time of its ULID from it, so the id sorts after every\nevent written before the turn (viewers read `SK > :after`, so an older id would be skipped by\na poll that already moved its cursor) and a retried dispatch writes the same item. Absent on\nan item from before, which falls back to the second of `startedAt`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "taskTokenCiphertext": {
+          "description": "KMS ciphertext of the Step Functions task token.",
+          "type": "string"
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The transport of the engine dispatch resolved for the turn, written with `engine` so a retried\ndispatch reads the engine, its transport and the policy row from this one item (1.25.0)."
+        },
+        "turnClass": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Engine-reported tokens; absent when the engine reported none."
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "agentId",
+        "n",
+        "taskTokenCiphertext",
+        "startedAt",
+        "rulesDigest",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Token accounting for one turn.",
+      "properties": {
+        "cacheReadInputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadInputTokens",
+        "cacheWriteInputTokens"
+      ],
+      "type": "object"
+    },
+    "Verdict": {
+      "description": "Evaluator verdict on the evidence bundle.",
+      "enum": [
+        "met",
+        "not_met",
+        "impossible"
+      ],
+      "type": "string"
+    },
+    "VerdictRef": {
+      "description": "A recorded verdict; the body lives in S3.",
+      "properties": {
+        "evaluatorModelId": {
+          "type": "string"
+        },
+        "s3Uri": {
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        }
+      },
+      "required": [
+        "evaluatorModelId",
+        "verdict",
+        "s3Uri"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Every item type, tagged by `entity`; `items.schema.json` is this type's schema.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RunItem",
+      "properties": {
+        "entity": {
+          "const": "run",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/GoalItem",
+      "properties": {
+        "entity": {
+          "const": "goal",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/AgentItem",
+      "properties": {
+        "entity": {
+          "const": "agent",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/TurnItem",
+      "properties": {
+        "entity": {
+          "const": "turn",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/ControlItem",
+      "properties": {
+        "entity": {
+          "const": "control",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/EventItem",
+      "properties": {
+        "entity": {
+          "const": "event",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/ArtifactItem",
+      "properties": {
+        "entity": {
+          "const": "artifact",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/RepoAllowItem",
+      "properties": {
+        "entity": {
+          "const": "repoAllow",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/IdempotencyItem",
+      "properties": {
+        "entity": {
+          "const": "idempotency",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/MessageItem",
+      "description": "Protocol 1.38.0: one message of the user (`MSG#<id>`).",
+      "properties": {
+        "entity": {
+          "const": "message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/MessageCtlItem",
+      "description": "Protocol 1.38.0: the item every message transition of a run goes through (`MSGCTL`).",
+      "properties": {
+        "entity": {
+          "const": "messageCtl",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    },
+    {
+      "$ref": "#/$defs/OwnerRateItem",
+      "description": "Protocol 1.38.0: an owner's admissions in one clock minute.",
+      "properties": {
+        "entity": {
+          "const": "ownerRate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "StoreItem"
+}

@@ -1,0 +1,560 @@
+#!/usr/bin/python3.12
+"""ham-containers: a Docker-compatible socket for the engine inside a direct-run session.
+
+The session is an AgentCore microVM whose container runs as root with `no_new_privs`, no TUN, no FUSE and no loop device. It
+cannot run a Docker daemon as root for the engine, and newuidmap cannot raise privileges. So the engine gets this instead:
+
+  /var/run/docker.sock   a front socket owned by the engine user (mode 0600) that answers `/_ping` at once and holds every other
+                         request until the runtime behind it is up. The runtime starts LAZILY: `up` leaves only the front and a
+                         small idle root-side supervisor, and the first request that is not a ping wakes the supervisor, which then
+                         maps the namespace and starts Podman (it imports the offline images first: about 12 s). A session that never
+                         touches Docker never starts it.
+  rootless Podman 6      its Docker-compatible API service, running as the engine user's uid inside a user, mount and PID
+                         namespace that this program maps from root (uid 0 of the namespace is the engine user on the host, ids 1
+                         to 65536 are a private range), the vfs storage driver (an overlay upper cannot sit on the VM's overlay
+                         root), a bridge in a rootless netns, rootlessport for published ports and a stub for pasta
+
+Nothing in it has host root: the launcher drops into the namespace's root before it executes anything, and `no_new_privs` stays on.
+No registry is reachable from the VM, so the images are the ones the image build baked in (images.json); a pull fails at once.
+The `docker` command is Podman's remote client on the front socket. It prints "Service did not provide Libpod-API-Version Header" when
+a ping reply lacks that header; the front's own ping reply carries it (the version of the pinned Podman), and the warning is harmless.
+
+  ham-containers up --user NAME   (root) start the front and the idle supervisor in the background and return; agentd runs this. The
+                                  last line it prints is `CONTAINERS PIDS front=<pid> supervisor=<pid>`: agentd reads it before the engine
+                                  exists and keeps those processes, and everything below them, out of its sweep of the engine's user
+  ham-containers down             (root or the user) stop both and remove /var/run/docker.sock
+  ham-containers status           print front=up|down backend=up|idle|down (idle: waiting for the first use)
+  ham-containers env              print the export lines a shell needs (agentd sets the same variables for the engine)
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import pwd
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(os.environ.get("HAMH_CONTAINERS_ROOT", "/opt/harness/containers"))
+SELF = Path(__file__).resolve()
+PYTHON = "/usr/bin/python3.12"
+SUBID_START = 200000
+SUBID_COUNT = 65536
+API_VERSION = "1.44"
+LIBPOD_API_VERSION = "6.1.4"  # the pinned podman-static release (containers.lock); a test keeps the two equal
+ENGINE_ENV = {
+    "DOCKER_HOST": "unix:///var/run/docker.sock",
+    "CONTAINER_HOST": "unix:///var/run/docker.sock",
+    "TESTCONTAINERS_RYUK_DISABLED": "true",
+    "TESTCONTAINERS_HOST_OVERRIDE": "127.0.0.1",
+}
+
+
+class Paths:
+    def __init__(self, run: Path | None = None, store: Path | None = None, link: Path | None = None, root: Path | None = None) -> None:
+        self.run = run or Path(os.environ.get("HAMH_CONTAINERS_RUN", "/run/ham-containers"))
+        self.store = store or Path(os.environ.get("HAMH_CONTAINERS_STORE", "/var/lib/ham-containers"))
+        self.link = link or Path(os.environ.get("HAMH_CONTAINERS_LINK", "/var/run/docker.sock"))
+        self.root = root or ROOT
+
+    @property
+    def front_sock(self) -> Path:
+        return self.run / "docker.sock"
+
+    @property
+    def back_sock(self) -> Path:
+        return self.run / "podman.sock"
+
+    @property
+    def holder_pid(self) -> Path:
+        return self.run / "holder.pid"
+
+    @property
+    def front_pid(self) -> Path:
+        return self.run / "front.pid"
+
+    @property
+    def wake_sock(self) -> Path:
+        return self.run / "wake.sock"
+
+    @property
+    def supervisor_pid(self) -> Path:
+        return self.run / "supervisor.pid"
+
+    @property
+    def log(self) -> Path:
+        return self.run / "ham-containers.log"
+
+
+# ---- pure parts ---------------------------------------------------------------------------------------------------------------
+
+
+def userns_maps(uid: int, gid: int, start: int = SUBID_START, count: int = SUBID_COUNT) -> tuple[str, str]:
+    """uid_map and gid_map text: namespace root is the engine user on the host, ids 1..count are a private range."""
+    if uid <= 0 or gid <= 0:
+        raise ValueError("the namespace must not map to host root")
+    return f"0 {uid} 1\n1 {start} {count}\n", f"0 {gid} 1\n1 {start} {count}\n"
+
+
+def import_changes(config: dict) -> list[str]:
+    """`podman import --change` arguments that restore a Docker image config on a flattened root file system."""
+    out = [f"ENV {e}" for e in config.get("Env") or []]
+    if config.get("Entrypoint"):
+        out.append("ENTRYPOINT " + json.dumps(config["Entrypoint"]))
+    if config.get("Cmd"):
+        out.append("CMD " + json.dumps(config["Cmd"]))
+    out += [f"EXPOSE {p}" for p in sorted(config.get("ExposedPorts") or {})]
+    out += [f"VOLUME {v}" for v in sorted(config.get("Volumes") or {})]
+    if config.get("WorkingDir"):
+        out.append(f"WORKDIR {config['WorkingDir']}")
+    if config.get("User"):
+        out.append(f"USER {config['User']}")
+    out += [f"LABEL {k}={v}" for k, v in sorted((config.get("Labels") or {}).items())]
+    if config.get("StopSignal"):
+        out.append(f"STOPSIGNAL {config['StopSignal']}")
+    return out
+
+
+def podman_env(uid: int, gid: int, home: str, root: Path = ROOT, paths: Paths | None = None) -> dict[str, str]:
+    """The environment of the Podman API service: rootless inside a namespace that is already configured."""
+    p = paths or Paths(root=root)
+    return {
+        "PATH": f"{root}/bin:/usr/bin:/bin",
+        "HOME": home,
+        "XDG_RUNTIME_DIR": str(p.run),
+        "XDG_DATA_HOME": str(p.store),
+        "CONTAINERS_CONF": f"{root}/etc/containers.conf",
+        "CONTAINERS_STORAGE_CONF": f"{root}/etc/storage.conf",
+        "CONTAINERS_REGISTRIES_CONF": f"{root}/etc/registries.conf",
+        "_CONTAINERS_USERNS_CONFIGURED": "done",
+        "_CONTAINERS_ROOTLESS_UID": str(uid),
+        "_CONTAINERS_ROOTLESS_GID": str(gid),
+        "NETAVARK_FW": "none",
+        # No registry is reachable from the VM: a pull ends at once on this closed local port, not after a TCP time-out.
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "HTTP_PROXY": "http://127.0.0.1:9",
+        "NO_PROXY": "",
+    }
+
+
+def ping_reply(method: str) -> bytes:
+    head = (
+        "HTTP/1.1 200 OK\r\n"
+        f"Api-Version: {API_VERSION}\r\n"
+        f"Libpod-API-Version: {LIBPOD_API_VERSION}\r\n"
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: 2\r\n"
+        "Docker-Experimental: false\r\n"
+        "Pragma: no-cache\r\n"
+        "Server: ham-containers\r\n\r\n"
+    ).encode()
+    return head if method == "HEAD" else head + b"OK"
+
+
+# ---- the front socket ---------------------------------------------------------------------------------------------------------
+
+
+def _backend_up(back: str) -> bool:
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(1.0)
+    try:
+        s.connect(back)
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+class Waker:
+    """Knocks once on the supervisor's wake socket; a knock that finds nobody is tried again at the next look."""
+
+    def __init__(self, path: str | None) -> None:
+        self.path, self.done = path, False
+
+    async def wake(self) -> None:
+        if self.path is None or self.done:
+            return
+        try:
+            _, w = await asyncio.open_unix_connection(self.path)
+            w.write(b"1")
+            await w.drain()
+            w.close()
+            self.done = True
+        except OSError:
+            pass
+
+
+async def _wait_backend(back: str, wait_s: float, waker: Waker | None = None) -> bool:
+    deadline = time.monotonic() + wait_s
+    while True:
+        if _backend_up(back):
+            return True
+        if waker is not None:
+            await waker.wake()
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+
+
+async def _copy(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+    try:
+        while True:
+            data = await src.read(65536)
+            if not data:
+                break
+            dst.write(data)
+            await dst.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        try:
+            dst.close()
+        except OSError:
+            pass
+
+
+async def _read_head(reader: asyncio.StreamReader) -> bytes | None:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = await reader.read(65536)
+        if not chunk:
+            return None
+        data += chunk
+        if len(data) > 1 << 20:
+            return None
+    return data
+
+
+async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, back: str, wait_s: float, waker: Waker) -> None:
+    try:
+        while True:
+            head = await _read_head(reader)
+            if head is None:
+                return
+            method, _, rest = head.split(b"\r\n", 1)[0].decode("latin-1").partition(" ")
+            target = rest.split(" ")[0]
+            if method in ("GET", "HEAD") and target.rstrip("/").endswith("/_ping") and not _backend_up(back):
+                writer.write(ping_reply(method))
+                await writer.drain()
+                continue
+            if not await _wait_backend(back, wait_s, waker):
+                body = f"the container runtime is not ready after {wait_s:.0f} s; see /run/ham-containers/ham-containers.log"
+                writer.write(
+                    (
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                        f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n{body}"
+                    ).encode()
+                )
+                await writer.drain()
+                return
+            br, bw = await asyncio.open_unix_connection(back)
+            bw.write(head)
+            await bw.drain()
+            await asyncio.gather(_copy(reader, bw), _copy(br, writer))
+            return
+    except (ConnectionError, OSError):
+        return
+    finally:
+        try:
+            writer.close()
+        except OSError:
+            pass
+
+
+async def serve_front(front: str, back: str, *, wait_s: float = 120.0, wake: str | None = None) -> None:
+    waker = Waker(str(wake) if wake else None)
+    server = await asyncio.start_unix_server(lambda r, w: _handle(r, w, str(back), wait_s, waker), path=str(front))
+    os.chmod(front, 0o600)
+    async with server:
+        await server.serve_forever()
+
+
+# ---- up, down, status ---------------------------------------------------------------------------------------------------------
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return True
+
+
+def _pid(path: Path) -> int | None:
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _mkdir(path: Path, uid: int, gid: int, chown) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
+    chown(path, uid, gid)
+
+
+def holder_argv(paths: Paths, uid: int, gid: int, home: str) -> list[str]:
+    """The root-side launcher command of the first use: map the namespace, then run the session in it."""
+    return [
+        PYTHON, str(SELF), "_userns", "--pidfile", str(paths.holder_pid), str(uid), str(gid), str(SUBID_START), str(SUBID_COUNT),
+        "--", PYTHON, str(SELF), "_session", "--uid", str(uid), "--gid", str(gid), "--home", home,
+    ]
+
+
+def run_supervisor(wake: str, argv: list[str], uid: int, gid: int, chown=os.chown, execv=os.execv) -> int:
+    """Wait on a private wake socket; the first knock turns this process into the launcher `argv` (root only, so it can write id maps)."""
+    srv = socket.socket(socket.AF_UNIX)
+    srv.bind(wake)
+    os.chmod(wake, 0o600)
+    chown(wake, uid, gid)
+    srv.listen(1)
+    conn, _ = srv.accept()
+    conn.close()
+    srv.close()
+    os.unlink(wake)
+    execv(argv[0], argv)
+    return 0
+
+
+def pids_line(front: int | None, supervisor: int | None, holder: int | None = None) -> str | None:
+    """`CONTAINERS PIDS front=<pid> supervisor=<pid> [holder=<pid>]`: the long-lived processes of the runtime, which agentd keeps out of its
+    sweep of the engine's user (the front runs as that user). The holder is the namespace's init, named only for a runtime that is already
+    running: it is below the supervisor's launcher, but a start that finds the launcher gone and the init alive still counts the runtime as
+    running. A process without a pid is left out; none at all gives no line."""
+    members = (("front", front), ("supervisor", supervisor), ("holder", holder))
+    parts = [f"{name}={pid}" for name, pid in members if pid]
+    return "CONTAINERS PIDS " + " ".join(parts) if parts else None
+
+
+def cmd_up(
+    *,
+    user: str,
+    paths: Paths | None = None,
+    spawn=subprocess.Popen,
+    geteuid=os.geteuid,
+    getpwnam=pwd.getpwnam,
+    chown=os.chown,
+    alive=pid_alive,
+    sleep=time.sleep,
+) -> int:
+    paths = paths or Paths()
+    if geteuid() != 0:
+        print("ham-containers: up must run as root", file=sys.stderr)
+        return 2
+    try:
+        pw = getpwnam(user)
+    except KeyError:
+        print(f"ham-containers: no such user: {user}", file=sys.stderr)
+        return 2
+    if pw.pw_uid == 0 or pw.pw_gid == 0:
+        print("ham-containers: refusing to serve root", file=sys.stderr)
+        return 2
+    front = _pid(paths.front_pid)
+    behind = [p for p in (_pid(paths.supervisor_pid), _pid(paths.holder_pid)) if p]
+    if front and alive(front) and any(alive(p) for p in behind):
+        print(f"CONTAINERS UP socket={paths.link} (already running)")
+        holder = _pid(paths.holder_pid)
+        line = pids_line(front, _pid(paths.supervisor_pid), holder if holder and alive(holder) else None)
+        if line:
+            print(line)
+        return 0
+    uid, gid = pw.pw_uid, pw.pw_gid
+    _mkdir(paths.run, uid, gid, chown)
+    _mkdir(paths.run / "runroot", uid, gid, chown)
+    _mkdir(paths.store, uid, gid, chown)
+    _mkdir(paths.store / "storage", uid, gid, chown)
+    _mkdir(paths.store / "volumes", uid, gid, chown)
+    log = open(paths.log, "ab")
+    chown(paths.log, uid, gid)
+    fp = spawn(
+        [PYTHON, str(SELF), "_front"],
+        user=uid, group=gid, extra_groups=[], start_new_session=True, close_fds=True,
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+    )
+    paths.front_pid.write_text(str(fp.pid))
+    for _ in range(100):
+        if paths.front_sock.exists():
+            break
+        sleep(0.1)
+    else:
+        print("ham-containers: the front socket did not appear", file=sys.stderr)
+        return 1
+    if paths.link.is_symlink() or paths.link.exists():
+        paths.link.unlink()
+    paths.link.symlink_to(paths.front_sock)
+    sp = spawn(
+        [PYTHON, str(SELF), "_supervisor", "--wake", str(paths.wake_sock), "--uid", str(uid), "--gid", str(gid), "--home", pw.pw_dir],
+        start_new_session=True, close_fds=True, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+    )
+    paths.supervisor_pid.write_text(str(sp.pid))
+    log.close()
+    print(f"CONTAINERS UP socket={paths.link} (idle: the runtime starts on the first request that is not a ping, ready about 12 s later)")
+    print(pids_line(fp.pid, sp.pid))
+    return 0
+
+
+def cmd_down(*, paths: Paths | None = None, kill=os.kill, alive=pid_alive, sleep=time.sleep) -> int:
+    paths = paths or Paths()
+    for pidfile in (paths.holder_pid, paths.supervisor_pid, paths.front_pid):  # the namespace's init first: its death ends everything inside it
+        pid = _pid(pidfile)
+        if pid and alive(pid):
+            try:
+                kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    if paths.link.is_symlink():
+        paths.link.unlink()
+    print("CONTAINERS DOWN")
+    return 0
+
+
+def cmd_status(*, paths: Paths | None = None) -> int:
+    paths = paths or Paths()
+    front = paths.front_sock.exists()
+    back = _backend_up(str(paths.back_sock))
+    state = "up" if back else "idle" if paths.wake_sock.exists() else "down"
+    print(f"front={'up' if front else 'down'} backend={state}")
+    return 0 if state != "down" else 1
+
+
+# ---- the root-side launcher and the session in the namespace --------------------------------------------------------------------
+
+
+def run_userns(argv: list[str]) -> int:
+    """Run a command as root of a new user, mount and PID namespace mapped as userns_maps() says (root only)."""
+    p = argparse.ArgumentParser(prog="_userns")
+    p.add_argument("--pidfile", required=True)
+    p.add_argument("uid", type=int)
+    p.add_argument("gid", type=int)
+    p.add_argument("start", type=int)
+    p.add_argument("count", type=int)
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    ns = p.parse_args(argv)
+    cmd = ns.cmd[1:] if ns.cmd[:1] == ["--"] else ns.cmd
+    if os.geteuid() != 0:
+        print("ham-containers: _userns must run as root", file=sys.stderr)
+        return 2
+    uid_map, gid_map = userns_maps(ns.uid, ns.gid, ns.start, ns.count)
+    ready_r, ready_w = os.pipe()
+    go_r, go_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(ready_r)
+        os.close(go_w)
+        os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS | os.CLONE_NEWPID)
+        os.write(ready_w, b"1")
+        if os.read(go_r, 1) != b"1":
+            os._exit(125)
+        inner = os.fork()  # the first child of a new PID namespace is its PID 1
+        if inner == 0:
+            os.setgroups([])
+            os.setresgid(0, 0, 0)
+            os.setresuid(0, 0, 0)
+            # A fresh /proc: the session's has masked, read-only parts that a nested runtime needs writable.
+            subprocess.run(["mount", "--make-rprivate", "/"], check=True)
+            subprocess.run(["mount", "-t", "proc", "proc", "/proc"], check=True)
+            init = str(ROOT / "lib" / "catatonit")
+            os.execv(init, [init, "--"] + cmd)
+        Path(ns.pidfile).write_text(str(inner))
+        _, status = os.waitpid(inner, 0)
+        os._exit(os.waitstatus_to_exitcode(status) & 0xFF)
+    os.close(ready_w)
+    os.close(go_r)
+    if os.read(ready_r, 1) != b"1":
+        print("ham-containers: the child did not unshare", file=sys.stderr)
+        return 1
+    Path(f"/proc/{pid}/uid_map").write_text(uid_map)
+    Path(f"/proc/{pid}/gid_map").write_text(gid_map)
+    os.write(go_w, b"1")
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status)
+
+
+def import_images(env: dict[str, str], root: Path = ROOT) -> None:
+    podman = str(root / "bin" / "podman")
+    for item in json.loads((root / "images" / "images.json").read_text()):
+        ref = item["ref"]
+        if subprocess.run([podman, "image", "exists", ref], env=env).returncode == 0:
+            continue
+        config = json.loads((root / "images" / item["config"]).read_text())
+        args = [podman, "import", "--os", "linux", "--arch", "arm64"]
+        for c in import_changes(config):
+            args += ["--change", c]
+        args += ["-", ref]
+        src = subprocess.Popen(["xz", "-dc", str(root / "images" / item["rootfs"])], stdout=subprocess.PIPE)
+        done = subprocess.run(args, stdin=src.stdout, env=env)
+        src.stdout.close()
+        if src.wait() != 0 or done.returncode != 0:
+            print(f"ham-containers: importing {ref} failed", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"ham-containers: imported {ref}", flush=True)
+
+
+def run_session(argv: list[str]) -> int:
+    """Inside the namespace: import the baked-in images, then become the Podman API service."""
+    p = argparse.ArgumentParser(prog="_session")
+    p.add_argument("--uid", type=int, required=True)
+    p.add_argument("--gid", type=int, required=True)
+    p.add_argument("--home", required=True)
+    ns = p.parse_args(argv)
+    paths = Paths()
+    env = podman_env(ns.uid, ns.gid, ns.home, ROOT, paths)
+    import_images(env, ROOT)
+    podman = str(ROOT / "bin" / "podman")
+    os.execve(podman, [podman, "system", "service", "--time", "0", f"unix://{paths.back_sock}"], env)
+    return 1
+
+
+def main(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="ham-containers", description=__doc__.split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    up = sub.add_parser("up")
+    up.add_argument("--user", required=True)
+    sub.add_parser("down")
+    sub.add_parser("status")
+    sub.add_parser("env")
+    for hidden in ("_front", "_supervisor", "_userns", "_session"):
+        sub.add_parser(hidden, add_help=False)
+    ns, rest = p.parse_known_args(argv[1:])
+    if ns.cmd == "up":
+        return cmd_up(user=ns.user)
+    if ns.cmd == "down":
+        return cmd_down()
+    if ns.cmd == "status":
+        return cmd_status()
+    if ns.cmd == "env":
+        for k, v in ENGINE_ENV.items():
+            print(f"export {k}={v}")
+        return 0
+    if ns.cmd == "_front":
+        paths = Paths()
+        asyncio.run(serve_front(str(paths.front_sock), str(paths.back_sock), wake=str(paths.wake_sock)))
+        return 0
+    if ns.cmd == "_supervisor":
+        sp = argparse.ArgumentParser(prog="_supervisor")
+        sp.add_argument("--wake", required=True)
+        sp.add_argument("--uid", type=int, required=True)
+        sp.add_argument("--gid", type=int, required=True)
+        sp.add_argument("--home", required=True)
+        a = sp.parse_args(rest)
+        return run_supervisor(a.wake, holder_argv(Paths(), a.uid, a.gid, a.home), a.uid, a.gid)
+    if ns.cmd == "_userns":
+        return run_userns(rest)
+    return run_session(rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

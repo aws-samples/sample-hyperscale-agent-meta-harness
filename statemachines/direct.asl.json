@@ -1,0 +1,657 @@
+{
+  "Comment": "hamh-direct-run: one coding run, in as many microVM sessions (slices) as its total time needs. Input {runId} from control-api. run-session decides every step; this machine only sequences them: ask for the run's name without waiting for it, stage the repository, start slice n and wait for it, ask run-session how the slice ended (NextSlice), start slice n+1 from the work it left or go on to plan and validate the delivery, open the pull request, package the zip and finalize. A lost or timed-out session still delivers its last snapshot. The loop is bounded: a run has at most 64 slices and delivers once, after the last.",
+  "StartAt": "Name",
+  "TimeoutSeconds": 640800,
+  "States": {
+    "Name": {
+      "Type": "Task",
+      "Comment": "Asks run-session to write the run's name and does not wait for the answer. A failure to start that call is ignored: a run without a model-written name keeps the name built from its prompt.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "InvocationType": "Event",
+        "Payload": {
+          "op": "name-run",
+          "runId.$": "$.runId"
+        }
+      },
+      "ResultPath": null,
+      "TimeoutSeconds": 15,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
+          "Next": "Prepare"
+        }
+      ],
+      "Next": "Prepare"
+    },
+    "Prepare": {
+      "Type": "Task",
+      "Comment": "Reads the run and its stored request, refuses what can never run (a run that is not active, a model not in models.json) and builds the repository-gateway payloads.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "prepare",
+          "runId.$": "$.runId"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.prep",
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "NeedsRepo"
+    },
+    "NeedsRepo": {
+      "Type": "Choice",
+      "Comment": "A --new-repo run creates its repository first.",
+      "Choices": [
+        {
+          "Variable": "$.prep.result.newRepo",
+          "IsPresent": true,
+          "Next": "CreateRepo"
+        }
+      ],
+      "Default": "StageRepo"
+    },
+    "CreateRepo": {
+      "Type": "Task",
+      "Comment": "repo-gateway creates the CodeCommit repository with an empty-tree main.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RepoGatewayArn}",
+        "Payload.$": "$.prep.result.newRepo"
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.created",
+      "TimeoutSeconds": 930,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Unavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Refused",
+            "Invalid"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "StageRepo"
+    },
+    "StageRepo": {
+      "Type": "Task",
+      "Comment": "repo-gateway writes runs/<run>/input/repo.bundle and tree.json (an empty base for --s3-only).",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RepoGatewayArn}",
+        "Payload.$": "$.prep.result.stage"
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.staged",
+      "TimeoutSeconds": 930,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Unavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Refused",
+            "Invalid"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "Init"
+    },
+    "Init": {
+      "Type": "Pass",
+      "Comment": "Rebuilds the state so every later .$ path exists: no session result yet (empty objects), no pull request failure yet, and the slice loop at slice 1 with nothing counted.",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "prep.$": "$.prep",
+        "staged.$": "$.staged",
+        "session": {
+          "turn": {},
+          "failure": {}
+        },
+        "prOut": {},
+        "prFailure": {},
+        "loop": {
+          "slice": 1,
+          "lost": 0,
+          "empty": 0,
+          "continue": false
+        }
+      },
+      "Next": "StartSession"
+    },
+    "StartSession": {
+      "Type": "Task",
+      "Comment": "run-session binds the agent, mints the credentials and invokes the microVM for slice $.loop.slice, then the state waits for worker-api's SendTaskSuccess with the newest task token. A lost session (no heartbeat for 600 s) or the state timeout is caught like any end of the slice: NextSlice decides what follows.",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "start-session",
+          "runId.$": "$.runId",
+          "taskToken.$": "$$.Task.Token",
+          "staged.$": "$.staged.result",
+          "slice.$": "$.loop.slice"
+        }
+      },
+      "ResultPath": "$.session.turn",
+      "TimeoutSeconds": 28500,
+      "HeartbeatSeconds": 600,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.session.failure",
+          "Next": "NextSlice"
+        }
+      ],
+      "Next": "NextSlice"
+    },
+    "NextSlice": {
+      "Type": "Task",
+      "Comment": "Reads how the slice ended (a result, a handoff at the slice deadline, or a session that was lost), stops the slice's machine, and decides: another slice from the best work there is, or deliver and end. A failure here delivers what the loop left (Plan).",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "next-slice",
+          "runId.$": "$.runId",
+          "staged.$": "$.staged.result",
+          "session.$": "$.session",
+          "loop.$": "$.loop"
+        }
+      },
+      "ResultSelector": {
+        "slice.$": "$.Payload.slice",
+        "lost.$": "$.Payload.lost",
+        "empty.$": "$.Payload.empty",
+        "continue.$": "$.Payload.continue",
+        "endReason.$": "$.Payload.endReason"
+      },
+      "ResultPath": "$.loop",
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.nextFailure",
+          "Next": "Plan"
+        }
+      ],
+      "Next": "SliceChoice"
+    },
+    "SliceChoice": {
+      "Type": "Choice",
+      "Comment": "Another slice follows: start it. Otherwise the run is delivered.",
+      "Choices": [
+        {
+          "Variable": "$.loop.continue",
+          "BooleanEquals": true,
+          "Next": "ResetSession"
+        }
+      ],
+      "Default": "Plan"
+    },
+    "ResetSession": {
+      "Type": "Pass",
+      "Comment": "Clears the result of the slice that ended, so the next slice starts with no session result and no failure.",
+      "Parameters": {
+        "runId.$": "$.runId",
+        "prep.$": "$.prep",
+        "staged.$": "$.staged",
+        "loop.$": "$.loop",
+        "session": {
+          "turn": {},
+          "failure": {}
+        },
+        "prOut": {},
+        "prFailure": {}
+      },
+      "Next": "StartSession"
+    },
+    "Plan": {
+      "Type": "Task",
+      "Comment": "Chooses the head (the session's final bundle, else its last snapshot), the outcome and its label, and builds the validate, pull request and package payloads.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "plan-delivery",
+          "runId.$": "$.runId",
+          "staged.$": "$.staged.result",
+          "session.$": "$.session",
+          "loop.$": "$.loop"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.plan",
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "HasWork"
+    },
+    "HasWork": {
+      "Type": "Choice",
+      "Comment": "Nothing was saved: the run ends blocked.",
+      "Choices": [
+        {
+          "Variable": "$.plan.result.deliver",
+          "BooleanEquals": true,
+          "Next": "ValidateBundle"
+        }
+      ],
+      "Default": "Blocked"
+    },
+    "ValidateBundle": {
+      "Type": "Task",
+      "Comment": "Builds the delivery bundle from the session's bundle, then the branch, history, protected-path, size and gitleaks checks.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${BundleValidatorArn}",
+        "Payload.$": "$.plan.result.validate"
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.validated",
+      "TimeoutSeconds": 930,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Unavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Refused",
+            "Invalid",
+            "AccessDenied"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "ValidationOutcome"
+    },
+    "ValidationOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.validated.result.pass",
+          "BooleanEquals": true,
+          "Next": "HasPr"
+        }
+      ],
+      "Default": "Blocked"
+    },
+    "HasPr": {
+      "Type": "Choice",
+      "Comment": "An --s3-only run, and a head equal to the base, have no pull request.",
+      "Choices": [
+        {
+          "Variable": "$.plan.result.pushPr",
+          "IsPresent": true,
+          "Next": "PushPullRequest"
+        }
+      ],
+      "Default": "NoPr"
+    },
+    "PushPullRequest": {
+      "Type": "Task",
+      "Comment": "repo-gateway pushes harness/<runId> and opens one PR to main. A failed push does not block: the zip is still packaged.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RepoGatewayArn}",
+        "Payload.$": "$.plan.result.pushPr"
+      },
+      "ResultSelector": {
+        "pr.$": "$.Payload"
+      },
+      "ResultPath": "$.prOut",
+      "TimeoutSeconds": 930,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Unavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.prFailure",
+          "Next": "PrFailed"
+        }
+      ],
+      "Next": "WithPrUrl"
+    },
+    "WithPrUrl": {
+      "Type": "Pass",
+      "Parameters": {
+        "prUrl.$": "$.prOut.pr.url"
+      },
+      "ResultPath": "$.prLink",
+      "Next": "Package"
+    },
+    "PrFailed": {
+      "Type": "Pass",
+      "Result": {},
+      "ResultPath": "$.prLink",
+      "Next": "Package"
+    },
+    "NoPr": {
+      "Type": "Pass",
+      "Result": {},
+      "ResultPath": "$.prLink",
+      "Next": "Package"
+    },
+    "Package": {
+      "Type": "Task",
+      "Comment": "The zip of the delivered head with its SHA-256 in object metadata; the label says how Cline stopped.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PackagerArn}",
+        "Payload.$": "States.JsonMerge($.plan.result.package, $.prLink, false)"
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.packaged",
+      "TimeoutSeconds": 900,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Unavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 4,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "Refused",
+            "Invalid",
+            "AccessDenied"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "Next": "Finalize"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Comment": "Publishes the delivery events, moves the run to complete with the label, and stops the session.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "finalize",
+          "runId.$": "$.runId",
+          "plan.$": "$.plan.result",
+          "validated.$": "$.validated.result",
+          "packaged.$": "$.packaged.result",
+          "prLink.$": "$.prLink",
+          "prFailure.$": "$.prFailure"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.completed",
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "Blocked"
+        }
+      ],
+      "End": true
+    },
+    "Blocked": {
+      "Type": "Task",
+      "Comment": "The run delivered nothing: blocked, with the reason. If run-session cannot answer this either, the execution fails in RunMachineFailed.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "mark-blocked",
+          "runId.$": "$.runId",
+          "state.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.blocked",
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionConflict",
+            "RunSessionUnavailable",
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2,
+          "JitterStrategy": "FULL"
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.blockedFailure",
+          "Next": "RunMachineFailed"
+        }
+      ],
+      "End": true
+    },
+    "RunMachineFailed": {
+      "Type": "Fail",
+      "Comment": "run-session could not even record the end (its init failed, or it stayed unavailable through every retry), so the execution fails with that cause. The run-ended rule reports the failure and the reaper machine clears the run as soon as run-session answers.",
+      "Error": "RunSessionUnreachable",
+      "CausePath": "$.blockedFailure.Cause"
+    }
+  }
+}

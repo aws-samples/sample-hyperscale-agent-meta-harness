@@ -1,0 +1,329 @@
+From cf365163a2a9faa996b45a732cbce0d3b438c5d7 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Mon, 28 Sep 2026 05:18:50 +0000
+X-Harness-Test-Only: commit=cf365163a2a9faa996b45a732cbce0d3b438c5d7 parent=7738ee22fda87d09f9fd4cfe9cab5b9f3eba1758 tree=4ea36a9e6e745a524e2388e60d5346565443e28a
+Subject: [PATCH] test(cli): ACP session/prompt reports the turn's token usage
+ (red first)
+
+Test-only commit for fork patch 0008. Through AcpAgent.prompt with a stand-in
+ClineCore that keeps session usage the way the local runtime host does:
+
+- the session/prompt result carries ACP `usage` for the turn: inputTokens is
+  the uncached input (core input totals include cache reads and writes),
+  cachedReadTokens and cachedWriteTokens apart, totalTokens their sum;
+- a second prompt reports its own tokens, never the running session total;
+- tokens spawned agents spent during the turn are counted;
+- a cancelled turn reports what it spent, and a cancel that lands while the
+  turn reads its usage still cancels the turn before it runs;
+- without a core usage summary, the run result's usage is reported;
+- with no usage at all, the result has no `usage` field (never zeros).
+
+Rebased onto cli-v3.0.71 (test files taken from the rebased fork patch 0007, old number 0008).
+---
+ apps/cli/src/acp/acpAgent.usage.test.ts | 295 ++++++++++++++++++++++++
+ 1 file changed, 295 insertions(+)
+ create mode 100644 apps/cli/src/acp/acpAgent.usage.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.usage.test.ts b/apps/cli/src/acp/acpAgent.usage.test.ts
+new file mode 100644
+index 0000000..4934e35
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.usage.test.ts
+@@ -0,0 +1,295 @@
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import type {
++	AgentSideConnection,
++	PromptResponse,
++} from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const mocks = vi.hoisted(() => ({
++	core: undefined as unknown,
++}));
++
++vi.mock("../session/session", () => ({
++	createCliCore: vi.fn(async () => mocks.core),
++}));
++vi.mock("../runtime/session-events", () => ({
++	subscribeToAgentEvents: () => () => {},
++}));
++vi.mock("../runtime/prompt", () => ({
++	resolveSystemPrompt: vi.fn(async () => "PROMPT"),
++}));
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => ({
++				"us.anthropic.claude-sonnet-5": { name: "Claude Sonnet 5" },
++			})),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "us.anthropic.claude-sonnet-5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++
++/** Core usage totals: `inputTokens` includes cache reads and writes. */
++interface Totals {
++	inputTokens: number;
++	outputTokens: number;
++	cacheReadTokens: number;
++	cacheWriteTokens: number;
++	totalCost: number;
++}
++
++interface Turn {
++	/** Tokens the primary agent spent in the turn. */
++	primary: Totals;
++	/** Tokens spawned agents spent in the turn. */
++	spawned?: Totals;
++	finishReason?: string;
++	/** `send` resolves with no result. */
++	noResult?: boolean;
++}
++
++const ZERO: Totals = {
++	inputTokens: 0,
++	outputTokens: 0,
++	cacheReadTokens: 0,
++	cacheWriteTokens: 0,
++	totalCost: 0,
++};
++
++function add(a: Totals, b: Totals): Totals {
++	return {
++		inputTokens: a.inputTokens + b.inputTokens,
++		outputTokens: a.outputTokens + b.outputTokens,
++		cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
++		cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
++		totalCost: a.totalCost + b.totalCost,
++	};
++}
++
++function totals(
++	inputTokens: number,
++	outputTokens: number,
++	cacheReadTokens = 0,
++	cacheWriteTokens = 0,
++): Totals {
++	return {
++		inputTokens,
++		outputTokens,
++		cacheReadTokens,
++		cacheWriteTokens,
++		totalCost: 0.001,
++	};
++}
++
++/**
++ * A ClineCore stand-in that keeps session usage the way the local runtime host
++ * does: `usage` for the primary agent, `aggregateUsage` for the primary agent
++ * plus spawned agents, both summed over the session.
++ */
++function fakeCore(turns: Turn[], options: { summary?: boolean } = {}) {
++	let usage = { ...ZERO };
++	let aggregate = { ...ZERO };
++	let next = 0;
++	return {
++		start: vi.fn(async () => ({ sessionId: "core-session" })),
++		readMessages: vi.fn(async () => []),
++		dispose: vi.fn(async () => {}),
++		abort: vi.fn(async () => {}),
++		getAccumulatedUsage: vi.fn(async () =>
++			options.summary === false
++				? undefined
++				: { usage: { ...usage }, aggregateUsage: { ...aggregate } },
++		),
++		send: vi.fn(async () => {
++			const turn = turns[next++];
++			if (!turn) {
++				throw new Error("unexpected send");
++			}
++			usage = add(usage, turn.primary);
++			aggregate = add(add(aggregate, turn.primary), turn.spawned ?? ZERO);
++			if (turn.noResult) {
++				return undefined;
++			}
++			return {
++				text: "done",
++				usage: { ...turn.primary },
++				messages: [],
++				toolCalls: [],
++				iterations: 1,
++				finishReason: turn.finishReason ?? "completed",
++				model: { id: "us.anthropic.claude-sonnet-5", provider: "bedrock" },
++				startedAt: new Date(0),
++				endedAt: new Date(0),
++				durationMs: 0,
++			};
++		}),
++	};
++}
++
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++async function promptTurns(
++	core: ReturnType<typeof fakeCore>,
++	count: number,
++): Promise<PromptResponse[]> {
++	mocks.core = core;
++	const agent = new AcpAgent(conn);
++	const created = await agent.newSession({
++		cwd: process.cwd(),
++		mcpServers: [],
++	});
++	const responses: PromptResponse[] = [];
++	for (let i = 0; i < count; i++) {
++		responses.push(
++			await agent.prompt({
++				sessionId: created.sessionId,
++				prompt: [{ type: "text", text: `turn ${i + 1}` }],
++			}),
++		);
++	}
++	return responses;
++}
++
++// Fork patch 0008: the session/prompt result carries the turn's token usage
++// (ACP PromptResponse.usage), so an ACP client can meter Cline sessions.
++describe("ACP turn usage", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		const dir = mkdtempSync(join(tmpdir(), "acp-usage-"));
++		process.env = { ...saved };
++		process.env.HOME = join(dir, "home");
++		process.env.CLINE_DATA_DIR = join(dir, "data");
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = "us.anthropic.claude-sonnet-5";
++		process.env.CLINE_API_KEY = "unused";
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("reports the turn's token usage in the session/prompt result, cache tokens apart from input", async () => {
++		const [response] = await promptTurns(
++			fakeCore([{ primary: totals(1300, 40, 1000, 200) }]),
++			1,
++		);
++		expect(response?.stopReason).toBe("end_turn");
++		expect(response?.usage).toEqual({
++			inputTokens: 100,
++			outputTokens: 40,
++			cachedReadTokens: 1000,
++			cachedWriteTokens: 200,
++			totalTokens: 1340,
++		});
++	});
++
++	it("reports each prompt's own usage, never the running session total", async () => {
++		const responses = await promptTurns(
++			fakeCore([
++				{ primary: totals(1300, 40, 1000, 200) },
++				{ primary: totals(1500, 10, 1400, 0) },
++			]),
++			2,
++		);
++		expect(responses[1]?.usage).toEqual({
++			inputTokens: 100,
++			outputTokens: 10,
++			cachedReadTokens: 1400,
++			cachedWriteTokens: 0,
++			totalTokens: 1510,
++		});
++	});
++
++	it("counts the tokens spawned agents spent during the turn", async () => {
++		const [response] = await promptTurns(
++			fakeCore([
++				{
++					primary: totals(300, 20, 200, 0),
++					spawned: totals(700, 30, 500, 100),
++				},
++			]),
++			1,
++		);
++		expect(response?.usage).toEqual({
++			inputTokens: 200,
++			outputTokens: 50,
++			cachedReadTokens: 700,
++			cachedWriteTokens: 100,
++			totalTokens: 1050,
++		});
++	});
++
++	it("reports the usage a cancelled turn spent", async () => {
++		const [response] = await promptTurns(
++			fakeCore([{ primary: totals(900, 5, 800, 0), finishReason: "aborted" }]),
++			1,
++		);
++		expect(response?.stopReason).toBe("cancelled");
++		expect(response?.usage).toEqual({
++			inputTokens: 100,
++			outputTokens: 5,
++			cachedReadTokens: 800,
++			cachedWriteTokens: 0,
++			totalTokens: 905,
++		});
++	});
++
++	it("falls back to the run result when the core keeps no usage summary", async () => {
++		const [response] = await promptTurns(
++			fakeCore([{ primary: totals(50, 5) }], { summary: false }),
++			1,
++		);
++		expect(response?.usage).toEqual({
++			inputTokens: 50,
++			outputTokens: 5,
++			cachedReadTokens: 0,
++			cachedWriteTokens: 0,
++			totalTokens: 55,
++		});
++	});
++
++	it("still cancels a turn when the cancel lands while its usage is read", async () => {
++		const core = fakeCore([{ primary: totals(50, 5) }]);
++		mocks.core = core;
++		const agent = new AcpAgent(conn);
++		const created = await agent.newSession({
++			cwd: process.cwd(),
++			mcpServers: [],
++		});
++		core.getAccumulatedUsage.mockImplementationOnce(async () => {
++			await agent.cancel({ sessionId: created.sessionId });
++			return undefined;
++		});
++		const response = await agent.prompt({
++			sessionId: created.sessionId,
++			prompt: [{ type: "text", text: "turn 1" }],
++		});
++		expect(response.stopReason).toBe("cancelled");
++		expect(core.send).not.toHaveBeenCalled();
++	});
++
++	it("omits usage, never zeros, when the core reports none", async () => {
++		const [response] = await promptTurns(
++			fakeCore([{ primary: totals(50, 5), noResult: true }], {
++				summary: false,
++			}),
++			1,
++		);
++		expect(response?.stopReason).toBe("end_turn");
++		expect(response).not.toHaveProperty("usage");
++	});
++});
+-- 
+2.47.3

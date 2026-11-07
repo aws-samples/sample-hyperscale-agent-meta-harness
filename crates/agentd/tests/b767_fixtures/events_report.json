@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "runId": "01M6K4VZAEDHRGHZ1G1KDWT3AW",
+  "headSha": "eb1d9e35844ee3df994f07a1fe3fe17c5181cc94",
+  "status": "ran",
+  "startedAt": "2026-11-04T12:40:55Z",
+  "durationMs": 41930,
+  "steps": [
+    {
+      "role": "setup",
+      "source": "detected",
+      "command": "ham-services postgres",
+      "exitCode": 0,
+      "durationMs": 1653,
+      "outputTail": "STAND-IN: compose service db (postgres:16 in compose.yaml) has a local PostgreSQL server in its place, on 127.0.0.1:5432 with user app, database app, trust authentication; the Compose container did not run"
+    },
+    {
+      "role": "setup",
+      "source": "detected",
+      "command": "ham-services rabbitmq",
+      "exitCode": 0,
+      "durationMs": 3422,
+      "outputTail": "STAND-IN: compose service broker (rabbitmq:3.13 in compose.yaml) has a local RabbitMQ server in its place, on 127.0.0.1:5672 with user app, a password the report made for this run; the Compose container did not run"
+    },
+    {
+      "role": "test",
+      "source": "lifecycle_log",
+      "command": "bash scripts/test-unit.sh",
+      "exitCode": 0,
+      "durationMs": 34740,
+      "limitS": 300,
+      "outputTail": "go: downloading gotest.tools/gotestsum v1.13.0\ngo: downloading github.com/dnephin/pflag v1.0.7\ngo: downloading github.com/fatih/color v1.18.0\ngo: downloading github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510\ngo: downloading golang.org/x/tools v0.36.0\ngo: downloading github.com/mattn/go-colorable v0.1.13\ngo: downloading github.com/mattn/go-isatty v0.0.20\ngo: downloading github.com/fsnotify/fsnotify v1.9.0\ngo: downloading golang.org/x/sys v0.36.0\ngo: downloading github.com/bitfield/gotestdox v0.2.2\ngo: downloading golang.org/x/sync v0.17.0\ngo: downloading golang.org/x/term v0.35.0\ngo: downloading golang.org/x/text v0.17.0\ngo: downloading golang.org/x/mod v0.27.0\ngo: downloading github.com/rabbitmq/amqp091-go v1.15.0\ngo: downloading github.com/jackc/pgx/v5 v5.10.0\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading golang.org/x/text v0.29.0\n\u2713  cmd/api (4ms)\n\u2205  cmd/worker\n\u2713  internal/api (6ms)\n\u2205  internal/app\n\u2713  internal/broker (67ms)\n\u2713  internal/config (5ms)\n\u2713  internal/order (2ms)\n\u2205  internal/store\n\u2713  internal/worker (4ms)\n\u2713  tests/contracts (33ms)\n\nDONE 80 tests in 1.065s\n",
+      "logged": {
+        "exitCode": 127
+      }
+    },
+    {
+      "role": "test",
+      "source": "lifecycle_log",
+      "command": "bash scripts/test-integration.sh",
+      "exitCode": 0,
+      "durationMs": 839,
+      "limitS": 300,
+      "outputTail": "\u2713  internal/store (44ms)\n\u2713  internal/broker (99ms)\n\nDONE 8 tests in 0.099s\n",
+      "logged": {
+        "exitCode": 127
+      }
+    },
+    {
+      "role": "test",
+      "source": "lifecycle_log",
+      "command": "bash scripts/test-e2e.sh",
+      "exitCode": 0,
+      "durationMs": 791,
+      "limitS": 300,
+      "outputTail": "\u2713  internal/app (52ms)\n\nDONE 1 tests in 0.052s\n",
+      "logged": {
+        "exitCode": 127
+      }
+    }
+  ],
+  "summary": {
+    "status": "ran",
+    "stepsRun": 5,
+    "allExitZero": true,
+    "exitCode": 0,
+    "command": "bash scripts/test-unit.sh",
+    "durationMs": 41930,
+    "servicesStarted": [
+      "postgres",
+      "rabbitmq"
+    ],
+    "details": [
+      "compose service db (postgres:16 in compose.yaml) has a local PostgreSQL server in its place, on 127.0.0.1:5432 with user app, database app, trust authentication; the Compose container did not run",
+      "compose service broker (rabbitmq:3.13 in compose.yaml) has a local RabbitMQ server in its place, on 127.0.0.1:5672 with user app, a password the report made for this run; the Compose container did not",
+      "`bash scripts/test-unit.sh`: exit 0, counts not read.",
+      "`bash scripts/test-integration.sh`: exit 0, counts not read.",
+      "`bash scripts/test-e2e.sh`: exit 0, counts not read."
+    ]
+  }
+}

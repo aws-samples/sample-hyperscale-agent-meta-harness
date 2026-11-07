@@ -1,0 +1,108 @@
+exit 0
+--- stdout
+setup.sh: set up the system on this machine: the backend in your own AWS account and the ham terminal app.
+
+The only tool you must already have is the AWS CLI, version 2 (plus git, or a zip download of this repository, to get setup.sh).
+Installing the client and the full setup need git on PATH. The full setup and `--update` also need a git clone; a zip download does not work for them.
+`--status`, `--doctor` and `--teardown` need neither git nor a clone. Setup uses the shell tools that ship with macOS and Linux.
+The local route (--build-on local) also needs cargo, cargo-zigbuild, zig, node and docker on PATH.
+
+Usage: ./setup.sh [options]
+       ./setup.sh --status | --doctor | --update | --teardown [options]
+
+The first question is "full (backend and client), or client only"; the default is the full setup.
+  --full          deploy the backend in your AWS account, then install and configure the client (creates AWS resources that cost money)
+  --client-only   install and configure the client for a backend that already exists (no AWS resource is created)
+  --yes never chooses the full setup by itself: a run with --yes and neither option, or with --from, --build or --endpoint, is a client-only setup.
+
+The full setup, step by step (a step that is already done is left alone, so you can run it again):
+  1. read your AWS identity, the account, the Region and the Availability Zones from the AWS CLI; refuse placeholders
+  2. show the account, Region, zone, source commit, the authority it grants and the cost items, and ask ONE question; after that nothing is asked
+     (for scripts: --yes --acknowledge-costs)
+  3. install the runner in your account: the CDK bootstrap stack when it is missing, and a small stack with a CodeBuild project and an encrypted,
+     versioned bucket, made with the AWS CLI alone
+  4. upload the git archive of your clean clone and a generated account file, build and deploy the backend and build the client and the operator tool
+     in your account
+  5. download the client and the operator tool from your own bucket, check the SHA-256 of each, install both, write the client's settings, run `ham models`,
+     `ham rules init`, `ham doctor`
+  6. the runner is removed after a successful setup (--keep-runner keeps it); print the endpoint, the phases, what stays, the teardown
+     command and the first command to run
+An interrupted setup attaches to the build it started when you run it again; it never starts a second one.
+
+Full-setup options:
+  --keep-runner   keep the runner stack and its bucket after a successful setup (the default removes them)
+  --acknowledge-costs  with --yes: accept the costs listed on the screen (without it, --yes stops with exit 4)
+  --preflight-only     read and report only: the account, the zone and the commit; create nothing
+  --build-on WHERE     runner (default: the CodeBuild runner in your account) or local (scripts/deploy.sh on this machine; you need cargo,
+                       cargo-zigbuild, zig, node and docker)
+  --account-id ID      the account you mean; setup stops with exit 7 when your credentials are for another one
+  --stage NAME         the stage (only direct is supported)
+  --azs N              the number of Availability Zones of the stage (only 1 is supported)
+  --invocation-logging MODE  read-only (default) or enable-and-restore: what the deploy may do with Bedrock invocation logging
+  --repo-name NAME     CodeCommit repository names in which a run may open a pull request, once the operator has allowed the repository. Use a name, a prefix ending in * (team-*), or * for every name.
+                       Repeat the option or separate entries with commas. Use up to 8 different entries. Default: hamh-e2e-*
+
+Later life of the system (they read or change this deployment only; --profile, --region and --account-id select it):
+  --status        what is deployed, which build runs, what the last setup did, whether the client fits the stage
+  --doctor        PASS, WARN and FAIL checks of the AWS CLI, the stage, the endpoint, a runner left behind and the client's own doctor
+  --update        build and deploy a revision of this clone (HEAD, or the full commit id of --revision).
+                  Active runs stop ./setup.sh --update with exit 7 before anything is installed or built.
+                  --allow-active-runs skips that check; the build then refuses only an update that changes the worker runtime.
+                  An update takes about 20 to 25 minutes when it reuses the Cline binary, and about 21 to 27 minutes more when it rebuilds it.
+  --revision ID        the full 40-digit commit id to deploy with --update (it must be in this clone)
+  --teardown      delete the stage and the runner; --yes --acknowledge-teardown --account-id ID skips the question. AgentCore network interfaces that hold
+                  the network stack are retained and listed as RETAINED, never counted as zero resources; AWS frees them up to 8 hours later.
+                  One plan covers every stage found, under the current names and under the previous names; --only legacy or --only current covers one of them
+
+Getting a client without the full setup (the project publishes no ham binary; the full setup builds one in your account):
+  --from PATH     a directory with `ham` and SHA256SUMS (the output of scripts/build-macos-driver.sh),
+                  or a single ham file together with --sha256. A checksum that does not match is refused.
+  --sha256 HEX    the SHA-256 of the single file given with --from
+  --build         compile ham on this machine: cargo build --release --locked -p ham --bin ham
+                  (run from a checkout of the repository).
+  With none of these, setup.sh uses the ham already in PREFIX/bin or on your PATH.
+
+Options:
+  --prefix DIR    install to DIR/bin/ham (default: $HOME/.local, so ~/.local/bin/ham)
+  --endpoint URL  the stage URL: the V1ApiUrl output of the CloudFormation stack hamh-direct-control
+  --profile NAME  AWS profile: static keys, credential_process, IAM Identity Center (SSO) or assume-role
+                  (SSO and assume-role profiles need the AWS CLI, version 2.9.0 or later)
+  --region NAME   AWS Region, when the profile or AWS_REGION does not name one (the stage deploys in us-east-1 or us-west-2)
+  --default-repo REPO  the repository your terminal app preselects: cc:hamh-e2e-NAME or cc:NAME covered by your --repo-name rule. Optional. A run without one returns a zip.
+  --yes, -y       do not ask before making changes
+  --no-input      ask nothing at all, not even the confirmation (add --yes or --dry-run)
+  --dry-run       show what would happen; create and write nothing and run no ham command (AWS is only read)
+  --verbose       show the whole log of the build while it runs
+  --help, -h      show this text
+
+Questions: on a terminal, setup.sh asks one numbered question at a time. The numbers follow the order in your run.
+You skip each question when you give its option. You first choose the full setup or the client only.
+You skip this first question with --full or --client-only. For the client-only setup, you next give the stage endpoint.
+The answer "deploy one for me" switches you to the full setup. You do not get this answer when you type --client-only.
+For the client-only setup, you then say where ham comes from, unless ham is installed or you gave --from, --sha256 or --build.
+You then choose the AWS profile. You next choose the Region. Both setups ask these questions.
+For the client-only setup, you then choose an optional default repository. Setup asks this only when an endpoint is known.
+For the full setup, you then choose where to build the backend.
+You get the build question only when your machine has cargo, cargo-zigbuild, zig, node and docker.
+You get at most six questions.
+Press Enter to take the answer in [brackets]; type q to stop. Nothing is created or written until you confirm the plan.
+--yes, --no-input and a missing terminal ask nothing.
+
+What the full setup grants: deployment code runs with the authority of your credentials in your account (IAM roles, a VPC, a firewall and the
+rest of the stage are created), through a runner. The runner role writes its logs, the results and client files of its builds, the objects and
+parameters of the stage and its worker runtime endpoints, and starts the stage's image-build project; a permissions boundary limits that role
+itself, but it can assume the CDK roles, and their CloudFormation execution role holds AdministratorAccess. Treat the runner as an administrator
+of the account for 12 hours after each install (HAMH_SETUP_AUTHORITY_HOURS sets 5 to 72); after that its role cannot assume them, whether or not
+it is still installed. Only you and the runner role may write the runner's bucket, and anyone who may start a build of its CodeBuild project
+(codebuild:StartBuild) can act as the runner role until then. The CDK bootstrap stack and its roles, which trust the whole account, stay in the
+account after the runner is removed, because updates need them. Use a dedicated sandbox account.
+
+SSO and assume-role profiles: ham asks the AWS CLI (`aws configure export-credentials`) for the credentials, so the AWS CLI must be on your
+PATH, or named by the environment variable HAMH_AWS_CLI. Before a session with an SSO profile run: aws sso login --profile NAME
+
+Without --endpoint, a client-only setup writes no endpoint and skips `ham doctor`.
+Exit codes: 0 done; 1 a prerequisite or step failed; 2 bad usage; 3 installed, but `ham doctor` found a problem; 4 you cancelled or a
+confirmation is missing; 5 bootstrap, deploy or initialization failed; 6 an operation is still running and safe to resume (run setup.sh
+again to attach); 7 a conflicting operation, or a source or configuration mismatch; 8 cleanup is incomplete.
+setup.sh refuses to run as root, writes no secret and edits no shell startup file.
+--- stderr

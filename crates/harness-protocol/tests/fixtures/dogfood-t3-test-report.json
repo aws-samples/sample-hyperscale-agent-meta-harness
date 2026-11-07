@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "runId": "01M5HZD83QRNP7H7NN9S4KYJK2",
+  "headSha": "20f65bb6b577ea61b6b783af7f6fc3e16365a969",
+  "status": "timed_out",
+  "reason": "a command was stopped at the report time limit",
+  "startedAt": "2026-10-22T14:58:25Z",
+  "durationMs": 307111,
+  "steps": [
+    {
+      "role": "test",
+      "source": "lifecycle_log",
+      "command": "cd scripts/tests && python3 -m unittest test_node_sh.RefresherCleanupCase",
+      "exitCode": 0,
+      "durationMs": 6488,
+      "counts": {
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0
+      },
+      "countsFrom": "unittest",
+      "outputTail": "........\n----------------------------------------------------------------------\nRan 8 tests in 6.391s\n\nOK\n",
+      "logged": {
+        "exitCode": 1,
+        "passed": 3,
+        "failed": 5
+      }
+    },
+    {
+      "role": "test",
+      "source": "lifecycle_log",
+      "command": "cd scripts/tests && python3 -m unittest test_docs_set test_docs_setup test_dox_lint test_internal_names test_password_scan test_lifecycle_goal_card test_lifecycle_pack test_lifecycle_lock test_lifecycle_check test_remote_job test_aws_target",
+      "timedOut": true,
+      "durationMs": 300007,
+      "outputTail": "..........................................................................................................................................................................................................s................................ss...........................................................................................................................................................................................................................................................................................................................................usage: python3 -m unittest [-h] [--root ROOT] [--write] [--version VERSION]\n                           [--backfill-history]\npython3 -m unittest: error: --backfill-history stands alone\n..............................................................................................................",
+      "logged": {
+        "exitCode": 0,
+        "passed": 713,
+        "failed": 0
+      }
+    }
+  ],
+  "summary": {
+    "status": "timed_out",
+    "reason": "a command was stopped at the report time limit",
+    "stepsRun": 1,
+    "allExitZero": false,
+    "failedCommand": "cd scripts/tests && python3 -m unittest test_docs_set test_docs_setup test_dox_lint test_internal_names test_password_scan test_lifecycle_goal_card test_lifecycle_pack test_lifecycle_lock test_lifecycle_check test_remote_job test_aws_target",
+    "command": "cd scripts/tests && python3 -m unittest test_node_sh.RefresherCleanupCase",
+    "durationMs": 307111
+  }
+}

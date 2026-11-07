@@ -1,0 +1,34 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "text": "A check fails; fixing.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "edit": {
+        "path": "src/calc.py",
+        "text": "\"\"\"Small calculator used by the E2E fixture.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef percent_change(a, b):\n    \"\"\"Percent change from a to b; raises ValueError when a is 0.\"\"\"\n    # fixed in round 2\n    if a == 0:\n        raise ValueError(\"percent_change is undefined for a == 0\")\n    return (b - a) / a * 100.0\n"
+      },
+      "iterations": 4
+    },
+    {
+      "text": "All checks pass now.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 2
+    },
+    {
+      "text": "Goal marked complete.",
+      "complete": "fixed and checked",
+      "iterations": 2
+    }
+  ]
+}

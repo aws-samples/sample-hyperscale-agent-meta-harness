@@ -1,0 +1,7 @@
+# Bandit configuration. It holds one exclude of one named file and nothing else: no skips line (that would hide a rule in the whole tree), no tests
+# line, no second exclude. The path is the plain path without a leading dot and slash. bandit stops with exit 2 when the tree holds a second .bandit file,
+# so this is the only one.
+[bandit]
+# B404, B603, B607: scripts/lib/agentd_build.py is a build-time helper (the worker image build, deploy and the fake-engine test step), not product
+# runtime logic. It runs cargo, zig and git through argument lists, never a shell.
+exclude = scripts/lib/agentd_build.py

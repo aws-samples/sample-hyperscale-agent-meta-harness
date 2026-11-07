@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "selector": "HAMH_AWS_PROFILE",
+  "accounts": [
+    {
+      "account": "123456789012",
+      "region": "us-east-1",
+      "profile": "my-profile",
+      "role": "active",
+      "azs": {"direct": ["us-east-1a"]},
+      "azIds": {"direct": ["use1-az1"]},
+      "invocationLogging": "read-only"
+    }
+  ]
+}

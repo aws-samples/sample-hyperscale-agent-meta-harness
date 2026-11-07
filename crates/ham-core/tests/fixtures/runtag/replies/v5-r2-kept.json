@@ -1,0 +1,187 @@
+{
+  "b01": [
+    "topic:nightly-export",
+    "topic:csv-export",
+    "tech:aws-lambda",
+    "tech:csv"
+  ],
+  "b02": [
+    "project:billing-export",
+    "tech:aws-lambda",
+    "tech:s3",
+    "topic:csv-export"
+  ],
+  "b03": [
+    "project:billing-export",
+    "topic:retry-backoff",
+    "tech:s3",
+    "tech:python"
+  ],
+  "b04": [
+    "project:billing-export",
+    "topic:backfill",
+    "tech:dynamodb",
+    "tech:csv",
+    "tech:python"
+  ],
+  "b05": [
+    "topic:tax-rounding",
+    "tech:python"
+  ],
+  "b06": [
+    "topic:nightly-export",
+    "tech:aws-lambda"
+  ],
+  "b07": [
+    "project:billing-export",
+    "topic:csv-export",
+    "tech:parquet"
+  ],
+  "b08": [
+    "project:billing-export",
+    "topic:nightly-export",
+    "topic:csv-export"
+  ],
+  "b09": [
+    "topic:invoice-import",
+    "topic:sap-export",
+    "tech:sap"
+  ],
+  "b10": [
+    "topic:nightly-export",
+    "topic:csv-export"
+  ],
+  "i01": [
+    "project:docs-site",
+    "tech:typescript",
+    "tech:aws-cdk",
+    "tech:s3",
+    "tech:cloudfront",
+    "tech:route-53"
+  ],
+  "i02": [
+    "project:docs-site",
+    "tech:aws-cdk",
+    "topic:ci-build"
+  ],
+  "i03": [
+    "topic:iam-policy",
+    "tech:aws-lambda",
+    "tech:s3",
+    "tech:dynamodb"
+  ],
+  "i04": [
+    "topic:state-migration",
+    "tech:terraform",
+    "tech:s3"
+  ],
+  "l01": [
+    "topic:tax-rounding",
+    "topic:unit-tests"
+  ],
+  "l02": [
+    "topic:rate-limiting",
+    "topic:order-service",
+    "topic:unit-tests"
+  ],
+  "l03": [
+    "topic:rate-limiting",
+    "topic:rest-api"
+  ],
+  "n01": [
+    "tech:react",
+    "topic:todo-app",
+    "topic:local-storage"
+  ],
+  "n02": [
+    "topic:dark-mode",
+    "topic:settings-page",
+    "topic:local-storage",
+    "topic:todo-app"
+  ],
+  "n03": [
+    "tech:python",
+    "topic:nginx-logs",
+    "topic:log-parsing"
+  ],
+  "p01": [
+    "project:photo-sorter",
+    "topic:photo-rename",
+    "tech:go",
+    "tech:exif"
+  ],
+  "p02": [
+    "project:photo-sorter",
+    "topic:photo-rename"
+  ],
+  "p03": [
+    "project:photo-sorter",
+    "topic:photo-rename"
+  ],
+  "p04": [
+    "project:photo-sorter",
+    "topic:ci-build",
+    "tech:github-actions"
+  ],
+  "p05": [
+    "project:photo-sorter",
+    "topic:documentation"
+  ],
+  "p06": [
+    "project:photo-sorter",
+    "topic:photo-rename",
+    "tech:exif"
+  ],
+  "p07": [
+    "project:photo-sorter",
+    "topic:dependency-upgrade"
+  ],
+  "s01": [
+    "project:shop-cart",
+    "topic:null-pointer",
+    "tech:java"
+  ],
+  "s02": [
+    "tech:java",
+    "topic:rename-class",
+    "tech:spring"
+  ],
+  "s03": [
+    "topic:rate-limiting",
+    "topic:token-bucket",
+    "topic:order-service",
+    "topic:rest-api"
+  ],
+  "s04": [
+    "topic:rest-api",
+    "topic:order-service"
+  ],
+  "s05": [
+    "tech:spring",
+    "tech:java",
+    "topic:dependency-upgrade"
+  ],
+  "s06": [
+    "project:shop-cart",
+    "topic:checkout-flow",
+    "topic:integration-tests",
+    "tech:testcontainers",
+    "tech:postgresql"
+  ],
+  "s07": [
+    "project:shop-cart",
+    "topic:coupon-gift-card",
+    "topic:cart-total"
+  ],
+  "s08": [
+    "project:shop-cart",
+    "topic:logging",
+    "topic:request-id",
+    "topic:rest-api"
+  ],
+  "v01": [],
+  "v02": [],
+  "v03": [
+    "topic:documentation"
+  ]
+}

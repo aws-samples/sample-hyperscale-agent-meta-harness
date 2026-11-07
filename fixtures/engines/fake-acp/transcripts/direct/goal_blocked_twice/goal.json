@@ -1,0 +1,20 @@
+{
+  "transcripts": "writes_files",
+  "repeat_last": true,
+  "rounds": [
+    {
+      "text": "Tried three fixes.\nBLOCKED: need the API key",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 6
+    },
+    {
+      "text": "BLOCKED: need the API key",
+      "iterations": 1
+    }
+  ]
+}

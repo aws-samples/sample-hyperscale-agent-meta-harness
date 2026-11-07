@@ -1,0 +1,1276 @@
+{
+ "schemaVersion": 1,
+ "about": "The live table behind the `reasoning` rows of models.json. `route` cells: one Converse call on the route with the request fields the pinned engine sends (Claude: thinking adaptive plus output_config.effort; GPT-6.1 Sol and GPT-6 Astra: reasoning.effort; GLM 5.3: reasoning_effort), at each word the route might take. `launch` cells: one coding turn through the pinned engine launched with `--thinking <level>`; `wire` is the word the engine sent. `hardRuns`: one no-tool counting prompt per model and level, to see whether the engine's own idle limit (`idleLimitS`, no stream event for that long) ends the turn. A row of models.json lists as `accepted` the launch levels whose launch cell is accepted; `default` is chosen from the hard runs. crates/ham-core/tests/model_reasoning.rs holds the two together.",
+ "recordedAt": "2026-10-27T16:03:59Z",
+ "engine": "Cline 3.0.71 series with the 15 patches of engine/cline (tree f8990b674540)",
+ "idleLimitS": 360.4,
+ "cells": [
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "low",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "medium",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "high",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "xhigh",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "max",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "minimal",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `minimal`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "none",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `none`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "low",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "medium",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "high",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "xhigh",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "max",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "minimal",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `minimal`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "opus",
+   "route": "global.anthropic.claude-opus-5-5",
+   "level": "none",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `none`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "low",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "medium",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "high",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "xhigh",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "max",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "minimal",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `minimal`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "none",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `none`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "low",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "medium",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "high",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "xhigh",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "max",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "minimal",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `minimal`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "sonnet",
+   "route": "us.anthropic.claude-sonnet-5-5",
+   "level": "none",
+   "sent": {
+    "thinking": {
+     "type": "adaptive"
+    },
+    "output_config": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "unknown variant `none`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'us.openai.gpt-6.1-sol' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'us.openai.gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'global.openai.gpt-6.1-sol' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.1-sol",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'global.openai.gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'us.openai.gpt-6-astra' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'us.openai.gpt-6-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'global.openai.gpt-6-astra' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6-astra",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'global.openai.gpt-6-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "low",
+   "sent": {
+    "reasoning_effort": "low"
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "medium",
+   "sent": {
+    "reasoning_effort": "medium"
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "high",
+   "sent": {
+    "reasoning_effort": "high"
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "xhigh",
+   "sent": {
+    "reasoning_effort": "xhigh"
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "max",
+   "sent": {
+    "reasoning_effort": "max"
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "minimal",
+   "sent": {
+    "reasoning_effort": "minimal"
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'reasoning_effort' does not support 'minimal' with this model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "none",
+   "sent": {
+    "reasoning_effort": "none"
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with this model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "launch",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 4.8 s"
+  },
+  {
+   "kind": "launch",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 5.6 s"
+  },
+  {
+   "kind": "launch",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 7.4 s"
+  },
+  {
+   "kind": "launch",
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 18.1 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 6.8 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 4.2 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 11.1 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 21.9 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 8.8 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 12.7 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 9.7 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 20.3 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 9.0 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 7.2 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 5.2 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 21.0 s"
+  },
+  {
+   "kind": "launch",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 7.7 s"
+  },
+  {
+   "kind": "launch",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 15.1 s"
+  },
+  {
+   "kind": "launch",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 3.5 s"
+  },
+  {
+   "kind": "launch",
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "xhigh",
+   "wire": "xhigh",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 4.1 s"
+  }
+ ],
+ "hardRuns": [
+  {
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "high",
+   "finished": true,
+   "wallS": 169.8,
+   "longestSilentGapS": 154.9,
+   "events": 295,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "opus",
+   "route": "us.anthropic.claude-opus-5-5",
+   "level": "xhigh",
+   "finished": false,
+   "wallS": 361.9,
+   "longestSilentGapS": 361.9,
+   "events": 2,
+   "idleLimitHit": true,
+   "end": "error:-32603",
+   "detail": "Internal error: The operation timed out."
+  },
+  {
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "high",
+   "finished": true,
+   "wallS": 24.7,
+   "longestSilentGapS": 18.1,
+   "events": 185,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sonnet",
+   "route": "global.anthropic.claude-sonnet-5-5",
+   "level": "xhigh",
+   "finished": false,
+   "wallS": 361.9,
+   "longestSilentGapS": 361.9,
+   "events": 2,
+   "idleLimitHit": true,
+   "end": "error:-32603",
+   "detail": "Internal error: The operation timed out."
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "high",
+   "finished": true,
+   "wallS": 232.0,
+   "longestSilentGapS": 209.9,
+   "events": 1471,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.1-sol",
+   "level": "xhigh",
+   "finished": true,
+   "wallS": 597.3,
+   "longestSilentGapS": 571.8,
+   "events": 1635,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "high",
+   "finished": true,
+   "wallS": 213.6,
+   "longestSilentGapS": 195.3,
+   "events": 1617,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6-astra",
+   "level": "xhigh",
+   "finished": true,
+   "wallS": 499.1,
+   "longestSilentGapS": 479.4,
+   "events": 1718,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "high",
+   "finished": true,
+   "wallS": 1087.5,
+   "longestSilentGapS": 5.1,
+   "events": 138415,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "glm",
+   "route": "us.zai.glm-5.3",
+   "level": "xhigh",
+   "finished": false,
+   "wallS": 958.1,
+   "longestSilentGapS": 2.9,
+   "events": 120121,
+   "idleLimitHit": false,
+   "end": "error:-32603",
+   "detail": "Internal error: The system encountered an unexpected error during processing. Try your request again."
+  }
+ ],
+ "earlierRuns": {
+  "recordedAt": "2026-10-20",
+  "about": "Hard no-tool prompt, same pinned engine, from the engine-settings probe of the configuration program; counts per model and level (the longest silent gap of a finished run is in the sweep report).",
+  "rows": [
+   {
+    "model": "sonnet",
+    "level": "xhigh",
+    "runs": 3,
+    "finished": 0,
+    "idleLimitHits": 3
+   },
+   {
+    "model": "opus",
+    "level": "xhigh",
+    "runs": 3,
+    "finished": 0,
+    "idleLimitHits": 3
+   },
+   {
+    "model": "sol",
+    "level": "xhigh",
+    "runs": 3,
+    "finished": 3,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "astra",
+    "level": "xhigh",
+    "runs": 3,
+    "finished": 3,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "glm",
+    "level": "xhigh",
+    "runs": 3,
+    "finished": 2,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "sonnet",
+    "level": "high",
+    "runs": 2,
+    "finished": 2,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "opus",
+    "level": "high",
+    "runs": 2,
+    "finished": 2,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "sol",
+    "level": "high",
+    "runs": 2,
+    "finished": 2,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "astra",
+    "level": "high",
+    "runs": 2,
+    "finished": 2,
+    "idleLimitHits": 0
+   },
+   {
+    "model": "glm",
+    "level": "high",
+    "runs": 2,
+    "finished": 2,
+    "idleLimitHits": 0
+   }
+  ]
+ }
+}

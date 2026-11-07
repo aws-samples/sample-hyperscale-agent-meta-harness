@@ -1,0 +1,23 @@
+# The pin of the scanner kit's rules package. Owned by security/AGENTS.md; the kit that installs the package is the script
+# lifecycle/pack/.agents/skills/lifecycle-check/scripts/scanner_kit.py of the lifecycle pack, and scripts/scanner_kit_rules.py builds and publishes it.
+# The rules are the YAML files of one commit of github.com/semgrep/semgrep-rules (Semgrep Rules License v1.0): third-party content that this repository
+# never holds.
+schema = "1"
+name = "hamh-semgrep-rules"
+version = "1.0.0"
+license = "LicenseRef-Semgrep-Rules-License-1.0"
+description = "Pinned python and bash rules of semgrep-rules for the ham scanner kit"
+
+[source]
+url = "https://github.com/semgrep/semgrep-rules.git"
+commit = "12f2eb5b92f2109a16c256a15f8b394f72f9a340"
+tree = "968f27c76056c484343f814fbc259d9a5e3f5e2b"
+
+[rules]
+folders = ["python", "bash"]
+files = 343
+bytes = 645059
+files_sha256 = "911fdc3474d971de350b69f4cd0f510eeac111a40e5bea02b84cec547f18f24d"
+
+[semgrep]
+version = "1.78.0"

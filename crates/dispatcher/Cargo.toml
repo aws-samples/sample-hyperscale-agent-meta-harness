@@ -1,0 +1,27 @@
+[package]
+name = "dispatcher"
+description = "Dispatcher library: bind and mint worker sessions, pin the endpoint, invoke and stop AgentCore sessions; the run-session Lambda builds on it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+harness-protocol.workspace = true
+worker-api.workspace = true
+aws-sdk-bedrockagentcore.workspace = true
+getrandom.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+aws-smithy-types.workspace = true
+http.workspace = true
+proptest.workspace = true

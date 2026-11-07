@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "selector": "HAMH_AWS_PROFILE",
+  "accounts": [
+    {
+      "account": "{account}",
+      "region": "us-west-2",
+      "profile": "hamh-setup",
+      "role": "active",
+      "azs": {"live": ["us-west-2b", "us-west-2a", "us-west-2c"], "drill": ["us-west-2b"], "direct": ["us-west-2b"]},
+      "azIds": {"live": ["usw2-az1", "usw2-az2", "usw2-az3"], "drill": ["usw2-az1"], "direct": ["usw2-az1"]},
+      "invocationLogging": "read-only"
+    }
+  ]
+}

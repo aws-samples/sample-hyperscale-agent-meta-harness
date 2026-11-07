@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A9D3F7HK2NP8Q4RV6XZ0YB",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 530,
+  "ts": "2026-10-15T14:03:52Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "needs-input",
+      "text": "Needs your input: The provider rejected the saved conversation (ham new-session or ham finish)",
+      "requestId": "01M5A9D3F7HK2NP8Q4RV6XZ0YB",
+      "n": 2,
+      "reason": "replay_rejected",
+      "title": "The provider rejected the saved conversation",
+      "stopOutcome": "stopped_provider_error",
+      "evidence": {
+        "attempts": 5,
+        "toolCalls": 77,
+        "filesChanged": 6,
+        "identicalCalls": null,
+        "failedTurns": null,
+        "lastError": "engine error -32603: Internal error: The format of the value at messages.7.content.0.toolUse.input is invalid. Provide a json object for the field and try again.",
+        "runS": 1604,
+        "sessions": 2
+      },
+      "lastMessage": null,
+      "files": [
+        "src/main.rs",
+        "src/lib.rs"
+      ],
+      "filesTotal": 2,
+      "blocking": true,
+      "options": [
+        "continue_with_prompt",
+        "new_session_with_prompt",
+        "try_model",
+        "finish"
+      ],
+      "models": [
+        {
+          "id": "us.anthropic.claude-opus-5-5",
+          "name": "Claude Opus 5.5",
+          "contextTokens": 1000000
+        },
+        {
+          "id": "global.anthropic.claude-sonnet-5-5",
+          "name": "Claude Sonnet 5.5",
+          "contextTokens": 1000000
+        }
+      ],
+      "recommended": null,
+      "canContinue": true,
+      "waitS": 1800,
+      "expiresAt": "2026-10-15T14:33:52Z"
+    }
+  }
+}

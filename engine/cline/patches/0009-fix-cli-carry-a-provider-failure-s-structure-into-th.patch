@@ -1,0 +1,2312 @@
+From 90f07f61880c12ee69700653b4cff8b5d6993881 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Wed, 30 Sep 2026 22:11:01 +0000
+Subject: [PATCH 09/11] fix(cli): carry a provider failure's structure into the
+ ACP error data
+
+Every failed Cline turn ended session/prompt with JSON-RPC -32603 and data {message}
+alone, so a harness that must tell a throttle from an outage from a model that is not
+ready could only match text. The AWS exception name, HTTP status, retryability,
+retry-after and attempt count were all known where the error was raised and dropped by
+the time it was flattened to a string.
+
+describeProviderError (llms) reads them from the error the AI SDK raised: the exception
+name from x-amzn-errortype, a JSON __type or an AWS SDK style name; the status from the
+APICallError or $metadata; isRetryable from the SDK flag, the status, or the exception
+name; retry-after from retry-after-ms or retry-after (seconds or an HTTP date); attempts
+from a RetryError; and a network code (ECONNRESET, ETIMEDOUT, Bun's ConnectionClosed).
+Nothing is inferred from message text and no status is synthesised.
+
+The model boundary carries the result on the finish event as errorDetails (with a phase:
+request or stream). The agent runtime keeps it on the error the run fails with
+(ProviderTurnError, ContextWindowOverflowError), so it is attached by identity and never
+to an unrelated failure; an error thrown from prepareTurn (the compaction summary call)
+carries the details of the finish event it came from, or is described by its own AI SDK
+fields, with phase compaction. run-failed and the public error event carry it, and
+acpAgent puts it in the JSON-RPC error data next to the unchanged message: errorName,
+statusCode, isRetryable, retryAfterS, attempts, code, stopReason, phase, and errorClass
+when it is not unknown.
+
+stopReason model_context_window_exceeded (the AI SDK's rawFinishReason) ended the turn as
+a clean end_turn, so a full window was invisible over ACP. It now ends the turn as an
+error, errorName ModelContextWindowExceeded, and the overflow recovery does not replay it:
+its text has already reached the client.
+
+A bun patch for @ai-sdk/amazon-bedrock 5.0.62 keeps the exception type of a ConverseStream
+exception frame inside an HTTP 200 as __type on the error part; the provider dropped it.
+
+Two existing gateway assertions gain the errorDetails their 400 errors now carry.
+---
+ apps/cli/src/acp/acpAgent.error-data.test.ts  | 220 +++++++++++
+ apps/cli/src/acp/acpAgent.ts                  |  70 +++-
+ .../src/agent-runtime.error-details.test.ts   | 246 ++++++++++++
+ sdk/packages/agents/src/agent-runtime.ts      | 167 ++++++--
+ ...untime-event-adapter.error-details.test.ts |  52 +++
+ .../orchestration/runtime-event-adapter.ts    |   1 +
+ sdk/packages/llms/src/index.ts                |   2 +
+ sdk/packages/llms/src/providers.ts            |   2 +
+ .../providers/ai-sdk.error-details.test.ts    | 176 +++++++++
+ sdk/packages/llms/src/providers/ai-sdk.ts     |  65 ++++
+ .../bedrock-exception-frames.test.ts          | 136 +++++++
+ .../src/providers/error-classification.ts     | 291 +++++++++++++-
+ .../llms/src/providers/error-details.test.ts  | 357 ++++++++++++++++++
+ .../llms/src/providers/gateway.test.ts        |   2 +
+ sdk/packages/shared/src/agent.ts              |  34 ++
+ sdk/packages/shared/src/agents/types.ts       |   3 +
+ 16 files changed, 1787 insertions(+), 37 deletions(-)
+ create mode 100644 apps/cli/src/acp/acpAgent.error-data.test.ts
+ create mode 100644 sdk/packages/agents/src/agent-runtime.error-details.test.ts
+ create mode 100644 sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.error-details.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/ai-sdk.error-details.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/bedrock-exception-frames.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/error-details.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.error-data.test.ts b/apps/cli/src/acp/acpAgent.error-data.test.ts
+new file mode 100644
+index 0000000..96af368
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.error-data.test.ts
+@@ -0,0 +1,220 @@
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import type { AgentSideConnection } from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const mocks = vi.hoisted(() => ({
++	core: undefined as unknown,
++	listener: undefined as ((event: unknown) => void) | undefined,
++}));
++
++vi.mock("../session/session", () => ({
++	createCliCore: vi.fn(async () => mocks.core),
++}));
++vi.mock("../runtime/session-events", () => ({
++	subscribeToAgentEvents: (_core: unknown, listener: (event: unknown) => void) => {
++		mocks.listener = listener;
++		return () => {};
++	},
++}));
++vi.mock("../runtime/prompt", () => ({
++	resolveSystemPrompt: vi.fn(async () => "PROMPT"),
++}));
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => ({
++				"us.anthropic.claude-sonnet-5": { name: "Claude Sonnet 5" },
++			})),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "us.anthropic.claude-sonnet-5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++
++// Harness patch 0011: a failed turn ends session/prompt with the JSON-RPC error whose `data` carries
++// the structure of the provider failure (AWS exception name, HTTP status, retryability, retry-after,
++// attempts) next to the unchanged `message`. Before the patch `data` was `{message}` only, so the
++// cline-agentcore-harness failover classifier had nothing to read (evidence
++// 2026-09-30-engine-fault-probe.md, "ACP error shape").
++
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++/** A core whose send() reports `event` as the run's terminal error and resolves with an error finish. */
++function coreFailingWith(event: Record<string, unknown>) {
++	return {
++		start: vi.fn(async () => ({ sessionId: "core-session" })),
++		readMessages: vi.fn(async () => []),
++		dispose: vi.fn(async () => {}),
++		abort: vi.fn(async () => {}),
++		getAccumulatedUsage: vi.fn(async () => undefined),
++		send: vi.fn(async () => {
++			mocks.listener?.({ recoverable: false, iteration: 1, ...event });
++			return {
++				text: "",
++				usage: { inputTokens: 0, outputTokens: 0 },
++				messages: [],
++				toolCalls: [],
++				iterations: 1,
++				finishReason: "error",
++				model: { id: "us.anthropic.claude-sonnet-5", provider: "bedrock" },
++				startedAt: new Date(0),
++				endedAt: new Date(0),
++				durationMs: 0,
++			};
++		}),
++	};
++}
++
++async function promptError(event: Record<string, unknown>) {
++	mocks.core = coreFailingWith(event);
++	const agent = new AcpAgent(conn);
++	const created = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
++	try {
++		await agent.prompt({
++			sessionId: created.sessionId,
++			prompt: [{ type: "text", text: "go" }],
++		});
++	} catch (error) {
++		return error as { code: number; message: string; data: unknown };
++	}
++	throw new Error("prompt did not fail");
++}
++
++describe("ACP prompt error data", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		const dir = mkdtempSync(join(tmpdir(), "acp-error-data-"));
++		process.env = { ...saved };
++		process.env.HOME = join(dir, "home");
++		process.env.CLINE_DATA_DIR = join(dir, "data");
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = "us.anthropic.claude-sonnet-5";
++		process.env.CLINE_API_KEY = "unused";
++		mocks.listener = undefined;
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("carries the AWS exception name, status, retryability and attempts of an exhausted 503", async () => {
++		const text = "The service isn't currently available. Retry your request.";
++		const error = await promptError({
++			type: "error",
++			error: new Error(text),
++			errorClass: "unknown",
++			errorDetails: {
++				errorName: "ServiceUnavailableException",
++				statusCode: 503,
++				isRetryable: true,
++				attempts: 6,
++			},
++		});
++		expect(error.code).toBe(-32603);
++		expect(error.message).toBe(`Internal error: ${text}`);
++		expect(error.data).toEqual({
++			message: text,
++			errorName: "ServiceUnavailableException",
++			statusCode: 503,
++			isRetryable: true,
++			attempts: 6,
++		});
++	});
++
++	it("carries retry-after seconds and the network code of a connection failure", async () => {
++		const throttled = await promptError({
++			type: "error",
++			error: new Error("Too many requests, please wait before trying again."),
++			errorDetails: {
++				errorName: "ThrottlingException",
++				statusCode: 429,
++				isRetryable: true,
++				retryAfterS: 5,
++				attempts: 6,
++			},
++		});
++		expect(throttled.data).toMatchObject({
++			errorName: "ThrottlingException",
++			statusCode: 429,
++			retryAfterS: 5,
++		});
++		const reset = await promptError({
++			type: "error",
++			error: new Error("Cannot connect to API: read ECONNRESET"),
++			errorDetails: { code: "ECONNRESET", isRetryable: true, attempts: 6 },
++		});
++		expect(reset.data).toEqual({
++			message: "Cannot connect to API: read ECONNRESET",
++			code: "ECONNRESET",
++			isRetryable: true,
++			attempts: 6,
++		});
++	});
++
++	it("names a context-window stop reason and its class", async () => {
++		const error = await promptError({
++			type: "error",
++			error: new Error(
++				"The conversation still exceeds the model's context window after compacting it.",
++			),
++			errorClass: "context_window_exceeded",
++			errorDetails: {
++				errorName: "ModelContextWindowExceeded",
++				stopReason: "model_context_window_exceeded",
++				isRetryable: false,
++			},
++		});
++		expect(error.code).toBe(-32603);
++		expect(error.data).toEqual({
++			message:
++				"The conversation still exceeds the model's context window after compacting it.",
++			errorName: "ModelContextWindowExceeded",
++			stopReason: "model_context_window_exceeded",
++			isRetryable: false,
++			errorClass: "context_window_exceeded",
++		});
++	});
++
++	it("keeps data to the message when the failure has no structure", async () => {
++		const error = await promptError({
++			type: "error",
++			error: new Error("upstream failed"),
++			errorClass: "unknown",
++		});
++		expect(error.code).toBe(-32603);
++		expect(error.data).toEqual({ message: "upstream failed" });
++	});
++
++	it("puts the status of an authentication failure in the auth-required error too", async () => {
++		const error = await promptError({
++			type: "error",
++			error: new Error("Invalid API key (401 Unauthorized)"),
++			errorClass: "auth",
++			errorDetails: {
++				errorName: "AccessDeniedException",
++				statusCode: 403,
++				isRetryable: false,
++			},
++		});
++		expect(error.code).toBe(-32000);
++		expect(error.data).toMatchObject({
++			errorName: "AccessDeniedException",
++			statusCode: 403,
++			isRetryable: false,
++			errorClass: "auth",
++		});
++	});
++});
+diff --git a/apps/cli/src/acp/acpAgent.ts b/apps/cli/src/acp/acpAgent.ts
+index 5c04e86..0e068a3 100644
+--- a/apps/cli/src/acp/acpAgent.ts
++++ b/apps/cli/src/acp/acpAgent.ts
+@@ -31,7 +31,12 @@ import {
+ 	ProviderSettingsManager,
+ 	SessionSource,
+ } from "@cline/core";
+-import { isLikelyAuthError, type MessageWithMetadata } from "@cline/shared";
++import {
++	isLikelyAuthError,
++	type MessageWithMetadata,
++	type ProviderErrorClass,
++	type ProviderErrorDetails,
++} from "@cline/shared";
+ import { getPersistedProviderApiKey } from "../commands/auth";
+ import { resolveSystemPrompt } from "../runtime/prompt";
+ import { subscribeToAgentEvents } from "../runtime/session-events";
+@@ -106,6 +111,11 @@ interface SessionState {
+ 	 * turn into an error response.
+ 	 */
+ 	fatalError?: Error;
++	/** Classification and structure of `fatalError` when it was a provider failure (patch 0011). */
++	fatalErrorInfo?: {
++		errorClass?: ProviderErrorClass;
++		details?: ProviderErrorDetails;
++	};
+ 	/** Messages to inject into the next session manager for conversation continuity. */
+ 	pendingInitialMessages?: MessageWithMetadata[];
+ }
+@@ -366,6 +376,7 @@ export class AcpAgent implements Agent {
+ 		const abortController = new AbortController();
+ 		session.abortController = abortController;
+ 		session.fatalError = undefined;
++		session.fatalErrorInfo = undefined;
+ 
+ 		// If cancel() was already called before prompt() started, bail early.
+ 		if (abortController.signal.aborted) {
+@@ -440,9 +451,11 @@ export class AcpAgent implements Agent {
+ 		// so clients don't show cancellations as errors.
+ 		if (stopReason !== "cancelled") {
+ 			const fatalError = session.fatalError;
++			const fatalErrorInfo = session.fatalErrorInfo;
+ 			session.fatalError = undefined;
++			session.fatalErrorInfo = undefined;
+ 			if (fatalError) {
+-				throw toAcpPromptError(fatalError);
++				throw toAcpPromptError(fatalError, fatalErrorInfo);
+ 			}
+ 		}
+ 
+@@ -804,6 +817,10 @@ export class AcpAgent implements Agent {
+ 						event.error instanceof Error
+ 							? event.error
+ 							: new Error(describeAgentError(event.error));
++					session.fatalErrorInfo = {
++						errorClass: event.errorClass,
++						details: event.errorDetails,
++					};
+ 				}
+ 				forwardAgentEvent(this.conn, acpSessionId, event);
+ 			},
+@@ -1005,17 +1022,60 @@ async function resolveDefaultModelId(
+  * as it forwards them across the event boundary, so `instanceof` alone fails on
+  * the object ACP actually receives.
+  */
+-function toAcpPromptError(error: Error): RequestError {
++function toAcpPromptError(
++	error: Error,
++	info?: {
++		errorClass?: ProviderErrorClass;
++		details?: ProviderErrorDetails;
++	},
++): RequestError {
+ 	if (isClineOrgIndividualInferenceSubscriptionErrorMessage(error)) {
+ 		const message = getAcpOrgSubscriptionMessage();
+ 		return RequestError.internalError({ message }, message);
+ 	}
+ 
+ 	const message = describeAgentError(error);
++	const data = providerErrorData(message, info);
+ 	const isAuthProblem = isLikelyAuthError(error);
+ 	return isAuthProblem
+-		? RequestError.authRequired({ message }, message)
+-		: RequestError.internalError({ message }, message);
++		? RequestError.authRequired(data, message)
++		: RequestError.internalError(data, message);
++}
++
++/**
++ * The JSON-RPC error `data` of a failed prompt: the unchanged `message`, then the
++ * structure of the provider failure (harness patch 0011) so a client reads the AWS
++ * exception name, HTTP status, retry-after and attempts instead of matching text:
++ * `errorName`, `statusCode`, `isRetryable`, `retryAfterS`, `attempts`, `code`,
++ * `stopReason`, `phase`, and `errorClass` when it is not `unknown`. A failure
++ * with no structure keeps `{ message }`.
++ */
++function providerErrorData(
++	message: string,
++	info?: { errorClass?: ProviderErrorClass; details?: ProviderErrorDetails },
++): Record<string, unknown> {
++	const data: Record<string, unknown> = { message };
++	const details = info?.details;
++	if (details) {
++		for (const key of [
++			"errorName",
++			"statusCode",
++			"isRetryable",
++			"retryAfterS",
++			"attempts",
++			"code",
++			"stopReason",
++			"phase",
++		] as const) {
++			if (details[key] !== undefined) {
++				data[key] = details[key];
++			}
++		}
++	}
++	if (info?.errorClass && info.errorClass !== "unknown") {
++		data.errorClass = info.errorClass;
++	}
++	return data;
+ }
+ 
+ async function buildProviderConfigOption(
+diff --git a/sdk/packages/agents/src/agent-runtime.error-details.test.ts b/sdk/packages/agents/src/agent-runtime.error-details.test.ts
+new file mode 100644
+index 0000000..42ae70d
+--- /dev/null
++++ b/sdk/packages/agents/src/agent-runtime.error-details.test.ts
+@@ -0,0 +1,246 @@
++import type {
++	AgentModel,
++	AgentModelEvent,
++	AgentModelRequest,
++	AgentRuntimeEvent,
++} from "@cline/shared";
++import { describe, expect, it, vi } from "vitest";
++import { AgentRuntime } from "./index";
++
++// Harness patch 0011: the run-failed event carries the structure of the provider failure that ended
++// the run (AWS exception name, HTTP status, retryability, attempts), whether the failure came in on
++// the model's finish event or was thrown from the prepareTurn pipeline (the compaction summary call).
++
++class ScriptedModel implements AgentModel {
++	public readonly requests: AgentModelRequest[] = [];
++
++	constructor(
++		private readonly steps: Array<
++			(request: AgentModelRequest) => Iterable<AgentModelEvent>
++		>,
++	) {}
++
++	async stream(
++		request: AgentModelRequest,
++	): Promise<AsyncIterable<AgentModelEvent>> {
++		this.requests.push(request);
++		const step = this.steps.shift();
++		if (!step) {
++			throw new Error("No scripted model step available");
++		}
++		const events = step(request);
++		return (async function* () {
++			for (const event of events) {
++				yield event;
++			}
++		})();
++	}
++}
++
++type RunFailed = Extract<AgentRuntimeEvent, { type: "run-failed" }>;
++
++async function runFailed(
++	runtime: AgentRuntime,
++	prompt = "Hi",
++): Promise<RunFailed> {
++	const seen: RunFailed[] = [];
++	runtime.subscribe((event) => {
++		if (event.type === "run-failed") {
++			seen.push(event);
++		}
++	});
++	const result = await runtime.run(prompt);
++	expect(result.status).toBe("failed");
++	expect(seen).toHaveLength(1);
++	return seen[0] as RunFailed;
++}
++
++const SERVICE_DOWN = {
++	errorName: "ServiceUnavailableException",
++	statusCode: 503,
++	isRetryable: true,
++	attempts: 6,
++};
++
++describe("run-failed error details", () => {
++	it("carries the details of the finish event that ended the run", async () => {
++		const model = new ScriptedModel([
++			() => [
++				{
++					type: "finish",
++					reason: "error",
++					error: "The service isn't currently available. Retry your request.",
++					errorClass: "unknown",
++					errorRetryable: false,
++					errorDetails: SERVICE_DOWN,
++				},
++			],
++		]);
++		const event = await runFailed(new AgentRuntime({ model }));
++		expect(event.error.message).toBe(
++			"The service isn't currently available. Retry your request.",
++		);
++		expect(event.errorDetails).toEqual(SERVICE_DOWN);
++	});
++
++	it("describes an error thrown from prepareTurn, the compaction summary call, by its own structure", async () => {
++		// The AI SDK's error shapes by their fields: the agents package does not depend on `ai`.
++		const last = Object.assign(
++			new Error("The service isn't currently available. Retry your request."),
++			{
++				name: "AI_APICallError",
++				statusCode: 503,
++				responseHeaders: {
++					"x-amzn-errortype": "ServiceUnavailableException:http://x/",
++				},
++				isRetryable: true,
++			},
++		);
++		const thrown = Object.assign(
++			new Error(`Failed after 3 attempts. Last error: ${last.message}`),
++			{
++				name: "AI_RetryError",
++				reason: "maxRetriesExceeded",
++				errors: [last, last, last],
++				lastError: last,
++			},
++		);
++		const model = new ScriptedModel([
++			() => [
++				{ type: "text-delta", text: "never reached" },
++				{ type: "finish", reason: "stop" },
++			],
++		]);
++		const prepareTurn = vi.fn(async () => {
++			throw thrown;
++		});
++		const event = await runFailed(new AgentRuntime({ model, prepareTurn }));
++		expect(model.requests).toHaveLength(0);
++		expect(event.errorDetails).toEqual({
++			errorName: "ServiceUnavailableException",
++			statusCode: 503,
++			isRetryable: true,
++			attempts: 3,
++			phase: "compaction",
++		});
++	});
++
++	it("ends the turn at a context-window stop reason without replaying it", async () => {
++		const details = {
++			errorName: "ModelContextWindowExceeded",
++			stopReason: "model_context_window_exceeded",
++			isRetryable: false,
++			phase: "stop" as const,
++		};
++		const model = new ScriptedModel([
++			() => [
++				{ type: "text-delta", text: "partial answer" },
++				{
++					type: "finish",
++					reason: "error",
++					error:
++						"Model reached the context window limit before completing the turn",
++					errorClass: "context_window_exceeded",
++					errorRetryable: false,
++					errorDetails: details,
++				},
++			],
++		]);
++		const prepareTurn = vi.fn(async () => undefined);
++		const event = await runFailed(new AgentRuntime({ model, prepareTurn }));
++		// One request, one ordinary prepareTurn: no forced compaction, no retry.
++		expect(model.requests).toHaveLength(1);
++		expect(prepareTurn).toHaveBeenCalledTimes(1);
++		expect(event.errorClass).toBe("context_window_exceeded");
++		expect(event.errorDetails).toEqual(details);
++	});
++
++	it("describes a summary-call failure by the details it carries, as a compaction failure", async () => {
++		// The compaction summary call goes through the legacy stream API, which flattens the failure to a
++		// message; the summariser rethrows it as an Error that carries the details of the finish event.
++		const thrown = Object.assign(
++			new Error("The service isn't currently available. Retry your request."),
++			{
++				errorDetails: {
++					errorName: "ServiceUnavailableException",
++					statusCode: 503,
++					isRetryable: true,
++					attempts: 6,
++					phase: "request" as const,
++				},
++			},
++		);
++		const model = new ScriptedModel([
++			() => [{ type: "finish", reason: "stop" }],
++		]);
++		const prepareTurn = vi.fn(async () => {
++			throw thrown;
++		});
++		const event = await runFailed(new AgentRuntime({ model, prepareTurn }));
++		expect(model.requests).toHaveLength(0);
++		expect(event.errorDetails).toEqual({
++			errorName: "ServiceUnavailableException",
++			statusCode: 503,
++			isRetryable: true,
++			attempts: 6,
++			phase: "compaction",
++		});
++	});
++
++	it("keeps the rejection's details when a window overflow cannot be compacted", async () => {
++		const details = {
++			errorName: "ValidationException",
++			statusCode: 400,
++			isRetryable: false,
++			phase: "request" as const,
++		};
++		const model = new ScriptedModel([
++			() => [
++				{
++					type: "finish",
++					reason: "error",
++					error: "Input is too long for requested model.",
++					errorClass: "context_window_exceeded",
++					errorRetryable: false,
++					errorDetails: details,
++				},
++			],
++		]);
++		// prepareTurn never shrinks the transcript: nothing to compact.
++		const prepareTurn = vi.fn(async () => undefined);
++		const event = await runFailed(new AgentRuntime({ model, prepareTurn }));
++		expect(prepareTurn).toHaveBeenCalledTimes(2);
++		expect(event.error.name).toBe("ContextWindowOverflowError");
++		expect(event.errorClass).toBe("context_window_exceeded");
++		expect(event.errorDetails).toEqual(details);
++	});
++
++	it("never attaches the details of an earlier failed attempt to a different error", async () => {
++		const model = new ScriptedModel([
++			() => [
++				{
++					type: "finish",
++					reason: "error",
++					error: "Cannot connect to API: read ECONNRESET",
++					errorClass: "unknown",
++					errorRetryable: true,
++					errorDetails: { code: "ECONNRESET", isRetryable: true },
++				},
++			],
++			() => [{ type: "finish", reason: "stop" }],
++		]);
++		const event = await runFailed(new AgentRuntime({ model }));
++		expect(model.requests).toHaveLength(2);
++		expect(event.error.message).toBe("Model returned empty response");
++		expect(event.errorDetails).toBeUndefined();
++	});
++
++	it("reports no details for an error that has no structure", async () => {
++		const model = new ScriptedModel([
++			() => [{ type: "finish", reason: "error", error: "upstream failed" }],
++		]);
++		const event = await runFailed(new AgentRuntime({ model }));
++		expect(event.error.message).toBe("upstream failed");
++		expect(event.errorDetails).toBeUndefined();
++	});
++});
+diff --git a/sdk/packages/agents/src/agent-runtime.ts b/sdk/packages/agents/src/agent-runtime.ts
+index 57e9669..a16f3c2 100644
+--- a/sdk/packages/agents/src/agent-runtime.ts
++++ b/sdk/packages/agents/src/agent-runtime.ts
+@@ -1,8 +1,10 @@
+ import {
+ 	classifyProviderError,
+ 	createGateway,
++	describeProviderError,
+ 	type GatewayProviderSettings,
+ 	isRetryableProviderError,
++	providerErrorDetailsForEvent,
+ } from "@cline/llms";
+ import type {
+ 	AgentAfterToolResult,
+@@ -28,6 +30,7 @@ import type {
+ 	AgentRuntimeConfig as BaseAgentRuntimeConfig,
+ 	CaptureTaskLifecycleEventInput,
+ 	ProviderErrorClass,
++	ProviderErrorDetails,
+ 	TelemetryProperties,
+ 	ToolApprovalResult,
+ 	ToolPolicy,
+@@ -122,13 +125,36 @@ export const CONTEXT_WINDOW_OVERFLOW_NO_RECOVERY_MESSAGE =
+ 
+ /** Thrown when overflow recovery cannot proceed; carries the terminal text. */
+ class ContextWindowOverflowError extends Error {
+-	constructor(message: string, providerError: string | undefined) {
++	/** The structure of the provider failure this overflow came from, when it had one. */
++	readonly errorDetails?: ProviderErrorDetails;
++
++	constructor(
++		message: string,
++		providerError: string | undefined,
++		errorDetails?: ProviderErrorDetails,
++	) {
+ 		super(
+ 			providerError?.trim()
+ 				? `${message} (provider reported: ${providerError.trim()})`
+ 				: message,
+ 		);
+ 		this.name = "ContextWindowOverflowError";
++		this.errorDetails = errorDetails;
++	}
++}
++
++/**
++ * The error a run fails with when a model turn ended in a provider failure. It
++ * carries the structure of that failure (AWS exception name, HTTP status,
++ * attempts) as data, so the run-failed event describes the error by identity
++ * and never by matching message text against state a later error could reuse.
++ */
++class ProviderTurnError extends Error {
++	readonly errorDetails?: ProviderErrorDetails;
++
++	constructor(message: string, errorDetails?: ProviderErrorDetails) {
++		super(message);
++		this.errorDetails = errorDetails;
+ 	}
+ }
+ 
+@@ -562,6 +588,12 @@ export class AgentRuntime {
+ 		usage: cloneUsage(DEFAULT_USAGE),
+ 		lastError: undefined as string | undefined,
+ 		lastErrorClass: undefined as ProviderErrorClass | undefined,
++		/**
++		 * The structure of `lastError` (AWS exception name, HTTP status, attempts),
++		 * carried from the model boundary via `errorDetails` on the `finish`
++		 * event. Undefined when the failure has none.
++		 */
++		lastErrorDetails: undefined as ProviderErrorDetails | undefined,
+ 		/** Provider-reported input tokens for the most recent request this run. */
+ 		lastRequestInputTokens: 0,
+ 		/**
+@@ -590,6 +622,8 @@ export class AgentRuntime {
+ 		 */
+ 		lastFinishReason: undefined as AgentModelFinishReason | undefined,
+ 	};
++	/** The error the last prepareTurn call (the compaction pipeline) threw this run, if any. */
++	private prepareTurnError: unknown;
+ 	/** One automatic overflow-recovery attempt per run. */
+ 	private overflowRecoveryAttempted = false;
+ 	/** Consecutive output-limit cut-offs recovered this run; see MAX_TOKENS_RECOVERY_LIMIT. */
+@@ -800,6 +834,8 @@ export class AgentRuntime {
+ 		this.state.lastErrorRetryable = undefined;
+ 		this.state.lastErrorReported = false;
+ 		this.state.lastFinishReason = undefined;
++		this.state.lastErrorDetails = undefined;
++		this.prepareTurnError = undefined;
+ 		this.state.usage = cloneUsage(DEFAULT_USAGE);
+ 		this.overflowRecoveryAttempted = false;
+ 		this.state.lastRequestInputTokens = 0;
+@@ -870,7 +906,7 @@ export class AgentRuntime {
+ 					// field unset and the attribute is omitted.
+ 					if (finishReason === "error") {
+ 						this.state.lastFinishReason = finishReason;
+-						throw new Error(this.state.lastError ?? "Model stream failed");
++						throw this.failedTurnError();
+ 					}
+ 					// Provider-executed tool activity lives in message metadata, not
+ 					// content (projecting it into content would replay tool_use blocks
+@@ -936,7 +972,7 @@ export class AgentRuntime {
+ 				}
+ 				if (finishReason === "error" && toolCalls.length === 0) {
+ 					this.state.lastFinishReason = finishReason;
+-					throw new Error(this.state.lastError ?? "Model stream failed");
++					throw this.failedTurnError();
+ 				}
+ 				// A turn that yields tool calls is progress: reset the cut-off streak.
+ 				if (toolCalls.length > 0) {
+@@ -1042,6 +1078,10 @@ export class AgentRuntime {
+ 			const errorAlreadyReported =
+ 				normalized.message === this.state.lastError &&
+ 				this.state.lastErrorReported;
++			// Same guard for the structure of the failure. An error thrown from
++			// prepareTurn (the compaction summary call) never passed a finish
++			// event, so it is described by its own fields.
++			const errorDetails = this.resolveErrorDetails(normalized);
+ 			this.state.status = status;
+ 			this.state.lastError = normalized.message;
+ 			this.state.lastErrorClass = errorClass;
+@@ -1076,6 +1116,7 @@ export class AgentRuntime {
+ 					snapshot: this.snapshot(),
+ 					error: normalized,
+ 					errorClass,
++					...(errorDetails ? { errorDetails } : {}),
+ 				});
+ 			} else {
+ 				await this.emit({
+@@ -1090,6 +1131,48 @@ export class AgentRuntime {
+ 		}
+ 	}
+ 
++	/** The error for a model turn that ended in a provider failure, with that failure's structure. */
++	private failedTurnError(): ProviderTurnError {
++		return new ProviderTurnError(
++			this.state.lastError ?? "Model stream failed",
++			this.state.lastErrorDetails,
++		);
++	}
++
++	/**
++	 * The structure of the provider failure that ended the run, or undefined when
++	 * it has none. Judged by the identity of the error the run failed with, so
++	 * details from an earlier failure never attach to an unrelated error (a tool
++	 * failure, the iteration limit): a provider turn error and an overflow error
++	 * carry their own; an error the prepareTurn pipeline threw (the compaction
++	 * summary call) never passed a finish event and is described by its own typed
++	 * fields.
++	 */
++	private resolveErrorDetails(error: Error): ProviderErrorDetails | undefined {
++		if (
++			error instanceof ProviderTurnError ||
++			error instanceof ContextWindowOverflowError
++		) {
++			return error.errorDetails;
++		}
++		if (this.prepareTurnError === error) {
++			// The compaction summary call streams through the legacy API, which
++			// flattens a failure to a message; its error carries the details of
++			// the finish event it came from. An AI SDK error thrown directly is
++			// described by its own typed fields.
++			const attached = (error as { errorDetails?: ProviderErrorDetails })
++				.errorDetails;
++			if (attached) {
++				return { ...attached, phase: "compaction" };
++			}
++			const described = providerErrorDetailsForEvent(
++				describeProviderError(error),
++			);
++			return described ? { ...described, phase: "compaction" } : undefined;
++		}
++		return undefined;
++	}
++
+ 	/**
+ 	 * Injects the collected hook context blocks as one user message at the end
+ 	 * of the conversation. Always delivers: the buffer is empty afterwards.
+@@ -1324,6 +1407,7 @@ export class AgentRuntime {
+ 		this.state.lastErrorClass = undefined;
+ 		this.state.lastErrorRetryable = undefined;
+ 		this.state.lastErrorReported = false;
++		this.state.lastErrorDetails = undefined;
+ 	}
+ 
+ 	/**
+@@ -1376,6 +1460,7 @@ export class AgentRuntime {
+ 			throw new ContextWindowOverflowError(
+ 				CONTEXT_WINDOW_OVERFLOW_NO_RECOVERY_MESSAGE,
+ 				providerError,
++				this.state.lastErrorDetails,
+ 			);
+ 		}
+ 		await this.emit({
+@@ -1400,6 +1485,7 @@ export class AgentRuntime {
+ 			throw new ContextWindowOverflowError(
+ 				CONTEXT_WINDOW_OVERFLOW_RECOVERY_FAILED_MESSAGE,
+ 				this.state.lastError,
++				this.state.lastErrorDetails,
+ 			);
+ 		}
+ 		return retry;
+@@ -1416,6 +1502,13 @@ export class AgentRuntime {
+ 		) {
+ 			return false;
+ 		}
++		// A stop reason is not a rejection: the response was cut off after its
++		// text had streamed to the client, and replaying the turn would show that
++		// text twice. It ends the turn; proactive compaction is what keeps a run
++		// from reaching the stop reason.
++		if (this.state.lastErrorDetails?.stopReason !== undefined) {
++			return false;
++		}
+ 		// An errored stream that still produced tool calls proceeds through the
+ 		// normal loop (matching existing behavior); a retry would discard that
+ 		// partial work.
+@@ -1576,7 +1669,7 @@ export class AgentRuntime {
+ 			) {
+ 				await this.recordAssistantMessage(retry.message, retry.finishReason);
+ 			}
+-			throw new Error(this.state.lastError ?? "Model stream failed");
++			throw this.failedTurnError();
+ 		}
+ 		// A retry that came back with nothing is no replacement either: handing it
+ 		// on would trip the loop's empty-response guard, which throws before
+@@ -1994,6 +2087,7 @@ export class AgentRuntime {
+ 						this.state.lastErrorRetryable =
+ 							event.errorRetryable ?? isRetryableProviderError(event.error);
+ 						this.state.lastErrorReported = event.errorReported === true;
++						this.state.lastErrorDetails = event.errorDetails;
+ 					}
+ 					break;
+ 				}
+@@ -2223,33 +2317,43 @@ export class AgentRuntime {
+ 		}
+ 
+ 		const overflowRecovery = options?.overflowRecovery === true;
+-		const result = await this.config.prepareTurn({
+-			agentId: this.state.agentId,
+-			conversationId: this.config.conversationId,
+-			parentAgentId: this.state.parentAgentId ?? null,
+-			iteration: this.state.iteration,
+-			messages: request.messages,
+-			systemPrompt: request.systemPrompt,
+-			tools: request.tools,
+-			model: {
+-				id: this.config.messageModelInfo?.id,
+-				provider: this.config.messageModelInfo?.provider,
+-			},
+-			signal: request.signal,
+-			overflowRecovery: overflowRecovery || undefined,
+-			previousRequestInputTokens:
+-				this.state.lastRequestInputTokens > 0
+-					? this.state.lastRequestInputTokens
+-					: undefined,
+-			emitStatusNotice: (message, metadata) => {
+-				void this.emit({
+-					type: "status-notice",
+-					snapshot: this.snapshot(),
+-					message,
+-					metadata,
+-				});
+-			},
+-		});
++		let result: Awaited<
++			ReturnType<NonNullable<typeof this.config.prepareTurn>>
++		>;
++		try {
++			result = await this.config.prepareTurn({
++				agentId: this.state.agentId,
++				conversationId: this.config.conversationId,
++				parentAgentId: this.state.parentAgentId ?? null,
++				iteration: this.state.iteration,
++				messages: request.messages,
++				systemPrompt: request.systemPrompt,
++				tools: request.tools,
++				model: {
++					id: this.config.messageModelInfo?.id,
++					provider: this.config.messageModelInfo?.provider,
++				},
++				signal: request.signal,
++				overflowRecovery: overflowRecovery || undefined,
++				previousRequestInputTokens:
++					this.state.lastRequestInputTokens > 0
++						? this.state.lastRequestInputTokens
++						: undefined,
++				emitStatusNotice: (message, metadata) => {
++					void this.emit({
++						type: "status-notice",
++						snapshot: this.snapshot(),
++						message,
++						metadata,
++					});
++				},
++			});
++		} catch (error) {
++			// Remembered so the run-failed event can describe a provider failure the
++			// pipeline threw (the compaction summary call) by its own fields.
++			this.prepareTurnError = error;
++			throw error;
++		}
+ 		if (overflowRecovery) {
+ 			// Only retry a provider-rejected overflow with a request that is
+ 			// actually smaller — anything else is guaranteed to fail again.
+@@ -2271,6 +2375,7 @@ export class AgentRuntime {
+ 				throw new ContextWindowOverflowError(
+ 					CONTEXT_WINDOW_OVERFLOW_NOTHING_TO_COMPACT_MESSAGE,
+ 					this.state.lastError,
++					this.state.lastErrorDetails,
+ 				);
+ 			}
+ 		}
+diff --git a/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.error-details.test.ts b/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.error-details.test.ts
+new file mode 100644
+index 0000000..b8436d6
+--- /dev/null
++++ b/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.error-details.test.ts
+@@ -0,0 +1,52 @@
++import type { AgentRuntimeStateSnapshot } from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { RuntimeEventAdapter } from "./runtime-event-adapter";
++
++// Harness patch 0011: the structure of the provider failure that failed a run reaches the public
++// `error` event, where the ACP agent turns it into the JSON-RPC error data.
++
++const SNAPSHOT: AgentRuntimeStateSnapshot = {
++	agentId: "agent_test",
++	runId: "run_test",
++	status: "failed",
++	iteration: 2,
++	messages: [],
++	pendingToolCalls: [],
++	usage: {
++		inputTokens: 0,
++		outputTokens: 0,
++		cacheReadTokens: 0,
++		cacheWriteTokens: 0,
++		totalCost: 0,
++	},
++};
++
++describe("RuntimeEventAdapter run-failed error details", () => {
++	it("copies errorDetails onto the error event", () => {
++		const error = new Error("Too many requests, please wait before trying again.");
++		const errorDetails = {
++			errorName: "ThrottlingException",
++			statusCode: 429,
++			isRetryable: true,
++			retryAfterS: 5,
++			attempts: 6,
++		};
++		const out = new RuntimeEventAdapter().translate({
++			type: "run-failed",
++			snapshot: SNAPSHOT,
++			error,
++			errorClass: "unknown",
++			errorDetails,
++		});
++		expect(out).toEqual([
++			{
++				type: "error",
++				error,
++				errorClass: "unknown",
++				errorDetails,
++				recoverable: false,
++				iteration: 2,
++			},
++		]);
++	});
++});
+diff --git a/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.ts b/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.ts
+index 4b623ba..4bb22c3 100644
+--- a/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.ts
++++ b/sdk/packages/core/src/runtime/orchestration/runtime-event-adapter.ts
+@@ -263,6 +263,7 @@ export class RuntimeEventAdapter {
+ 						type: "error",
+ 						error: event.error,
+ 						errorClass: event.errorClass,
++						...(event.errorDetails ? { errorDetails: event.errorDetails } : {}),
+ 						recoverable: false,
+ 						iteration: event.snapshot.iteration,
+ 					},
+diff --git a/sdk/packages/llms/src/index.ts b/sdk/packages/llms/src/index.ts
+index d94cd1e..4d8dff5 100644
+--- a/sdk/packages/llms/src/index.ts
++++ b/sdk/packages/llms/src/index.ts
+@@ -78,6 +78,7 @@ export {
+ 	classifyProviderError,
+ 	createHandler,
+ 	createHandlerAsync,
++	describeProviderError,
+ 	extractClineFreeModelLimitResetTime,
+ 	extractClinePassLimitMessage,
+ 	getClineNotSubscribedMessage,
+@@ -103,6 +104,7 @@ export {
+ 	normalizeProviderId,
+ 	OLLAMA_DEFAULT_CONTEXT_WINDOW,
+ 	type ProviderApiLine,
++	providerErrorDetailsForEvent,
+ 	registerAsyncHandler,
+ 	registerHandler,
+ 	resolveGatewayProviderRegistration,
+diff --git a/sdk/packages/llms/src/providers.ts b/sdk/packages/llms/src/providers.ts
+index 2d48e8e..d574e8e 100644
+--- a/sdk/packages/llms/src/providers.ts
++++ b/sdk/packages/llms/src/providers.ts
+@@ -43,7 +43,9 @@ import {
+ 
+ export {
+ 	classifyProviderError,
++	describeProviderError,
+ 	isRetryableProviderError,
++	providerErrorDetailsForEvent,
+ } from "./providers/error-classification";
+ export {
+ 	ClineFreeModelLimitError,
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.error-details.test.ts b/sdk/packages/llms/src/providers/ai-sdk.error-details.test.ts
+new file mode 100644
+index 0000000..f530d16
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/ai-sdk.error-details.test.ts
+@@ -0,0 +1,176 @@
++import type { AgentMessage, AgentModelEvent } from "@cline/shared";
++import { APICallError, RetryError } from "ai";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { createGateway } from "./gateway";
++
++// Harness patch 0011: the model boundary keeps the structure of a provider failure on the `finish`
++// event (`errorDetails`) and reports Bedrock's stopReason model_context_window_exceeded as an error
++// instead of a clean stop. Shapes are the ones the pinned fork saw against a local fake Bedrock.
++
++const streamTextSpy = vi.fn();
++
++vi.mock("ai", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("ai")>();
++	return {
++		...actual,
++		streamText: (input: unknown) => streamTextSpy(input),
++	};
++});
++
++vi.mock("@ai-sdk/openai", () => ({
++	createOpenAI: () => ({
++		responses: (modelId: string) => ({ modelId, family: "openai" }),
++	}),
++}));
++
++async function* parts(items: unknown[]) {
++	for (const item of items) {
++		yield item;
++	}
++}
++
++async function collect(
++	iterable: AsyncIterable<AgentModelEvent>,
++): Promise<AgentModelEvent[]> {
++	const events: AgentModelEvent[] = [];
++	for await (const event of iterable) {
++		events.push(event);
++	}
++	return events;
++}
++
++const messages: AgentMessage[] = [
++	{
++		id: "user_1",
++		role: "user",
++		content: [{ type: "text", text: "Hello" }],
++		createdAt: Date.now(),
++	},
++];
++
++async function run(streamParts: unknown[]): Promise<AgentModelEvent[]> {
++	streamTextSpy.mockReturnValue({ fullStream: parts(streamParts) });
++	const gateway = createGateway({
++		providerConfigs: [{ providerId: "openai-native", apiKey: "test" }],
++	});
++	return await collect(
++		await gateway.stream({
++			providerId: "openai-native",
++			modelId: "gpt-5-mini",
++			messages,
++		}),
++	);
++}
++
++beforeEach(() => {
++	streamTextSpy.mockReset();
++});
++
++describe("finish event error details", () => {
++	it("carries the AWS exception name, status and attempts of an exhausted request-start retry", async () => {
++		const last = new APICallError({
++			message: "The service isn't currently available. Retry your request.",
++			url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse-stream",
++			requestBodyValues: {},
++			statusCode: 503,
++			responseHeaders: {
++				"x-amzn-errortype":
++					"ServiceUnavailableException:http://internal.amazon.com/coral/com.amazon.bedrock/",
++			},
++			isRetryable: true,
++		});
++		const error = new RetryError({
++			message: `Failed after 6 attempts. Last error: ${last.message}`,
++			reason: "maxRetriesExceeded",
++			errors: [1, 2, 3, 4, 5].map(() => last).concat(last),
++		});
++		const events = await run([{ type: "error", error }]);
++		expect(events.at(-1)).toMatchObject({
++			type: "finish",
++			reason: "error",
++			error: "The service isn't currently available. Retry your request.",
++			// The turn-level retry stays off: the SDK already spent its retries.
++			errorRetryable: false,
++			errorDetails: {
++				errorName: "ServiceUnavailableException",
++				statusCode: 503,
++				isRetryable: true,
++				attempts: 6,
++				phase: "request",
++			},
++		});
++	});
++
++	it("marks a failure after visible output as a stream failure", async () => {
++		const error = Object.assign(
++			new Error("stream failed after the first chunk"),
++			{
++				statusCode: 503,
++				isRetryable: true,
++			},
++		);
++		const events = await run([
++			{ type: "text-delta", text: "partial answer" },
++			{ type: "error", error },
++		]);
++		expect(events.at(-1)).toMatchObject({
++			type: "finish",
++			reason: "error",
++			errorDetails: { statusCode: 503, phase: "stream" },
++		});
++	});
++
++	it("carries no details for a failure with no structure", async () => {
++		const events = await run([
++			{ type: "error", error: new Error("Invalid API key") },
++		]);
++		const finish = events.at(-1) as Record<string, unknown>;
++		expect(finish).toMatchObject({ reason: "error", error: "Invalid API key" });
++		expect(finish.errorDetails).toBeUndefined();
++	});
++});
++
++describe("stopReason model_context_window_exceeded", () => {
++	it("ends the turn as a context-window error instead of a clean stop", async () => {
++		const events = await run([
++			{ type: "text-delta", text: "partial answer" },
++			{
++				type: "finish",
++				finishReason: "other",
++				rawFinishReason: "model_context_window_exceeded",
++				usage: { inputTokens: 1_000_000, outputTokens: 4 },
++			},
++		]);
++		expect(events.at(-1)).toEqual({
++			type: "finish",
++			reason: "error",
++			error:
++				"Model reached the context window limit before completing the turn",
++			errorClass: "context_window_exceeded",
++			errorRetryable: false,
++			errorDetails: {
++				errorName: "ModelContextWindowExceeded",
++				stopReason: "model_context_window_exceeded",
++				isRetryable: false,
++				phase: "stop",
++			},
++		});
++	});
++
++	it("leaves an ordinary end_turn finish alone", async () => {
++		const events = await run([
++			{ type: "text-delta", text: "done" },
++			{
++				type: "finish",
++				finishReason: "stop",
++				rawFinishReason: "end_turn",
++				usage: { inputTokens: 10, outputTokens: 1 },
++			},
++		]);
++		const finish = events.at(-1) as Record<string, unknown>;
++		expect(finish.type).toBe("finish");
++		expect(finish.reason).toBe("stop");
++		expect(finish.error).toBeUndefined();
++		expect(finish.errorDetails).toBeUndefined();
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.ts b/sdk/packages/llms/src/providers/ai-sdk.ts
+index ae0ab37..9e8df40 100644
+--- a/sdk/packages/llms/src/providers/ai-sdk.ts
++++ b/sdk/packages/llms/src/providers/ai-sdk.ts
+@@ -14,6 +14,7 @@ import type {
+ 	ModelToolExecution,
+ 	ModelToolName,
+ 	ProviderErrorClass,
++	ProviderErrorDetails,
+ } from "@cline/shared";
+ import {
+ 	type AiSdkFormatterMessage,
+@@ -46,7 +47,9 @@ import { nanoid } from "nanoid";
+ import type { AiSdkTelemetryDecision } from "../services/langfuse-telemetry";
+ import {
+ 	classifyProviderError,
++	describeProviderError,
+ 	isRetryableBeyondSdkRetries,
++	providerErrorDetailsForEvent,
+ } from "./error-classification";
+ import { extractErrorMessage } from "./format";
+ import { createRetryEmptyResponseMiddleware } from "./middleware/retry-empty-response";
+@@ -1470,6 +1473,12 @@ interface CapturedStreamError {
+ 	 * does not report the same failure a second time.
+ 	 */
+ 	reported?: boolean;
++	/**
++	 * The structure of the failure (AWS exception name, HTTP status, retry-after,
++	 * attempts, network code), read while the raw error is in hand. Forwarded as
++	 * `errorDetails` on the `finish` event. Absent when the failure has none.
++	 */
++	details?: ProviderErrorDetails;
+ }
+ 
+ function captureStreamError(error: unknown): CapturedStreamError {
+@@ -1477,9 +1486,49 @@ function captureStreamError(error: unknown): CapturedStreamError {
+ 		message: extractErrorMessage(error),
+ 		errorClass: classifyProviderError(error),
+ 		retryable: isRetryableBeyondSdkRetries(error),
++		details: providerErrorDetailsForEvent(describeProviderError(error)),
++	};
++}
++
++/** The stop reason Bedrock (and Anthropic) report when the context window ends a response. */
++const CONTEXT_WINDOW_STOP_REASON = "model_context_window_exceeded";
++
++function isContextWindowStopReason(value: unknown): boolean {
++	return (
++		typeof value === "string" &&
++		value.trim().toLowerCase().replaceAll("-", "_") ===
++			CONTEXT_WINDOW_STOP_REASON
++	);
++}
++
++/**
++ * A response that stopped because the context window was full is not a
++ * completed turn: the answer is cut off wherever the window ended. It ends as a
++ * context-window error, which the agent loop recovers by compacting when it can.
++ */
++function contextWindowStopError(): CapturedStreamError {
++	return {
++		message:
++			"Model reached the context window limit before completing the turn",
++		errorClass: "context_window_exceeded",
++		retryable: false,
++		details: {
++			errorName: "ModelContextWindowExceeded",
++			isRetryable: false,
++			stopReason: CONTEXT_WINDOW_STOP_REASON,
++			phase: "stop",
++		},
+ 	};
+ }
+ 
++/** The details with the phase the failure happened in, unless the failure names its own. */
++function withPhase(
++	details: ProviderErrorDetails | undefined,
++	phase: "request" | "stream",
++): ProviderErrorDetails | undefined {
++	return details ? { phase, ...details } : undefined;
++}
++
+ async function* emitAiSdkEvents(
+ 	stream: AiSdkStreamResult,
+ 	request: GatewayStreamRequest,
+@@ -1490,6 +1539,7 @@ async function* emitAiSdkEvents(
+ ): AsyncIterable<AgentModelEvent> {
+ 	const emittedToolCallIds = new Set<string>();
+ 	let finishReason: unknown;
++	let rawFinishReason: unknown;
+ 	let requestId: string | undefined;
+ 	let streamError: CapturedStreamError | undefined;
+ 	let finishUsage: unknown;
+@@ -1848,6 +1898,7 @@ async function* emitAiSdkEvents(
+ 					finishUsage = part.usage ?? part.totalUsage;
+ 					finishProviderMetadata = part.providerMetadata;
+ 					finishReason = part.finishReason;
++					rawFinishReason = part.rawFinishReason;
+ 				}
+ 
+ 				if (part.type === "error") {
+@@ -1968,6 +2019,15 @@ async function* emitAiSdkEvents(
+ 		}
+ 	}
+ 
++	if (
++		!streamError &&
++		!streamAborted &&
++		(isContextWindowStopReason(rawFinishReason) ||
++			isContextWindowStopReason(finishReason))
++	) {
++		streamError = contextWindowStopError();
++	}
++
+ 	// Prefer stream.usage (has raw cost data) over finish part usage.
+ 	// stream.usage may be undefined in mocked/test scenarios, fall back to finish part + its providerMetadata.
+ 	let usageToEmit: unknown;
+@@ -2005,6 +2065,10 @@ async function* emitAiSdkEvents(
+ 		errorClass: streamError?.errorClass,
+ 		errorRetryable: streamError?.retryable,
+ 		errorReported: streamError?.reported,
++		errorDetails: withPhase(
++			streamError?.details,
++			sawVisibleContent ? "stream" : "request",
++		),
+ 	};
+ }
+ 
+@@ -2453,6 +2517,7 @@ function createAiSdkProvider(
+ 					errorClass: captured.errorClass,
+ 					errorRetryable: captured.retryable,
+ 					errorReported: reported || captured.reported,
++					errorDetails: withPhase(captured.details, "request"),
+ 				};
+ 			}
+ 		},
+diff --git a/sdk/packages/llms/src/providers/bedrock-exception-frames.test.ts b/sdk/packages/llms/src/providers/bedrock-exception-frames.test.ts
+new file mode 100644
+index 0000000..ab2d5d2
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/bedrock-exception-frames.test.ts
+@@ -0,0 +1,136 @@
++import { crc32 } from "node:zlib";
++import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
++import { describe, expect, it } from "vitest";
++import { describeProviderError } from "./error-classification";
++
++// Harness patch 0011: a ConverseStream exception frame (an exception inside an HTTP 200) must reach
++// describeProviderError with its exception type. @ai-sdk/amazon-bedrock 5.0.62 dropped it, so the
++// series carried a bun patch of that package that kept it as `__type`. From 5.0.98 (cli-v3.0.71) the
++// provider's own error part carries `type` (lower camel: "throttlingException"), `statusCode` and
++// `isRetryable`, so the bun patch is gone and describeProviderError reads `type` and names the
++// exception in the AWS form ("ThrottlingException"). This test fails if a provider upgrade drops either.
++
++function frame(headers: Record<string, string>, payload: string): Uint8Array {
++	const enc = new TextEncoder();
++	const headerBytes: number[] = [];
++	for (const [name, value] of Object.entries(headers)) {
++		const n = enc.encode(name);
++		const v = enc.encode(value);
++		headerBytes.push(n.length, ...n, 7, v.length >> 8, v.length & 255, ...v);
++	}
++	const body = enc.encode(payload);
++	const total = 12 + headerBytes.length + body.length + 4;
++	const out = new Uint8Array(total);
++	const view = new DataView(out.buffer);
++	view.setUint32(0, total);
++	view.setUint32(4, headerBytes.length);
++	view.setUint32(8, crc32(out.subarray(0, 8)));
++	out.set(headerBytes, 12);
++	out.set(body, 12 + headerBytes.length);
++	view.setUint32(total - 4, crc32(out.subarray(0, total - 4)));
++	return out;
++}
++
++function exceptionFrame(type: string, message: string): Uint8Array {
++	return frame(
++		{
++			":message-type": "exception",
++			":exception-type": type,
++			":content-type": "application/json",
++		},
++		JSON.stringify({ message }),
++	);
++}
++
++async function firstErrorPart(type: string, message: string): Promise<unknown> {
++	const body = exceptionFrame(type, message);
++	const fetchStub = (async () =>
++		new Response(
++			new ReadableStream({
++				start(controller) {
++					controller.enqueue(body);
++					controller.close();
++				},
++			}),
++			{
++				status: 200,
++				headers: { "content-type": "application/vnd.amazon.eventstream" },
++			},
++		)) as unknown as typeof fetch;
++	const provider = createAmazonBedrock({
++		region: "us-east-1",
++		apiKey: "unused",
++		fetch: fetchStub,
++	});
++	const model = provider.languageModel("us.anthropic.claude-sonnet-5");
++	const { stream } = await model.doStream({
++		prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
++	});
++	const reader = stream.getReader();
++	for (;;) {
++		const { done, value } = await reader.read();
++		if (done) {
++			throw new Error("the stream ended without an error part");
++		}
++		if ((value as { type: string }).type === "error") {
++			return (value as { error: unknown }).error;
++		}
++	}
++}
++
++describe("Bedrock stream exception frames keep their exception type", () => {
++	const cases: Array<[string, string, number, boolean]> = [
++		["throttlingException", "ThrottlingException", 429, true],
++		["serviceUnavailableException", "ServiceUnavailableException", 503, true],
++		["internalServerException", "InternalServerException", 500, true],
++		["modelStreamErrorException", "ModelStreamErrorException", 424, true],
++		["validationException", "ValidationException", 400, false],
++	];
++	for (const [frameType, name, status, retryable] of cases) {
++		it(`names a ${frameType} frame ${name}`, async () => {
++			const error = await firstErrorPart(frameType, "stream failed");
++			expect(error).toMatchObject({
++				message: "stream failed",
++				type: frameType,
++				statusCode: status,
++				isRetryable: retryable,
++			});
++			// The status is the provider's mapping of the exception type (the frame sits in an HTTP 200).
++			expect(describeProviderError(error)).toEqual({
++				errorName: name,
++				statusCode: status,
++				isRetryable: retryable,
++			});
++		});
++	}
++});
++
++describe("describeProviderError on a bare stream error part", () => {
++	it("names a lower camel exception type and judges it transient without a status", () => {
++		expect(
++			describeProviderError({
++				message: "slow down",
++				type: "throttlingException",
++			}),
++		).toEqual({ errorName: "ThrottlingException", isRetryable: true });
++	});
++
++	it("keeps an unknown Exception type's name and does not call it transient", () => {
++		expect(
++			describeProviderError({ message: "no", type: "accessDeniedException" }),
++		).toEqual({ errorName: "AccessDeniedException", isRetryable: false });
++	});
++
++	it("does not take a type that is not an AWS exception name for one", () => {
++		for (const type of [
++			"error",
++			"invalid_request_error",
++			"overloaded_error",
++			7,
++		]) {
++			expect(describeProviderError({ message: "x", type })).toEqual({
++				isRetryable: false,
++			});
++		}
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/error-classification.ts b/sdk/packages/llms/src/providers/error-classification.ts
+index 025e056..9e17eba 100644
+--- a/sdk/packages/llms/src/providers/error-classification.ts
++++ b/sdk/packages/llms/src/providers/error-classification.ts
+@@ -1,4 +1,8 @@
+-import { type ProviderErrorClass, safeJsonParse } from "@cline/shared";
++import {
++	type ProviderErrorClass,
++	type ProviderErrorDetails,
++	safeJsonParse,
++} from "@cline/shared";
+ import { AISDKError, APICallError, RetryError, TypeValidationError } from "ai";
+ 
+ /**
+@@ -459,3 +463,288 @@ export function isRetryableBeyondSdkRetries(error: unknown): boolean {
+ 	}
+ 	return isRetryableProviderError(error);
+ }
++
++// ---------------------------------------------------------------------------
++// Structured error details (harness patch 0011)
++// ---------------------------------------------------------------------------
++
++/**
++ * Socket and DNS codes that mean the request never got an answer. Only these
++ * are reported as `code`: an arbitrary `error.code` (`ENOENT`, a numeric
++ * DOMException code) says nothing about the provider. `ConnectionClosed`,
++ * `ConnectionRefused` and `FailedToOpenSocket` are Bun's spellings.
++ */
++const NETWORK_ERROR_CODES = new Set([
++	"ECONNRESET",
++	"ECONNREFUSED",
++	"ECONNABORTED",
++	"ETIMEDOUT",
++	"EPIPE",
++	"ENOTFOUND",
++	"EAI_AGAIN",
++	"EHOSTUNREACH",
++	"ENETUNREACH",
++	"UND_ERR_SOCKET",
++	"UND_ERR_CONNECT_TIMEOUT",
++	"UND_ERR_HEADERS_TIMEOUT",
++	"UND_ERR_BODY_TIMEOUT",
++	"ConnectionClosed",
++	"ConnectionRefused",
++	"FailedToOpenSocket",
++]);
++
++/**
++ * Bedrock runtime exceptions the API reference says to retry. Used only when
++ * an error carries a name and no HTTP status or SDK flag (a stream exception
++ * frame inside an HTTP 200): the name is the one fact the wire gave.
++ */
++const TRANSIENT_AWS_EXCEPTIONS = new Set([
++	"ThrottlingException",
++	"ServiceUnavailableException",
++	"InternalServerException",
++	"ModelTimeoutException",
++	"ModelNotReadyException",
++	"ModelStreamErrorException",
++]);
++
++const ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
++
++function asRecord(value: unknown): Record<string, unknown> | undefined {
++	return value !== null && typeof value === "object"
++		? (value as Record<string, unknown>)
++		: undefined;
++}
++
++/**
++ * The bare exception name of a wire value: `x-amzn-errortype` is
++ * `ThrottlingException:http://internal.amazon.com/coral/...` and a JSON `__type`
++ * is `com.amazon.coral.availability#ThrottlingException`.
++ */
++function bareErrorName(raw: unknown): string | undefined {
++	if (typeof raw !== "string") {
++		return undefined;
++	}
++	let name = raw.trim();
++	const colon = name.indexOf(":");
++	if (colon >= 0) {
++		name = name.slice(0, colon);
++	}
++	const hash = name.lastIndexOf("#");
++	if (hash >= 0) {
++		name = name.slice(hash + 1);
++	}
++	return ERROR_NAME_PATTERN.test(name) ? name : undefined;
++}
++
++function headerValue(headers: unknown, wanted: string): string | undefined {
++	const record = asRecord(headers);
++	if (!record) {
++		return undefined;
++	}
++	for (const [key, value] of Object.entries(record)) {
++		if (key.toLowerCase() === wanted && typeof value === "string") {
++			return value;
++		}
++	}
++	return undefined;
++}
++
++/** Whole seconds to wait from `retry-after-ms` or `retry-after` (seconds or an HTTP date). */
++function retryAfterSeconds(headers: unknown): number | undefined {
++	const ms = Number(headerValue(headers, "retry-after-ms"));
++	if (
++		headerValue(headers, "retry-after-ms") !== undefined &&
++		Number.isFinite(ms) &&
++		ms >= 0
++	) {
++		return Math.ceil(ms / 1000);
++	}
++	const raw = headerValue(headers, "retry-after")?.trim();
++	if (!raw) {
++		return undefined;
++	}
++	if (/^\d+(\.\d+)?$/.test(raw)) {
++		return Math.ceil(Number(raw));
++	}
++	const at = Date.parse(raw);
++	return Number.isFinite(at)
++		? Math.max(0, Math.ceil((at - Date.now()) / 1000))
++		: undefined;
++}
++
++function isRetryErrorLike(error: unknown): error is {
++	errors: unknown[];
++	lastError?: unknown;
++} {
++	try {
++		if (RetryError.isInstance(error)) {
++			return true;
++		}
++	} catch {
++		// The "ai" module is only partially available (tests mock a subset).
++	}
++	const record = asRecord(error);
++	return (
++		record?.name === "AI_RetryError" &&
++		Array.isArray(record.errors) &&
++		record.errors.length > 0
++	);
++}
++
++function numericStatus(value: unknown): number | undefined {
++	return typeof value === "number" &&
++		Number.isInteger(value) &&
++		value >= 100 &&
++		value <= 599
++		? value
++		: undefined;
++}
++
++/** Errors reachable from `root` through `cause`, nearest first. */
++function causeChain(root: unknown): Record<string, unknown>[] {
++	const chain: Record<string, unknown>[] = [];
++	const seen = new Set<unknown>();
++	let current: unknown = root;
++	for (let depth = 0; depth <= MAX_WALK_DEPTH; depth += 1) {
++		const record = asRecord(current);
++		if (!record || seen.has(record)) {
++			break;
++		}
++		seen.add(record);
++		chain.push(record);
++		current = record.cause;
++	}
++	return chain;
++}
++
++/**
++ * The exception name of a provider stream error part. @ai-sdk/amazon-bedrock (5.0.98 and later)
++ * puts the ConverseStream frame's exception on the part as `type` in lower camel case
++ * (`throttlingException`); the AWS form is `ThrottlingException`. Only a name ending in
++ * `Exception` counts, so an Anthropic `invalid_request_error` or a plain `error` is not one.
++ */
++function streamFrameErrorName(raw: unknown): string | undefined {
++	const name = bareErrorName(raw);
++	if (name === undefined || !name.endsWith("Exception")) {
++		return undefined;
++	}
++	return name.charAt(0).toUpperCase() + name.slice(1);
++}
++
++function bodyErrorName(node: Record<string, unknown>): string | undefined {
++	const bodies: unknown[] = [];
++	if (typeof node.responseBody === "string") {
++		bodies.push(safeJsonParse<unknown>(node.responseBody));
++	}
++	bodies.push(node.data);
++	for (const body of bodies) {
++		const record = asRecord(body);
++		for (const key of ["__type", "type", "code", "errorType"]) {
++			const name = bareErrorName(record?.[key]);
++			// Only AWS wire names: an Anthropic `invalid_request_error` is not one.
++			if (name?.endsWith("Exception")) {
++				return name;
++			}
++		}
++	}
++	return undefined;
++}
++
++/**
++ * Describe a provider failure by the structure it carries: AWS exception name,
++ * HTTP status, retryability, retry-after, request attempts and network code.
++ * Read where the structured error is still in hand, like
++ * {@link classifyProviderError}; the flattened message has lost all of it.
++ *
++ * Nothing is inferred: a field the failure does not carry is left out of the
++ * result (a stream exception frame inside an HTTP 200 carries the provider's own
++ * type, status and retryability, and nothing else). `isRetryable` is whether the fault is transient (429, 5xx, a
++ * network or timeout failure), whatever retries the SDK already spent; the
++ * agent loop's turn-level retry is a separate decision
++ * ({@link isRetryableBeyondSdkRetries}).
++ */
++export function describeProviderError(error: unknown): ProviderErrorDetails {
++	try {
++		return describeProviderErrorUnsafe(error);
++	} catch {
++		return { isRetryable: false };
++	}
++}
++
++function describeProviderErrorUnsafe(error: unknown): ProviderErrorDetails {
++	let attempts: number | undefined;
++	let subject: unknown = error;
++	if (isRetryErrorLike(error)) {
++		attempts = error.errors.length;
++		subject = error.lastError ?? error.errors[error.errors.length - 1];
++	}
++	const chain = causeChain(subject);
++
++	let statusCode: number | undefined;
++	let errorName: string | undefined;
++	let code: string | undefined;
++	let retryAfterS: number | undefined;
++	let sdkRetryable: boolean | undefined;
++	let awsRetryable = false;
++	for (const node of chain) {
++		statusCode ??=
++			numericStatus(node.statusCode) ??
++			numericStatus(asRecord(node.$metadata)?.httpStatusCode) ??
++			numericStatus(asRecord(node.$response)?.statusCode);
++		errorName ??=
++			bareErrorName(headerValue(node.responseHeaders, "x-amzn-errortype")) ??
++			(typeof node.name === "string" &&
++			(node.name.endsWith("Exception") || node.name === "TimeoutError")
++				? bareErrorName(node.name)
++				: undefined) ??
++			(bareErrorName(node.__type)?.endsWith("Exception")
++				? bareErrorName(node.__type)
++				: undefined) ??
++			streamFrameErrorName(node.type) ??
++			bodyErrorName(node);
++		if (code === undefined && typeof node.code === "string") {
++			code = NETWORK_ERROR_CODES.has(node.code) ? node.code : undefined;
++		}
++		retryAfterS ??= retryAfterSeconds(node.responseHeaders);
++		if (sdkRetryable === undefined && typeof node.isRetryable === "boolean") {
++			sdkRetryable = node.isRetryable;
++		}
++		awsRetryable ||= asRecord(node.$retryable) !== undefined;
++	}
++
++	const isRetryable =
++		sdkRetryable ??
++		(statusCode !== undefined
++			? statusCode >= 500 || RETRYABLE_STATUSES.has(statusCode)
++			: awsRetryable ||
++				code !== undefined ||
++				errorName === "TimeoutError" ||
++				(errorName !== undefined && TRANSIENT_AWS_EXCEPTIONS.has(errorName)));
++
++	return {
++		...(errorName !== undefined ? { errorName } : {}),
++		...(statusCode !== undefined ? { statusCode } : {}),
++		isRetryable,
++		...(retryAfterS !== undefined ? { retryAfterS } : {}),
++		...(attempts !== undefined ? { attempts } : {}),
++		...(code !== undefined ? { code } : {}),
++	};
++}
++
++/**
++ * The details worth putting on an event: `undefined` when the failure has no
++ * structure beyond retryability, so a plain `new Error(...)` failure keeps the
++ * event shape it always had.
++ */
++export function providerErrorDetailsForEvent(
++	details: ProviderErrorDetails,
++): ProviderErrorDetails | undefined {
++	return details.errorName !== undefined ||
++		details.statusCode !== undefined ||
++		details.retryAfterS !== undefined ||
++		details.attempts !== undefined ||
++		details.code !== undefined ||
++		details.stopReason !== undefined
++		? details
++		: undefined;
++}
+diff --git a/sdk/packages/llms/src/providers/error-details.test.ts b/sdk/packages/llms/src/providers/error-details.test.ts
+new file mode 100644
+index 0000000..9eff66f
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/error-details.test.ts
+@@ -0,0 +1,357 @@
++import { APICallError, RetryError } from "ai";
++import { describe, expect, it } from "vitest";
++import { describeProviderError } from "./error-classification";
++import { extractErrorMessage } from "./format";
++
++// Harness patch 0011: the structure of a provider failure (AWS exception name, HTTP status,
++// retryability, retry-after, attempts) survives to the ACP error data, so the cline-agentcore-harness
++// failover classifier reads fields instead of guessing from message text. Shapes are the ones the
++// pinned fork raised against a local fake Bedrock (evidence 2026-09-30-engine-fault-probe.md).
++
++const ARN_SUFFIX = ":http://internal.amazon.com/coral/com.amazon.bedrock/";
++
++function bedrockHttpError(
++	statusCode: number,
++	errorType: string,
++	message: string,
++	extraHeaders: Record<string, string> = {},
++) {
++	return new APICallError({
++		message,
++		url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse-stream",
++		requestBodyValues: {},
++		statusCode,
++		responseHeaders: {
++			"x-amzn-errortype": `${errorType}${ARN_SUFFIX}`,
++			...extraHeaders,
++		},
++		responseBody: JSON.stringify({ message }),
++		isRetryable: statusCode === 429 || statusCode >= 500,
++	});
++}
++
++function retryError(last: Error, attempts: number) {
++	// A sustained outage fails every attempt the same way.
++	const earlier = Array.from({ length: attempts - 1 }, () => last);
++	return new RetryError({
++		message: `Failed after ${attempts} attempts. Last error: ${last.message}`,
++		reason: "maxRetriesExceeded",
++		errors: [...earlier, last],
++	});
++}
++
++describe("describeProviderError", () => {
++	describe("APICallError with a status code", () => {
++		it("reads the AWS exception name from x-amzn-errortype and counts the attempts of a RetryError", () => {
++			const last = bedrockHttpError(
++				503,
++				"ServiceUnavailableException",
++				"The service isn't currently available. Retry your request.",
++			);
++			const error = retryError(last, 6);
++			expect(describeProviderError(error)).toEqual({
++				errorName: "ServiceUnavailableException",
++				statusCode: 503,
++				isRetryable: true,
++				attempts: 6,
++			});
++			// The display message the ACP error already carried does not change.
++			expect(extractErrorMessage(error)).toBe(
++				"The service isn't currently available. Retry your request.",
++			);
++		});
++
++		it("keeps ModelNotReadyException apart from ThrottlingException on the same status", () => {
++			const notReady = bedrockHttpError(
++				429,
++				"ModelNotReadyException",
++				"The model is not ready to serve inference requests. Wait and try again.",
++			);
++			const throttled = bedrockHttpError(
++				429,
++				"ThrottlingException",
++				"Too many requests, please wait before trying again.",
++			);
++			expect(describeProviderError(notReady)).toMatchObject({
++				errorName: "ModelNotReadyException",
++				statusCode: 429,
++				isRetryable: true,
++			});
++			expect(describeProviderError(throttled)).toMatchObject({
++				errorName: "ThrottlingException",
++				statusCode: 429,
++				isRetryable: true,
++			});
++		});
++
++		it("reports retry-after as whole seconds from retry-after, retry-after-ms and an HTTP date", () => {
++			const secs = bedrockHttpError(429, "ThrottlingException", "slow down", {
++				"retry-after": "5",
++			});
++			expect(describeProviderError(secs).retryAfterS).toBe(5);
++			const ms = bedrockHttpError(429, "ThrottlingException", "slow down", {
++				"retry-after-ms": "1500",
++			});
++			expect(describeProviderError(ms).retryAfterS).toBe(2);
++			const soon = new Date(Date.now() + 30_000).toUTCString();
++			const dated = bedrockHttpError(429, "ThrottlingException", "slow down", {
++				"retry-after": soon,
++			});
++			const got = describeProviderError(dated).retryAfterS;
++			expect(got).toBeGreaterThanOrEqual(28);
++			expect(got).toBeLessThanOrEqual(31);
++			const none = bedrockHttpError(429, "ThrottlingException", "slow down");
++			expect(describeProviderError(none).retryAfterS).toBeUndefined();
++			const junk = bedrockHttpError(429, "ThrottlingException", "slow down", {
++				"retry-after": "soon",
++			});
++			expect(describeProviderError(junk).retryAfterS).toBeUndefined();
++		});
++
++		it("marks a 400 ValidationException and a 403 AccessDeniedException as not retryable", () => {
++			expect(
++				describeProviderError(
++					bedrockHttpError(
++						400,
++						"ValidationException",
++						"Input is too long for requested model.",
++					),
++				),
++			).toEqual({
++				errorName: "ValidationException",
++				statusCode: 400,
++				isRetryable: false,
++			});
++			expect(
++				describeProviderError(
++					bedrockHttpError(403, "AccessDeniedException", "not allowed"),
++				),
++			).toEqual({
++				errorName: "AccessDeniedException",
++				statusCode: 403,
++				isRetryable: false,
++			});
++		});
++
++		it("gives a status without a name when the response names no exception", () => {
++			const error = new APICallError({
++				message: "Service Unavailable",
++				url: "https://example.test/v1",
++				requestBodyValues: {},
++				statusCode: 503,
++				isRetryable: true,
++			});
++			expect(describeProviderError(error)).toEqual({
++				statusCode: 503,
++				isRetryable: true,
++			});
++		});
++
++		it("reads a name the body carries when the header is absent", () => {
++			const error = new APICallError({
++				message: "Too many requests",
++				url: "https://example.test/v1",
++				requestBodyValues: {},
++				statusCode: 429,
++				responseBody: JSON.stringify({
++					__type: "com.amazon.coral.availability#ThrottlingException",
++					message: "Too many requests",
++				}),
++				isRetryable: true,
++			});
++			expect(describeProviderError(error)).toMatchObject({
++				errorName: "ThrottlingException",
++				statusCode: 429,
++			});
++		});
++	});
++
++	describe("error objects from another copy of the AI SDK", () => {
++		it("reads a RetryError and an APICallError by their fields", () => {
++			const last = Object.assign(new Error("Too many requests"), {
++				name: "AI_APICallError",
++				statusCode: 429,
++				responseHeaders: { "x-amzn-ErrorType": "ThrottlingException" },
++				isRetryable: true,
++			});
++			const error = Object.assign(new Error("Failed after 6 attempts."), {
++				name: "AI_RetryError",
++				reason: "maxRetriesExceeded",
++				errors: [last, last, last, last, last, last],
++				lastError: last,
++			});
++			expect(describeProviderError(error)).toEqual({
++				errorName: "ThrottlingException",
++				statusCode: 429,
++				isRetryable: true,
++				attempts: 6,
++			});
++		});
++	});
++
++	describe("an AWS exception that carries its name", () => {
++		it("reads name, $metadata status and the retryable flag of an AWS SDK style error", () => {
++			const error = Object.assign(new Error("Rate exceeded"), {
++				name: "ThrottlingException",
++				$metadata: { httpStatusCode: 429 },
++				$retryable: { throttling: true },
++			});
++			expect(describeProviderError(error)).toEqual({
++				errorName: "ThrottlingException",
++				statusCode: 429,
++				isRetryable: true,
++			});
++		});
++
++		it("reads the name of an exception with a __type and no status", () => {
++			const error = Object.assign(new Error("model stream failed"), {
++				__type: "com.amazon.bedrock#ModelStreamErrorException",
++			});
++			expect(describeProviderError(error)).toEqual({
++				errorName: "ModelStreamErrorException",
++				isRetryable: true,
++			});
++		});
++
++		it("judges retryability by the exception name when the error has no status or flag", () => {
++			const named = (name: string) =>
++				describeProviderError(Object.assign(new Error("x"), { name }));
++			for (const transient of [
++				"ThrottlingException",
++				"ServiceUnavailableException",
++				"InternalServerException",
++				"ModelTimeoutException",
++				"ModelNotReadyException",
++				"ModelStreamErrorException",
++			]) {
++				expect(named(transient)).toEqual({
++					errorName: transient,
++					isRetryable: true,
++				});
++			}
++			for (const permanent of [
++				"ValidationException",
++				"AccessDeniedException",
++				"ResourceNotFoundException",
++			]) {
++				expect(named(permanent)).toEqual({
++					errorName: permanent,
++					isRetryable: false,
++				});
++			}
++		});
++	});
++
++	describe("a network error", () => {
++		it("reports the code of a connection failure the SDK wrapped as APICallError", () => {
++			const cause = Object.assign(new Error("read ECONNRESET"), {
++				code: "ECONNRESET",
++			});
++			const error = retryError(
++				new APICallError({
++					message: "Cannot connect to API: read ECONNRESET",
++					url: "https://bedrock-runtime.us-east-1.amazonaws.com/x",
++					requestBodyValues: {},
++					cause,
++					isRetryable: true,
++				}),
++				6,
++			);
++			expect(describeProviderError(error)).toEqual({
++				code: "ECONNRESET",
++				isRetryable: true,
++				attempts: 6,
++			});
++		});
++
++		it("reports the code of a bare fetch failure", () => {
++			const error = new TypeError("fetch failed", {
++				cause: Object.assign(new Error("connect ETIMEDOUT"), {
++					code: "ETIMEDOUT",
++				}),
++			});
++			expect(describeProviderError(error)).toEqual({
++				code: "ETIMEDOUT",
++				isRetryable: true,
++			});
++		});
++
++		it("reports Bun's ConnectionClosed code", () => {
++			const error = Object.assign(
++				new Error("The socket connection was closed unexpectedly."),
++				{ code: "ConnectionClosed" },
++			);
++			expect(describeProviderError(error)).toEqual({
++				code: "ConnectionClosed",
++				isRetryable: true,
++			});
++		});
++	});
++
++	describe("the timeout error", () => {
++		it("reports a TimeoutError as a transient failure", () => {
++			const error = new DOMException(
++				"The operation timed out.",
++				"TimeoutError",
++			);
++			expect(describeProviderError(error)).toEqual({
++				errorName: "TimeoutError",
++				isRetryable: true,
++			});
++		});
++	});
++
++	describe("anything else", () => {
++		it("describes a stream exception payload that lost its type as not retryable and nameless", () => {
++			expect(
++				describeProviderError({ message: "stream failed before any content" }),
++			).toEqual({ isRetryable: false });
++		});
++
++		it("survives null, strings and self-referential errors", () => {
++			expect(describeProviderError(undefined)).toEqual({ isRetryable: false });
++			expect(describeProviderError("boom")).toEqual({ isRetryable: false });
++			const loop: Record<string, unknown> = { message: "x" };
++			loop.cause = loop;
++			expect(describeProviderError(loop)).toEqual({ isRetryable: false });
++		});
++
++		it("does not invent an attempts count for a plain error", () => {
++			expect(describeProviderError(new Error("nope")).attempts).toBeUndefined();
++		});
++	});
++});
++
++describe("describeProviderError: retry decisions without an SDK flag", () => {
++	it("treats every 5xx status as retryable, also one the named list does not carry", () => {
++		for (const statusCode of [501, 507, 599]) {
++			expect(describeProviderError({ statusCode }), String(statusCode)).toEqual({
++				statusCode,
++				isRetryable: true,
++			});
++		}
++	});
++
++	it("treats a 4xx status outside the named list as not retryable", () => {
++		for (const statusCode of [400, 401, 403, 404, 413, 422]) {
++			expect(
++				describeProviderError({ statusCode }).isRetryable,
++				String(statusCode),
++			).toBe(false);
++		}
++	});
++
++	it("keeps the code of a network failure and ignores any other code", () => {
++		expect(
++			describeProviderError(
++				Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
++			),
++		).toEqual({ code: "ECONNRESET", isRetryable: true });
++		for (const code of ["ENOENT", "EACCES", "ERR_INVALID_ARG_TYPE", "E_OTHER"]) {
++			expect(
++				describeProviderError(Object.assign(new Error(code), { code })),
++				code,
++			).toEqual({ isRetryable: false });
++		}
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/gateway.test.ts b/sdk/packages/llms/src/providers/gateway.test.ts
+index 73c69a2..ce39996 100644
+--- a/sdk/packages/llms/src/providers/gateway.test.ts
++++ b/sdk/packages/llms/src/providers/gateway.test.ts
+@@ -2912,6 +2912,7 @@ describe("sdk-gateway", () => {
+ 			error: "prompt is too long: 213462 tokens > 200000 maximum",
+ 			errorClass: "context_window_exceeded",
+ 			errorRetryable: false,
++			errorDetails: { statusCode: 400, isRetryable: false, phase: "request" },
+ 		});
+ 	});
+ 
+@@ -2949,6 +2950,7 @@ describe("sdk-gateway", () => {
+ 			error: "Instructions are required",
+ 			errorClass: "unknown",
+ 			errorRetryable: false,
++			errorDetails: { statusCode: 400, isRetryable: false, phase: "request" },
+ 		});
+ 	});
+ 
+diff --git a/sdk/packages/shared/src/agent.ts b/sdk/packages/shared/src/agent.ts
+index b280ee2..29d2574 100644
+--- a/sdk/packages/shared/src/agent.ts
++++ b/sdk/packages/shared/src/agent.ts
+@@ -303,6 +303,33 @@ export type AgentModelFinishReason =
+  */
+ export type ProviderErrorClass = "context_window_exceeded" | "auth" | "unknown";
+ 
++/**
++ * The structure of a provider failure, read at the model boundary while the raw
++ * error is still in hand (the flattened `error` message loses it). Every field
++ * is a fact the wire or the SDK gave; nothing is inferred from message text.
++ *
++ * The ACP agent copies these fields into the JSON-RPC error `data` next to the
++ * unchanged `message`, so a harness reads them instead of matching text.
++ */
++export interface ProviderErrorDetails {
++	/** AWS exception name (`ThrottlingException`), or `TimeoutError`, or `ModelContextWindowExceeded`. */
++	errorName?: string;
++	/** HTTP status the provider answered with; absent when the failure has none (stream frame, network). */
++	statusCode?: number;
++	/** The underlying fault is transient (429, 5xx, a network or timeout failure), whatever retries were already spent. */
++	isRetryable: boolean;
++	/** Whole seconds from a retry-after or retry-after-ms header. */
++	retryAfterS?: number;
++	/** Requests the SDK made for the final failing call (a RetryError's attempt count). */
++	attempts?: number;
++	/** Network or socket code: `ECONNRESET`, `ETIMEDOUT`, `ConnectionClosed`. */
++	code?: string;
++	/** Provider stop reason that ended the turn as an error (`model_context_window_exceeded`). */
++	stopReason?: string;
++	/** Where the failure happened: the request, the response stream, the compaction summary call, or a stop reason. */
++	phase?: "request" | "stream" | "compaction" | "stop";
++}
++
+ export type AgentModelEvent =
+ 	| { type: "text-delta"; text: string }
+ 	| { type: "media"; media: GeneratedMedia }
+@@ -347,6 +374,11 @@ export type AgentModelEvent =
+ 			requestId?: string;
+ 			error?: string;
+ 			errorClass?: ProviderErrorClass;
++			/**
++			 * The structure of the provider failure (`error` is a flattened string).
++			 * Absent when the failure has none beyond retryability.
++			 */
++			errorDetails?: ProviderErrorDetails;
+ 			/**
+ 			 * Whether the underlying provider error was transient and worth
+ 			 * retrying, decided at the model boundary from the AI SDK's typed
+@@ -709,6 +741,8 @@ export type AgentRuntimeEvent =
+ 			error: Error;
+ 			/** Classification of the provider error that failed the run. */
+ 			errorClass?: ProviderErrorClass;
++			/** The structure of the provider failure that failed the run, when it has one. */
++			errorDetails?: ProviderErrorDetails;
+ 	  };
+ 
+ // =============================================================================
+diff --git a/sdk/packages/shared/src/agents/types.ts b/sdk/packages/shared/src/agents/types.ts
+index 712ce2b..e468680 100644
+--- a/sdk/packages/shared/src/agents/types.ts
++++ b/sdk/packages/shared/src/agents/types.ts
+@@ -15,6 +15,7 @@ import type {
+ 	AgentRuntimeHooks,
+ 	AgentTool,
+ 	ProviderErrorClass,
++	ProviderErrorDetails,
+ } from "../agent";
+ import type { ExtensionContext } from "../extensions/context";
+ import type {
+@@ -213,6 +214,8 @@ export interface AgentErrorEvent extends AgentEventMetadata {
+ 	error: Error;
+ 	/** Classification of the provider error, when known. */
+ 	errorClass?: ProviderErrorClass;
++	/** The structure of the provider failure (AWS exception name, HTTP status, attempts), when it has one. */
++	errorDetails?: ProviderErrorDetails;
+ 	/** Whether the error is recoverable */
+ 	recoverable: boolean;
+ 	/** Current iteration when error occurred */
+-- 
+2.47.3
+

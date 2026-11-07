@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 412,
+  "ts": "2026-10-15T13:41:07Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "needs-input",
+      "text": "Needs your input: Cline stopped its own prompt (ham say, ham new-session or ham finish)",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "n": 1,
+      "reason": "engine_stop",
+      "title": "Cline stopped its own prompt",
+      "stopOutcome": "stopped_engine_cancelled",
+      "evidence": {
+        "attempts": 2,
+        "toolCalls": 41,
+        "filesChanged": 3,
+        "identicalCalls": 5,
+        "failedTurns": null,
+        "lastError": "the engine ended the prompt cancelled with no cancel request (mistake limit or a cut model stream)",
+        "runS": 412,
+        "sessions": 1
+      },
+      "lastMessage": "I will keep polling the build until it finishes, then append step 4 to PROGRESS.md.",
+      "files": [
+        "PROGRESS.md",
+        "src/app.py",
+        "tests/test_app.py"
+      ],
+      "filesTotal": 3,
+      "blocking": true,
+      "options": [
+        "continue_with_prompt",
+        "new_session_with_prompt",
+        "try_model",
+        "finish"
+      ],
+      "models": [
+        {
+          "id": "us.anthropic.claude-opus-5-5",
+          "name": "Claude Opus 5.5",
+          "contextTokens": 1000000
+        },
+        {
+          "id": "global.anthropic.claude-sonnet-5-5",
+          "name": "Claude Sonnet 5.5",
+          "contextTokens": 1000000
+        }
+      ],
+      "recommended": null,
+      "canContinue": true,
+      "waitS": 1800,
+      "expiresAt": "2026-10-15T14:11:07Z"
+    }
+  }
+}

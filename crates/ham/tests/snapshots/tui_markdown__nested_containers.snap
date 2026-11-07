@@ -1,0 +1,15 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: "dump(&render(src, 40))"
+---
+  Outer:
+  
+  • item with code:
+    ⟦yellow:echo hi⟧
+  • next
+  
+  ⟦yellow:```rust⟧
+  ⟦yellow:fn x() {}⟧
+  ⟦yellow:```⟧
+  
+  ⟦d:│ ⟧⟦yellow:quoted code⟧

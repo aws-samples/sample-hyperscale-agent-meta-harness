@@ -1,0 +1,28 @@
+# Test stand-ins that the secret scanner reads as credentials: made-up key ids and placeholder values that tests pass around. None is a credential.
+# A line is `<file>:<rule>:<line>`, with no commit, so it holds for any history of this tree. The lines are found again whenever the files change,
+# and every block has its reason above it. Never add a line for a real secret: rotate the secret instead.
+
+# a made-up key id that a test uses to tell a refreshed credential from the first one; no cloud account issued it
+crates/agentd/tests/creds.rs:aws-access-token:128
+
+# a made-up key id that the test passes to a fake credential provider; no cloud account issued it
+crates/agentd/tests/direct_probe.rs:generic-api-key:28
+crates/agentd/tests/direct_probe.rs:generic-api-key:135
+
+# a test input that holds only the header and the footer of a private key, with no key material between them
+crates/harness-core/tests/engine_diagnostic_fuzz.rs:private-key:132
+
+# a made-up key id in a test copy of a credential reply; no cloud account issued it
+crates/harness-protocol/tests/wire_direct_failover.rs:generic-api-key:33
+
+# a made-up key id in a test copy of a credential reply; no cloud account issued it
+crates/harness-protocol/tests/wire_direct_input_runtime.rs:generic-api-key:23
+
+# a made-up key id in a test copy of a credential reply; no cloud account issued it
+crates/harness-protocol/tests/wire_direct_runtime.rs:generic-api-key:41
+
+# a made-up key id in a test that the patch adds; the patch is stored byte for byte and pinned by its SHA-256, so it cannot carry a comment
+engine/cline/patches/0006-fix-cli-never-send-the-ACP-placeholder-key-as-a-bear.patch:aws-access-token:72
+
+# the test-only form of the same patch, with the same made-up key id; it is pinned by its SHA-256 and cannot carry a comment
+engine/cline/patches/tdd/0006-test-only.patch:aws-access-token:72

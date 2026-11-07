@@ -1,0 +1,61 @@
+Update available! 12.6.0 → 12.16.1.
+Changelog: https://pnpm.io/v/12.16.1
+To update, run: curl -fsSL https://get.pnpm.io/install.sh | sh -
+? Verifying lockfile against supply-chain policies (118 entries)...
+Downloading @aws-cdk/asset-awscli-v1@2.2.292: 0.00 B/21.17 MB
+Downloading aws-cdk-lib@2.270.0: 0.00 B/37.20 MB
+Downloading @typescript/typescript-linux-x64@7.0.2: 0.00 B/9.66 MB
+Downloading @rolldown/binding-linux-x64-gnu@1.2.15: 0.00 B/8.30 MB
+Packages are copied from the content-addressable store to the virtual store.
+  Content-addressable store is at: /hamh/cache/pnpm-store/v11
+  Virtual store is at:             node_modules/.pnpm
+✓ Lockfile passes supply-chain policies (118 entries in 771ms)
+Lockfile is up to date, resolution step is skipped
+Packages: +49
++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 49, reused 0, downloaded 49, added 49, done
+
+dependencies:
++ aws-cdk-lib 2.270.0
++ constructs 10.8.1
+
+devDependencies:
++ @types/node 22.20.4
++ tsx 4.23.15
++ typescript 7.0.2
++ vitest 5.0.1
+
+Done in 3.5s using pnpm v12.6.0
+/codebuild/output/src545072180/src/infra/lib/config.ts:96
+    throw new Error(`${path}: ${e?.code ?? e?.message ?? e}`);
+          ^
+
+Error: /codebuild/output/src545072180/src/../hamh-setup-work/account/accounts.json: ENOENT
+    at loadAccounts (/codebuild/output/src545072180/src/infra/lib/config.ts:96:11)
+    at <anonymous> (/codebuild/output/src545072180/src/infra/lib/config.ts:106:44)
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.23.2
+node_modules/.bin/tsx bin/app.ts: Subprocess exited with error 1
+DEPLOY-FAIL synth cdk synth failed
+SETUP-FAIL deploy synth cdk synth failed
+
+[Container] 2026/01/01 00:00:50.979880 Command did not exit successfully bash scripts/setup/runner-build.sh exit status 1
+[Container] 2026/01/01 00:00:51.052098 Phase complete: BUILD State: FAILED
+[Container] 2026/01/01 00:00:51.052113 Phase context status code: COMMAND_EXECUTION_ERROR Message: Error while executing command: bash scripts/setup/runner-build.sh. Reason: exit status 1
+[Container] 2026/01/01 00:00:51.095478 Entering phase POST_BUILD
+[Container] 2026/01/01 00:00:51.100622 Phase complete: POST_BUILD State: SUCCEEDED
+[Container] 2026/01/01 00:00:51.100636 Phase context status code:  Message: 
+[Container] 2026/01/01 00:00:51.253013 Set report auto-discover timeout to 5 seconds
+[Container] 2026/01/01 00:00:51.287107 Expanding base directory path:  .
+[Container] 2026/01/01 00:00:51.289746 Assembling file list
+[Container] 2026/01/01 00:00:51.289753 Expanding .
+[Container] 2026/01/01 00:00:51.293116 Expanding file paths for base directory .
+[Container] 2026/01/01 00:00:51.293122 Assembling file list
+[Container] 2026/01/01 00:00:51.293125 Expanding **/*
+[Container] 2026/01/01 00:00:51.419733 No matching auto-discover report paths found
+[Container] 2026/01/01 00:00:51.419761 Report auto-discover file discovery took 0.166748 seconds
+[Container] 2026/01/01 00:00:51.419775 Phase complete: UPLOAD_ARTIFACTS State: SUCCEEDED
+[Container] 2026/01/01 00:00:51.419779 Phase context status code:  Message: 

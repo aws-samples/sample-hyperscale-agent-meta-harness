@@ -1,0 +1,3395 @@
+{
+  "$defs": {
+    "AuditInput": {
+      "description": "What a call asked for, as the audit object records it (the exact query and URLs; never a header or a key).",
+      "properties": {
+        "bytesOut": {
+          "description": "Bytes of model-chosen outbound text this call counted against the run's budget.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "query": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bytesOut"
+      ],
+      "type": "object"
+    },
+    "AuditObject": {
+      "description": "One immutable object per call (`audit/<time>-<request-id>.json`). S3 cannot append, so each call writes its own. The LC-1 and LC-2\nchecks of the lifecycle scorer read these, so Cline's own tool log is not the only record.",
+      "properties": {
+        "agent": {
+          "description": "`direct`",
+          "type": "string"
+        },
+        "at": {
+          "description": "RFC 3339 UTC.",
+          "type": "string"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credits": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/AuditInput"
+        },
+        "items": {
+          "description": "The ids of the items this call stored.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "jobId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "op": {
+          "$ref": "#/$defs/ResearchOp"
+        },
+        "provider": {
+          "$ref": "#/$defs/ResearchProvider"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "schema": {
+          "description": "[`AUDIT_SCHEMA`]",
+          "type": "string"
+        },
+        "seenBefore": {
+          "description": "A fetch: whether every URL had appeared before (the provenance gate).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/AuditStatus"
+        },
+        "upstreamRequestId": {
+          "description": "The upstream's own request id (Tavily's), when it gave one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "run",
+        "agent",
+        "op",
+        "provider",
+        "at",
+        "requestId",
+        "status",
+        "ms",
+        "input",
+        "items"
+      ],
+      "type": "object"
+    },
+    "AuditStatus": {
+      "description": "How a call ended, in an audit object.",
+      "enum": [
+        "ok",
+        "refused",
+        "error"
+      ],
+      "type": "string"
+    },
+    "BodyRef": {
+      "description": "The stored body of an item.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "DirectAttempt": {
+      "description": "One try of the prompt in a run that retried (`DirectSummary.attempts`). A run with one try lists none.",
+      "properties": {
+        "backoffS": {
+          "description": "For a failed try that another followed: the seconds agentd waited before it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "detail": {
+          "description": "For a failed try: the engine's error, scrubbed; at most [`MAX_DIRECT_DETAIL_CHARS`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DirectAttemptKind"
+        },
+        "modelId": {
+          "description": "The model id (the route) the try ran on; set in a run that has failover routes (protocol 1.34.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "n": {
+          "description": "1 for the user's prompt, then 2 and up for each resume.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "result": {
+          "$ref": "#/$defs/DirectAttemptResult"
+        },
+        "retryClass": {
+          "description": "For a failed try: what kind of failure decided the next step: `transient`, `permanent`, `unavailable` (the route itself is refused) or `never`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "kind",
+        "startedAt",
+        "endedAt",
+        "result"
+      ],
+      "type": "object"
+    },
+    "DirectAttemptKind": {
+      "description": "What a try of the prompt sent (protocol 1.32.0, the first slice of provider failover).",
+      "oneOf": [
+        {
+          "const": "prompt",
+          "description": "The user's text, byte for byte. Always try 1.",
+          "type": "string"
+        },
+        {
+          "const": "resume",
+          "description": "The one fixed sentence agentd sends on the same engine session after a provider failure.",
+          "type": "string"
+        },
+        {
+          "const": "fresh_session",
+          "description": "Protocol 1.37.0: the first send of a fresh Cline session: harness-written text, the user's words\nwhen there are some, and a summary of the earlier session.",
+          "type": "string"
+        },
+        {
+          "const": "instruction",
+          "description": "Protocol 1.37.0: the first send after a person's (or the analyzer's) message in the same session.",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectAttemptResult": {
+      "description": "How a try ended.",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The engine answered the prompt (with any stop reason).",
+          "type": "string"
+        },
+        {
+          "const": "provider_error",
+          "description": "The prompt ended in a JSON-RPC error: the provider failed.",
+          "type": "string"
+        },
+        {
+          "const": "engine_cancelled",
+          "description": "The engine answered `cancelled` and agentd had written no cancel: it ended the prompt itself (its mistake limit, a stop from a\nhook, or a stream it lost).",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectEngineConfigRef": {
+      "description": "The engine settings as `summary.json` lists them (protocol 1.39.0, `DirectSummary.engineConfig`): what the session was given, never a value.",
+      "properties": {
+        "engine": {
+          "type": "string"
+        },
+        "keys": {
+          "description": "The number of keys of the table the settings held.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "[`EngineConfig::canonical_sha256`]: 64 lowercase hex digits.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine",
+        "schema",
+        "sha256",
+        "keys"
+      ],
+      "type": "object"
+    },
+    "DirectEvidence": {
+      "description": "`PackageRequest.direct`: what EVIDENCE.md says about a direct run. Built from `summary.json` when it exists, from\nthe Step Functions failure when it does not.",
+      "properties": {
+        "clineMessage": {
+          "description": "At most [`MAX_CLINE_MESSAGE_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engineVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finalModelId": {
+          "description": "The model id the run ended on, when it switched (protocol 1.34.0); `model_id` stays the model the user chose.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The flow the run declared, from the summary; absent when the summary has none. It never changes `outcome` or\n`label`."
+        },
+        "headSource": {
+          "$ref": "#/$defs/HeadSource"
+        },
+        "label": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "modelSwitches": {
+          "description": "How many confirmed switches the run made (protocol 1.34.0); 0 is left out.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/DirectOutcome"
+        },
+        "review": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectReview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the review round did, or why it did not run; absent for a run that decided nothing. It never changes `outcome`\nor `label`."
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/DirectRuleRef"
+          },
+          "type": "array"
+        },
+        "stopReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "testReport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestReportSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The clean-checkout test report, summarised by run-session; absent when the run made none. It never changes\n`outcome` or `label`."
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wallS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "label",
+        "modelId",
+        "rules",
+        "headSource"
+      ],
+      "type": "object"
+    },
+    "DirectFailoverNote": {
+      "description": "What agentd used and did for failover in this run (protocol 1.34.0).",
+      "properties": {
+        "effectiveContextTokens": {
+          "description": "The context window in the engine's provider settings: the smallest of the routes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "effectiveMaxOutputTokens": {
+          "description": "The output limit in the engine's provider settings: the smallest of the routes, so no switch sends more than a route allows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "passes": {
+          "description": "Times every route had failed and agentd waited, then began again at the preferred one.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "probes": {
+          "description": "Small test requests agentd sent to a route while everything was down.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "routes": {
+          "description": "Routes the run could use, the preferred one included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "waitedS": {
+          "description": "Seconds spent waiting with every route down.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "routes",
+        "effectiveMaxOutputTokens",
+        "effectiveContextTokens",
+        "passes",
+        "probes",
+        "waitedS"
+      ],
+      "type": "object"
+    },
+    "DirectFlow": {
+      "description": "The flow a run declared.\n\nA reader is lenient, as for every record the harness writes: a word this build does not know reads as [`DirectFlow::Undeclared`], so a\nlater writer that adds a word cannot make an older reader drop the whole summary.",
+      "oneOf": [
+        {
+          "const": "quick",
+          "description": "`Flow: quick`: the short path for a bounded change.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "`Flow: full`: the eight steps.",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "Neither the final commit message nor the last message declared a flow. The wire word is `none`.",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectFreshSession": {
+      "description": "One fresh session (`DirectSummary.freshSessions`).",
+      "properties": {
+        "atAttempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "digestBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "digestSha256": {
+          "type": "string"
+        },
+        "n": {
+          "description": "2 for the first fresh session.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "restartedProcess": {
+          "type": "boolean"
+        },
+        "startedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "`harness`, `user` or `analyzer`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "trigger",
+        "reason",
+        "startedAt",
+        "restartedProcess",
+        "digestBytes",
+        "digestSha256",
+        "atAttempt"
+      ],
+      "type": "object"
+    },
+    "DirectGit": {
+      "properties": {
+        "baseSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundleBytes": {
+          "description": "Present only when the bundle upload succeeded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "bundleUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "committedByHarness": {
+          "description": "True when the end sequence made a commit for what Cline left uncommitted.",
+          "type": "boolean"
+        },
+        "filesChanged": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headSha": {
+          "description": "Present only when the bundle upload succeeded.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "committedByHarness",
+        "filesChanged"
+      ],
+      "type": "object"
+    },
+    "DirectIntervention": {
+      "description": "One question and what became of it (`DirectSummary.interventions`). Never carries the user's text.",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "atAttempt": {
+          "description": "The `n` of the next attempt this answer started, or of the last one for a close.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "closedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "model": {
+          "description": "`try_model` only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "n": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "openedAt": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstructOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "description": "`answered`, `expired`, `cancelled`, `deadline`, `finish` or `superseded`.",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "textBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "waitedS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "n",
+        "requestId",
+        "reason",
+        "openedAt",
+        "closedAt",
+        "waitedS",
+        "outcome",
+        "atAttempt"
+      ],
+      "type": "object"
+    },
+    "DirectInvocationRequest": {
+      "additionalProperties": false,
+      "description": "`POST /invocations` body of a direct run. At most [`MAX_DIRECT_BODY_BYTES`].",
+      "properties": {
+        "agentId": {
+          "description": "[`DIRECT_AGENT_ID`].",
+          "type": "string"
+        },
+        "credentials": {
+          "$ref": "#/$defs/ProcessCredentials",
+          "description": "Session credentials of `harness-worker-session`, minted outside the VM."
+        },
+        "engine": {
+          "description": "The engine profile name, `cline`.",
+          "type": "string"
+        },
+        "failover": {
+          "description": "Protocol 1.34.0: the routes agentd may switch to after `model`, in the order it tries them: the other\nprofile of the same model first, then the other supported models. Each has a smoke record in `engine/catalog/models.json`; the\ncontrol plane builds the list and the session credentials cover exactly these routes. Absent or empty: no failover. At most\n[`MAX_DIRECT_ROUTES`]; none repeats `model` or another route.",
+          "items": {
+            "$ref": "#/$defs/DirectModelSpec"
+          },
+          "type": "array"
+        },
+        "inputWaitS": {
+          "description": "Protocol 1.37.0: how many seconds agentd keeps the session alive for a person's answer when\nCline fails or gives up. Absent means 0: no question is raised and the run ends at the stop, as before. At most\n[`MAX_INPUT_WAIT_S`]; run-session copies the request's value.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "internalApiUrl": {
+          "description": "`https://<id>.execute-api.<region>.amazonaws.com/direct`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DirectKind"
+        },
+        "model": {
+          "$ref": "#/$defs/DirectModelSpec"
+        },
+        "nonce": {
+          "description": "Rotating refresh nonce for `/internal/creds`.",
+          "type": "string"
+        },
+        "packagesToken": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackagesToken"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The CodeArtifact token, kept in agentd's memory only; absent on a run without packages."
+        },
+        "packagesTokenExpiresAt": {
+          "description": "When `packages_token` stops working, in Unix seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "providerSilenceS": {
+          "description": "The engine silence limit; agentd's default is 900 s.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "The stage Region: S3, the internal API and CodeArtifact.",
+          "type": "string"
+        },
+        "repo": {
+          "$ref": "#/$defs/RepoSource",
+          "description": "`S3Bundle { uri: runs/<runId>/input/repo.bundle }`."
+        },
+        "request": {
+          "$ref": "#/$defs/InputRef",
+          "description": "`runs/<runId>/input/request.json` and its SHA-256: the prompt, the rules and the optional nudge."
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runtimeSessionId": {
+          "type": "string"
+        },
+        "slice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectSlice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a slice of a run that renews its session needs to know. Absent for a run of one session,\nso an agentd image that predates the member parses what it always parsed. Required from turn 2 on."
+        },
+        "snapshotEveryS": {
+          "description": "Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timeoutS": {
+          "description": "1 to [`MAX_DIRECT_TIMEOUT_S`]; run-session sends the maximum.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turn": {
+          "description": "[`DIRECT_TURN`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "runId",
+        "agentId",
+        "turn",
+        "runtimeSessionId",
+        "credentials",
+        "nonce",
+        "internalApiUrl",
+        "region",
+        "engine",
+        "model",
+        "request",
+        "repo",
+        "timeoutS"
+      ],
+      "type": "object"
+    },
+    "DirectKind": {
+      "description": "The `kind` member of the invocation: the one word that tells agentd this is a direct turn.",
+      "enum": [
+        "direct"
+      ],
+      "type": "string"
+    },
+    "DirectModelSpec": {
+      "additionalProperties": false,
+      "description": "One row of `engine/catalog/models.json`, as the session needs it.",
+      "properties": {
+        "contextTokens": {
+          "description": "Written to the engine's provider settings as the context window.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "defaultReasoningEffort": {
+          "description": "Protocol 1.47.0: the reasoning level this model's row of `engine/catalog/models.json` gives, one of\n[`REASONING_LEVELS`]. agentd launches the engine with it (`--thinking <level>`) when the user's `reasoning.effort` is `default` (or the key\nis not set), and with the user's own level or none (`off`) otherwise. Absent: the engine is launched as in 1.45.0, with no reasoning\nargument. The launch level is set once for the engine process, so it is the level of the model the run starts on, also after a switch to\na route of another model.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The Bedrock model id, for example `us.anthropic.claude-opus-5-5`.",
+          "type": "string"
+        },
+        "maxOutputTokens": {
+          "description": "Written to the engine's provider settings as the output limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protocol": {
+          "$ref": "#/$defs/Protocol",
+          "description": "`converse` in v1."
+        },
+        "region": {
+          "description": "The inference Region the engine calls; it may differ from the stage Region.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "region",
+        "protocol",
+        "contextTokens",
+        "maxOutputTokens"
+      ],
+      "type": "object"
+    },
+    "DirectNudge": {
+      "properties": {
+        "honored": {
+          "type": "boolean"
+        },
+        "requested": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requested",
+        "honored"
+      ],
+      "type": "object"
+    },
+    "DirectObservation": {
+      "description": "A fact the harness read at the end of the run (protocol 1.38.0). Its `text` is one plain sentence the harness wrote; no field holds a\nword of [`BANNED_CLAIM_WORDS`].",
+      "properties": {
+        "command": {
+          "description": "`last_log_entry_red`: the command of the logged run as the log wrote it, cleaned and cut; left out when it holds a banned claim word.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit": {
+          "description": "`last_log_entry_red`: the exit code as logged (a number or `unknown`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed": {
+          "description": "`last_log_entry_red`: the failed count as logged, when it was above zero.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/DirectObservationKind"
+        },
+        "text": {
+          "description": "The sentence the card shows beside the label, at most [`MAX_OBSERVATION_CHARS`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DirectObservationKind": {
+      "description": "What kinds of fact [`DirectObservation`] records. An observation is something the harness read and writes down as it found\nit; it says nothing about whether the work is good.",
+      "oneOf": [
+        {
+          "const": "last_log_entry_red",
+          "description": "The last entry of the run log (`docs/lifecycle/LOG.md`) is a run with a non-zero exit code or failed tests.",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectOutcome": {
+      "description": "How a direct session ended, as the harness records it. The word is the wire form (`snake_case`); the label is\nthe text the product shows. The labels are frozen: a change to one needs the maintainers' decision.\n\nOnly [`DirectOutcome::ReportedDone`] says \"Cline reported done\", and that is the sentence the product uses when\nCline's own stop reason is `end_turn` with a message. The harness never claims more.",
+      "enum": [
+        "reported_done",
+        "stopped_setup_failed",
+        "stopped_no_message",
+        "stopped_max_tokens",
+        "stopped_max_requests",
+        "stopped_refusal",
+        "stopped_by_user",
+        "stopped_engine_cancelled",
+        "stopped_provider_error",
+        "stopped_engine_died",
+        "stopped_silence",
+        "stopped_timeout",
+        "stopped_other",
+        "stopped_session_lost",
+        "stopped_no_changes"
+      ],
+      "type": "string"
+    },
+    "DirectPackages": {
+      "description": "What the loopback package proxy counted (`pkgproxy::StatsSnapshot`).",
+      "properties": {
+        "byPrefix": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "refused": {
+          "description": "Requests the proxy refused; left out when 0.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "statuses": {
+          "additionalProperties": false,
+          "description": "HTTP status code to count; JSON object keys are strings.",
+          "patternProperties": {
+            "^\\d+$": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "enabled",
+        "requests",
+        "bytes",
+        "byPrefix",
+        "statuses"
+      ],
+      "type": "object"
+    },
+    "DirectRequestRef": {
+      "properties": {
+        "promptBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "promptBytes"
+      ],
+      "type": "object"
+    },
+    "DirectResearchCounts": {
+      "description": "What agentd's own research API did during a run, in counts (no text, no address): the `counts` of [`DirectResearchNote`].\nA call is a request the engine's `ham-research` command made to the loopback API. The numbers are this agentd process's; a second invocation of\nthe same run on the same VM starts again from zero.",
+      "properties": {
+        "errors": {
+          "description": "Every other call that gave nothing: a limit, the upstream, the route, a hash that differed, a placement that failed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fetches": {
+          "description": "Calls to `fetch`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "placed": {
+          "description": "Items checked against their manifest and placed read-only in the context directory.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "placedBytes": {
+          "description": "Bytes placed in the context directory: the text of the pages and the unpacked files of the repositories.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "refused": {
+          "description": "Calls the policy refused (a secret-shaped string, an address the run never saw, a host that is not served, research off, no key).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repos": {
+          "description": "Calls to `repo`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "searches": {
+          "description": "Calls to `search`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "waits": {
+          "description": "Calls to `wait` (polls of a repository download that said pending).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "searches",
+        "fetches",
+        "repos",
+        "waits",
+        "placed",
+        "refused",
+        "errors",
+        "placedBytes"
+      ],
+      "type": "object"
+    },
+    "DirectResearchNote": {
+      "description": "The research part of `summary.json` for agentd to write: whether the research lane ran,\nwhich provider answered, what the route counted for the run and what agentd's own API did. Counts only; it never changes the label, the\noutcome or the delivery.\n\n- `enabled` is true when agentd served the lane to the engine (its loopback API was up), also when the engine never called it; false, with\n  nothing else, when the user switched research off for the run or the route said it is off (`disabled`, `no_key`) or the lane could not\n  start. A stage without the research route leaves the whole member out.\n- `usage` is the route's own count for the run, read once more when the run ends. It is left out when that read failed: a zero would claim\n  that the route counted nothing.\n- `counts` is agentd's own count of what its API did. The two are different quantities and need not be equal (one `fetch` call can name\n  several addresses; the route counts per run, agentd per process).",
+      "properties": {
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectResearchCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "DirectReview": {
+      "description": "What the review round did in a run (protocol 1.44.0), in `summary.json` and in the evidence. A fact the harness read, never a claim about the\nwork: the round asks Cline to look again, and the harness makes no judgment of the result.",
+      "properties": {
+        "changedFiles": {
+          "description": "Whether the round changed any file (the work tree after differs from the work tree before); left out when the harness could not tell.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "commitAfter": {
+          "description": "The commit `HEAD` pointed to when the round ended.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commitBefore": {
+          "description": "The commit `HEAD` pointed to when the round began (40 or 64 lowercase hex digits); left out when it could not be read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "description": "Input tokens the round used, when the engine reported them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "description": "Output tokens the round used, when the engine reported them.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "A skipped round: why (`REVIEW_SKIP_*`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "result": {
+          "description": "A round that ran: [`REVIEW_COMPLETED`], [`REVIEW_FAILED`] or [`REVIEW_CANCELLED`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seconds": {
+          "description": "How long the round took.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "[`REVIEW_RAN`] or [`REVIEW_SKIPPED`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "DirectRuleRef": {
+      "description": "A rules file the session was given. `bytes` is in `summary.json`; the evidence leaves it out.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "DirectRulesPreflight": {
+      "properties": {
+        "ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ran": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ran"
+      ],
+      "type": "object"
+    },
+    "DirectSkillRef": {
+      "description": "A skill as `summary.json` lists it (protocol 1.38.0): what the session was given, never the content.",
+      "properties": {
+        "bytes": {
+          "description": "The total size of the files, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "The number of files.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "description": "[`skill_sha256`] of the skill.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256",
+        "files",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "DirectSlice": {
+      "additionalProperties": false,
+      "description": "The slice member of an invocation (protocol 1.55.0).",
+      "properties": {
+        "baseSha": {
+          "description": "Turn 2 and later: the run's original base commit (40 lowercase hex). Changed-file counts, the no-changes label, the review round and the\nsummary are measured against it, not against the head the slice restored.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "brief": {
+          "description": "Turn 2 and later: the last message the earlier slice's Cline wrote (at most [`MAX_SLICE_BRIEF_BYTES`] bytes), from the turn-complete the\nservice already holds. The new session's first prompt quotes it as data, never as an instruction.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last": {
+          "description": "No slice follows this one: when its prompt deadline comes the run ends (paused, at its total time). When `false`, the deadline is a\nhandoff: agentd ends the slice the same way and says so in turn-complete (`handoff`), and the service starts the next slice.",
+          "type": "boolean"
+        },
+        "restoreHead": {
+          "description": "Turn 2 and later: the commit the restored repository must be at (40 lowercase hex); agentd refuses to start the engine on any other.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionsBefore": {
+          "description": "Turn 2 and later: how many engine sessions the earlier slices used, so the `new-session` events of this slice go on counting.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "last"
+      ],
+      "type": "object"
+    },
+    "DirectSnapshots": {
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failures": {
+          "description": "Snapshots that failed (a log line each); left out when 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "type": "object"
+    },
+    "DirectSummary": {
+      "description": "`summary.json`, uploaded by agentd to `runs/<run>/agents/direct/turns/1/summary.json`.\n\nAt most [`MAX_DIRECT_SUMMARY_BYTES`]; every string is cut to its stated limit. `usage` is `null` when Cline\nreported none, never zeros standing in for it. The reader ignores unknown keys.",
+      "properties": {
+        "agentId": {
+          "description": "[`DIRECT_AGENT_ID`].",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "Every try of the prompt when the run retried after a provider failure (protocol 1.32.0); left out for a run with one try.",
+          "items": {
+            "$ref": "#/$defs/DirectAttempt"
+          },
+          "type": "array"
+        },
+        "clineMessage": {
+          "description": "The last [`MAX_CLINE_MESSAGE_CHARS`] characters of Cline's final message.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "description": "The specifics (silence seconds, JSON-RPC code, exit status); at most [`MAX_DIRECT_DETAIL_CHARS`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine": {
+          "$ref": "#/$defs/DirectSummaryEngine"
+        },
+        "engineConfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectEngineConfigRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.39.0: the engine settings the session was given (`StartDirectRunRequest.engineConfig`): the engine, the schema, the canonical hash\nand the number of keys, never a value. Left out for a run that had none."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failover": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectFailoverNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present in a run that had failover routes (protocol 1.34.0)."
+        },
+        "faultHint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaultHint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finalModel": {
+          "description": "The model id the run ended on, when it switched at least once (protocol 1.34.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.48.0: the flow the run declared, read by agentd from the `Flow:` trailer of the final task commit's message, else from the\nfirst line of the last message (see [`DirectFlow`]). A fact recorded beside the label: nothing reads it to decide an outcome. Left out\nwhen the harness could not read the run's commits."
+        },
+        "freshSessions": {
+          "description": "Every fresh Cline session of the run (protocol 1.37.0); at most [`MAX_DIRECT_INTERVENTIONS`]; left out when there was none.\n`usage` sums over every session.",
+          "items": {
+            "$ref": "#/$defs/DirectFreshSession"
+          },
+          "type": "array"
+        },
+        "git": {
+          "$ref": "#/$defs/DirectGit"
+        },
+        "interventions": {
+          "description": "Every question the run raised and what became of it (protocol 1.37.0); at most [`MAX_DIRECT_INTERVENTIONS`], the last ones; left\nout when there was none. Never carries the user's text.",
+          "items": {
+            "$ref": "#/$defs/DirectIntervention"
+          },
+          "type": "array"
+        },
+        "label": {
+          "description": "`outcome.label()`.",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/DirectSummaryModel"
+        },
+        "nudge": {
+          "$ref": "#/$defs/DirectNudge"
+        },
+        "observations": {
+          "description": "Facts the harness read at the end of the run and records as it found them: today the last entry of\nthe run log when it is red. At most [`MAX_DIRECT_OBSERVATIONS`]; left out when there is none. Never a claim about the work.",
+          "items": {
+            "$ref": "#/$defs/DirectObservation"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "$ref": "#/$defs/DirectOutcome"
+        },
+        "packages": {
+          "$ref": "#/$defs/DirectPackages"
+        },
+        "request": {
+          "$ref": "#/$defs/DirectRequestRef"
+        },
+        "research": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectResearchNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.38.0: the research lane of the run, written by agentd's research module through the `on_summary` hook; left out when\nthe module did not decide anything (a stage without the research route). Counts only."
+        },
+        "review": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectReview"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.44.0: what the review round did, or why it did not run; left out when the run had no stage loop to decide it. A fact the\nharness recorded, never a claim about the work."
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/DirectRuleRef"
+          },
+          "type": "array"
+        },
+        "rulesPreflight": {
+          "$ref": "#/$defs/DirectRulesPreflight"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "description": "[`SUMMARY_SCHEMA_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skills": {
+          "description": "Protocol 1.38.0: the skills the session was given; left out when none.",
+          "items": {
+            "$ref": "#/$defs/DirectSkillRef"
+          },
+          "type": "array"
+        },
+        "snapshots": {
+          "$ref": "#/$defs/DirectSnapshots"
+        },
+        "stopReason": {
+          "description": "The engine's raw ACP stop reason.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "switches": {
+          "description": "Every confirmed switch of route or model (protocol 1.34.0); left out when there was none.",
+          "items": {
+            "$ref": "#/$defs/DirectSwitch"
+          },
+          "type": "array"
+        },
+        "timing": {
+          "$ref": "#/$defs/DirectTiming"
+        },
+        "toolCalls": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectToolsNote"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.40.0 (wire B of the tool layer): what the harness's tool server did in this run, written by agentd's tools module through the\n`on_summary` hook; left out when the module decided nothing (a stage without the layer, or a profile with no `[mcp]` table). Words and\ncounts only (see [`DirectToolsNote`])."
+        },
+        "turn": {
+          "description": "[`DIRECT_TURN`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turnOutcome": {
+          "$ref": "#/$defs/TurnOutcome",
+          "description": "Telemetry only; the machine never branches on it."
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "versions": {
+          "$ref": "#/$defs/DirectVersions"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "agentId",
+        "turn",
+        "outcome",
+        "label",
+        "turnOutcome",
+        "model",
+        "engine",
+        "rules",
+        "rulesPreflight",
+        "request",
+        "nudge",
+        "toolCalls",
+        "timing",
+        "git",
+        "snapshots",
+        "packages",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "DirectSummaryEngine": {
+      "properties": {
+        "binarySha256": {
+          "description": "SHA-256 of the engine binary, computed at start.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity": {
+          "description": "Protocol 1.49.0: who the engine ran as. `nobody` is the nobody route of an Instances session (the overflow user in user and IPC namespaces of its\nown), `agentd` is the engine as agentd's own user, and any other word is the name of the engine user of a microVM session. Absent in a summary written\nbefore this version. Lower-case letters, digits, `-` and `_`, 1 to [`MAX_ENGINE_IDENTITY_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "description": "Protocol 1.47.0: the reasoning level the engine was launched with (`--thinking <level>`), one of [`REASONING_LEVELS`] today. Absent\nwhen the launch had no reasoning argument. It is the level of the model the run started on; a switch to another model does not change it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningSource": {
+          "description": "Protocol 1.47.0: where that level came from, one of [`REASONING_SOURCES`] today: `default` (the model's catalog level), `explicit` (the\nuser's `reasoning.effort`) or `off` (the user turned reasoning off). Absent when the request gave agentd no level to launch with.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "The profile's `version`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "DirectSummaryModel": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "pinned": {
+          "description": "The model id the engine reported back at `session/new`; absent when the engine never got that far.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "region"
+      ],
+      "type": "object"
+    },
+    "DirectSwitch": {
+      "description": "One change of route in a run with failover (`DirectSummary.switches`). Only a switch the engine confirmed counts.",
+      "properties": {
+        "at": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "class": {
+          "description": "What kind of failure caused it: `transient`, `permanent` or `unavailable` (the route was down or refused before any prompt).",
+          "type": "string"
+        },
+        "detail": {
+          "description": "The failure that caused it, scrubbed; at most [`MAX_DIRECT_DETAIL_CHARS`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "The model id the run left.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DirectSwitchKind"
+        },
+        "n": {
+          "description": "1 for the first switch.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "description": "The model id the engine reported after the switch.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "at",
+        "from",
+        "to",
+        "kind",
+        "class"
+      ],
+      "type": "object"
+    },
+    "DirectSwitchKind": {
+      "description": "What a switch changed (protocol 1.34.0).",
+      "oneOf": [
+        {
+          "const": "route",
+          "description": "The same model through its other inference profile (`us.` to `global.` or back).",
+          "type": "string"
+        },
+        {
+          "const": "model",
+          "description": "Another supported model.",
+          "type": "string"
+        },
+        {
+          "const": "return",
+          "description": "Back to the model the user chose, after it had failed and the wait since its failure passed.",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectTiming": {
+      "properties": {
+        "endedAt": {
+          "type": "string"
+        },
+        "maxSilentGapS": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "promptS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "wallS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "startedAt",
+        "endedAt",
+        "wallS"
+      ],
+      "type": "object"
+    },
+    "DirectToolsCounts": {
+      "description": "The counts of a run's tool server (protocol 1.40.0), part of [`DirectToolsNote`].\n\n- `calls`: per tool, the `tools/call` requests received for a listed tool, including the ones that failed or were refused. A call that names\n  a tool the server did not list is a protocol fault and is counted nowhere, so the keys are a subset of `list`.\n- `failed`: calls whose backend failed (`error: unavailable`, `error: timeout`, or an internal fault).\n- `refused`: calls the server did not run (`error: usage`, `error: busy`, `error: refused`, `error: disabled`).\n- `truncated`: calls whose answer was shortened to the result cap or to the match limits.\n- `restarts`: times the server task ended and the module started it again on the same port (at most three).\n- `p50Ms`, `p95Ms`: the latency of the calls that ran, in milliseconds. Left out when no call ran: a zero would claim that the server answered\n  instantly.",
+      "properties": {
+        "calls": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "failed": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p50Ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "p95Ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refused": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "restarts": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "truncated": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "DirectToolsNote": {
+      "description": "What the tool server did in one run (protocol 1.40.0): `DirectSummary.tools`, written by agentd's tools module through the `on_summary` hook.\nLeft out when the module decided nothing (a stage without the layer). Words and counts only: never a pattern, a path, a query or a result.\n\nEvery word is a plain string, validated for its form and not for membership of a list. The summary is read by components that may be older than\nthe agentd that wrote it, and an unknown value of an enum would fail the whole parse and lose the run's record.\n\n- `enabled`: the module started the server and registered the tool list. When false, `reason` says why in one kebab word, and there are no\n  `counts`: a zero would claim that a server that never ran counted nothing.\n- `port`: the loopback port the server bound.\n- `connect`: what the module saw of the engine's connection 30 seconds after the first prompt of a session: `none` (nothing arrived),\n  `handshake-only` (`initialize` without `tools/list`) or `ok`. Left out when the module did not judge.\n- `list`: the bare names of the tools the server listed, as the engine's `tools/list` read them. The stored events carry the engine's joined\n  form (`ham__code_search`); the summary never does.\n- `counts`: present when the server ran.",
+      "properties": {
+        "connect": {
+          "description": "`none`, `handshake-only` or `ok` today; a later writer may add a word.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectToolsCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "list": {
+          "description": "Bare tool names, at most 16, each once.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why the module is off, or why its server stopped for good: one kebab word of at most 40 characters, the writer's own set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "DirectVersions": {
+      "properties": {
+        "agentd": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agentd",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "DroppedEntry": {
+      "description": "One entry of a repository archive that was not kept, with the rule that dropped it.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "FaultHint": {
+      "additionalProperties": false,
+      "description": "Structured evidence of a provider fault, as agentd reads it from the ACP error data (Cline\npatch 0011, OpenCode) or from its own watchdog. Every member is optional; a hint with none set\nis the same as no hint.",
+      "properties": {
+        "awsErrorType": {
+          "description": "The AWS exception type (`ThrottlingException`, `ServiceUnavailableException`, ...).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "code": {
+          "description": "A short machine code: `stall` from the watchdog, else what the engine named.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "httpStatus": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "retryAfterS": {
+          "description": "The provider's `Retry-After`, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "silentS": {
+          "description": "For a stall: how long, in seconds, the engine was silent.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaultTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FaultTransport": {
+      "description": "Where in agentd the engine failure was seen: only failures on the engine transport can be\ninfrastructure-unknown; agentd-local ones (worktree, engine start, credential socket,\nwrite-policy) set none and keep the ordinary failed-turn path.",
+      "oneOf": [
+        {
+          "const": "rpc-32603",
+          "description": "The engine answered a request with a JSON-RPC internal error (-32603).",
+          "type": "string"
+        },
+        {
+          "const": "io",
+          "description": "Reading or writing the engine's pipes failed.",
+          "type": "string"
+        },
+        {
+          "const": "closed",
+          "description": "The engine closed its output.",
+          "type": "string"
+        }
+      ]
+    },
+    "HeadSource": {
+      "description": "Where the delivered head came from: the final bundle of the session, or the last periodic snapshot.",
+      "enum": [
+        "final",
+        "snapshot"
+      ],
+      "type": "string"
+    },
+    "InputRef": {
+      "additionalProperties": false,
+      "description": "An object in the harness bucket that the receiver fetches and checks against its SHA-256.",
+      "properties": {
+        "sha256": {
+          "description": "64 lowercase hex characters.",
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "InstructAction": {
+      "description": "What the user (or, later, the analyzer) asks the machine to do. Wire words: `continue_with_prompt`, `new_session_with_prompt`,\n`try_model`, `finish`. One control carries all four so a person and the analyzer share one path.",
+      "enum": [
+        "continue_with_prompt",
+        "new_session_with_prompt",
+        "try_model",
+        "finish"
+      ],
+      "type": "string"
+    },
+    "InstructOrigin": {
+      "description": "Who answered. control-api always writes `user`; `analyzer` is written only inside agentd.",
+      "enum": [
+        "user",
+        "analyzer"
+      ],
+      "type": "string"
+    },
+    "InvocationAccepted": {
+      "description": "`POST /invocations` answer: the turn was accepted and runs in the background.",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "turn": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runId",
+        "agentId",
+        "turn",
+        "accepted"
+      ],
+      "type": "object"
+    },
+    "InvocationResponse": {
+      "description": "A finished turn: the body of [`turn_result_path`].",
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "bundleUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "faultHint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FaultHint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The provider-fault evidence `TurnCompleteRequest.faultHint` carries;\nabsent when there is none."
+        },
+        "lastCommitSha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maxSilentGapS": {
+          "description": "The longest engine silence of the turn, as `TurnCompleteRequest.maxSilentGapS` carries it.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/TurnOutcome"
+        },
+        "quarantined": {
+          "description": "Hidden paths (repository hooks, plugins, engine configs) that existed at launch and were\nmoved out of the engine's view; absent when none.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refused": {
+          "description": "The kinds of permission request agentd refused this turn, grouped by tool and reason\n(`TurnCompleteRequest.refused` carries the first `MAX_REFUSALS`); absent when none.",
+          "items": {
+            "$ref": "#/$defs/Refusal"
+          },
+          "type": "array"
+        },
+        "reverted": {
+          "description": "Repository paths the engine changed outside the role's write globs, which agentd restored to\nthe turn's base before the commit; absent when none (or without a role policy).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rulesDigest": {
+          "description": "SHA-256 of the canonical JSON of `rulesManifest`, when an engine ran.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rulesManifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RulesManifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "stopReason": {
+          "description": "The engine's ACP `stopReason` (for example `end_turn`, `max_tokens`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "The agent's final message of the turn, as `TurnCompleteRequest::summary` carries it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "systemPromptSha256": {
+          "description": "SHA-256 (hex) of the prompt agentd supplied at `session/new`, when an engine ran.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Tokens the engine reported for the turn; `null` when it reported none (Cline 3.0.65 over\nACP), never zeros standing in for an absent measurement. Invocation logs stay authoritative."
+        }
+      },
+      "required": [
+        "runId",
+        "agentId",
+        "turn",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "ItemCaps": {
+      "description": "The caps a repository was filtered under.",
+      "properties": {
+        "maxFiles": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxUnpackedBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxFiles",
+        "maxUnpackedBytes"
+      ],
+      "type": "object"
+    },
+    "ItemKind": {
+      "description": "What a stored item is.",
+      "enum": [
+        "page",
+        "repo",
+        "attachment"
+      ],
+      "type": "string"
+    },
+    "ItemManifest": {
+      "description": "The immutable manifest the route writes last for each stored item (`items/<id>/manifest.json`); its presence is the commit. The\nSHA-256 of its canonical bytes is the item's index hash, so an index row can be checked against the route's own record.",
+      "properties": {
+        "agent": {
+          "description": "`direct`",
+          "type": "string"
+        },
+        "body": {
+          "$ref": "#/$defs/BodyRef"
+        },
+        "caps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemCaps"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit": {
+          "description": "The 40-hex commit id a repository archive carries.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dropped": {
+          "items": {
+            "$ref": "#/$defs/DroppedEntry"
+          },
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/ManifestFile"
+          },
+          "type": "array"
+        },
+        "itemId": {
+          "description": "`i-0002`",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        },
+        "licence": {
+          "$ref": "#/$defs/LicenceEvidence"
+        },
+        "origin": {
+          "description": "The page address or the repository URL.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ResearchProvider"
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "retrievedAt": {
+          "description": "RFC 3339 UTC.",
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        },
+        "schema": {
+          "description": "[`ITEM_SCHEMA`]",
+          "type": "string"
+        },
+        "sourceSha256": {
+          "description": "A page: the hash of the text as the provider returned it, before the one cleaning pass.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "default": false,
+          "description": "True when the page text was cut at the page cap.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "schema",
+        "itemId",
+        "kind",
+        "run",
+        "agent",
+        "provider",
+        "requestId",
+        "origin",
+        "retrievedAt",
+        "licence",
+        "body"
+      ],
+      "type": "object"
+    },
+    "LicenceEvidence": {
+      "description": "How the licence of an item was found. Evidence, not clearance.",
+      "properties": {
+        "evidenceSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "`file:<path>`, `declared:<file>` or `none`.",
+          "type": "string"
+        },
+        "spdx": {
+          "description": "An SPDX id or expression, or `NOASSERTION` when unsure.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "spdx",
+        "source"
+      ],
+      "type": "object"
+    },
+    "LoggedRun": {
+      "description": "What the lifecycle log said about the same command: `RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | ...`.",
+      "properties": {
+        "exitCode": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ManifestFile": {
+      "description": "One file kept from a repository archive.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "PackagesToken": {
+      "description": "A CodeArtifact authorization token the dispatcher minted outside the VM with its own role; agentd writes it only to `package_index_path`, never where the\nengine can read it. `Debug` never shows it.",
+      "type": "string"
+    },
+    "PingResponse": {
+      "description": "`GET /ping` body; field names are the AgentCore contract's own.",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/PingStatus"
+        },
+        "time_of_last_update": {
+          "description": "Unix seconds of the last status change.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "time_of_last_update"
+      ],
+      "type": "object"
+    },
+    "PingStatus": {
+      "description": "`/ping` status: `HealthyBusy` while a turn runs, so AgentCore keeps the session.",
+      "enum": [
+        "Healthy",
+        "HealthyBusy"
+      ],
+      "type": "string"
+    },
+    "PolicyItem": {
+      "description": "The per-run policy row in the research table (`run#<run>` / `cfg`), written by `run-session` when the run starts and read by the\nroute on every call: research on or off, the limits, and when the row stops being honoured. A missing, switched-off or expired row\nrefuses every call with `disabled`, so switching research off stops a running run.",
+      "properties": {
+        "PK": {
+          "type": "string"
+        },
+        "SK": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "description": "Epoch seconds: the end of the run's longest lifetime.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "limits": {
+          "$ref": "#/$defs/ResearchLimits"
+        },
+        "promptUrls": {
+          "description": "URLs the user's prompt named, as `run-session` found them (at most [`MAX_PROMPT_URLS`]): they count as seen for the provenance gate, so\na fetch of a page the user pointed at needs no search first. The route canonicalises them when it compares.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "provider": {
+          "$ref": "#/$defs/ResearchProvider",
+          "description": "The stage's search provider, copied from the stage configuration."
+        },
+        "ttl": {
+          "description": "DynamoDB time-to-live: epoch seconds, a week after `expiresAt`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "PK",
+        "SK",
+        "enabled",
+        "provider",
+        "limits",
+        "expiresAt",
+        "ttl"
+      ],
+      "type": "object"
+    },
+    "ProcessCredentials": {
+      "description": "AWS `credential_process` output format (PascalCase field names, `Version` 1).",
+      "properties": {
+        "AccessKeyId": {
+          "type": "string"
+        },
+        "Expiration": {
+          "type": "string"
+        },
+        "SecretAccessKey": {
+          "type": "string"
+        },
+        "SessionToken": {
+          "type": "string"
+        },
+        "Version": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "Version",
+        "AccessKeyId",
+        "SecretAccessKey",
+        "SessionToken",
+        "Expiration"
+      ],
+      "type": "object"
+    },
+    "Protocol": {
+      "description": "Bedrock inference protocol of a catalog row.",
+      "oneOf": [
+        {
+          "enum": [
+            "converse",
+            "converse-relay",
+            "mantle-responses"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "mantle-chat",
+          "description": "Mantle Chat Completions on the Cline fork.",
+          "type": "string"
+        }
+      ]
+    },
+    "Refusal": {
+      "description": "One kind of permission request agentd's role policy refused in a turn: the tool, what the\nfirst such request asked for, agentd's reason, and how many requests of the turn got it.",
+      "properties": {
+        "action": {
+          "description": "The first such request's command or paths, the worktree path shown as `.`, control\ncharacters escaped, secrets redacted; at most [`MAX_REFUSAL_ACTION_CHARS`] characters.",
+          "type": "string"
+        },
+        "count": {
+          "description": "Requests of the turn refused with this tool and reason (1 or more).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "agentd's reason, the same way; at most [`MAX_REFUSAL_REASON_CHARS`] characters.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The tool the engine named (`run_commands`, `editor`, `read_files`), `-` when none.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool",
+        "action",
+        "reason",
+        "count"
+      ],
+      "type": "object"
+    },
+    "RepoSource": {
+      "description": "Where `agentd` restores the worktree from.",
+      "oneOf": [
+        {
+          "description": "`s3://<bucket>/runs/<runId>/...`: a git bundle staged by the dispatcher.",
+          "properties": {
+            "kind": {
+              "const": "s3Bundle",
+              "type": "string"
+            },
+            "uri": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "uri"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An absolute local path (local runs and tests only).",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ResearchContract": {
+      "description": "The stored research objects as one document, exported in `runtime.schema.json` (`RuntimeContract.research`).",
+      "properties": {
+        "audit": {
+          "$ref": "#/$defs/AuditObject"
+        },
+        "item_manifest": {
+          "$ref": "#/$defs/ItemManifest"
+        },
+        "limits": {
+          "$ref": "#/$defs/ResearchLimits"
+        },
+        "note": {
+          "$ref": "#/$defs/DirectResearchNote"
+        },
+        "policy": {
+          "$ref": "#/$defs/PolicyItem"
+        }
+      },
+      "required": [
+        "item_manifest",
+        "audit",
+        "policy",
+        "note",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "ResearchErrorCode": {
+      "description": "The closed set of words a research route answers with when it does not do what was asked. Each has one HTTP status (the route's\nanswer), and one `ham-research` exit code (2 usage, 3 policy, 4 limit, 5 upstream). The words are the product's: a client shows\nthem and a test pins them.",
+      "enum": [
+        "usage",
+        "conflict",
+        "disabled",
+        "no_key",
+        "refused_secret",
+        "refused_url",
+        "refused_unseen_url",
+        "refused_host",
+        "limit_calls",
+        "limit_bytes",
+        "limit_rate",
+        "too_large",
+        "upstream_error",
+        "upstream_rate_limited",
+        "not_found",
+        "not_started",
+        "timeout",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "ResearchLimits": {
+      "additionalProperties": false,
+      "description": "The per-run limits. They are abuse and exfiltration bounds, not budgets (spend is approved), settable in the stage configuration and\ncopied into the run's policy row when the run starts. `Default` is the numbers",
+      "properties": {
+        "callsPerMinute": {
+          "description": "Calls of any kind per minute and run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contextBytes": {
+          "description": "Bytes of all research material of one run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fetchedUrls": {
+          "description": "URLs fetched per run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outboundBytes": {
+          "description": "Bytes of model-chosen outbound text (queries, URLs, repository paths) per run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pageBytes": {
+          "description": "Bytes of one stored page.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "queryChars": {
+          "description": "Characters of a query.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoCompressedBytes": {
+          "description": "Bytes of the filtered archive that is stored.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoDownloadBytes": {
+          "description": "Bytes downloaded for one repository archive.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoFiles": {
+          "description": "Files kept from one archive.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoReadBytes": {
+          "description": "Bytes read from one archive after decompression, kept or not.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoReadEntries": {
+          "description": "Entries read from one archive.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repoUnpackedBytes": {
+          "description": "Bytes of the files kept from one archive.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repos": {
+          "description": "Repository jobs per run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "searches": {
+          "description": "Search calls per run.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "urlBytes": {
+          "description": "Bytes of a URL.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "searches",
+        "fetchedUrls",
+        "repos",
+        "callsPerMinute",
+        "queryChars",
+        "urlBytes",
+        "outboundBytes",
+        "pageBytes",
+        "repoDownloadBytes",
+        "repoReadBytes",
+        "repoReadEntries",
+        "repoCompressedBytes",
+        "repoUnpackedBytes",
+        "repoFiles",
+        "contextBytes"
+      ],
+      "type": "object"
+    },
+    "ResearchOp": {
+      "description": "What an audit object records.",
+      "enum": [
+        "search",
+        "fetch",
+        "repo",
+        "job",
+        "limits"
+      ],
+      "type": "string"
+    },
+    "ResearchProvider": {
+      "description": "Where an answer came from. The stage configuration chooses the search provider; a caller cannot. Every response, audit object and\nmanifest records it, so each record can be checked against the provider the stage is configured for (`tavily`\nunless the stage names another).",
+      "enum": [
+        "tavily",
+        "tavily-keyless",
+        "agentcore",
+        "fixture",
+        "github-archive",
+        "user"
+      ],
+      "type": "string"
+    },
+    "ResearchUsage": {
+      "description": "What a run has used so far. The route's counters are conditional updates, so concurrent calls cannot pass a cap.",
+      "properties": {
+        "contextBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fetchedUrls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outboundBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "repos": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "searches": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "searches",
+        "fetchedUrls",
+        "repos",
+        "outboundBytes",
+        "contextBytes"
+      ],
+      "type": "object"
+    },
+    "RuleDelivery": {
+      "description": "How a rule reaches the engine.",
+      "oneOf": [
+        {
+          "enum": [
+            "systemPrompt"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "native",
+          "description": "The engine loads the file itself.",
+          "type": "string"
+        },
+        {
+          "const": "compiled",
+          "description": "Written into agentd's compiled rules file.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuleEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/RuleDelivery"
+        },
+        "layer": {
+          "$ref": "#/$defs/RuleLayer"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "source": {
+          "description": "A repository-relative path, a rule name, or `system prompt`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "source",
+        "sha256",
+        "delivery"
+      ],
+      "type": "object"
+    },
+    "RuleLayer": {
+      "description": "Precedence, highest first.",
+      "oneOf": [
+        {
+          "const": "harness",
+          "description": "Harness invariants, carried by the supplied system prompt.",
+          "type": "string"
+        },
+        {
+          "const": "tenant",
+          "description": "Tenant and run rules sent with the run.",
+          "type": "string"
+        },
+        {
+          "const": "repository",
+          "description": "`AGENTS.md`, `CLAUDE.md`, `.clinerules/**`, `.cline/rules/**`, `.roo/rules-<role>/**`,\n`.cursorrules` in the repository.",
+          "type": "string"
+        },
+        {
+          "const": "role",
+          "description": "The role's customInstructions.",
+          "type": "string"
+        }
+      ]
+    },
+    "RulesManifest": {
+      "additionalProperties": false,
+      "description": "The per-session rules manifest: every rule in precedence order and how it was delivered.",
+      "properties": {
+        "compiledSha256": {
+          "description": "SHA-256 of the compiled rules file, when one was written.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/RuleEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "TestCommandSource": {
+      "description": "Where a command came from.",
+      "oneOf": [
+        {
+          "const": "test_command_file",
+          "description": "A line of `.ham/test-command` in the delivered tree.",
+          "type": "string"
+        },
+        {
+          "const": "lifecycle_log",
+          "description": "A `RUN` line of `docs/lifecycle/LOG.md`.",
+          "type": "string"
+        },
+        {
+          "const": "goal_card",
+          "description": "A numbered check of `docs/lifecycle/GOAL.md`.",
+          "type": "string"
+        },
+        {
+          "const": "detected",
+          "description": "A manifest of the tree (`pyproject.toml`, `package.json`, `go.mod`, ...).",
+          "type": "string"
+        }
+      ]
+    },
+    "TestCounts": {
+      "description": "What a runner printed. `failed` includes errors.",
+      "properties": {
+        "failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "passed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "passed",
+        "failed",
+        "skipped"
+      ],
+      "type": "object"
+    },
+    "TestReport": {
+      "description": "`test-report.json`.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headSha": {
+          "description": "The delivered head the clean checkout was made at.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the report is `no_command`, `not_run` or `timed_out`; at most [`MAX_REPORT_REASON_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "description": "[`TEST_REPORT_SCHEMA_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "startedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/TestReportStatus"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/TestStep"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestReportSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Filled by run-session from the steps ([`TestReport::summary`]); the worker leaves it out and a reader never trusts a worker's."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "headSha",
+        "status",
+        "durationMs",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "TestReportStatus": {
+      "description": "How the report ended. `off` is never written by the worker: run-session puts it in a summary when the user switched the report off.",
+      "oneOf": [
+        {
+          "const": "ran",
+          "description": "Every planned step ran to its end, or a setup step failed and the steps after it were not started. A step may have failed.",
+          "type": "string"
+        },
+        {
+          "const": "no_command",
+          "description": "The repository names no test command and none could be detected.",
+          "type": "string"
+        },
+        {
+          "const": "not_run",
+          "description": "The report could not be made (the checkout failed, for example); `reason` says why.",
+          "type": "string"
+        },
+        {
+          "const": "timed_out",
+          "description": "The time limit ended the steps; the steps that finished are listed.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "The user switched the report off for this run (`reportTests: false`).",
+          "type": "string"
+        }
+      ]
+    },
+    "TestReportSummary": {
+      "description": "What a reader needs without the steps: carried in `DirectEvidence.testReport`, in the pull request comment and by `ham pull`.",
+      "properties": {
+        "allExitZero": {
+          "description": "Every setup and test step exited 0 and none timed out, and at least one test step exists.",
+          "type": "boolean"
+        },
+        "command": {
+          "description": "The first test command, at most [`MAX_REPORT_COMMAND_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The counts of the test steps, present only when every test step has counts.\nSteps of one runner stand for the largest of each count among them. The counts of different runners are added, and runners that report the same counts count once."
+        },
+        "details": {
+          "description": "The lines EVIDENCE.md prints under the sentence, one fact each, derived from the steps: what each service step did and what each test\nstep did and needed. At most [`MAX_SUMMARY_DETAILS`] lines of [`MAX_SUMMARY_DETAIL_CHARS`] characters.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "exitCode": {
+          "description": "The first exit code that was not 0 among the setup and test steps; else the exit code of the last test step.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failedCommand": {
+          "description": "The command of the first setup or test step that did not exit 0 (or timed out), at most [`MAX_REPORT_COMMAND_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "needs": {
+          "description": "The services the first failing step ran without ([`TestStep::needs`]); empty for every other report.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "servicesStarted": {
+          "description": "The services the report started in place of the Compose services the repository declares, by name (`postgres`): the service steps that\nexited 0.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "setupFailed": {
+          "description": "A setup step failed, so no test step ran after it.",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/TestReportStatus"
+        },
+        "stepsRun": {
+          "description": "Setup and test steps that ran to an exit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timedOut": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimedOutCommand"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The first command that was stopped at its time limit, with the seconds it was given. `None` when no command\ntimed out, also for a report whose time ran out between two commands. Computed from the steps by every reader, so an older report\nhas it too."
+        }
+      },
+      "required": [
+        "status",
+        "stepsRun",
+        "allExitZero",
+        "durationMs"
+      ],
+      "type": "object"
+    },
+    "TestStep": {
+      "description": "One command of the report.",
+      "properties": {
+        "command": {
+          "description": "At most [`MAX_REPORT_COMMAND_CHARS`] characters.",
+          "type": "string"
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TestCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The counts the runner's summary line gave; `None` when no parser recognised the output."
+        },
+        "countsFrom": {
+          "description": "The runner the counts were read from (`pytest`, `cargo`, ...), at most [`MAX_REPORT_RUNNER_CHARS`] characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "exitCode": {
+          "description": "`None` when the command was stopped (time limit) or never started.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "limitS": {
+          "description": "The time limit agentd gave this command, in whole seconds rounded up: the user's or the stage's step limit, or\nless when the rest of the report's budget was shorter. `None` for a command never started and for a report an older agentd wrote;\n1 to [`MAX_REPORT_STEP_S`] otherwise.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "logged": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoggedRun"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For a step that reruns a command of the lifecycle log: what the log said."
+        },
+        "outputTail": {
+          "default": "",
+          "description": "The end of the output (standard output and error together), at most [`MAX_REPORT_TAIL_BYTES`] bytes, secrets redacted.",
+          "type": "string"
+        },
+        "outputTruncated": {
+          "type": "boolean"
+        },
+        "role": {
+          "$ref": "#/$defs/TestStepRole"
+        },
+        "source": {
+          "$ref": "#/$defs/TestCommandSource"
+        },
+        "timedOut": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "role",
+        "source",
+        "command",
+        "durationMs"
+      ],
+      "type": "object"
+    },
+    "TestStepRole": {
+      "description": "What a step is for.",
+      "oneOf": [
+        {
+          "const": "setup",
+          "description": "Installs what the test step needs (a virtual environment, `npm ci`). Not counted.",
+          "type": "string"
+        },
+        {
+          "const": "test",
+          "description": "A test command whose counts and exit code decide whether the wording may appear.",
+          "type": "string"
+        }
+      ]
+    },
+    "TimedOutCommand": {
+      "description": "The command a report stopped at its time limit.",
+      "properties": {
+        "afterS": {
+          "description": "The limit the command was given, in whole seconds: [`TestStep::limit_s`] when the worker recorded it, else the time the command ran,\nto the nearest second. Never 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "command": {
+          "description": "At most [`MAX_REPORT_COMMAND_CHARS`] characters.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "afterS"
+      ],
+      "type": "object"
+    },
+    "TurnOutcome": {
+      "description": "How a turn ended, as `agentd` observed it. Telemetry only: the harness owns \"done\" (invariant 1).",
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "Usage": {
+      "description": "Token accounting for one turn.",
+      "properties": {
+        "cacheReadInputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadInputTokens",
+        "cacheWriteInputTokens"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The `runtime.schema.json` contract document covers both directions.",
+  "properties": {
+    "direct_evidence": {
+      "$ref": "#/$defs/DirectEvidence"
+    },
+    "direct_invocation_request": {
+      "$ref": "#/$defs/DirectInvocationRequest",
+      "description": "The direct-run contract (1.30.0): the `InvokeAgentRuntime` body, `summary.json` and the packager's evidence."
+    },
+    "direct_summary": {
+      "$ref": "#/$defs/DirectSummary"
+    },
+    "direct_test_report": {
+      "$ref": "#/$defs/TestReport",
+      "description": "The clean-checkout test report (1.38.0): the worker's `test-report.json` and the checked copy in `evidence/`."
+    },
+    "invocation_accepted": {
+      "$ref": "#/$defs/InvocationAccepted"
+    },
+    "invocation_response": {
+      "$ref": "#/$defs/InvocationResponse"
+    },
+    "ping": {
+      "$ref": "#/$defs/PingResponse"
+    },
+    "research": {
+      "$ref": "#/$defs/ResearchContract",
+      "description": "The research route's stored objects: the item manifest, the audit object, the policy row and the summary note."
+    }
+  },
+  "required": [
+    "ping",
+    "invocation_accepted",
+    "invocation_response",
+    "direct_invocation_request",
+    "direct_summary",
+    "direct_evidence",
+    "research",
+    "direct_test_report"
+  ],
+  "title": "RuntimeContract",
+  "type": "object"
+}

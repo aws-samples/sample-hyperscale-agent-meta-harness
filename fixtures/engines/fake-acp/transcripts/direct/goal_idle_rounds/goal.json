@@ -1,0 +1,16 @@
+{
+  "transcripts": "writes_files",
+  "repeat_last": true,
+  "rounds": [
+    {
+      "text": "The checks pass; I am not sure.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 3
+    }
+  ]
+}

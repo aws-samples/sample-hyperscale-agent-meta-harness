@@ -1,0 +1,6589 @@
+{
+ "c001": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R1"
+ },
+ "c002": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 0
+  },
+  "requirement": "R2"
+ },
+ "c003": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R3"
+ },
+ "c004": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R4"
+ },
+ "c005": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 0,
+   "week": 5
+  },
+  "requirement": "R5"
+ },
+ "c006": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 3
+  },
+  "requirement": "R6"
+ },
+ "c007": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R7"
+ },
+ "c008": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R8"
+ },
+ "c009": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R9"
+ },
+ "c010": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 0
+  },
+  "requirement": "R10"
+ },
+ "c011": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R11"
+ },
+ "c012": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R12"
+ },
+ "c013": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 1,
+   "week": 5
+  },
+  "requirement": "R13"
+ },
+ "c014": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 3
+  },
+  "requirement": "R14"
+ },
+ "c015": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R15"
+ },
+ "c016": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R16"
+ },
+ "c017": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R17"
+ },
+ "c018": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 0
+  },
+  "requirement": "R18"
+ },
+ "c019": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R19"
+ },
+ "c020": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R20"
+ },
+ "c021": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 2,
+   "week": 5
+  },
+  "requirement": "R21"
+ },
+ "c022": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 3
+  },
+  "requirement": "R22"
+ },
+ "c023": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R23"
+ },
+ "c024": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R24"
+ },
+ "c025": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R25"
+ },
+ "c026": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 0
+  },
+  "requirement": "R26"
+ },
+ "c027": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R27"
+ },
+ "c028": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R28"
+ },
+ "c029": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 3,
+   "week": 5
+  },
+  "requirement": "R29"
+ },
+ "c030": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 3
+  },
+  "requirement": "R30"
+ },
+ "c031": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R31"
+ },
+ "c032": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R32"
+ },
+ "c033": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R33"
+ },
+ "c034": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 0
+  },
+  "requirement": "R34"
+ },
+ "c035": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R35"
+ },
+ "c036": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R36"
+ },
+ "c037": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 4,
+   "week": 5
+  },
+  "requirement": "R37"
+ },
+ "c038": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 3
+  },
+  "requirement": "R38"
+ },
+ "c039": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R39"
+ },
+ "c040": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R40"
+ },
+ "c041": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R41"
+ },
+ "c042": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 0
+  },
+  "requirement": "R42"
+ },
+ "c043": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R43"
+ },
+ "c044": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 3
+  },
+  "requirement": "R44"
+ },
+ "c045": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 0,
+   "week": 5
+  },
+  "requirement": "R45"
+ },
+ "c046": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 4
+  },
+  "requirement": "R46"
+ },
+ "c047": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R47"
+ },
+ "c048": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R48"
+ },
+ "c049": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R49"
+ },
+ "c050": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 0
+  },
+  "requirement": "R50"
+ },
+ "c051": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R51"
+ },
+ "c052": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 3
+  },
+  "requirement": "R52"
+ },
+ "c053": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 0,
+   "week": 6
+  },
+  "requirement": "R53"
+ },
+ "c054": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 4
+  },
+  "requirement": "R54"
+ },
+ "c055": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R55"
+ },
+ "c056": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R56"
+ },
+ "c057": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R57"
+ },
+ "c058": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 0
+  },
+  "requirement": "R58"
+ },
+ "c059": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R59"
+ },
+ "c060": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 3
+  },
+  "requirement": "R60"
+ },
+ "c061": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 1,
+   "week": 6
+  },
+  "requirement": "R61"
+ },
+ "c062": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 4
+  },
+  "requirement": "R62"
+ },
+ "c063": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R63"
+ },
+ "c064": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R64"
+ },
+ "c065": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R65"
+ },
+ "c066": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 0
+  },
+  "requirement": "R66"
+ },
+ "c067": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R67"
+ },
+ "c068": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 3
+  },
+  "requirement": "R68"
+ },
+ "c069": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 2,
+   "week": 6
+  },
+  "requirement": "R69"
+ },
+ "c070": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 4
+  },
+  "requirement": "R70"
+ },
+ "c071": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R71"
+ },
+ "c072": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R72"
+ },
+ "c073": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R73"
+ },
+ "c074": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 0
+  },
+  "requirement": "R74"
+ },
+ "c075": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R75"
+ },
+ "c076": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 3
+  },
+  "requirement": "R76"
+ },
+ "c077": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 3,
+   "week": 6
+  },
+  "requirement": "R77"
+ },
+ "c078": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 4
+  },
+  "requirement": "R78"
+ },
+ "c079": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R79"
+ },
+ "c080": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R80"
+ },
+ "c081": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R81"
+ },
+ "c082": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 4
+  },
+  "requirement": "R82"
+ },
+ "c083": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R83"
+ },
+ "c084": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 4
+  },
+  "requirement": "R84"
+ },
+ "c085": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 4,
+   "week": 6
+  },
+  "requirement": "R85"
+ },
+ "c086": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 5
+  },
+  "requirement": "R86"
+ },
+ "c087": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R87"
+ },
+ "c088": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R88"
+ },
+ "c089": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R89"
+ },
+ "c090": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 4
+  },
+  "requirement": "R90"
+ },
+ "c091": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R91"
+ },
+ "c092": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 4
+  },
+  "requirement": "R92"
+ },
+ "c093": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 5,
+   "week": 6
+  },
+  "requirement": "R93"
+ },
+ "c094": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 5
+  },
+  "requirement": "R94"
+ },
+ "c095": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R95"
+ },
+ "c096": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R96"
+ },
+ "c097": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R97"
+ },
+ "c098": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 4
+  },
+  "requirement": "R98"
+ },
+ "c099": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R99"
+ },
+ "c100": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 4
+  },
+  "requirement": "R100"
+ },
+ "c101": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 5,
+   "week": 7
+  },
+  "requirement": "R101"
+ },
+ "c102": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 5
+  },
+  "requirement": "R102"
+ },
+ "c103": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R103"
+ },
+ "c104": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R104"
+ },
+ "c105": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R105"
+ },
+ "c106": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 4
+  },
+  "requirement": "R106"
+ },
+ "c107": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R107"
+ },
+ "c108": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 4
+  },
+  "requirement": "R108"
+ },
+ "c109": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 6,
+   "week": 7
+  },
+  "requirement": "R109"
+ },
+ "c110": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 5
+  },
+  "requirement": "R110"
+ },
+ "c111": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R111"
+ },
+ "c112": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R112"
+ },
+ "c113": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R113"
+ },
+ "c114": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 4
+  },
+  "requirement": "R114"
+ },
+ "c115": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R115"
+ },
+ "c116": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 4
+  },
+  "requirement": "R116"
+ },
+ "c117": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 0,
+   "week": 7
+  },
+  "requirement": "R117"
+ },
+ "c118": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 5
+  },
+  "requirement": "R118"
+ },
+ "c119": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R119"
+ },
+ "c120": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R120"
+ },
+ "c121": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R121"
+ },
+ "c122": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 4
+  },
+  "requirement": "R122"
+ },
+ "c123": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R123"
+ },
+ "c124": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R124"
+ },
+ "c125": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 1,
+   "week": 7
+  },
+  "requirement": "R125"
+ },
+ "c126": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 6
+  },
+  "requirement": "R126"
+ },
+ "c127": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R127"
+ },
+ "c128": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R128"
+ },
+ "c129": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R129"
+ },
+ "c130": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 4
+  },
+  "requirement": "R130"
+ },
+ "c131": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R131"
+ },
+ "c132": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R132"
+ },
+ "c133": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 2,
+   "week": 7
+  },
+  "requirement": "R133"
+ },
+ "c134": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 6
+  },
+  "requirement": "R134"
+ },
+ "c135": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R135"
+ },
+ "c136": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R136"
+ },
+ "c137": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R137"
+ },
+ "c138": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 4
+  },
+  "requirement": "R138"
+ },
+ "c139": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R139"
+ },
+ "c140": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R140"
+ },
+ "c141": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 3,
+   "week": 7
+  },
+  "requirement": "R141"
+ },
+ "c142": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 6
+  },
+  "requirement": "R142"
+ },
+ "c143": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R143"
+ },
+ "c144": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R144"
+ },
+ "c145": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R145"
+ },
+ "c146": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 4
+  },
+  "requirement": "R146"
+ },
+ "c147": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R147"
+ },
+ "c148": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R148"
+ },
+ "c149": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 2,
+   "week": 8
+  },
+  "requirement": "R149"
+ },
+ "c150": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 6
+  },
+  "requirement": "R150"
+ },
+ "c151": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R151"
+ },
+ "c152": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R152"
+ },
+ "c153": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R153"
+ },
+ "c154": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 4
+  },
+  "requirement": "R154"
+ },
+ "c155": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R155"
+ },
+ "c156": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R156"
+ },
+ "c157": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 3,
+   "week": 8
+  },
+  "requirement": "R157"
+ },
+ "c158": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 6
+  },
+  "requirement": "R158"
+ },
+ "c159": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R159"
+ },
+ "c160": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R160"
+ },
+ "c161": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R161"
+ },
+ "c162": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 6
+  },
+  "requirement": "R162"
+ },
+ "c163": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R163"
+ },
+ "c164": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 3
+  },
+  "requirement": "R164"
+ },
+ "c165": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 4,
+   "week": 8
+  },
+  "requirement": "R165"
+ },
+ "c166": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 7
+  },
+  "requirement": "R166"
+ },
+ "c167": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R167"
+ },
+ "c168": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R168"
+ },
+ "c169": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R169"
+ },
+ "c170": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 6
+  },
+  "requirement": "R170"
+ },
+ "c171": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R171"
+ },
+ "c172": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 3
+  },
+  "requirement": "R172"
+ },
+ "c173": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 5,
+   "week": 8
+  },
+  "requirement": "R173"
+ },
+ "c174": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 7
+  },
+  "requirement": "R174"
+ },
+ "c175": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R175"
+ },
+ "c176": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R176"
+ },
+ "c177": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R177"
+ },
+ "c178": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 6
+  },
+  "requirement": "R178"
+ },
+ "c179": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R179"
+ },
+ "c180": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 3
+  },
+  "requirement": "R180"
+ },
+ "c181": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 6,
+   "week": 8
+  },
+  "requirement": "R181"
+ },
+ "c182": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 7
+  },
+  "requirement": "R182"
+ },
+ "c183": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R183"
+ },
+ "c184": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R184"
+ },
+ "c185": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R185"
+ },
+ "c186": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 6
+  },
+  "requirement": "R186"
+ },
+ "c187": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R187"
+ },
+ "c188": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 3
+  },
+  "requirement": "R188"
+ },
+ "c189": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 7,
+   "week": 8
+  },
+  "requirement": "R189"
+ },
+ "c190": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 7
+  },
+  "requirement": "R190"
+ },
+ "c191": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R191"
+ },
+ "c192": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R192"
+ },
+ "c193": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R193"
+ },
+ "c194": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 6
+  },
+  "requirement": "R194"
+ },
+ "c195": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R195"
+ },
+ "c196": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 3
+  },
+  "requirement": "R196"
+ },
+ "c197": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 4,
+   "week": 5
+  },
+  "requirement": "R197"
+ },
+ "c198": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 7
+  },
+  "requirement": "R198"
+ },
+ "c199": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R199"
+ },
+ "c200": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R200"
+ },
+ "c201": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R201"
+ },
+ "c202": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 6
+  },
+  "requirement": "R202"
+ },
+ "c203": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R203"
+ },
+ "c204": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 4
+  },
+  "requirement": "R204"
+ },
+ "c205": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 0,
+   "week": 5
+  },
+  "requirement": "R205"
+ },
+ "c206": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 8
+  },
+  "requirement": "R206"
+ },
+ "c207": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R207"
+ },
+ "c208": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R208"
+ },
+ "c209": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R209"
+ },
+ "c210": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 6
+  },
+  "requirement": "R210"
+ },
+ "c211": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R211"
+ },
+ "c212": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 4
+  },
+  "requirement": "R212"
+ },
+ "c213": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 1,
+   "week": 5
+  },
+  "requirement": "R213"
+ },
+ "c214": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 8
+  },
+  "requirement": "R214"
+ },
+ "c215": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R215"
+ },
+ "c216": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R216"
+ },
+ "c217": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R217"
+ },
+ "c218": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 6
+  },
+  "requirement": "R218"
+ },
+ "c219": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R219"
+ },
+ "c220": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 4
+  },
+  "requirement": "R220"
+ },
+ "c221": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 2,
+   "week": 5
+  },
+  "requirement": "R221"
+ },
+ "c222": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 8
+  },
+  "requirement": "R222"
+ },
+ "c223": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R223"
+ },
+ "c224": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R224"
+ },
+ "c225": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R225"
+ },
+ "c226": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 6
+  },
+  "requirement": "R226"
+ },
+ "c227": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R227"
+ },
+ "c228": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 4
+  },
+  "requirement": "R228"
+ },
+ "c229": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 3,
+   "week": 5
+  },
+  "requirement": "R229"
+ },
+ "c230": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 8
+  },
+  "requirement": "R230"
+ },
+ "c231": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R231"
+ },
+ "c232": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R232"
+ },
+ "c233": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R233"
+ },
+ "c234": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 6
+  },
+  "requirement": "R234"
+ },
+ "c235": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R235"
+ },
+ "c236": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 4
+  },
+  "requirement": "R236"
+ },
+ "c237": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 4,
+   "week": 5
+  },
+  "requirement": "R237"
+ },
+ "c238": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 8
+  },
+  "requirement": "R238"
+ },
+ "c239": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R239"
+ },
+ "c240": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R240"
+ },
+ "c241": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R241"
+ },
+ "c242": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 0
+  },
+  "requirement": "R242"
+ },
+ "c243": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R243"
+ },
+ "c244": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R244"
+ },
+ "c245": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 0,
+   "week": 6
+  },
+  "requirement": "R245"
+ },
+ "c246": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 3
+  },
+  "requirement": "R246"
+ },
+ "c247": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R247"
+ },
+ "c248": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R248"
+ },
+ "c249": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R249"
+ },
+ "c250": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 0
+  },
+  "requirement": "R250"
+ },
+ "c251": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R251"
+ },
+ "c252": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R252"
+ },
+ "c253": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 1,
+   "week": 6
+  },
+  "requirement": "R253"
+ },
+ "c254": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 3
+  },
+  "requirement": "R254"
+ },
+ "c255": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R255"
+ },
+ "c256": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R256"
+ },
+ "c257": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R257"
+ },
+ "c258": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 0
+  },
+  "requirement": "R258"
+ },
+ "c259": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R259"
+ },
+ "c260": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R260"
+ },
+ "c261": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 2,
+   "week": 6
+  },
+  "requirement": "R261"
+ },
+ "c262": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 3
+  },
+  "requirement": "R262"
+ },
+ "c263": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R263"
+ },
+ "c264": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R264"
+ },
+ "c265": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R265"
+ },
+ "c266": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 0
+  },
+  "requirement": "R266"
+ },
+ "c267": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R267"
+ },
+ "c268": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R268"
+ },
+ "c269": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 3,
+   "week": 6
+  },
+  "requirement": "R269"
+ },
+ "c270": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 3
+  },
+  "requirement": "R270"
+ },
+ "c271": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R271"
+ },
+ "c272": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R272"
+ },
+ "c273": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R273"
+ },
+ "c274": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 0
+  },
+  "requirement": "R274"
+ },
+ "c275": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R275"
+ },
+ "c276": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R276"
+ },
+ "c277": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 4,
+   "week": 6
+  },
+  "requirement": "R277"
+ },
+ "c278": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 3
+  },
+  "requirement": "R278"
+ },
+ "c279": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R279"
+ },
+ "c280": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R280"
+ },
+ "c281": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R281"
+ },
+ "c282": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 0
+  },
+  "requirement": "R282"
+ },
+ "c283": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R283"
+ },
+ "c284": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 3
+  },
+  "requirement": "R284"
+ },
+ "c285": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 5,
+   "week": 6
+  },
+  "requirement": "R285"
+ },
+ "c286": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 4
+  },
+  "requirement": "R286"
+ },
+ "c287": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R287"
+ },
+ "c288": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R288"
+ },
+ "c289": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R289"
+ },
+ "c290": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 0
+  },
+  "requirement": "R290"
+ },
+ "c291": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R291"
+ },
+ "c292": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 3
+  },
+  "requirement": "R292"
+ },
+ "c293": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 1,
+   "week": 7
+  },
+  "requirement": "R293"
+ },
+ "c294": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 4
+  },
+  "requirement": "R294"
+ },
+ "c295": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R295"
+ },
+ "c296": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R296"
+ },
+ "c297": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R297"
+ },
+ "c298": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 0
+  },
+  "requirement": "R298"
+ },
+ "c299": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R299"
+ },
+ "c300": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 3
+  },
+  "requirement": "R300"
+ },
+ "c301": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 2,
+   "week": 7
+  },
+  "requirement": "R301"
+ },
+ "c302": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 4
+  },
+  "requirement": "R302"
+ },
+ "c303": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R303"
+ },
+ "c304": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R304"
+ },
+ "c305": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R305"
+ },
+ "c306": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 0
+  },
+  "requirement": "R306"
+ },
+ "c307": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R307"
+ },
+ "c308": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 3
+  },
+  "requirement": "R308"
+ },
+ "c309": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 3,
+   "week": 7
+  },
+  "requirement": "R309"
+ },
+ "c310": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 4
+  },
+  "requirement": "R310"
+ },
+ "c311": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R311"
+ },
+ "c312": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R312"
+ },
+ "c313": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R313"
+ },
+ "c314": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 0
+  },
+  "requirement": "R314"
+ },
+ "c315": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R315"
+ },
+ "c316": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 3
+  },
+  "requirement": "R316"
+ },
+ "c317": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 4,
+   "week": 7
+  },
+  "requirement": "R317"
+ },
+ "c318": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 4
+  },
+  "requirement": "R318"
+ },
+ "c319": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R319"
+ },
+ "c320": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R320"
+ },
+ "c321": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R321"
+ },
+ "c322": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 4
+  },
+  "requirement": "R322"
+ },
+ "c323": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R323"
+ },
+ "c324": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 4
+  },
+  "requirement": "R324"
+ },
+ "c325": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 5,
+   "week": 7
+  },
+  "requirement": "R325"
+ },
+ "c326": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 5
+  },
+  "requirement": "R326"
+ },
+ "c327": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R327"
+ },
+ "c328": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R328"
+ },
+ "c329": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R329"
+ },
+ "c330": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 4
+  },
+  "requirement": "R330"
+ },
+ "c331": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R331"
+ },
+ "c332": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 4
+  },
+  "requirement": "R332"
+ },
+ "c333": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 6,
+   "week": 7
+  },
+  "requirement": "R333"
+ },
+ "c334": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 5
+  },
+  "requirement": "R334"
+ },
+ "c335": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R335"
+ },
+ "c336": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R336"
+ },
+ "c337": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R337"
+ },
+ "c338": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 4
+  },
+  "requirement": "R338"
+ },
+ "c339": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R339"
+ },
+ "c340": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 4
+  },
+  "requirement": "R340"
+ },
+ "c341": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 2,
+   "week": 8
+  },
+  "requirement": "R341"
+ },
+ "c342": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 5
+  },
+  "requirement": "R342"
+ },
+ "c343": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R343"
+ },
+ "c344": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R344"
+ },
+ "c345": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R345"
+ },
+ "c346": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 4
+  },
+  "requirement": "R346"
+ },
+ "c347": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R347"
+ },
+ "c348": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 4
+  },
+  "requirement": "R348"
+ },
+ "c349": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 3,
+   "week": 8
+  },
+  "requirement": "R349"
+ },
+ "c350": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 5
+  },
+  "requirement": "R350"
+ },
+ "c351": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R351"
+ },
+ "c352": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R352"
+ },
+ "c353": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R353"
+ },
+ "c354": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 4
+  },
+  "requirement": "R354"
+ },
+ "c355": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R355"
+ },
+ "c356": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 4
+  },
+  "requirement": "R356"
+ },
+ "c357": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 4,
+   "week": 8
+  },
+  "requirement": "R357"
+ },
+ "c358": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 5
+  },
+  "requirement": "R358"
+ },
+ "c359": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R359"
+ },
+ "c360": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R360"
+ },
+ "c361": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R361"
+ },
+ "c362": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 4
+  },
+  "requirement": "R362"
+ },
+ "c363": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R363"
+ },
+ "c364": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R364"
+ },
+ "c365": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 5,
+   "week": 8
+  },
+  "requirement": "R365"
+ },
+ "c366": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 6
+  },
+  "requirement": "R366"
+ },
+ "c367": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R367"
+ },
+ "c368": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R368"
+ },
+ "c369": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R369"
+ },
+ "c370": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 4
+  },
+  "requirement": "R370"
+ },
+ "c371": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R371"
+ },
+ "c372": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R372"
+ },
+ "c373": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 6,
+   "week": 8
+  },
+  "requirement": "R373"
+ },
+ "c374": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 6
+  },
+  "requirement": "R374"
+ },
+ "c375": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R375"
+ },
+ "c376": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R376"
+ },
+ "c377": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R377"
+ },
+ "c378": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 4
+  },
+  "requirement": "R378"
+ },
+ "c379": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R379"
+ },
+ "c380": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R380"
+ },
+ "c381": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 7,
+   "week": 8
+  },
+  "requirement": "R381"
+ },
+ "c382": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 6
+  },
+  "requirement": "R382"
+ },
+ "c383": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R383"
+ },
+ "c384": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R384"
+ },
+ "c385": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R385"
+ },
+ "c386": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 4
+  },
+  "requirement": "R386"
+ },
+ "c387": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R387"
+ },
+ "c388": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R388"
+ },
+ "c389": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 3,
+   "week": 5
+  },
+  "requirement": "R389"
+ },
+ "c390": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 6
+  },
+  "requirement": "R390"
+ },
+ "c391": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R391"
+ },
+ "c392": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R392"
+ },
+ "c393": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R393"
+ },
+ "c394": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 4
+  },
+  "requirement": "R394"
+ },
+ "c395": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R395"
+ },
+ "c396": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R396"
+ },
+ "c397": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 4,
+   "week": 5
+  },
+  "requirement": "R397"
+ },
+ "c398": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 6
+  },
+  "requirement": "R398"
+ },
+ "c399": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R399"
+ },
+ "c400": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R400"
+ },
+ "c401": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R401"
+ },
+ "c402": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 6
+  },
+  "requirement": "R402"
+ },
+ "c403": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R403"
+ },
+ "c404": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 3
+  },
+  "requirement": "R404"
+ },
+ "c405": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 0,
+   "week": 5
+  },
+  "requirement": "R405"
+ },
+ "c406": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 7
+  },
+  "requirement": "R406"
+ },
+ "c407": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R407"
+ },
+ "c408": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R408"
+ },
+ "c409": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R409"
+ },
+ "c410": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 6
+  },
+  "requirement": "R410"
+ },
+ "c411": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R411"
+ },
+ "c412": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 3
+  },
+  "requirement": "R412"
+ },
+ "c413": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 1,
+   "week": 5
+  },
+  "requirement": "R413"
+ },
+ "c414": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 7
+  },
+  "requirement": "R414"
+ },
+ "c415": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R415"
+ },
+ "c416": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R416"
+ },
+ "c417": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R417"
+ },
+ "c418": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 6
+  },
+  "requirement": "R418"
+ },
+ "c419": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R419"
+ },
+ "c420": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 3
+  },
+  "requirement": "R420"
+ },
+ "c421": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 2,
+   "week": 5
+  },
+  "requirement": "R421"
+ },
+ "c422": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 7
+  },
+  "requirement": "R422"
+ },
+ "c423": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R423"
+ },
+ "c424": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R424"
+ },
+ "c425": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R425"
+ },
+ "c426": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 6
+  },
+  "requirement": "R426"
+ },
+ "c427": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R427"
+ },
+ "c428": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 3
+  },
+  "requirement": "R428"
+ },
+ "c429": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 3,
+   "week": 5
+  },
+  "requirement": "R429"
+ },
+ "c430": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 7
+  },
+  "requirement": "R430"
+ },
+ "c431": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R431"
+ },
+ "c432": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R432"
+ },
+ "c433": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R433"
+ },
+ "c434": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 6
+  },
+  "requirement": "R434"
+ },
+ "c435": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R435"
+ },
+ "c436": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 3
+  },
+  "requirement": "R436"
+ },
+ "c437": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 0,
+   "week": 6
+  },
+  "requirement": "R437"
+ },
+ "c438": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 7
+  },
+  "requirement": "R438"
+ },
+ "c439": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R439"
+ },
+ "c440": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R440"
+ },
+ "c441": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R441"
+ },
+ "c442": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 6
+  },
+  "requirement": "R442"
+ },
+ "c443": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R443"
+ },
+ "c444": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 4
+  },
+  "requirement": "R444"
+ },
+ "c445": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 1,
+   "week": 6
+  },
+  "requirement": "R445"
+ },
+ "c446": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 8
+  },
+  "requirement": "R446"
+ },
+ "c447": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R447"
+ },
+ "c448": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R448"
+ },
+ "c449": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R449"
+ },
+ "c450": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 6
+  },
+  "requirement": "R450"
+ },
+ "c451": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R451"
+ },
+ "c452": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 4
+  },
+  "requirement": "R452"
+ },
+ "c453": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 2,
+   "week": 6
+  },
+  "requirement": "R453"
+ },
+ "c454": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 8
+  },
+  "requirement": "R454"
+ },
+ "c455": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R455"
+ },
+ "c456": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R456"
+ },
+ "c457": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R457"
+ },
+ "c458": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 6
+  },
+  "requirement": "R458"
+ },
+ "c459": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R459"
+ },
+ "c460": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 4
+  },
+  "requirement": "R460"
+ },
+ "c461": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 3,
+   "week": 6
+  },
+  "requirement": "R461"
+ },
+ "c462": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 8
+  },
+  "requirement": "R462"
+ },
+ "c463": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R463"
+ },
+ "c464": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R464"
+ },
+ "c465": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R465"
+ },
+ "c466": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 6
+  },
+  "requirement": "R466"
+ },
+ "c467": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R467"
+ },
+ "c468": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 4
+  },
+  "requirement": "R468"
+ },
+ "c469": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 4,
+   "week": 6
+  },
+  "requirement": "R469"
+ },
+ "c470": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 8
+  },
+  "requirement": "R470"
+ },
+ "c471": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R471"
+ },
+ "c472": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R472"
+ },
+ "c473": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R473"
+ },
+ "c474": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 6
+  },
+  "requirement": "R474"
+ },
+ "c475": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R475"
+ },
+ "c476": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 4
+  },
+  "requirement": "R476"
+ },
+ "c477": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 5,
+   "week": 6
+  },
+  "requirement": "R477"
+ },
+ "c478": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 8
+  },
+  "requirement": "R478"
+ },
+ "c479": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100,
+    500
+   ]
+  },
+  "requirement": "R479"
+ },
+ "c480": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R480"
+ },
+ "c481": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R481"
+ },
+ "c482": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 0
+  },
+  "requirement": "R482"
+ },
+ "c483": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R483"
+ },
+ "c484": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R484"
+ },
+ "c485": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 4,
+   "week": 7
+  },
+  "requirement": "R485"
+ },
+ "c486": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 3
+  },
+  "requirement": "R486"
+ },
+ "c487": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R487"
+ },
+ "c488": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R488"
+ },
+ "c489": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R489"
+ },
+ "c490": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 0
+  },
+  "requirement": "R490"
+ },
+ "c491": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R491"
+ },
+ "c492": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R492"
+ },
+ "c493": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 5,
+   "week": 7
+  },
+  "requirement": "R493"
+ },
+ "c494": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 3
+  },
+  "requirement": "R494"
+ },
+ "c495": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R495"
+ },
+ "c496": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R496"
+ },
+ "c497": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R497"
+ },
+ "c498": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 0
+  },
+  "requirement": "R498"
+ },
+ "c499": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R499"
+ },
+ "c500": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R500"
+ },
+ "c501": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 6,
+   "week": 7
+  },
+  "requirement": "R501"
+ },
+ "c502": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 3
+  },
+  "requirement": "R502"
+ },
+ "c503": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R503"
+ },
+ "c504": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R504"
+ },
+ "c505": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R505"
+ },
+ "c506": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 0
+  },
+  "requirement": "R506"
+ },
+ "c507": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R507"
+ },
+ "c508": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R508"
+ },
+ "c509": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 0,
+   "week": 7
+  },
+  "requirement": "R509"
+ },
+ "c510": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 3
+  },
+  "requirement": "R510"
+ },
+ "c511": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    4,
+    16,
+    64
+   ]
+  },
+  "requirement": "R511"
+ },
+ "c512": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R512"
+ },
+ "c513": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R513"
+ },
+ "c514": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 0
+  },
+  "requirement": "R514"
+ },
+ "c515": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R515"
+ },
+ "c516": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R516"
+ },
+ "c517": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 1,
+   "week": 7
+  },
+  "requirement": "R517"
+ },
+ "c518": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 3
+  },
+  "requirement": "R518"
+ },
+ "c519": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R519"
+ },
+ "c520": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R520"
+ },
+ "c521": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R521"
+ },
+ "c522": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 0
+  },
+  "requirement": "R522"
+ },
+ "c523": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R523"
+ },
+ "c524": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 3
+  },
+  "requirement": "R524"
+ },
+ "c525": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 2,
+   "week": 7
+  },
+  "requirement": "R525"
+ },
+ "c526": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 4
+  },
+  "requirement": "R526"
+ },
+ "c527": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R527"
+ },
+ "c528": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R528"
+ },
+ "c529": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R529"
+ },
+ "c530": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 0
+  },
+  "requirement": "R530"
+ },
+ "c531": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R531"
+ },
+ "c532": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 3
+  },
+  "requirement": "R532"
+ },
+ "c533": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 2,
+   "week": 8
+  },
+  "requirement": "R533"
+ },
+ "c534": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 4
+  },
+  "requirement": "R534"
+ },
+ "c535": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R535"
+ },
+ "c536": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R536"
+ },
+ "c537": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R537"
+ },
+ "c538": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 0
+  },
+  "requirement": "R538"
+ },
+ "c539": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R539"
+ },
+ "c540": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 3
+  },
+  "requirement": "R540"
+ },
+ "c541": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 3,
+   "week": 8
+  },
+  "requirement": "R541"
+ },
+ "c542": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 4
+  },
+  "requirement": "R542"
+ },
+ "c543": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256
+   ]
+  },
+  "requirement": "R543"
+ },
+ "c544": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R544"
+ },
+ "c545": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R545"
+ },
+ "c546": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 0
+  },
+  "requirement": "R546"
+ },
+ "c547": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R547"
+ },
+ "c548": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 3
+  },
+  "requirement": "R548"
+ },
+ "c549": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 4,
+   "week": 8
+  },
+  "requirement": "R549"
+ },
+ "c550": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 4
+  },
+  "requirement": "R550"
+ },
+ "c551": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLCD",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R551"
+ },
+ "c552": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R552"
+ },
+ "c553": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R553"
+ },
+ "c554": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 0
+  },
+  "requirement": "R554"
+ },
+ "c555": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R555"
+ },
+ "c556": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 3
+  },
+  "requirement": "R556"
+ },
+ "c557": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 5,
+   "week": 8
+  },
+  "requirement": "R557"
+ },
+ "c558": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 4
+  },
+  "requirement": "R558"
+ },
+ "c559": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDEF",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R559"
+ },
+ "c560": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R560"
+ },
+ "c561": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "overwrite"
+  },
+  "requirement": "R561"
+ },
+ "c562": {
+  "family": "radix",
+  "params": {
+   "base": 2,
+   "width": 4
+  },
+  "requirement": "R562"
+ },
+ "c563": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R563"
+ },
+ "c564": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 4
+  },
+  "requirement": "R564"
+ },
+ "c565": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 6,
+   "week": 8
+  },
+  "requirement": "R565"
+ },
+ "c566": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 5
+  },
+  "requirement": "R566"
+ },
+ "c567": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRSTU",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R567"
+ },
+ "c568": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "\""
+  },
+  "requirement": "R568"
+ },
+ "c569": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "overwrite"
+  },
+  "requirement": "R569"
+ },
+ "c570": {
+  "family": "radix",
+  "params": {
+   "base": 3,
+   "width": 4
+  },
+  "requirement": "R570"
+ },
+ "c571": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R571"
+ },
+ "c572": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 4
+  },
+  "requirement": "R572"
+ },
+ "c573": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 7,
+   "week": 8
+  },
+  "requirement": "R573"
+ },
+ "c574": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 5
+  },
+  "requirement": "R574"
+ },
+ "c575": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNWY",
+   "values": [
+    1,
+    4,
+    16,
+    64,
+    256,
+    1024
+   ]
+  },
+  "requirement": "R575"
+ },
+ "c576": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "\""
+  },
+  "requirement": "R576"
+ },
+ "c577": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "overwrite"
+  },
+  "requirement": "R577"
+ },
+ "c578": {
+  "family": "radix",
+  "params": {
+   "base": 5,
+   "width": 4
+  },
+  "requirement": "R578"
+ },
+ "c579": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R579"
+ },
+ "c580": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 4
+  },
+  "requirement": "R580"
+ },
+ "c581": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 2,
+   "week": 5
+  },
+  "requirement": "R581"
+ },
+ "c582": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 5
+  },
+  "requirement": "R582"
+ },
+ "c583": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXL",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R583"
+ },
+ "c584": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "\""
+  },
+  "requirement": "R584"
+ },
+ "c585": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "overwrite"
+  },
+  "requirement": "R585"
+ },
+ "c586": {
+  "family": "radix",
+  "params": {
+   "base": 7,
+   "width": 4
+  },
+  "requirement": "R586"
+ },
+ "c587": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R587"
+ },
+ "c588": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 4
+  },
+  "requirement": "R588"
+ },
+ "c589": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 3,
+   "week": 5
+  },
+  "requirement": "R589"
+ },
+ "c590": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 5
+  },
+  "requirement": "R590"
+ },
+ "c591": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCD",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R591"
+ },
+ "c592": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "\""
+  },
+  "requirement": "R592"
+ },
+ "c593": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "overwrite"
+  },
+  "requirement": "R593"
+ },
+ "c594": {
+  "family": "radix",
+  "params": {
+   "base": 8,
+   "width": 4
+  },
+  "requirement": "R594"
+ },
+ "c595": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -100
+  },
+  "requirement": "R595"
+ },
+ "c596": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 4
+  },
+  "requirement": "R596"
+ },
+ "c597": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29,
+    31,
+    29
+   ],
+   "offset": 4,
+   "week": 5
+  },
+  "requirement": "R597"
+ },
+ "c598": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 5
+  },
+  "requirement": "R598"
+ },
+ "c599": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRS",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R599"
+ },
+ "c600": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "\""
+  },
+  "requirement": "R600"
+ },
+ "c601": {
+  "family": "ring",
+  "params": {
+   "capacity": 3,
+   "policy": "reject"
+  },
+  "requirement": "R601"
+ },
+ "c602": {
+  "family": "radix",
+  "params": {
+   "base": 11,
+   "width": 4
+  },
+  "requirement": "R602"
+ },
+ "c603": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -100
+  },
+  "requirement": "R603"
+ },
+ "c604": {
+  "family": "rle",
+  "params": {
+   "marker": "#",
+   "min_run": 2
+  },
+  "requirement": "R604"
+ },
+ "c605": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45,
+    45
+   ],
+   "offset": 0,
+   "week": 5
+  },
+  "requirement": "R605"
+ },
+ "c606": {
+  "family": "lru",
+  "params": {
+   "capacity": 2,
+   "ttl": 6
+  },
+  "requirement": "R606"
+ },
+ "c607": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKN",
+   "values": [
+    1,
+    5,
+    10,
+    50
+   ]
+  },
+  "requirement": "R607"
+ },
+ "c608": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ",",
+   "quote": "'"
+  },
+  "requirement": "R608"
+ },
+ "c609": {
+  "family": "ring",
+  "params": {
+   "capacity": 4,
+   "policy": "reject"
+  },
+  "requirement": "R609"
+ },
+ "c610": {
+  "family": "radix",
+  "params": {
+   "base": 12,
+   "width": 4
+  },
+  "requirement": "R610"
+ },
+ "c611": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": -1000
+  },
+  "requirement": "R611"
+ },
+ "c612": {
+  "family": "rle",
+  "params": {
+   "marker": "@",
+   "min_run": 2
+  },
+  "requirement": "R612"
+ },
+ "c613": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20,
+    40,
+    20
+   ],
+   "offset": 1,
+   "week": 5
+  },
+  "requirement": "R613"
+ },
+ "c614": {
+  "family": "lru",
+  "params": {
+   "capacity": 3,
+   "ttl": 6
+  },
+  "requirement": "R614"
+ },
+ "c615": {
+  "family": "numerals",
+  "params": {
+   "symbols": "IVXLC",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R615"
+ },
+ "c616": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ";",
+   "quote": "'"
+  },
+  "requirement": "R616"
+ },
+ "c617": {
+  "family": "ring",
+  "params": {
+   "capacity": 5,
+   "policy": "reject"
+  },
+  "requirement": "R617"
+ },
+ "c618": {
+  "family": "radix",
+  "params": {
+   "base": 16,
+   "width": 4
+  },
+  "requirement": "R618"
+ },
+ "c619": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": -1000
+  },
+  "requirement": "R619"
+ },
+ "c620": {
+  "family": "rle",
+  "params": {
+   "marker": "%",
+   "min_run": 2
+  },
+  "requirement": "R620"
+ },
+ "c621": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36,
+    36
+   ],
+   "offset": 2,
+   "week": 5
+  },
+  "requirement": "R621"
+ },
+ "c622": {
+  "family": "lru",
+  "params": {
+   "capacity": 4,
+   "ttl": 6
+  },
+  "requirement": "R622"
+ },
+ "c623": {
+  "family": "numerals",
+  "params": {
+   "symbols": "ABCDE",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R623"
+ },
+ "c624": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "|",
+   "quote": "'"
+  },
+  "requirement": "R624"
+ },
+ "c625": {
+  "family": "ring",
+  "params": {
+   "capacity": 6,
+   "policy": "reject"
+  },
+  "requirement": "R625"
+ },
+ "c626": {
+  "family": "radix",
+  "params": {
+   "base": 20,
+   "width": 4
+  },
+  "requirement": "R626"
+ },
+ "c627": {
+  "family": "intervals",
+  "params": {
+   "closed": true,
+   "lo_min": 0
+  },
+  "requirement": "R627"
+ },
+ "c628": {
+  "family": "rle",
+  "params": {
+   "marker": "&",
+   "min_run": 2
+  },
+  "requirement": "R628"
+ },
+ "c629": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30,
+    30
+   ],
+   "offset": 0,
+   "week": 6
+  },
+  "requirement": "R629"
+ },
+ "c630": {
+  "family": "lru",
+  "params": {
+   "capacity": 5,
+   "ttl": 6
+  },
+  "requirement": "R630"
+ },
+ "c631": {
+  "family": "numerals",
+  "params": {
+   "symbols": "PQRST",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R631"
+ },
+ "c632": {
+  "family": "csvline",
+  "params": {
+   "delimiter": "\t",
+   "quote": "'"
+  },
+  "requirement": "R632"
+ },
+ "c633": {
+  "family": "ring",
+  "params": {
+   "capacity": 7,
+   "policy": "reject"
+  },
+  "requirement": "R633"
+ },
+ "c634": {
+  "family": "radix",
+  "params": {
+   "base": 36,
+   "width": 4
+  },
+  "requirement": "R634"
+ },
+ "c635": {
+  "family": "intervals",
+  "params": {
+   "closed": false,
+   "lo_min": 0
+  },
+  "requirement": "R635"
+ },
+ "c636": {
+  "family": "rle",
+  "params": {
+   "marker": "~",
+   "min_run": 2
+  },
+  "requirement": "R636"
+ },
+ "c637": {
+  "family": "calendar",
+  "params": {
+   "months": [
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28,
+    28
+   ],
+   "offset": 1,
+   "week": 6
+  },
+  "requirement": "R637"
+ },
+ "c638": {
+  "family": "lru",
+  "params": {
+   "capacity": 6,
+   "ttl": 6
+  },
+  "requirement": "R638"
+ },
+ "c639": {
+  "family": "numerals",
+  "params": {
+   "symbols": "HJKNW",
+   "values": [
+    1,
+    5,
+    10,
+    50,
+    100
+   ]
+  },
+  "requirement": "R639"
+ },
+ "c640": {
+  "family": "csvline",
+  "params": {
+   "delimiter": ":",
+   "quote": "'"
+  },
+  "requirement": "R640"
+ }
+}

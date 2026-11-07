@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_tags.rs
+expression: "screen_text(&app, 80, 24)"
+---
+ham · Tags
+┌ tags · all 212 runs loaded at 14:05 ─────────────────────────────────────────┐
+│   TAG                   RUNS                                                 │
+│                                                                              │
+│   No tags yet.                                                               │
+│   New runs get topic and tech tags a few seconds after they start.           │
+│   A run on a repository shows project:<repository> at once.                  │
+│   To add a tag by hand, open a run and type /tag +topic:name.                │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+212 runs · 0 tags · 212 have no tags
+Esc back

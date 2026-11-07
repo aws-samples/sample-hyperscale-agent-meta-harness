@@ -1,0 +1,567 @@
+From f8bc968034e4d95eb2afe5b817c762f7eab4188a Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Thu, 24 Sep 2026 21:05:14 +0000
+Subject: [PATCH 02/11] build(cli): compile telemetry out unless the build opts
+ in
+
+The CLI bundle (bun.mts) and the compiled binaries (script/build.ts)
+inline telemetry settings from the build shell as Bun defines:
+OpenTelemetry export and its endpoint and headers, trace content
+recording, the PostHog key that drives feature-flag polling against
+data.cline.bot, and the error-service key. Defines replace the
+process.env reads at compile time, so a shipped binary cannot be
+reconfigured at runtime; the only runtime escape was IS_TEST/E2E_TEST.
+Any from-source build also inherited whatever OTEL_* values its shell
+happened to carry.
+
+Add script/telemetry-defines.ts with a build telemetry mode:
+
+- off (default): every telemetry variable inlines a disabled value
+  whatever the build shell contains: OTEL_TELEMETRY_ENABLED=false,
+  exporters none, CLINE_TRACE_RECORD_CONTENT=false, sample percent 0,
+  and empty endpoint, headers, PostHog and error-service keys. With an
+  empty key the CLI uses NoOpFeatureFlagsProvider, so feature flags are
+  never polled, without IS_TEST. bun.mts also stops inlining OTEL_*
+  through Bun's env option.
+- on: the previous inline-from-environment behavior, unchanged.
+  Selected with --telemetry=on or CLINE_BUILD_TELEMETRY=on; the
+  cli-publish workflow now sets CLINE_BUILD_TELEMETRY=on on every step
+  that injects telemetry secrets, so release builds are unchanged.
+
+An off build asserts after compiling that no telemetry endpoint,
+header or key value from the build shell appears in the binary, and
+fails the build otherwise.
+
+Tests: 9 new tests for mode resolution, off/on defines, the runtime
+effect on the shared telemetry config, and the leak check; 1 guard
+test that the CLI feature-flag service stays on the no-op provider
+without IS_TEST when the key is empty.
+---
+ .github/workflows/cli-publish.yml             |   4 +
+ apps/cli/bun.mts                              |  13 +-
+ apps/cli/script/build.ts                      |  65 +++++---
+ apps/cli/script/telemetry-defines.ts          | 139 ++++++++++++++++
+ .../src/commands/telemetry-defines.test.ts    | 156 ++++++++++++++++++
+ apps/cli/src/utils/feature-flags.test.ts      |  18 ++
+ 6 files changed, 369 insertions(+), 26 deletions(-)
+ create mode 100644 apps/cli/script/telemetry-defines.ts
+ create mode 100644 apps/cli/src/commands/telemetry-defines.test.ts
+
+diff --git a/.github/workflows/cli-publish.yml b/.github/workflows/cli-publish.yml
+index a89ee27..cc75b09 100644
+--- a/.github/workflows/cli-publish.yml
++++ b/.github/workflows/cli-publish.yml
+@@ -134,6 +134,7 @@ jobs:
+         run: bun run build:sdk
+         env:
+           TELEMETRY_SERVICE_API_KEY: ${{ secrets.TELEMETRY_SERVICE_API_KEY }}
++          CLINE_BUILD_TELEMETRY: "on"
+           ERROR_SERVICE_API_KEY: ${{ secrets.ERROR_SERVICE_API_KEY }}
+           OTEL_TELEMETRY_ENABLED: ${{ secrets.OTEL_TELEMETRY_ENABLED }}
+           OTEL_LOGS_EXPORTER: otlp
+@@ -150,6 +151,7 @@ jobs:
+         working-directory: apps/cli
+         env:
+           TELEMETRY_SERVICE_API_KEY: ${{ secrets.TELEMETRY_SERVICE_API_KEY }}
++          CLINE_BUILD_TELEMETRY: "on"
+           ERROR_SERVICE_API_KEY: ${{ secrets.ERROR_SERVICE_API_KEY }}
+           OTEL_TELEMETRY_ENABLED: ${{ secrets.OTEL_TELEMETRY_ENABLED }}
+           OTEL_LOGS_EXPORTER: otlp
+@@ -376,6 +378,7 @@ jobs:
+         run: bun run build:sdk
+         env:
+           TELEMETRY_SERVICE_API_KEY: ${{ secrets.TELEMETRY_SERVICE_API_KEY }}
++          CLINE_BUILD_TELEMETRY: "on"
+           ERROR_SERVICE_API_KEY: ${{ secrets.ERROR_SERVICE_API_KEY }}
+           OTEL_TELEMETRY_ENABLED: ${{ secrets.OTEL_TELEMETRY_ENABLED }}
+           OTEL_LOGS_EXPORTER: otlp
+@@ -421,6 +424,7 @@ jobs:
+         working-directory: apps/cli
+         env:
+           TELEMETRY_SERVICE_API_KEY: ${{ secrets.TELEMETRY_SERVICE_API_KEY }}
++          CLINE_BUILD_TELEMETRY: "on"
+           ERROR_SERVICE_API_KEY: ${{ secrets.ERROR_SERVICE_API_KEY }}
+           OTEL_TELEMETRY_ENABLED: ${{ secrets.OTEL_TELEMETRY_ENABLED }}
+           OTEL_LOGS_EXPORTER: otlp
+diff --git a/apps/cli/bun.mts b/apps/cli/bun.mts
+index e7dad98..d254dd4 100644
+--- a/apps/cli/bun.mts
++++ b/apps/cli/bun.mts
+@@ -9,12 +9,19 @@ import {
+ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { $ } from "bun";
++import {
++	buildTelemetryDefines,
++	resolveBuildTelemetryMode,
++} from "./script/telemetry-defines";
+ 
+ function defineProcessEnv(name: string): string {
+ 	return JSON.stringify(process.env[name] ?? "");
+ }
+ 
+ const sourcemap = Bun.env.CLINE_SOURCEMAPS === "1" ? "linked" : "none";
++// See script/telemetry-defines.ts: only CLINE_BUILD_TELEMETRY=on inlines the
++// build shell's telemetry values; the default `off` compiles telemetry out.
++const telemetryMode = resolveBuildTelemetryMode([], process.env);
+ const rootDir = dirname(fileURLToPath(import.meta.url));
+ const repoRoot = join(rootDir, "../../");
+ const hubWebviewSourcePath = join(repoRoot, "apps/cline-hub/src/webview");
+@@ -124,8 +131,12 @@ const result = await Bun.build({
+ 		"process.env.OTEL_EXPORTER_OTLP_HEADERS": defineProcessEnv(
+ 			"OTEL_EXPORTER_OTLP_HEADERS",
+ 		),
++		// A telemetry-off build overrides every telemetry value above.
++		...(telemetryMode === "off"
++			? buildTelemetryDefines({ mode: "off", env: process.env })
++			: {}),
+ 	},
+-	env: "OTEL_*",
++	env: telemetryMode === "off" ? "disable" : "OTEL_*",
+ 	banner:
+ 		'import { createRequire as __clineCreateRequire } from "node:module"; const require = __clineCreateRequire(import.meta.url);',
+ });
+diff --git a/apps/cli/script/build.ts b/apps/cli/script/build.ts
+index 306aec5..ac2d924 100644
+--- a/apps/cli/script/build.ts
++++ b/apps/cli/script/build.ts
+@@ -20,43 +20,40 @@ import {
+ 	shouldInstallNativeVariants,
+ 	validateBuildOptions,
+ } from "./build-options";
++import {
++	buildTelemetryDefines,
++	CLI_BINARY_TELEMETRY_ENV_VARS,
++	findLeakedTelemetryValues,
++	resolveBuildTelemetryMode,
++} from "./telemetry-defines";
+ 
+ const cliDir = resolve(import.meta.dir, "..");
+ const rootDir = resolve(cliDir, "../..");
+ process.chdir(cliDir);
+ 
+-// Telemetry / OTEL environment variables that should be baked into the
+-// compiled binary at build time. Mirrors the list of secrets injected by the
+-// `cli-publish` GitHub Actions workflow. These are inlined via Bun's `define`
+-// so the CLI ships with the production telemetry configuration without
+-// requiring the end user to set any env vars.
+-const BUILD_TIME_INLINED_ENV_VARS = [
+-	"TELEMETRY_SERVICE_API_KEY",
+-	"ERROR_SERVICE_API_KEY",
+-	"OTEL_TELEMETRY_ENABLED",
+-	"OTEL_LOGS_EXPORTER",
+-	"OTEL_METRICS_EXPORTER",
+-	"OTEL_TRACES_EXPORTER",
+-	"CLINE_TRACE_SAMPLE_PERCENT",
+-	"CLINE_TRACE_RECORD_CONTENT",
+-	"OTEL_EXPORTER_OTLP_PROTOCOL",
+-	"OTEL_EXPORTER_OTLP_ENDPOINT",
+-	"OTEL_EXPORTER_OTLP_HEADERS",
+-] as const;
++// Telemetry / OTEL settings are baked into the compiled binary at build time
++// via Bun's `define` (see ./telemetry-defines.ts). `--telemetry=on` (or
++// CLINE_BUILD_TELEMETRY=on, as the `cli-publish` workflow sets) inlines the
++// build shell's production telemetry configuration; the default `off` inlines
++// disabled values regardless of the build shell.
++const telemetryMode = resolveBuildTelemetryMode(
++	process.argv.slice(2),
++	process.env,
++);
+ 
+ function buildInlinedEnvDefines(): Record<string, string> {
+-	const defines: Record<string, string> = {};
+-	for (const name of BUILD_TIME_INLINED_ENV_VARS) {
+-		defines[`process.env.${name}`] = JSON.stringify(process.env[name] ?? "");
+-	}
+-	return defines;
++	return buildTelemetryDefines({
++		mode: telemetryMode,
++		env: process.env,
++		names: CLI_BINARY_TELEMETRY_ENV_VARS,
++	});
+ }
+ 
+ const pkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8"));
+ const version: string = pkg.version;
+ const repository: unknown = pkg.repository;
+ 
+-console.log(`Building @cline/cli v${version}`);
++console.log(`Building @cline/cli v${version} (telemetry: ${telemetryMode})`);
+ 
+ const buildOptions = parseBuildOptions(process.argv.slice(2));
+ 
+@@ -107,7 +104,9 @@ if (!buildOptions.skipSdkBuild) {
+ 	await $`bun run build:sdk`.cwd(rootDir);
+ 
+ 	console.log("Building CLI bundle...");
+-	await $`bun -F @cline/cli build`.cwd(rootDir);
++	await $`bun -F @cline/cli build`
++		.cwd(rootDir)
++		.env({ ...process.env, CLINE_BUILD_TELEMETRY: telemetryMode });
+ }
+ 
+ const hubWebviewSource = join(cliDir, "../cline-hub/src/webview");
+@@ -243,6 +242,22 @@ async function buildCompiledBinary(input: {
+ 
+ 	await $`cp ${tmpOutfile} ${input.outfile} && chmod 755 ${input.outfile}`;
+ 	await $`rm -rf ${tmpDir}`;
++
++	if (telemetryMode === "off") {
++		const leaked = findLeakedTelemetryValues(
++			readFileSync(input.outfile),
++			process.env,
++		);
++		if (leaked.length > 0) {
++			console.error(
++				`Telemetry-off build of ${input.dirName} contains build-shell values for: ${leaked.join(", ")}`,
++			);
++			process.exit(1);
++		}
++		console.log(
++			`  Telemetry off: no build-shell telemetry endpoint, header or key values in ${input.dirName}`,
++		);
++	}
+ }
+ 
+ for (const item of targets) {
+diff --git a/apps/cli/script/telemetry-defines.ts b/apps/cli/script/telemetry-defines.ts
+new file mode 100644
+index 0000000..1af3e62
+--- /dev/null
++++ b/apps/cli/script/telemetry-defines.ts
+@@ -0,0 +1,139 @@
++/**
++ * Build-time telemetry configuration for the Cline CLI.
++ *
++ * Telemetry and OpenTelemetry settings are inlined into the CLI bundle
++ * (`bun.mts`) and the compiled binaries (`script/build.ts`) as Bun `define`
++ * values, so the runtime environment cannot change them afterwards.
++ *
++ * - `on` inlines the build shell's values. The release workflow sets them
++ *   from repository secrets and opts in with `CLINE_BUILD_TELEMETRY=on`.
++ * - `off` (the default) inlines disabled values whatever the build shell
++ *   contains, so from-source and downstream builds ship with OpenTelemetry
++ *   export, trace content recording, PostHog feature-flag polling and error
++ *   reporting compiled out.
++ */
++
++export type BuildTelemetryMode = "on" | "off";
++
++/** Variables the compiled binaries inline (unchanged from the release build). */
++export const CLI_BINARY_TELEMETRY_ENV_VARS = [
++	"TELEMETRY_SERVICE_API_KEY",
++	"ERROR_SERVICE_API_KEY",
++	"OTEL_TELEMETRY_ENABLED",
++	"OTEL_LOGS_EXPORTER",
++	"OTEL_METRICS_EXPORTER",
++	"OTEL_TRACES_EXPORTER",
++	"CLINE_TRACE_SAMPLE_PERCENT",
++	"CLINE_TRACE_RECORD_CONTENT",
++	"OTEL_EXPORTER_OTLP_PROTOCOL",
++	"OTEL_EXPORTER_OTLP_ENDPOINT",
++	"OTEL_EXPORTER_OTLP_HEADERS",
++] as const;
++
++/** Every telemetry variable either CLI build inlines. */
++export const BUILD_TIME_TELEMETRY_ENV_VARS = [
++	...CLI_BINARY_TELEMETRY_ENV_VARS,
++	"OTEL_METRIC_EXPORT_INTERVAL",
++] as const;
++
++export type BuildTimeTelemetryEnvVar =
++	(typeof BUILD_TIME_TELEMETRY_ENV_VARS)[number];
++
++/** Values that identify a telemetry destination or credential. */
++const TELEMETRY_SECRET_ENV_VARS: readonly BuildTimeTelemetryEnvVar[] = [
++	"TELEMETRY_SERVICE_API_KEY",
++	"ERROR_SERVICE_API_KEY",
++	"OTEL_EXPORTER_OTLP_ENDPOINT",
++	"OTEL_EXPORTER_OTLP_HEADERS",
++];
++
++/** Disabled values for an `off` build; unlisted variables inline as "". */
++const TELEMETRY_OFF_VALUES: Partial<Record<BuildTimeTelemetryEnvVar, string>> =
++	{
++		OTEL_TELEMETRY_ENABLED: "false",
++		OTEL_LOGS_EXPORTER: "none",
++		OTEL_METRICS_EXPORTER: "none",
++		OTEL_TRACES_EXPORTER: "none",
++		CLINE_TRACE_SAMPLE_PERCENT: "0",
++		CLINE_TRACE_RECORD_CONTENT: "false",
++	};
++
++type BuildEnv = Readonly<Record<string, string | undefined>>;
++
++const TELEMETRY_FLAG_PREFIX = "--telemetry=";
++
++function parseMode(value: string, source: string): BuildTelemetryMode {
++	const normalized = value.trim().toLowerCase();
++	if (normalized === "on" || normalized === "off") {
++		return normalized;
++	}
++	throw new Error(
++		`Invalid ${source} value "${value}": expected "on" or "off" for the CLI build telemetry mode.`,
++	);
++}
++
++/**
++ * Resolves the build telemetry mode: `--telemetry=on|off` wins, then
++ * `CLINE_BUILD_TELEMETRY`, then `off`.
++ */
++export function resolveBuildTelemetryMode(
++	args: readonly string[],
++	env: BuildEnv,
++): BuildTelemetryMode {
++	const flag = args
++		.filter((arg) => arg.startsWith(TELEMETRY_FLAG_PREFIX))
++		.at(-1);
++	if (flag !== undefined) {
++		return parseMode(flag.slice(TELEMETRY_FLAG_PREFIX.length), "--telemetry");
++	}
++	const fromEnv = env.CLINE_BUILD_TELEMETRY;
++	if (fromEnv !== undefined && fromEnv.trim() !== "") {
++		return parseMode(fromEnv, "CLINE_BUILD_TELEMETRY");
++	}
++	return "off";
++}
++
++/**
++ * Bun `define` entries for the telemetry variables.
++ *
++ * `on` inlines `env[name] ?? ""` for each of `names`; `off` inlines the
++ * disabled value for every telemetry variable, ignoring `env`.
++ */
++export function buildTelemetryDefines(input: {
++	mode: BuildTelemetryMode;
++	env: BuildEnv;
++	names?: readonly string[];
++}): Record<string, string> {
++	const defines: Record<string, string> = {};
++	if (input.mode === "off") {
++		for (const name of BUILD_TIME_TELEMETRY_ENV_VARS) {
++			defines[`process.env.${name}`] = JSON.stringify(
++				TELEMETRY_OFF_VALUES[name] ?? "",
++			);
++		}
++		return defines;
++	}
++	for (const name of input.names ?? CLI_BINARY_TELEMETRY_ENV_VARS) {
++		defines[`process.env.${name}`] = JSON.stringify(input.env[name] ?? "");
++	}
++	return defines;
++}
++
++/**
++ * Names of telemetry destination/credential variables whose build-shell value
++ * appears in `artifact`. An `off` build asserts this list is empty.
++ */
++export function findLeakedTelemetryValues(
++	artifact: Uint8Array,
++	env: BuildEnv,
++): BuildTimeTelemetryEnvVar[] {
++	const content = Buffer.from(
++		artifact.buffer,
++		artifact.byteOffset,
++		artifact.byteLength,
++	);
++	return TELEMETRY_SECRET_ENV_VARS.filter((name) => {
++		const value = env[name]?.trim();
++		return value ? content.includes(value) : false;
++	});
++}
+diff --git a/apps/cli/src/commands/telemetry-defines.test.ts b/apps/cli/src/commands/telemetry-defines.test.ts
+new file mode 100644
+index 0000000..e93634e
+--- /dev/null
++++ b/apps/cli/src/commands/telemetry-defines.test.ts
+@@ -0,0 +1,156 @@
++import { createClineTelemetryServiceConfig } from "@cline/shared";
++import { afterEach, describe, expect, it } from "vitest";
++import {
++	BUILD_TIME_TELEMETRY_ENV_VARS,
++	buildTelemetryDefines,
++	CLI_BINARY_TELEMETRY_ENV_VARS,
++	findLeakedTelemetryValues,
++	resolveBuildTelemetryMode,
++} from "../../script/telemetry-defines";
++
++// The values the release workflow injects from repository secrets.
++const RELEASE_ENV = {
++	TELEMETRY_SERVICE_API_KEY: "phc_release_posthog_project_key",
++	ERROR_SERVICE_API_KEY: "phc_release_error_service_key",
++	OTEL_TELEMETRY_ENABLED: "true",
++	OTEL_LOGS_EXPORTER: "otlp",
++	OTEL_METRICS_EXPORTER: "otlp",
++	OTEL_TRACES_EXPORTER: "otlp",
++	CLINE_TRACE_SAMPLE_PERCENT: "100",
++	CLINE_TRACE_RECORD_CONTENT: "true",
++	OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
++	OTEL_EXPORTER_OTLP_ENDPOINT: "https://otel.release-collector.example",
++	OTEL_EXPORTER_OTLP_HEADERS: "authorization=Bearer release-otel-token",
++	OTEL_METRIC_EXPORT_INTERVAL: "60000",
++} as const;
++
++function inlined(defines: Record<string, string>, name: string): unknown {
++	const raw = defines[`process.env.${name}`];
++	return raw === undefined ? undefined : JSON.parse(raw);
++}
++
++describe("CLI build telemetry mode", () => {
++	it("defaults to off when neither the flag nor CLINE_BUILD_TELEMETRY is set", () => {
++		expect(resolveBuildTelemetryMode([], {})).toBe("off");
++		expect(resolveBuildTelemetryMode(["--single"], {})).toBe("off");
++	});
++
++	it("opts into release telemetry only when asked, with the flag winning over the environment", () => {
++		expect(resolveBuildTelemetryMode([], { CLINE_BUILD_TELEMETRY: "on" })).toBe(
++			"on",
++		);
++		expect(resolveBuildTelemetryMode(["--telemetry=on"], {})).toBe("on");
++		expect(
++			resolveBuildTelemetryMode(["--telemetry=off"], {
++				CLINE_BUILD_TELEMETRY: "on",
++			}),
++		).toBe("off");
++	});
++
++	it("rejects unknown telemetry modes instead of guessing", () => {
++		expect(() => resolveBuildTelemetryMode(["--telemetry=maybe"], {})).toThrow(
++			/telemetry/i,
++		);
++		expect(() =>
++			resolveBuildTelemetryMode([], { CLINE_BUILD_TELEMETRY: "1" }),
++		).toThrow(/telemetry/i);
++	});
++});
++
++describe("CLI build telemetry defines", () => {
++	it("off inlines disabled values even when the build shell carries release telemetry settings", () => {
++		const defines = buildTelemetryDefines({ mode: "off", env: RELEASE_ENV });
++
++		expect(inlined(defines, "OTEL_TELEMETRY_ENABLED")).toBe("false");
++		expect(inlined(defines, "CLINE_TRACE_RECORD_CONTENT")).toBe("false");
++		expect(inlined(defines, "CLINE_TRACE_SAMPLE_PERCENT")).toBe("0");
++		expect(inlined(defines, "TELEMETRY_SERVICE_API_KEY")).toBe("");
++		expect(inlined(defines, "ERROR_SERVICE_API_KEY")).toBe("");
++		expect(inlined(defines, "OTEL_EXPORTER_OTLP_ENDPOINT")).toBe("");
++		expect(inlined(defines, "OTEL_EXPORTER_OTLP_HEADERS")).toBe("");
++		for (const name of ["LOGS", "METRICS", "TRACES"]) {
++			expect(inlined(defines, `OTEL_${name}_EXPORTER`)).toBe("none");
++		}
++		const serialized = JSON.stringify(defines);
++		for (const value of Object.values(RELEASE_ENV)) {
++			if (value.length >= 8) {
++				expect(serialized).not.toContain(value);
++			}
++		}
++	});
++
++	it("off defines every telemetry variable either CLI build inlines", () => {
++		const defines = buildTelemetryDefines({ mode: "off", env: {} });
++
++		for (const name of [
++			...CLI_BINARY_TELEMETRY_ENV_VARS,
++			...BUILD_TIME_TELEMETRY_ENV_VARS,
++		]) {
++			expect(defines, name).toHaveProperty(`process.env.${name}`);
++		}
++	});
++
++	it("on reproduces the existing inline-from-environment behavior for the given variables", () => {
++		const defines = buildTelemetryDefines({
++			mode: "on",
++			env: RELEASE_ENV,
++			names: CLI_BINARY_TELEMETRY_ENV_VARS,
++		});
++
++		expect(Object.keys(defines).sort()).toEqual(
++			CLI_BINARY_TELEMETRY_ENV_VARS.map((name) => `process.env.${name}`).sort(),
++		);
++		for (const name of CLI_BINARY_TELEMETRY_ENV_VARS) {
++			expect(defines[`process.env.${name}`]).toBe(
++				JSON.stringify(RELEASE_ENV[name]),
++			);
++		}
++		expect(
++			buildTelemetryDefines({
++				mode: "on",
++				env: {},
++				names: ["OTEL_TELEMETRY_ENABLED"],
++			}),
++		).toEqual({ "process.env.OTEL_TELEMETRY_ENABLED": '""' });
++	});
++});
++
++describe("CLI build telemetry off: runtime effect", () => {
++	const saved = { ...process.env };
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("leaves OpenTelemetry disabled in the shared telemetry config", () => {
++		const defines = buildTelemetryDefines({ mode: "off", env: RELEASE_ENV });
++		for (const name of BUILD_TIME_TELEMETRY_ENV_VARS) {
++			process.env[name] = inlined(defines, name) as string;
++		}
++
++		const config = createClineTelemetryServiceConfig();
++
++		expect(config.enabled).toBe(false);
++		expect(config.otlpEndpoint).toBeFalsy();
++		expect(config.otlpHeaders).toBeUndefined();
++	});
++});
++
++describe("findLeakedTelemetryValues", () => {
++	it("reports build-shell telemetry values that appear in a built artifact", () => {
++		const artifact = new TextEncoder().encode(
++			`...binary...${RELEASE_ENV.OTEL_EXPORTER_OTLP_ENDPOINT}...${RELEASE_ENV.TELEMETRY_SERVICE_API_KEY}...`,
++		);
++
++		expect(findLeakedTelemetryValues(artifact, RELEASE_ENV).sort()).toEqual([
++			"OTEL_EXPORTER_OTLP_ENDPOINT",
++			"TELEMETRY_SERVICE_API_KEY",
++		]);
++	});
++
++	it("checks only destination and credential values, and skips unset variables", () => {
++		const artifact = new TextEncoder().encode("otlp true http/json 100 none");
++
++		expect(findLeakedTelemetryValues(artifact, RELEASE_ENV)).toEqual([]);
++		expect(findLeakedTelemetryValues(artifact, {})).toEqual([]);
++	});
++});
+diff --git a/apps/cli/src/utils/feature-flags.test.ts b/apps/cli/src/utils/feature-flags.test.ts
+index 986eb96..3e54616 100644
+--- a/apps/cli/src/utils/feature-flags.test.ts
++++ b/apps/cli/src/utils/feature-flags.test.ts
+@@ -1,3 +1,4 @@
++import { NoOpFeatureFlagsProvider } from "@cline/core";
+ import { afterEach, describe, expect, it } from "vitest";
+ import {
+ 	disposeCliFeatureFlagsService,
+@@ -16,4 +17,21 @@ describe("CLI feature flags singleton", () => {
+ 
+ 		expect(getCliFeatureFlagsService()).not.toBe(service);
+ 	});
++
++	it("never polls PostHog without IS_TEST when the build inlines an empty telemetry key", async () => {
++		const saved = { ...process.env };
++		try {
++			// A telemetry-off build defines TELEMETRY_SERVICE_API_KEY as "".
++			process.env.TELEMETRY_SERVICE_API_KEY = "";
++			delete process.env.IS_TEST;
++			delete process.env.E2E_TEST;
++
++			const service = getCliFeatureFlagsService();
++
++			expect(service.getProvider()).toBeInstanceOf(NoOpFeatureFlagsProvider);
++			expect(service.enabled).toBe(false);
++		} finally {
++			process.env = saved;
++		}
++	});
+ });
+-- 
+2.47.3
+

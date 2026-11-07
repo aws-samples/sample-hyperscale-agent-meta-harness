@@ -1,0 +1,174 @@
+# Toolchain pins of a Linux build host. They install under HAMH_TOOLS (the tools folder of the build host); nothing under /usr or /opt.
+# Host: x86_64 Linux with glibc 2.26 or later, so static musl builds are preferred.
+# Every sha256 below was computed from the download on 2026-09-25 (cargo-audit and osv-scanner on
+# 2026-09-26) and matched the upstream checksum file or the GitHub release asset digest, except
+# awscli (GPG .sig published, no checksum file).
+schema = "1"
+
+[rust]
+toolchain = "1.98.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+
+[node]
+# Node runs only inside [containers].node through scripts/node.sh (host glibc 2.26 < 2.28).
+pnpm = "12.6.0"
+pnpm_integrity = "sha512-PvaPlRyxEawgS0paFvCy3fDaVqluBBPoHYVdnwtV75JnFHCQKOHNAMQFwsX7e56OxNxGd3yAXQNzwvL/AP0g7A=="
+aws_cdk = "2.1143.0"
+aws_cdk_integrity = "sha512-bTbgEmNuN6UMDAyhGFWOAnriafSu7j0cAjaFKRw1/WEs6RE5g062D2v2+YE8Dw6qw7RgNGQPH5Nv47TsK5kZSQ=="
+
+[containers]
+node = "node:22-bookworm@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d"
+binfmt = "tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+# linux/arm64 manifest of alpine:3.22; runs only through QEMU binfmt on this x86_64 host.
+hello_arm64 = "alpine:3.22@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f"
+# linux/arm64 child manifest of the index that images/worker-python/Dockerfile builds FROM (amazonlinux:2023@sha256:381352c4...).
+# scripts/lib/arm64_sysroot.py copies the glibc 2.34 loader and libraries out of it so the production aarch64 agentd runs on
+# this x86_64 host under QEMU.
+al2023_arm64 = "public.ecr.aws/amazonlinux/amazonlinux@sha256:6b60f399998548f63d564a8591eb9493a1aed0d6ef447db83b9ea884ed82065d"
+
+[gate_tools]
+# gate tool set (images/tools/install.sh) at HAMH_TOOLS/gate-tools: this
+# CPython (installed by the pinned uv under HAMH_TOOLS/python), the tools.txt venv, the runtime.txt
+# wheels, and these tools from the [[tool]] entries. The worker image uses its own python3.12.
+python = "3.12.11"
+tools = ["uv", "gitleaks"]
+
+[[tool]]
+name = "rustup-init"
+version = "1.29.1"
+url = "https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init"
+sha256 = "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71"
+kind = "binary"
+bin = ["rustup-init"]
+
+[[tool]]
+name = "cargo-lambda"
+version = "1.9.2"
+url = "https://github.com/cargo-lambda/cargo-lambda/releases/download/v1.9.2/cargo-lambda-v1.9.2.x86_64-unknown-linux-musl.tar.gz"
+sha256 = "b5c258c424ebaef39541c3641f33c51137ee6c426016f365628fedb2c737271d"
+kind = "tar.gz"
+bin = ["cargo-lambda"]
+
+[[tool]]
+name = "cargo-zigbuild"
+version = "0.23.4"
+url = "https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.23.4/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
+sha256 = "9e3cf73485edbd45905c8aadbc0fdf869c7ddc3848f0c898229f2680db52e44b"
+kind = "tar.xz"
+bin = ["cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild"]
+
+[[tool]]
+# 0.16.0 is the stable zig in the cargo-zigbuild CI matrix.
+name = "zig"
+version = "0.16.0"
+url = "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
+sha256 = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+kind = "tar.xz"
+bin = ["zig-x86_64-linux-0.16.0/zig"]
+
+[[tool]]
+name = "cargo-nextest"
+version = "0.9.146"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa"
+kind = "tar.gz"
+bin = ["cargo-nextest"]
+
+[[tool]]
+name = "cargo-llvm-cov"
+version = "0.9.1"
+url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522"
+kind = "tar.gz"
+bin = ["cargo-llvm-cov"]
+
+[[tool]]
+name = "sccache"
+version = "0.18.0"
+url = "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+kind = "tar.gz"
+bin = ["sccache-v0.18.0-x86_64-unknown-linux-musl/sccache"]
+
+[[tool]]
+# The bootstrap runs aws/install with --install-dir and --bin-dir under HAMH_TOOLS.
+name = "awscli"
+version = "2.37.2"
+url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.37.2.zip"
+sha256 = "d1aae55d47b69d7d34039ce2023e66c2e16a03a7b4d46681993c29b67ba7b92e"
+kind = "zip"
+bin = []
+
+[[tool]]
+name = "gh"
+version = "2.101.0"
+url = "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz"
+sha256 = "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
+kind = "tar.gz"
+bin = ["gh_2.101.0_linux_amd64/bin/gh"]
+
+[[tool]]
+name = "gitleaks"
+version = "8.30.1"
+url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz"
+sha256 = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+kind = "tar.gz"
+bin = ["gitleaks"]
+
+[[tool]]
+name = "jq"
+version = "1.8.2"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64"
+sha256 = "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+kind = "binary"
+bin = ["jq"]
+
+[[tool]]
+# The image scan runs exactly this version. The arm64 build (CodeBuild ARM) is
+# https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-ARM64.tar.gz, sha256
+# aab21e677a7b7071fc79f1711480840754c18a1b9d9cefa7ccd06af63a0e8f4c (from the release's checksums file).
+name = "trivy"
+version = "0.76.0"
+url = "https://github.com/aquasecurity/trivy/releases/download/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz"
+sha256 = "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
+kind = "tar.gz"
+bin = ["trivy"]
+
+[[tool]]
+# The same uv version (aarch64-unknown-linux-musl) is pinned in images/codebuild/worker-python.yml.
+name = "uv"
+version = "0.12.18"
+url = "https://github.com/astral-sh/uv/releases/download/0.12.18/uv-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "e38d97460b98ebfd31b197de0fe9fa578add4bc8ba0179b203dd3f87b99f98e6"
+kind = "tar.gz"
+bin = ["uv-x86_64-unknown-linux-musl/uv"]
+
+[[tool]]
+# Linked into DOCKER_CONFIG/cli-plugins by the bootstrap.
+name = "docker-buildx"
+version = "0.37.1"
+url = "https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.linux-amd64"
+sha256 = "9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b"
+kind = "binary"
+bin = ["docker-buildx"]
+
+[[tool]]
+# The advisory check runs `cargo audit --json`. sha256 computed 2026-09-26; it
+# matched the GitHub release asset digest (the release publishes no checksum file).
+name = "cargo-audit"
+version = "0.22.2"
+url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"
+sha256 = "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428"
+kind = "tar.gz"
+bin = ["cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit"]
+
+[[tool]]
+# The advisory check runs `osv-scanner --format json -r <directory>`. sha256 computed 2026-09-26; it matched
+# osv-scanner_SHA256SUMS and the GitHub release asset digest.
+name = "osv-scanner"
+version = "2.6.0"
+url = "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64"
+sha256 = "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+kind = "binary"
+bin = ["osv-scanner"]

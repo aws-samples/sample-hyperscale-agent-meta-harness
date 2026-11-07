@@ -1,0 +1,137 @@
+[
+  {
+    "id": "c01",
+    "category": "1-short",
+    "prompt": "Add a retry with exponential backoff to the S3 uploader in uploader.py"
+  },
+  {
+    "id": "c02",
+    "category": "1-short",
+    "prompt": "Create a REST endpoint GET /orders/{id} that returns the order with its line items from DynamoDB"
+  },
+  {
+    "id": "c03",
+    "category": "1-short",
+    "prompt": "Build a command line tool in Go that converts CSV files to JSON lines"
+  },
+  {
+    "id": "c04",
+    "category": "2-bug",
+    "prompt": "The login page returns 500 when the email has a plus sign. Traceback: KeyError 'user_id' in auth/session.py line 88. Fix it."
+  },
+  {
+    "id": "c05",
+    "category": "2-bug",
+    "prompt": "Unit tests for the date parser fail on the first day of the year: parse_week('2026-01-01') returns week 53 of the previous year. Please fix it and add a regression test."
+  },
+  {
+    "id": "c06",
+    "category": "2-bug",
+    "prompt": "Our Lambda times out after 15 minutes when exporting more than a million rows to CSV. Find out why and make it stream."
+  },
+  {
+    "id": "c07",
+    "category": "3-long-ask-end",
+    "prompt": "Context for the team.\n\nThe billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. \n\nWhat I want from you: change the nightly export Lambda so it writes one CSV per month plus a manifest file, with unit tests."
+  },
+  {
+    "id": "c08",
+    "category": "3-long-ask-start",
+    "prompt": "Change the nightly export Lambda so it writes one CSV per month plus a manifest file, with unit tests.\n\nBackground:\nThe billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. \n\nAppendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. "
+  },
+  {
+    "id": "c09",
+    "category": "3-long-ask-middle",
+    "prompt": "The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. The billing service stores invoices in DynamoDB and exports a nightly CSV to S3. Finance reads the CSV in a spreadsheet. The export has grown to 4 million rows and the Lambda that builds it times out after 15 minutes. \n\nWhat I want: add pagination support to the vendor client wrapper so it follows next_cursor until done.\n\nAppendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. Appendix, pasted from the vendor docs: the API returns pages of 100 records, supports a cursor parameter, and rate limits callers to 10 requests per second per key. Responses carry a next_cursor field. "
+  },
+  {
+    "id": "c10",
+    "category": "4-vague",
+    "prompt": "make it better"
+  },
+  {
+    "id": "c11",
+    "category": "4-vague",
+    "prompt": "refactor"
+  },
+  {
+    "id": "c12",
+    "category": "4-vague",
+    "prompt": "fix the bug"
+  },
+  {
+    "id": "c13",
+    "category": "5-non-english",
+    "prompt": "Agrega pruebas unitarias para el modulo de facturacion y corrige el redondeo de impuestos"
+  },
+  {
+    "id": "c14",
+    "category": "5-non-english",
+    "prompt": "Fuege dem Bestell-Service eine Ratenbegrenzung hinzu und schreibe Tests dafuer"
+  },
+  {
+    "id": "c15",
+    "category": "5-non-english",
+    "prompt": "ユーザー認証のAPIにレート制限を追加してください"
+  },
+  {
+    "id": "c16",
+    "category": "6-code",
+    "prompt": "def total(items):\n    t = 0\n    for i in items:\n        t += i.price * i.qty\n    return t\n\ndef total_with_tax(items, rate):\n    return total(items) * (1 + rate)\n\nThese two functions give the wrong answer when qty is a string from the form. Fix it and add tests."
+  },
+  {
+    "id": "c17",
+    "category": "6-code",
+    "prompt": "{\n  \"env\": \"prod\",\n  \"region\": \"us-east-1\",\n  \"replicas\": 4,\n  \"db\": {\"host\": \"db.internal\", \"pool\": 20}\n}\nAdd a staging environment next to this one with two replicas and a smaller pool."
+  },
+  {
+    "id": "c18",
+    "category": "6-code",
+    "prompt": "java.lang.NullPointerException\n\tat com.shop.cart.CartService.total(CartService.java:114)\n\tat com.shop.cart.CartController.view(CartController.java:52)\nWhy does this happen when the cart is empty?"
+  },
+  {
+    "id": "c19",
+    "category": "7-url-path",
+    "prompt": "Implement the feature described in https://example.com/issues/123 and follow the style guide at https://example.com/style"
+  },
+  {
+    "id": "c20",
+    "category": "7-url-path",
+    "prompt": "Update the handling in src/config/loader.rs so that /etc/app/config.yaml values can be overridden by environment variables"
+  },
+  {
+    "id": "c21",
+    "category": "7-url-path",
+    "prompt": "Rename CustomerOrderProcessor to OrderService across the Java services module and update the Spring config"
+  },
+  {
+    "id": "c22",
+    "category": "8-multi",
+    "prompt": "# Tasks\n\n1. Fix the login bug\n2. Update the README with setup steps\n3. Bump the dependencies and run the tests"
+  },
+  {
+    "id": "c23",
+    "category": "8-multi",
+    "prompt": "## Goals\n- Add dark mode to the settings page\n- Persist the choice in local storage\n\n## Out of scope\n- Mobile layout"
+  },
+  {
+    "id": "c24",
+    "category": "8-multi",
+    "prompt": "TODO.md:\n[ ] write migration for the users table\n[ ] backfill the new email_verified column\n[ ] add an index on email"
+  },
+  {
+    "id": "c25",
+    "category": "9-decorated",
+    "prompt": "🚀 BUILD ME A TODO APP IN REACT WITH LOCAL STORAGE!!! 🔥"
+  },
+  {
+    "id": "c26",
+    "category": "9-decorated",
+    "prompt": "**Please** create a \"hello world\" web server in Node.js with `express` and a /health route"
+  },
+  {
+    "id": "c27",
+    "category": "9-decorated",
+    "prompt": "Hey! Hope you are doing well. Could you please help me write a script that renames all the photos in a folder by the date they were taken? Thanks so much!"
+  }
+]

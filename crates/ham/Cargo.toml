@@ -1,0 +1,58 @@
+[package]
+name = "ham"
+description = "The ham thin client: SigV4 /v1 calls, start, watch, pull, clone and the Ratatui TUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ham"
+path = "src/main.rs"
+
+[dependencies]
+ham-core.workspace = true
+harness-protocol.workspace = true
+aws-config-client.workspace = true
+aws-credential-types.workspace = true
+aws-sigv4.workspace = true
+aws-smithy-runtime-api.workspace = true
+bytes.workspace = true
+# use-dev-tty: the terminal event source polls level-triggered (poll(2) on Linux; select(2) on
+# macOS, whose poll(2) does not serve ttys) and reads until the terminal is drained, so a paste
+# longer than 1024 bytes arrives whole; the default mio source reads 1024 bytes per
+# edge-triggered wake-up and leaves the rest for the next key.
+crossterm = { workspace = true, features = ["use-dev-tty"] }
+getrandom.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+ratatui.workspace = true
+ratatui-textarea.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+# `signal`: the TUI ends on SIGTERM, SIGINT and SIGHUP after giving the terminal back (tui/session.rs). Already part of tokio's resolved
+# dependencies in the lock (the `process` feature uses signal-hook-registry), so Cargo.lock does not change.
+tokio = { workspace = true, features = ["signal"] }
+# `ham clone` reads repo.bundle and the src/ entries out of the delivered zip.
+zip.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+control-api.workspace = true
+message-ledger.workspace = true
+worker-api.workspace = true
+# `tests/clone_packager.rs` clones the zip the real packager makes.
+delivery.workspace = true
+insta.workspace = true
+proptest.workspace = true

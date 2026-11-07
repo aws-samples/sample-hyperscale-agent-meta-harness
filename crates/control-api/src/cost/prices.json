@@ -1,0 +1,37 @@
+{
+  "version": "bedrock-us-west-2-2026-10-05",
+  "currency": "USD",
+  "unit": "1M tokens",
+  "source": "AWS Pricing API GetProducts, region us-west-2; GPT-6.1 Sol, GPT-6 Astra and Claude Sonnet 5.5 (global profile) from the model cards and Price List files named in their rows. The rows are the models of engine/catalog/models.json that have a price; GLM 5.3 (us.zai.glm-5.3) has none yet.",
+  "models": [
+    {
+      "modelId": "us.anthropic.claude-opus-5-5",
+      "input": 4.40, "cacheWrite": 5.50, "cacheRead": 0.22, "output": 22.00,
+      "source": "AmazonBedrockFoundationModels, Claude Opus 5.5 (Amazon Bedrock Edition), USW2-MP:USW2_*_tokens_standard-Units; cacheWrite is the 5-minute TTL"
+    },
+    {
+      "modelId": "us.openai.gpt-6.1-sol",
+      "input": 2.2,
+      "cacheWrite": 2.75,
+      "cacheRead": 0.11,
+      "output": 11.0,
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-1-sol.html, US CRIS (bedrock-runtime), Standard tier, short context (272K input tokens or fewer); the Price List files list no Sol SKU; cacheWrite is the card's 1.25x input rate and cacheRead its 0.05x, the only ones listed"
+    },
+    {
+      "modelId": "us.openai.gpt-6-astra",
+      "input": 11.0,
+      "cacheWrite": 13.75,
+      "cacheRead": 1.1,
+      "output": 55.0,
+      "source": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-astra.html, Geo CRIS, Standard tier, short context (272K input tokens or fewer); the Price List (AmazonBedrockFoundationModels, USW2-MP:USW2_*_tokens_standard-Units) agrees; cacheWrite is the card's 30-minute cache write, the only one listed"
+    },
+    {
+      "modelId": "global.anthropic.claude-sonnet-5-5",
+      "input": 2.0,
+      "cacheWrite": 2.5,
+      "cacheRead": 0.2,
+      "output": 10.0,
+      "source": "AmazonBedrockFoundationModels, Claude Sonnet 5.5 (Amazon Bedrock Edition), USW2-MP:USW2_{input,cache_write,cache_read,output}_tokens_global_standard-Units (the global profile; the geo and in-Region rows are 10% dearer: 2.2, 2.75, 0.22, 11.0); cacheWrite is the 5-minute TTL"
+    }
+  ]
+}

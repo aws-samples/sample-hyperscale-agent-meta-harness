@@ -1,0 +1,9 @@
+---
+source: crates/ham/tests/tui_keys.rs
+expression: "bottom(&screen(&browse, w, h), 5)"
+---
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

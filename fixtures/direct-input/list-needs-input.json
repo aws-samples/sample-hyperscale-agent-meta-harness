@@ -1,0 +1,20 @@
+{
+  "runs": [
+    {
+      "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+      "status": "active",
+      "phase": "planning",
+      "target": {
+        "mode": "s3-only"
+      },
+      "createdAt": "2026-10-15T13:34:15Z",
+      "ownerPrincipalArn": "arn:aws:sts::123456789012:assumed-role/Admin/testuser",
+      "needsInput": {
+        "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+        "reason": "engine_stop",
+        "title": "Cline stopped its own prompt",
+        "expiresAt": "2026-10-15T14:11:07Z"
+      }
+    }
+  ]
+}

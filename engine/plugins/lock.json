@@ -1,0 +1,24 @@
+{
+  "files": {
+    "goal/LICENSE": "f704446a5f1271608805598b557e4288cf8580477ea038c9c3d8b361f693f6b8",
+    "goal/NOTICE": "3cfa3c44c7475cad1944c7eaf7429b02871ae7a567864ff6415fdf0d4ec54368",
+    "goal/PROVENANCE": "3ecf4c1bef017f10c93d90a887701f718448b3c99c431f4d2655182cfdfbd710",
+    "goal/index.js": "7341c68257f775daafc23168634d7329ac3224e4ea287e752d73963872b994c4",
+    "goal/package.json": "5e3315a2ef29dcb36f48b81c55c52266b29882f90af8f4f6ca71f4d7c1b60d18",
+    "harness-rounds/index.js": "f30f669d3257c58b985d3bda7bdced4248c9c8ddf9b473fcddc4c5b6f21398cf",
+    "harness-rounds/package.json": "be4a6ddfcd8e993807116d2d06e281bfbe5ca24a8470fd45f59b0517433619d1"
+  },
+  "sources": {
+    "goal-plugin": {
+      "bundle_bytes": 11830,
+      "bundler": "esbuild 0.25.12",
+      "inputs": {
+        "cline/shared/src/tools/create.ts": "5ff090d12d8c828446e692e4bed9581f8e69f3bff6be7216df74fffceedd7487",
+        "goal-index.ts": "8fa09f470ff4b8e1b86472213d0b84abaf07b09e4c6f2da6d914dbacce09dd30"
+      },
+      "metafile_sha256": "6f7b37cfdafb88764dccb25ad572427d5a607a79daae552a7927608beb42c641",
+      "recipe_sha256": "fc9912e32a026588b2d64b4db9bec890b981dedee182cd07476728d0a5c3f4d4"
+    }
+  },
+  "version": 1
+}

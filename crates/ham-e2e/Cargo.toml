@@ -1,0 +1,25 @@
+[package]
+name = "ham-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+harness-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+agentd.workspace = true
+harness-protocol.workspace = true
+
+[[bin]]
+name = "fake-acp-engine"
+path = "src/bin/fake-acp-engine.rs"

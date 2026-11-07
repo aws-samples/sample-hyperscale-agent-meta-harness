@@ -1,0 +1,585 @@
+{
+ "about": "COMPAT-CAH-DATA. Cases of the .ham/records locator and of the choice of the records folder, read by crates/agentd/tests/direct_records.rs, crates/ham-e2e/tests/lifecycle_layout.rs and scripts/tests/test_lifecycle_check.py and the tests of the scanner kit so the Rust reader, the scorer, the self-check script and the scanner kit give the same answer. `cases`: kind is default (the records sit in defaultBase/lifecycle, defaultBase/research and defaultBase/context), off, moved (dir is the folder that takes the place of defaultBase) or invalid; the value docs is a moved folder: it is the earlier layout of the default. `baseCases`: which folder is the base of the run, chosen once per run. A folder holds state when it is a real directory (no link) and holds a regular file named by stateFiles directly in it, or a regular file at any depth under a folder named by stateDirs (a link is nothing, an empty directory is nothing). Exactly one of the two folders holds state: that one is the base. Neither: the current folder. Both: refuse, and the message names both folders. expect is current, legacy or refuse. Each case builds its tree in an empty directory: files (a path, or a path with its text), emptyDirs and links (a path and the relative target it points to, which the case's files may fill).",
+ "defaultBase": ".ham",
+ "cases": [
+  {
+   "text": "",
+   "kind": "default"
+  },
+  {
+   "text": "\n",
+   "kind": "default"
+  },
+  {
+   "text": "   \n\n",
+   "kind": "default"
+  },
+  {
+   "text": "# only a comment\n",
+   "kind": "default"
+  },
+  {
+   "text": "\n# a\n# b\n\n",
+   "kind": "default"
+  },
+  {
+   "text": "\r\n",
+   "kind": "default"
+  },
+  {
+   "text": "  # indented comment\n",
+   "kind": "default"
+  },
+  {
+   "text": "off",
+   "kind": "off"
+  },
+  {
+   "text": "OFF\n",
+   "kind": "off"
+  },
+  {
+   "text": "  Off  \n",
+   "kind": "off"
+  },
+  {
+   "text": "# why\noff\n",
+   "kind": "off"
+  },
+  {
+   "text": "off\nsomething else\n",
+   "kind": "off"
+  },
+  {
+   "text": "off\r\n",
+   "kind": "off"
+  },
+  {
+   "text": ".ham/lifecycle\n",
+   "kind": "moved",
+   "dir": ".ham/lifecycle"
+  },
+  {
+   "text": ".ham/lifecycle\r\n",
+   "kind": "moved",
+   "dir": ".ham/lifecycle"
+  },
+  {
+   "text": "# the records of runs\n\n  .ham/lifecycle/  \n.ignored\n",
+   "kind": "moved",
+   "dir": ".ham/lifecycle"
+  },
+  {
+   "text": "run-records\n",
+   "kind": "moved",
+   "dir": "run-records"
+  },
+  {
+   "text": "a/b_c.d-e/f//\n",
+   "kind": "moved",
+   "dir": "a/b_c.d-e/f"
+  },
+  {
+   "text": ".records\n",
+   "kind": "moved",
+   "dir": ".records"
+  },
+  {
+   "text": "Records/Run.1\n",
+   "kind": "moved",
+   "dir": "Records/Run.1"
+  },
+  {
+   "text": ".ham/lifecycle-2/x\n",
+   "kind": "moved",
+   "dir": ".ham/lifecycle-2/x"
+  },
+  {
+   "text": "offline\n",
+   "kind": "moved",
+   "dir": "offline"
+  },
+  {
+   "text": "off-the-record\n",
+   "kind": "moved",
+   "dir": "off-the-record"
+  },
+  {
+   "text": "/etc",
+   "kind": "invalid"
+  },
+  {
+   "text": "/",
+   "kind": "invalid"
+  },
+  {
+   "text": ".",
+   "kind": "invalid"
+  },
+  {
+   "text": "./",
+   "kind": "invalid"
+  },
+  {
+   "text": "..",
+   "kind": "invalid"
+  },
+  {
+   "text": "../x",
+   "kind": "invalid"
+  },
+  {
+   "text": "a/../b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a/./b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a//b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a\\b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a*b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a?b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a[b]",
+   "kind": "invalid"
+  },
+  {
+   "text": "a:b",
+   "kind": "invalid"
+  },
+  {
+   "text": "~/x",
+   "kind": "invalid"
+  },
+  {
+   "text": "$HOME/x",
+   "kind": "invalid"
+  },
+  {
+   "text": ".git",
+   "kind": "invalid"
+  },
+  {
+   "text": ".git/x",
+   "kind": "invalid"
+  },
+  {
+   "text": "x/.git/y",
+   "kind": "invalid"
+  },
+  {
+   "text": ".GIT/x",
+   "kind": "invalid"
+  },
+  {
+   "text": "-x",
+   "kind": "invalid"
+  },
+  {
+   "text": "a/-b",
+   "kind": "invalid"
+  },
+  {
+   "text": "caf\u00e9",
+   "kind": "invalid"
+  },
+  {
+   "text": "a\u0000b",
+   "kind": "invalid"
+  },
+  {
+   "text": "a\tb",
+   "kind": "invalid"
+  },
+  {
+   "text": "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/",
+   "kind": "invalid"
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "kind": "invalid"
+  },
+  {
+   "text": ".ham\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": ".ham/\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": "docs\n",
+   "kind": "moved",
+   "dir": "docs"
+  },
+  {
+   "text": "  .ham  # not a comment\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u00a0.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": ".ham\u00a0\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u000b.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\f.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u0085.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u2028.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u2029.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u2003.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u3000off\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u3000.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "off\u00a0\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u0085off\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u00a0# note\n.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "\u3000# note\noff\n",
+   "kind": "invalid"
+  },
+  {
+   "text": "# note\n\u00a0\n.ham\n",
+   "kind": "invalid"
+  },
+  {
+   "text": " \t .ham \r\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": "\t.ham\t\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": "\r.ham\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": "# c\r\n .ham \r\n",
+   "kind": "moved",
+   "dir": ".ham"
+  },
+  {
+   "text": "\t# note\r\n\toff\n",
+   "kind": "off"
+  },
+  {
+   "text": "docs/\n",
+   "kind": "moved",
+   "dir": "docs"
+  },
+  {
+   "text": "  docs  \n",
+   "kind": "moved",
+   "dir": "docs"
+  },
+  {
+   "text": "# the records stay in docs\ndocs\n",
+   "kind": "moved",
+   "dir": "docs"
+  },
+  {
+   "text": "Docs\n",
+   "kind": "moved",
+   "dir": "Docs"
+  },
+  {
+   "text": "docs/lifecycle\n",
+   "kind": "moved",
+   "dir": "docs/lifecycle"
+  },
+  {
+   "text": "\u00a0docs\n",
+   "kind": "invalid"
+  }
+ ],
+ "baseFolders": {
+  "current": ".ham",
+  "legacy": ".cah"
+ },
+ "stateFiles": [
+  "records",
+  "test-command"
+ ],
+ "stateDirs": [
+  "lifecycle",
+  "research",
+  "context"
+ ],
+ "baseCases": [
+  {
+   "name": "neither folder",
+   "files": [],
+   "expect": "current"
+  },
+  {
+   "name": "only the current folder, a card",
+   "files": [
+    ".ham/lifecycle/GOAL.md"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "only the current folder, the locator",
+   "files": [
+    ".ham/records"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "only the legacy folder, a card",
+   "files": [
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "only the legacy folder, a red record deep down",
+   "files": [
+    ".cah/lifecycle/red/01-add.txt"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "only the legacy folder, the locator",
+   "files": [
+    {
+     "path": ".cah/records",
+     "text": "docs\n"
+    }
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "only the legacy folder, the test command",
+   "files": [
+    {
+     "path": ".cah/test-command",
+     "text": "make test\n"
+    }
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "only the legacy folder, a research note",
+   "files": [
+    ".cah/research/01-topic.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "only the legacy folder, the context index",
+   "files": [
+    ".cah/context/INDEX.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "both folders hold a card",
+   "files": [
+    ".ham/lifecycle/GOAL.md",
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "refuse"
+  },
+  {
+   "name": "the current locator and a legacy card",
+   "files": [
+    ".ham/records",
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "refuse"
+  },
+  {
+   "name": "the current test command and a legacy card",
+   "files": [
+    ".ham/test-command",
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "refuse"
+  },
+  {
+   "name": "an empty current folder never hides legacy records",
+   "emptyDirs": [
+    ".ham"
+   ],
+   "files": [
+    ".cah/lifecycle/LOG.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "empty record folders in the current folder hide nothing",
+   "emptyDirs": [
+    ".ham/lifecycle",
+    ".ham/research",
+    ".ham/context"
+   ],
+   "files": [
+    ".cah/lifecycle/LOG.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "empty legacy folders hold no state",
+   "emptyDirs": [
+    ".cah/lifecycle",
+    ".cah/context"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a stray file in the legacy folder is no state",
+   "files": [
+    ".cah/notes.txt"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a stray file in the current folder does not count against legacy records",
+   "files": [
+    ".ham/notes.txt",
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "a legacy folder that is a link holds nothing",
+   "links": [
+    {
+     "path": ".cah",
+     "target": "elsewhere"
+    }
+   ],
+   "files": [
+    "elsewhere/lifecycle/GOAL.md"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a current folder that is a link holds nothing",
+   "links": [
+    {
+     "path": ".ham",
+     "target": "elsewhere"
+    }
+   ],
+   "files": [
+    "elsewhere/lifecycle/GOAL.md",
+    ".cah/lifecycle/GOAL.md"
+   ],
+   "expect": "legacy"
+  },
+  {
+   "name": "a record folder that is a link holds nothing",
+   "emptyDirs": [
+    ".cah"
+   ],
+   "links": [
+    {
+     "path": ".cah/lifecycle",
+     "target": "../elsewhere"
+    }
+   ],
+   "files": [
+    "elsewhere/GOAL.md"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a card that is a link is not a regular file",
+   "emptyDirs": [
+    ".cah/lifecycle"
+   ],
+   "links": [
+    {
+     "path": ".cah/lifecycle/GOAL.md",
+     "target": "../../elsewhere.md"
+    }
+   ],
+   "files": [
+    "elsewhere.md"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a locator that is a link is not a regular file",
+   "emptyDirs": [
+    ".cah"
+   ],
+   "links": [
+    {
+     "path": ".cah/records",
+     "target": "../elsewhere.txt"
+    }
+   ],
+   "files": [
+    "elsewhere.txt"
+   ],
+   "expect": "current"
+  },
+  {
+   "name": "a locator that is a directory is not a regular file",
+   "emptyDirs": [
+    ".cah/records"
+   ],
+   "expect": "current"
+  }
+ ]
+}

@@ -1,0 +1,46 @@
+[package]
+name = "agentd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-credential-types.workspace = true
+aws-sigv4.workspace = true
+axum.workspace = true
+bytes.workspace = true
+flate2.workspace = true
+harness-core.workspace = true
+harness-protocol.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+rustls.workspace = true
+hyper-util.workspace = true
+landlock.workspace = true
+libc.workspace = true
+nix.workspace = true
+pkgproxy.workspace = true
+regex.workspace = true
+rustix.workspace = true
+seccompiler.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# Paused-clock tests of the flusher's tick timing.
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"

@@ -1,0 +1,173 @@
+{
+ "about": "Notes of a RUN row of the lifecycle run log and whether the note says PASS for itself: the upper-case word PASS (a word is a run of ASCII letters and digits), not right after not, no, never or the t of n't (any case), and none of the upper-case words FAIL, FAILS, FAILED, FAILING. A row with failed tests and a note that says PASS is not a red run. Read by crates/agentd/tests/direct_observe.rs, crates/ham-e2e/tests/lifecycle_core.rs and scripts/tests/test_lifecycle_check.py, so agentd, the scorer and the self-check script give the same answer.",
+ "cases": [
+  {
+   "note": "PASS",
+   "says_pass": true
+  },
+  {
+   "note": " PASS",
+   "says_pass": true
+  },
+  {
+   "note": "PASS ",
+   "says_pass": true
+  },
+  {
+   "note": "NEW-FAILURES PASS",
+   "says_pass": true
+  },
+  {
+   "note": "NEW-FAILURES PASS (every failure is also a failure of the base commit)",
+   "says_pass": true
+  },
+  {
+   "note": "(PASS)",
+   "says_pass": true
+  },
+  {
+   "note": "PASS: 6124 of 6285",
+   "says_pass": true
+  },
+  {
+   "note": "result: PASS",
+   "says_pass": true
+  },
+  {
+   "note": "PASS PASS",
+   "says_pass": true
+  },
+  {
+   "note": "no PASS PASS",
+   "says_pass": true
+  },
+  {
+   "note": "pass PASS",
+   "says_pass": true
+  },
+  {
+   "note": "Not run, PASS",
+   "says_pass": true
+  },
+  {
+   "note": "PASS\u00a0",
+   "says_pass": true
+  },
+  {
+   "note": "tests PASS, lint PASS",
+   "says_pass": true
+  },
+  {
+   "note": "",
+   "says_pass": false
+  },
+  {
+   "note": " ",
+   "says_pass": false
+  },
+  {
+   "note": "x",
+   "says_pass": false
+  },
+  {
+   "note": "OK",
+   "says_pass": false
+  },
+  {
+   "note": "2 failed, 10 passed in 0.3s",
+   "says_pass": false
+  },
+  {
+   "note": "pass",
+   "says_pass": false
+  },
+  {
+   "note": "Pass",
+   "says_pass": false
+  },
+  {
+   "note": "PASSED",
+   "says_pass": false
+  },
+  {
+   "note": "PASSES",
+   "says_pass": false
+  },
+  {
+   "note": "PASSING",
+   "says_pass": false
+  },
+  {
+   "note": "did not PASS",
+   "says_pass": false
+  },
+  {
+   "note": "NOT PASS",
+   "says_pass": false
+  },
+  {
+   "note": "NOT-PASS",
+   "says_pass": false
+  },
+  {
+   "note": "Not PASS",
+   "says_pass": false
+  },
+  {
+   "note": "no PASS yet",
+   "says_pass": false
+  },
+  {
+   "note": "never PASS",
+   "says_pass": false
+  },
+  {
+   "note": "didn't PASS",
+   "says_pass": false
+  },
+  {
+   "note": "can't PASS",
+   "says_pass": false
+  },
+  {
+   "note": "PASS expected, 2 FAILED observed",
+   "says_pass": false
+  },
+  {
+   "note": "PASS or FAIL",
+   "says_pass": false
+  },
+  {
+   "note": "PASS, FAILS",
+   "says_pass": false
+  },
+  {
+   "note": "PASS (FAILING)",
+   "says_pass": false
+  },
+  {
+   "note": "FAIL",
+   "says_pass": false
+  },
+  {
+   "note": "FAILED",
+   "says_pass": false
+  },
+  {
+   "note": "FAILING",
+   "says_pass": false
+  },
+  {
+   "note": "FAILS",
+   "says_pass": false
+  },
+  {
+   "note": "NEW-FAILURES",
+   "says_pass": false
+  },
+  {
+   "note": "\uff30\uff21\uff33\uff33",
+   "says_pass": false
+  }
+ ]
+}

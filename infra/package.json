@@ -1,0 +1,22 @@
+{
+  "name": "hamh-infra",
+  "private": true,
+  "type": "module",
+  "description": "CDK v2 app (L1 constructs) for hyperscale-agent-meta-harness; run only through scripts/node.sh",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.270.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  },
+  "packageManager": "pnpm@12.6.0"
+}

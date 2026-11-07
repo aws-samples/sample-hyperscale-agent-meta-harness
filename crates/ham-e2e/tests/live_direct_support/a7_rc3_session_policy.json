@@ -1,0 +1,47 @@
+{
+ "Statement": [
+  {
+   "Action": [
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:AbortMultipartUpload",
+    "s3:ListBucket",
+    "kms:Decrypt",
+    "kms:GenerateDataKey",
+    "execute-api:Invoke"
+   ],
+   "Effect": "Allow",
+   "Resource": "*",
+   "Sid": "RoleGrants"
+  },
+  {
+   "Action": [
+    "bedrock:InvokeModel",
+    "bedrock:InvokeModelWithResponseStream"
+   ],
+   "Effect": "Allow",
+   "Resource": [
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/global.anthropic.claude-sonnet-5-5",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/us.anthropic.claude-sonnet-5-5",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/us.anthropic.claude-opus-5-5",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/global.anthropic.claude-opus-5-5",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/us.openai.gpt-6.1-sol",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/global.openai.gpt-6.1-sol",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/us.openai.gpt-6-astra",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/global.openai.gpt-6-astra",
+    "arn:aws:bedrock:us-east-1:700000000011:inference-profile/us.zai.glm-5.3",
+    "arn:aws:bedrock:us-*::foundation-model/anthropic.claude-sonnet-5-5",
+    "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-5-5",
+    "arn:aws:bedrock:us-*::foundation-model/anthropic.claude-opus-5-5",
+    "arn:aws:bedrock:::foundation-model/anthropic.claude-opus-5-5",
+    "arn:aws:bedrock:us-*::foundation-model/openai.gpt-6.1-sol",
+    "arn:aws:bedrock:::foundation-model/openai.gpt-6.1-sol",
+    "arn:aws:bedrock:us-*::foundation-model/openai.gpt-6-astra",
+    "arn:aws:bedrock:::foundation-model/openai.gpt-6-astra",
+    "arn:aws:bedrock:us-*::foundation-model/zai.glm-5.3"
+   ],
+   "Sid": "LeasedModel"
+  }
+ ],
+ "Version": "2012-10-17"
+}

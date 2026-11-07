@@ -1,0 +1,180 @@
+# Cline fork pin. Contract: engine/cline/AGENTS.md. Read by scripts/build-cline-fork.sh, which
+# accepts only [table], [[patches]] and [[tdd]] headers, `key = "string"` lines, and comment lines.
+schema = "1"
+
+[upstream]
+url = "https://github.com/cline/cline.git"
+tag = "cli-v3.0.71"
+# Commit the tag points at (tag object 7418804b1460929f3ff701bcccc8184fb69c8e26).
+commit = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
+
+[series]
+# `git rev-parse HEAD^{tree}` after `git am` of every patch below onto the commit.
+tree = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+
+[[patches]]
+file = "0001-feat-llms-route-Bedrock-Mantle-models-through-SigV4-.patch"
+sha256 = "607b134cd5964dd2a3c3a907aa567a06a9057c2bfa6dfaf3cf3b387cc9089960"
+
+[[patches]]
+file = "0002-build-cli-compile-telemetry-out-unless-the-build-opt.patch"
+sha256 = "f511133521cde912b584321a8374631032629572b78ae04cc082f9bb986c135c"
+
+[[patches]]
+file = "0003-fix-llms-advance-Bedrock-prompt-cache-checkpoints-th.patch"
+sha256 = "3028597fa1c1504bd7ead08f61227c6721a56df44b809a92758b1f8e0e2ecd14"
+
+[[patches]]
+file = "0004-fix-cli-fail-loud-on-an-ACP-model-pin-instead-of-fal.patch"
+sha256 = "15eefe12d96149a028f3f408a5ed95790f9fc0d856d0ca0b31e12f23d7659520"
+
+[[patches]]
+file = "0005-fix-cli-honor-data-dir-under-ACP-and-run-the-local-b.patch"
+sha256 = "d9e5f06c06c480f79155babf4b2499b6730abfce21f4b57bf50133da0c0f6492"
+
+[[patches]]
+file = "0006-fix-cli-never-send-the-ACP-placeholder-key-as-a-bear.patch"
+sha256 = "6ec43198df1fb3e41e602a6fcbc49753ef816dabfa859cf26e8448e616a0d257"
+
+[[patches]]
+file = "0007-fix-cli-report-the-turn-s-token-usage-in-the-ACP-ses.patch"
+sha256 = "a602a7833511baf2906940c5a8896834de1c58839783e8df90493fff16bf5877"
+
+[[patches]]
+file = "0008-fix-core-keep-providers.json-maxTokens-when-no-per-t.patch"
+sha256 = "fe1c677a2c89903e8d20df3f0ebbaf9b19c40e7c943650a105949c9888a258c4"
+
+[[patches]]
+file = "0009-fix-cli-carry-a-provider-failure-s-structure-into-th.patch"
+sha256 = "b167df4fef441011cdf267dd674246cee97f8904a240e854720cce64f7f121ec"
+
+[[patches]]
+file = "0010-feat-cli-compact-the-context-under-ACP-from-provider.patch"
+sha256 = "3bbfb70c6e1a8e03dc355ac5d68be74bae00b2bfc2672442b73c848072d063d3"
+
+[[patches]]
+file = "0011-fix-llms-send-a-Mantle-model-that-cannot-turn-reason.patch"
+sha256 = "9c6db934767912390fa0279de3e7f75b30373fbaff8a81388f728d53b0a3a937"
+
+[[patches]]
+file = "0012-fix-llms-send-GLM-5.3-on-Bedrock-Converse-its-reason.patch"
+sha256 = "9acce3f8cec53e00d68f304f7ad40a28ef73e25275c23956a57c13a72d8045ba"
+
+[[patches]]
+file = "0013-fix-llms-keep-Bedrock-tool-call-ids-unique-across-co.patch"
+sha256 = "6579c95056f670313dc873afb46e52b1ed10e0dbc241f4c14a47e6139256e525"
+
+[[patches]]
+file = "0014-fix-llms-drop-blank-keys-from-Bedrock-tool-use-input.patch"
+sha256 = "fedf8db1a363db3b3c33116912e9e38ea293c8622ce26b7a31e9b7b204477f15"
+
+[[patches]]
+file = "0015-fix-core-raise-the-default-command-limit-to-10-minut.patch"
+sha256 = "831ab011cab700e5cb1ed0b4d96e37d3dc6f533d26397300e46591c05c93e50b"
+
+# Test-only patches: the failing-test commit of each built patch,
+# exported from the fork checkout's harness/series branch. `tree` is HEAD^{tree} after
+# `git am` of the file onto the commit plus the series patches before its number.
+
+[[tdd]]
+file = "tdd/0003-test-only.patch"
+sha256 = "06f17449c763996c9423d1882c1b2ec70b0d6ed7494b445ecc286ad18c0e1147"
+commit = "6133019314854d41893ae3cea731390e3b89e4dc"
+parent = "f8bc968034e4d95eb2afe5b817c762f7eab4188a"
+tree = "06d564b067de2a67b3adf53038b451c47203f8d9"
+
+[[tdd]]
+file = "tdd/0004-test-only.patch"
+sha256 = "92a45396a9b8cb8ce5f5b7971328f5f8968fe85a254177e7e8b58cf11d7f9d98"
+commit = "be83eedff3e52273dc9be32afc19b35b60dd8a52"
+parent = "53f4bf70babc578835f529a322c1f5d101e229bc"
+tree = "3f57be40923f68946800f7ca71e0fffceab1cab6"
+
+[[tdd]]
+file = "tdd/0005-test-only.patch"
+sha256 = "57c15a4a3579d87a05765828632648f0d7b51657c1425d19ab7da5328d6f9c13"
+commit = "c2e8d02f4dd8c53226d165ed978de9c07d332767"
+parent = "82b73e10fcff2e4510203211354859efd5a72bbf"
+tree = "a10a672ac043f8beef7ca5e26bc40959fdbe53b0"
+
+[[tdd]]
+file = "tdd/0006-test-only.patch"
+sha256 = "d568bff52296dd61c84693a93f8cccf1d3acfa5a1c9fdc59b9e91bea2a622629"
+commit = "8de23a18b9d4c74cc04abb8cca82fbcc106f0bf5"
+parent = "2aa5e747fa35058bb27e7f632839ddc2073710f7"
+tree = "d49aac556737f4aad937621269237cfc004ebcd7"
+
+[[tdd]]
+file = "tdd/0007-test-only.patch"
+sha256 = "fc60ce1aa2ed9aea0e102e7f31d22b62dfdbcb303985ab58be9cacfd0b3243e4"
+commit = "cf365163a2a9faa996b45a732cbce0d3b438c5d7"
+parent = "7738ee22fda87d09f9fd4cfe9cab5b9f3eba1758"
+tree = "4ea36a9e6e745a524e2388e60d5346565443e28a"
+
+[[tdd]]
+file = "tdd/0008-test-only.patch"
+sha256 = "e3f6a3e825e86aadfc1c2c4c35ab03129ddf6a4f02f100fa71b1f8336fcff472"
+commit = "d738cd600f0c470bdab1ee8fe657d555a97fc66a"
+parent = "d02e4ae1d80e00ef84e394104adb221459085ec7"
+tree = "4c8fd7670bf07fc09ab4558f24a0cf55e18d2bef"
+
+[[tdd]]
+file = "tdd/0009-test-only.patch"
+sha256 = "f88c4cd554d53279372eb63e46ccab1da92e16bdd3d258cf2edcb06ffcb0f5d6"
+commit = "c4d5a318bcd8f6b6099cd793a73802a6a145107a"
+parent = "2a4c3dae08941551cabedd42f437c14016baac28"
+tree = "4f1d743299202e7ce7800b83545003aa5e408a72"
+
+[[tdd]]
+file = "tdd/0010-test-only.patch"
+sha256 = "b68b279277d3d49b51240516ef33a01b004d45479f50081b18fce8d637db96b9"
+commit = "faca9a11b373d5861b1869101bd0afb1f783b76c"
+parent = "90f07f61880c12ee69700653b4cff8b5d6993881"
+tree = "a1df2714723d21e2d139aa078de572ce660c0e9c"
+
+[[tdd]]
+file = "tdd/0011-test-only.patch"
+sha256 = "c3b1f1ea561ca5641bb9da12ccea59b910b41fa8cd7a9f9e82a5dfb8d0008734"
+commit = "53a039df2d9195e281c6d1fcfde5f57c04bca8d8"
+parent = "a62e2e19f60bea00b6525464d77c30427473d132"
+tree = "750d95efc4b9eda30a8378491e62c4bc96657cd4"
+
+[[tdd]]
+file = "tdd/0012-test-only.patch"
+sha256 = "09b47f0f9ea7b558d72d2190bb33b5d59f824a4e6b6e97671698fec45e06d85e"
+commit = "ceecb8adad72b0fafe1e51772626bbc2d4415f77"
+parent = "8fa0bdbe380f4761ff91700fad1a50a8d9476572"
+tree = "1f5b3ac7da892e60cfb6e88aa25e30c295f865b9"
+
+[[tdd]]
+file = "tdd/0013-test-only.patch"
+sha256 = "6684bfe25bd8b12a0c8cf27ed978e4fc525077737b6d5d4db8a6102489bb58cf"
+commit = "6205439fc233929ca1abe9f5ee852d928a2aaea5"
+parent = "f8a28129df26011ee69515a7fe77a8d0cb324d66"
+tree = "92cb7aa9c2b788117cfc7e225de98d3261d19524"
+
+[[tdd]]
+file = "tdd/0014-test-only.patch"
+sha256 = "21b98e1977aca44eabc621cd8ef72d69f2007e1d4658c3835680e0f5688a3148"
+commit = "320c04855dd94315e7954f97597d46c9994f3944"
+parent = "125b15f7a5cf7c72b4f5c1929c0374fa7230fb57"
+tree = "f919306e7299d2de215894619dba22ea7bae6e21"
+
+[[tdd]]
+file = "tdd/0015-test-only.patch"
+sha256 = "1092d6d2d640b450c54ffdb33a41397cc7a7fee14d53f49ffe004c159aee7164"
+commit = "f8d2de76d353bae72fc292fd6e9dc65815db59c2"
+parent = "46733ed73dadbef5e3b3fa1396126c0c7370a776"
+tree = "a9a46ef099c1866e3089d2375eb3270c710c6c5e"
+
+[toolchain]
+# Release zips from https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2 (SHASUMS256.txt); upstream cli-v3.0.71 declares packageManager bun@1.4.2.
+bun_version = "1.4.2"
+bun_linux_x64_zip_sha256 = "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913"
+bun_linux_aarch64_zip_sha256 = "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7"
+# Node 22.23.2 and glibc 2.36 for bun install and the build.
+build_image = "node:22-bookworm@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d"
+
+[reference]
+# Binary SHA-256 values from builds of an earlier series, kept empty until a build of this
+# tree records one. Builds are not bit-reproducible, so these are comparison points, never pins.

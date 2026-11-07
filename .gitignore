@@ -1,0 +1,20 @@
+target/
+node_modules/
+cdk.out/
+dist/
+.venv/
+__pycache__/
+*.log
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.p12
+credentials*
+
+# LLVM coverage profiles written by cargo llvm-cov runs; never tracked.
+*.profraw
+
+# insta writes a pending snapshot beside the accepted one whenever a test runs with different metadata; never tracked.
+*.snap.new

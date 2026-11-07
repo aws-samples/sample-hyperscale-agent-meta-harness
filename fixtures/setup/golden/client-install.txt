@@ -1,0 +1,60 @@
+exit 0
+--- stdout
+
+== Checking this machine
+ok    platform Linux x86_64
+ok    git works
+ok    AWS profile work uses credential_process
+ok    Region us-east-1 (from --region or your answer)
+warn  unzip was not found; you need it only to open the zip that ham pull downloads (ham clone does not)
+ok    checksum of <TMP>/artifact/ham matches (fba1667b6a91d07e575bd5b87711662afb3bde26164627bbf5e380a26cb62617)
+
+== Plan
+  binary:  install <TMP>/artifact/ham to <TMP>/home/.local/bin/ham
+  link:    <TMP>/home/.local/bin/<earlier command> to ham, a relative link with the earlier command name
+  config:  set api_endpoint aws_profile region in <TMP>/home/.config/ham/config.toml
+  rules:   ham rules init (the default rules when you have none, the lifecycle rules and its seven skills; it replaces only an unedited earlier default or pack file)
+  checks:  ham models, ham --version, and ham doctor when an endpoint is set
+
+== Installing ham
+ok    installed <TMP>/home/.local/bin/ham (sha256 fba1667b6a91d07e575bd5b87711662afb3bde26164627bbf5e380a26cb62617)
+warn  <TMP>/home/.local/bin is not on your PATH. Add this line to your shell profile (setup.sh does not edit it):
+        export PATH="<TMP>/home/.local/bin:$PATH"
+ok    linked <TMP>/home/.local/bin/<earlier command> to ham
+      <earlier command> is the earlier command name. Running it prints a notice on stderr and then behaves as ham. The link stays for a limited time.
+
+== Checking the binary (offline)
+      sonnet  global.anthropic.claude-sonnet-5-5  Claude Sonnet 5.5  default
+ok    ham runs and lists its models
+ok    installed: ham v9.99
+
+== Config
+config file: <TMP>/home/.config/ham/config.toml
+ok    api_endpoint set to https://abc123.execute-api.us-east-1.amazonaws.com/direct
+ok    aws_profile set to work
+ok    region set to us-east-1
+
+== Rules
+      created <TMP>/home/.config/ham/rules/00-my-rules.md
+ok    rules are in place; change them with: ham rules edit
+
+== Smoke check (ham doctor)
+      PASS identity ok
+      PASS api ok
+      PASS catalog ok
+      PASS git-host ok
+      PASS allowlist ok
+ok    ham doctor found no failing check
+
+== Next steps
+  1. Look at your rules, and edit them if you like:   ham rules show      ham rules edit
+  2. See the five models and which one a run uses:    ham models
+  3. Start a run (a deployed stage and its endpoint are needed):
+       ham "Build a small command-line todo app in Python with tests" --s3-only --direct
+     or, to get a pull request in a CodeCommit repository:
+       ham "<your prompt>" --repo cc:hamh-e2e-<name> --direct
+     or run ham alone to open the terminal app and type the prompt there.
+  4. Follow it, then collect the work:
+       ham watch          ham pull <runId>          ham clone <runId>
+  More: docs/user-guide.md in this repository.
+--- stderr

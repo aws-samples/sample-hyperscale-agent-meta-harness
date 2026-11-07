@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "{toolsName}": {
+      "transport": { "type": "streamableHttp", "url": "{toolsUrl}" },
+      "timeout": 120
+    }
+  }
+}

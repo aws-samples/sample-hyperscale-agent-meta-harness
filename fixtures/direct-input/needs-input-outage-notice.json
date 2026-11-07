@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5B8T4W2N6QJ3C7D9EH1FZ0A",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 880,
+  "ts": "2026-10-15T16:12:00Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "needs-input",
+      "text": "Every model route has been down for 30 minutes. The run keeps trying until its time limit (c c stops it).",
+      "requestId": "01M5B8T4W2N6QJ3C7D9EH1FZ0A",
+      "n": 2,
+      "reason": "provider_outage",
+      "title": "Every model route is down",
+      "stopOutcome": null,
+      "evidence": {
+        "attempts": 14,
+        "toolCalls": 212,
+        "filesChanged": 9,
+        "identicalCalls": null,
+        "failedTurns": null,
+        "lastError": "ThrottlingException",
+        "runS": 9120,
+        "sessions": 1
+      },
+      "lastMessage": null,
+      "files": [],
+      "filesTotal": 9,
+      "blocking": false,
+      "options": [],
+      "models": [],
+      "recommended": null,
+      "canContinue": false,
+      "waitS": 0,
+      "expiresAt": null
+    }
+  }
+}

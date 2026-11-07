@@ -1,0 +1,128 @@
+# CodeBuild ARM (hamh-<stage>-image-build): the worker image of stage direct: the python and node tool sets
+# (Node 24 and the JS tools from images/tools/lang/install.sh).
+# Run with scripts/codebuild-run.sh --buildspec images/codebuild/worker-python.yml and
+#   --env HARNESS_BUCKET=<bucket> --env REPO_URI=<account>.dkr.ecr.<region>.amazonaws.com/hamh-<stage>-worker-python
+#   --env AGENTD_SHA256=<sha> --env CLINE_SHA256=<promoted sha> [--env IMAGE_TAG=<tag>] [--env LANG_FAMILY=direct]
+# LANG_FAMILY (default python) is the language tool set of images/tools/lang/install.sh: scripts/deploy.sh passes `direct` for stage
+# direct, whose one worker image then also carries Go, the JDK, Maven and the slim Rust toolchain with gcc; the build fails
+# above either ceiling of images/worker-python/image-size-gate.sh for either family.
+# The image is tagged IMAGE_TAG (scripts/deploy.sh passes in-<image key>) or else SOURCE_SHA.
+# agentd comes from s3://$HARNESS_BUCKET/builds/out/agentd/$SOURCE_SHA/agentd
+# (cross-built on a Linux machine); Cline from the promoted engine/cline/$CLINE_SHA256/cline;
+# OpenCode and uv (the gate tool set's binaries) from their pinned release assets, gitleaks built from source (images/tools/build-gitleaks.sh: the release
+# binary of 8.30.1 carries the standard library of Go 1.24.11). Each is checked before and inside the image build.
+version: 0.2
+env:
+  variables:
+    OPENCODE_URL: https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-arm64.tar.gz
+    OPENCODE_ARCHIVE_SHA256: 568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840
+    OPENCODE_SHA256: 7c6e67883fcb230b7d4cb1bfea821756ed8b320c1fb44e9c36c8e7fc8725826b
+    # The gate tool set's binaries: the linux arm64 build of the tools.lock uv pin, and gitleaks built from the source of the tools.lock version with the Go
+    # toolchain of images/tools/gitleaks.lock. The build is reproducible, so its SHA-256 is a pin: a different value stops the build.
+    GITLEAKS_SHA256: c1e5d7312000dc63d44357fd290e5cd50d1ad2de071ca2f9fd2fd7e8df9944cd
+    UV_URL: https://github.com/astral-sh/uv/releases/download/0.12.18/uv-aarch64-unknown-linux-musl.tar.gz
+    UV_ARCHIVE_SHA256: 0796973fb3eea8095078c3d0659bd17a5f6789a71b8dd85caff2483178f78ac3
+    UV_SHA256: d11e7511d3615551f82151ee865e24d6b4d9585ed7ac398c79b009c181f5502d
+    # ripgrep for the engine's own tools (OpenCode's glob and grep run rg; without it they fail).
+    RG_URL: https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz
+    RG_ARCHIVE_SHA256: c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f
+    RG_SHA256: e07d5c85fa9ca740ff4ab8bbac60a1e11c7a5ce242435f7820a03f7c20ef6276
+    # The image-size gate. The platform counts the COMPRESSED bytes of the layers in
+    # ECR (about 2,048 MB), so that is the gate: 1,800 MB (1 MB = 1,000,000 bytes), read back from ECR after the push. The unpacked size keeps a loose
+    # ceiling of 3,200 MiB so growth stays visible; it is checked before the push. Both are recorded in image.json and in the build log.
+    IMAGE_MAX_COMPRESSED_MB: "1800"
+    IMAGE_MAX_UNPACKED_MIB: "3200"
+    LANG_FAMILY: python
+phases:
+  pre_build:
+    commands:
+      - . scripts/lib/child-build-env.sh
+      - test "$(uname -m)" = aarch64
+      - test -n "$HARNESS_BUCKET" && test -n "$REPO_URI" && test -n "$AGENTD_SHA256" && test -n "$CLINE_SHA256"
+      - mkdir -p build
+      # Cline's goal plugin is fetched from its pinned sources and bundled by the pinned esbuild binary (no package manager runs), then every file is checked against engine/plugins/lock.json.
+      - bash scripts/engine-fetch build goal-plugin --dest build/plugins --platform linux-arm64
+      - bash scripts/engine-fetch verify goal-plugin --dir build/plugins
+      - aws s3 cp "s3://$HARNESS_BUCKET/builds/out/agentd/$SOURCE_SHA/agentd" build/agentd --only-show-errors
+      - aws s3 cp "s3://$HARNESS_BUCKET/engine/cline/$CLINE_SHA256/cline" build/cline --only-show-errors
+      # OpenCode is downloaded and hashed for every family; the direct family runs Cline only, so its image leaves the binary out (Dockerfile, 176 MiB).
+      - bash images/tools/fetch.sh "$OPENCODE_URL" "$OPENCODE_ARCHIVE_SHA256" build/opencode.tgz
+      - tar -xzf build/opencode.tgz -C build opencode
+      - GITLEAKS_BUILD_DIR=/tmp/gitleaks-build bash images/tools/build-gitleaks.sh build/gitleaks arm64
+      - bash images/tools/fetch.sh "$UV_URL" "$UV_ARCHIVE_SHA256" build/uv.tgz
+      - tar -xzf build/uv.tgz -C build --strip-components=1 uv-aarch64-unknown-linux-musl/uv
+      - bash images/tools/fetch.sh "$RG_URL" "$RG_ARCHIVE_SHA256" build/rg.tgz
+      - tar -xzf build/rg.tgz -C build --strip-components=1 ripgrep-14.1.1-aarch64-unknown-linux-gnu/rg
+      - printf '%s  build/agentd\n%s  build/cline\n%s  build/opencode\n%s  build/gitleaks\n%s  build/uv\n%s  build/rg\n' "$AGENTD_SHA256" "$CLINE_SHA256" "$OPENCODE_SHA256" "$GITLEAKS_SHA256" "$UV_SHA256" "$RG_SHA256" | sha256sum -c -
+      # The direct family's in-session container runtime: podman-static by hash and the offline postgres:16 as one flattened layer.
+      - >-
+        if [ "$LANG_FAMILY" = direct ]; then
+        bash images/worker-python/containers-assets.sh build/containers; fi
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${REPO_URI%%/*}"
+  build:
+    commands:
+      - >-
+        DOCKER_BUILDKIT=1 docker build --platform linux/arm64 -f images/worker-python/Dockerfile
+        --build-arg AGENTD_SHA256 --build-arg CLINE_SHA256 --build-arg OPENCODE_SHA256
+        --build-arg GITLEAKS_SHA256 --build-arg UV_SHA256 --build-arg RG_SHA256 --build-arg SOURCE_SHA --build-arg LANG_FAMILY
+        -t "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" .
+      - SIZE_BYTES=$(docker image inspect --format '{{.Size}}' "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"); SIZE_MB=$(( SIZE_BYTES / 1048576 )); bash images/worker-python/image-size-gate.sh unpacked "$SIZE_BYTES" "$IMAGE_MAX_UNPACKED_MIB"
+      - docker run --rm --entrypoint /opt/harness/bin/agentd "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - >-
+        if [ "$LANG_FAMILY" != direct ]; then docker run --rm --entrypoint /opt/harness/bin/opencode "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version; fi
+      - docker run --rm --entrypoint /opt/harness/bin/cline "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      # The shipped goal bundle (14 checks of its state machine) and the observer plugin run their unit checks inside the built image, with the image's own Node.
+      - >-
+        docker run --rm -v "$PWD/engine/plugins/build:/u:ro" --entrypoint /opt/harness/gate-tools/lang/bin/node "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" /u/plugin-unit.mjs /opt/harness/engine/plugins/goal/index.js | tee build/plugin-unit.json | grep -q '"allOk": true'
+      - >-
+        docker run --rm -v "$PWD/engine/plugins/build:/u:ro" --entrypoint /opt/harness/gate-tools/lang/bin/node "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" /u/observer-unit.mjs /opt/harness/engine/plugins/harness-rounds/index.js | tee build/observer-unit.json | grep -q '"allOk": true'
+      - >-
+        docker run --rm --entrypoint /opt/harness/bin/ham-research "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" limits 2>&1 | grep -q 'research is off for this run'
+      # COMPAT-CAH-DATA: the earlier names of two helpers are links that resolve to the renamed helpers, and the link of the research helper runs it (ends at VERSION 6.00).
+      - test "$(docker run --rm --entrypoint readlink "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" /opt/harness/bin/cah-research)" = ham-research # COMPAT-CAH-DATA
+      - test "$(docker run --rm --entrypoint readlink "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" /opt/harness/bin/cah-services)" = ham-services # COMPAT-CAH-DATA
+      - docker run --rm --entrypoint /opt/harness/bin/cah-research "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" limits 2>&1 | grep -q 'research is off for this run' # COMPAT-CAH-DATA
+      # The nobody helper of the Instances session type: with no arguments it must refuse with its usage text (a container build has no user namespaces, so only its parse is checked).
+      - >-
+        docker run --rm --entrypoint /opt/harness/bin/ham-nobody-exec "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" 2>&1 | grep -q 'usage: ham-nobody-exec'
+      - docker run --rm --entrypoint /opt/harness/gate-tools/bin/ruff "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - docker run --rm --entrypoint /opt/harness/gate-tools/lang/bin/node "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      # The direct family's toolchains run in the image, at the pinned versions, and the families' gate tools are not in it.
+      - >-
+        if [ "$LANG_FAMILY" = direct ]; then
+        T="$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"; L=/opt/harness/gate-tools/lang/bin;
+        docker run --rm --entrypoint $L/go "$T" version | grep -q 'go1.27.1 linux/arm64'
+        && docker run --rm --entrypoint $L/java "$T" -version 2>&1 | grep -q 'Corretto-21.0.12.12.1'
+        && docker run --rm -e PATH=$L:/usr/local/bin:/usr/bin:/bin --entrypoint mvn "$T" -v | grep -q 'Apache Maven 3.9.16'
+        && docker run --rm --entrypoint bash "$T" -c 'command -v curl >/dev/null && command -v unzip >/dev/null && command -v git >/dev/null && command -v cc >/dev/null && command -v ld >/dev/null && command -v diff >/dev/null && command -v patch >/dev/null && command -v jq >/dev/null && command -v pip >/dev/null && ! test -e /opt/harness/gate-tools/lang/bin/golangci-lint && ! test -e /opt/harness/gate-tools/lang/bin/gradle && ! test -e /opt/harness/gate-tools/lang/bin/cargo-llvm-cov && ! ls /opt/harness/gate-tools/lang/rust/lib/rustlib/*/bin/llvm-profdata'
+        && docker run --rm --entrypoint erl "$T" -noshell -eval 'io:format("~s~n", [erlang:system_info(otp_release)]), halt().' | grep -qx 26
+        && docker run --rm --entrypoint test "$T" -x /opt/harness/services/rabbitmq/sbin/rabbitmq-server
+        && docker run --rm --user agent --entrypoint /opt/harness/bin/ham-services "$T" status | grep -q 'postgres stopped'
+        && docker run --rm --entrypoint $L/node "$T" -p 'JSON.parse(require("fs").readFileSync("/opt/harness/gate-tools/lang/manifest.json","utf8")).family' | grep -qx direct; fi
+      # The Rust toolchain compiles, links, tests and lints a crate as the engine user, offline: a missing linker or standard library fails here, before the push (images/worker-python/rust-check.sh; the version is lang.lock's).
+      - >-
+        if [ "$LANG_FAMILY" = direct ]; then
+        bash images/worker-python/rust-check.sh "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" "$(awk '$1 == "rustc" && $3 == "aarch64" { print $2 }' images/tools/lang/lang.lock)"; fi
+      # Each pinned runtime binary has its SHA-256 in the built image, and the runtime's files are in place (images/worker-python/containers.lock).
+      - >-
+        if [ "$LANG_FAMILY" = direct ]; then
+        bash images/worker-python/containers-check.sh "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"; fi
+      - docker run --rm --entrypoint /opt/harness/gate-tools/lang/bin/node "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -p 'JSON.stringify(require("/opt/harness/gate-tools/lang/manifest.json"))'
+      - docker run --rm --entrypoint /opt/harness/gate-tools/bin/python3 "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -c 'import json; print(json.load(open("/opt/harness/gate-tools/manifest.json"))["versions"])'
+      # The native services (images/services/install.sh) run, and their user exists.
+      - docker run --rm --entrypoint /usr/bin/postgres "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - docker run --rm --entrypoint /usr/libexec/mariadbd "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - docker run --rm --entrypoint /usr/bin/valkey-server "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - docker run --rm --entrypoint /opt/harness/services/bin/mailpit "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --help > /dev/null
+      - test "$(docker run --rm --entrypoint stat "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -c '%U:%G' /opt/harness/services/bin/mailpit)" = root:root
+      - test "$(docker run --rm --entrypoint id "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -u svc)" = 904
+      - test "$(docker run --rm --entrypoint id "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -u sut)" = 903
+      - docker run --rm --entrypoint cat "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" /opt/harness/services/manifest.json
+      - docker push "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"
+      - DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"); echo "IMAGE $DIGEST"
+      # The platform counts the compressed bytes ECR holds for the tag (the build role's ecr:DescribeImages reads them); a build over the ceiling fails here and writes no record.
+      - COMPRESSED_BYTES=$(aws ecr describe-images --region "$AWS_REGION" --repository-name "${REPO_URI#*/}" --image-ids "imageTag=${IMAGE_TAG:-$SOURCE_SHA}" --query 'imageDetails[0].imageSizeInBytes' --output text); bash images/worker-python/image-size-gate.sh compressed "$COMPRESSED_BYTES" "$IMAGE_MAX_COMPRESSED_MB"
+      - >-
+        printf '{"image": "%s", "sizeMB": %s, "compressedBytes": %s, "source": "%s", "pins": {"agentd": "%s", "cline": "%s", "opencode": "%s", "gitleaks": "%s", "uv": "%s"}}\n'
+        "$DIGEST" "$SIZE_MB" "$COMPRESSED_BYTES" "$SOURCE_SHA" "$AGENTD_SHA256" "$CLINE_SHA256" "$OPENCODE_SHA256" "$GITLEAKS_SHA256" "$UV_SHA256" > image.json
+      - aws s3 cp image.json "s3://$HARNESS_BUCKET/builds/out/images/worker-python/$SOURCE_SHA/image.json" --only-show-errors

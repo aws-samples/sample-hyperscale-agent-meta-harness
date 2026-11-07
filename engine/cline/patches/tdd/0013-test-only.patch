@@ -1,0 +1,244 @@
+From 6205439fc233929ca1abe9f5ee852d928a2aaea5 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Wed, 14 Oct 2026 02:12:31 +0000
+X-Harness-Test-Only: commit=6205439fc233929ca1abe9f5ee852d928a2aaea5 parent=f8a28129df26011ee69515a7fe77a8d0cb324d66 tree=92cb7aa9c2b788117cfc7e225de98d3261d19524
+Subject: [PATCH] test(llms): tool call ids stay unique across turns (red
+ first)
+
+Failing tests for fork patch 0013: a tool call id that an earlier call in the conversation already uses gets a
+numeric suffix, other ids are unchanged.
+---
+ .../providers/ai-sdk.tool-call-ids.test.ts    | 222 ++++++++++++++++++
+ 1 file changed, 222 insertions(+)
+ create mode 100644 sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts b/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+new file mode 100644
+index 0000000..2261ccf
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+@@ -0,0 +1,222 @@
++import type {
++	AgentModelEvent,
++	AgentToolDefinition,
++	GatewayProviderContext,
++	GatewayStreamRequest,
++} from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { createOpenAICompatibleProvider } from "./ai-sdk";
++
++/**
++ * GLM 5.3 on Bedrock Converse numbers its tool calls call_0, call_1, ... from
++ * zero in every response, so the id of its first call repeats across turns.
++ * The ACP spec asks for a toolCallId that is unique in the session, and
++ * clients (the harness, ACP UIs) key tool calls by it, so two distinct calls
++ * with one id merge into one. The adapter keeps the id the model chose until
++ * that id already belongs to an earlier call in the conversation, then adds a
++ * numeric suffix (call_0-2). The suffix uses only characters Bedrock accepts in
++ * a toolUseId ([a-zA-Z0-9_-]), and the same id is what the conversation
++ * history carries on the next request, so toolUse and toolResult still match.
++ */
++
++const TOOL: AgentToolDefinition = {
++	name: "run_commands",
++	description: "Run shell commands",
++	inputSchema: {
++		type: "object",
++		properties: { commands: { type: "array", items: { type: "string" } } },
++		required: ["commands"],
++	},
++};
++
++function sseCalls(ids: readonly string[]): string {
++	const chunk = (delta: unknown, finish: string | null = null) =>
++		`data: ${JSON.stringify({
++			id: "cmpl-1",
++			object: "chat.completion.chunk",
++			created: 1,
++			model: "test-model",
++			choices: [{ index: 0, delta, finish_reason: finish }],
++		})}\n\n`;
++	let body = "";
++	ids.forEach((id, index) => {
++		body += chunk({
++			...(index === 0 ? { role: "assistant" } : {}),
++			tool_calls: [
++				{
++					index,
++					id,
++					type: "function",
++					function: {
++						name: "run_commands",
++						arguments: `{"commands":["echo ${index}"]}`,
++					},
++				},
++			],
++		});
++	});
++	return `${body}${chunk({}, "tool_calls")}data: [DONE]\n\n`;
++}
++
++/** The history of earlier turns: one assistant tool call and its result each. */
++function history(
++	priorIds: readonly string[],
++): GatewayStreamRequest["messages"] {
++	const messages: GatewayStreamRequest["messages"] = [
++		{
++			id: "u0",
++			role: "user",
++			content: [{ type: "text", text: "do the thing" }],
++			createdAt: 0,
++		},
++	];
++	priorIds.forEach((id, index) => {
++		messages.push(
++			{
++				id: `a${index}`,
++				role: "assistant",
++				content: [
++					{
++						type: "tool-call",
++						toolCallId: id,
++						toolName: "run_commands",
++						input: { commands: ["echo old"] },
++					},
++				],
++				createdAt: index + 1,
++			},
++			{
++				id: `t${index}`,
++				role: "tool",
++				content: [
++					{
++						type: "tool-result",
++						toolCallId: id,
++						toolName: "run_commands",
++						output: "old",
++					},
++				],
++				createdAt: index + 1,
++			},
++		);
++	});
++	return messages;
++}
++
++async function callIds(
++	responseIds: readonly string[],
++	priorIds: readonly string[],
++	options: { providerId?: string; sessionId?: string } = {},
++): Promise<string[]> {
++	const config = {
++		providerId: "openai-compatible",
++		apiKey: "test-key",
++		baseUrl: "http://fake.local/v1",
++		fetch: (async () =>
++			new Response(sseCalls(responseIds), {
++				status: 200,
++				headers: { "content-type": "text/event-stream" },
++			})) as unknown as typeof fetch,
++	};
++	const provider = await createOpenAICompatibleProvider(config);
++	const model = {
++		id: "test-model",
++		providerId: "openai-compatible",
++		name: "test-model",
++	};
++	const context = {
++		provider: {
++			id: "openai-compatible",
++			name: "OpenAI Compatible",
++			defaultModelId: "test-model",
++			models: [model],
++		},
++		model,
++		config,
++	} as unknown as GatewayProviderContext;
++	// The stub speaks the OpenAI-compatible wire; the request names the provider
++	// whose ids are under test (the allocator is scoped to Bedrock).
++	const request = {
++		providerId: options.providerId ?? "bedrock",
++		modelId: "test-model",
++		messages: history(priorIds),
++		tools: [TOOL],
++		...(options.sessionId
++			? { metadata: { sessionId: options.sessionId } }
++			: {}),
++	} as unknown as GatewayStreamRequest;
++	const ids: string[] = [];
++	for await (const event of await provider.stream(request, context)) {
++		const delta = event as AgentModelEvent & { toolCallId?: string };
++		if (delta.type === "tool-call-delta" && delta.toolCallId) {
++			if (!ids.includes(delta.toolCallId)) ids.push(delta.toolCallId);
++		}
++	}
++	return ids;
++}
++
++describe("ai-sdk adapter tool call ids", () => {
++	it("keeps the model's ids on the first turn", async () => {
++		expect(await callIds(["call_0", "call_1", "call_2"], [])).toEqual([
++			"call_0",
++			"call_1",
++			"call_2",
++		]);
++	});
++
++	it("keeps an id no earlier call used", async () => {
++		expect(await callIds(["call_7"], ["call_0"])).toEqual(["call_7"]);
++	});
++
++	it("suffixes an id an earlier turn already used", async () => {
++		expect(await callIds(["call_0"], ["call_0"])).toEqual(["call_0-2"]);
++	});
++
++	it("counts on past suffixes the history already carries", async () => {
++		expect(await callIds(["call_0"], ["call_0", "call_0-2"])).toEqual([
++			"call_0-3",
++		]);
++	});
++
++	it("renames only the colliding calls of one response", async () => {
++		expect(await callIds(["call_0", "call_1"], ["call_0"])).toEqual([
++			"call_0-2",
++			"call_1",
++		]);
++	});
++
++	it("produces ids Bedrock accepts as a toolUseId", async () => {
++		const [id] = await callIds(["call_0"], ["call_0"]);
++		expect(id).not.toBe("call_0");
++		expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
++	});
++
++	it("leaves ids of other providers untouched", async () => {
++		expect(
++			await callIds(["call_0"], ["call_0"], {
++				providerId: "openai-compatible",
++			}),
++		).toEqual(["call_0"]);
++	});
++
++	it("keeps an id unique for the whole session when the history lost the earlier call", async () => {
++		// After compaction the history no longer holds the first call, but the
++		// ACP client still shows it: the next call_0 must not repeat it.
++		const session = { sessionId: "sess-compaction" };
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0"]);
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0-2"]);
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0-3"]);
++		expect(await callIds(["call_0"], [], { sessionId: "sess-other" })).toEqual([
++			"call_0",
++		]);
++	});
++
++	it("never grows an id past Bedrock's 64 characters", async () => {
++		const long = `call_${"x".repeat(59)}`;
++		expect(long).toHaveLength(64);
++		const [id] = await callIds([long], [long]);
++		expect(id).not.toBe(long);
++		expect(id.length).toBeLessThanOrEqual(64);
++		expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
++	});
++});
+-- 
+2.47.3

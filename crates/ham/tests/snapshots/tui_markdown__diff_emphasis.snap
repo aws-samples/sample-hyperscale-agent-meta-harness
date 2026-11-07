@@ -1,0 +1,15 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: "dump(&render_diff(&d, 50))"
+---
+  ⟦b:--- a/src/calc.py⟧
+  ⟦b:+++ b/src/calc.py⟧
+  ⟦cyan:@@ -1,5 +1,5 @@⟧
+   def add(a, b):
+  ⟦red:-    return a ⟧⟦r,red:-⟧⟦red: b⟧
+  ⟦green:+    return a ⟧⟦r,green:+⟧⟦green: b⟧
+   
+  ⟦red:-def mul(a, b):⟧
+  ⟦red:-    return a * b⟧
+  ⟦green:+def mul(a, b⟧⟦r,green:, c=1⟧⟦green:):⟧
+  ⟦green:+    return a * b⟧⟦r,green: * c⟧

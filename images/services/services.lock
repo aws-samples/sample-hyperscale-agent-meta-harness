@@ -1,0 +1,22 @@
+# Lane A native service pins, read by install.sh.
+# Five columns per row. rpm rows: rpm <package> <version-release> any -  (Amazon Linux 2023 packages,
+# installed without their dependency closure; the base image digest fixes the repository). lib rows:
+# lib <package> - any -  (shared libraries the servers link, installed with dnf). Asset rows: <tool> <version>
+# <arch: x86_64 | aarch64> <sha256 of the download> <url>; <tool>-bin rows pin the SHA-256 of the
+# extracted binary the same way. Update a row only with a measured hash.
+rpm postgresql16-server 16.15-1.amzn2023.0.1 any -
+rpm postgresql16 16.15-1.amzn2023.0.1 any -
+rpm postgresql16-private-libs 16.15-1.amzn2023.0.1 any -
+rpm mariadb114-server 11.4.13-1.amzn2023.0.2 any -
+rpm mariadb114-errmsg 11.4.13-1.amzn2023.0.2 any -
+rpm mariadb114-common 11.4.13-1.amzn2023.0.2 any -
+rpm valkey 9.0.7-1.amzn2023.0.1 any -
+lib libicu - any -
+lib libaio - any -
+lib systemd-libs - any -
+lib openldap - any -
+lib pam - any -
+mailpit 1.31.2 x86_64 397a14cad03ae34d7c5f13215fd24971fed5ce48bf4237554829b0a10d4306ad https://github.com/axllent/mailpit/releases/download/v1.31.2/mailpit-linux-amd64.tar.gz
+mailpit 1.31.2 aarch64 91f4e7d94ac302470dbe59379af10222a43ff1625b7aea65f35890daa456817d https://github.com/axllent/mailpit/releases/download/v1.31.2/mailpit-linux-arm64.tar.gz
+mailpit-bin 1.31.2 x86_64 af464637e394c525852fd34179dd923006176e99e362f3454e9d355f663225b5 -
+mailpit-bin 1.31.2 aarch64 0d541f7598b9739bff9fe6649b5b896ef11d6801c5607f74a928509f59d948fe -

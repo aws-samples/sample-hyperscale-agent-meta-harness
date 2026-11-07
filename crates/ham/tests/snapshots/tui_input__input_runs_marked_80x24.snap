@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Runs
+┌ runs ────────────────────────────────────────────────────────────────────────┐
+│    RUN                        STATUS         NAME                            │
+│! ▶ 01K6A0000000000000000000R1 needs input    -                               │
+│>   01K6A0000000000000000000R0 active         -                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└────────────────────────────────────────────────────────────────── run 1 of 2 ┘
+2 runs · 1 needs input · needs input: Cline stopped its own prompt · target s3-o
+n new run · Enter open · ↑↓ · / find · t tags · p s3-only · r refresh · q quit

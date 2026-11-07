@@ -1,0 +1,64 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active · updated 0s ago
+tool     editing src/module_4949.py                                                                                                                                                             pending│
+tool     editing src/module_4950.py                                                                                                                                                             pending│
+tool     editing src/module_4951.py                                                                                                                                                             pending│
+tool     editing src/module_4952.py                                                                                                                                                             pending│
+tool     editing src/module_4953.py                                                                                                                                                             pending│
+tool     editing src/module_4954.py                                                                                                                                                             pending│
+tool     editing src/module_4955.py                                                                                                                                                             pending│
+tool     editing src/module_4956.py                                                                                                                                                             pending│
+tool     editing src/module_4957.py                                                                                                                                                             pending│
+tool     editing src/module_4958.py                                                                                                                                                             pending│
+tool     editing src/module_4959.py                                                                                                                                                             pending│
+tool     editing src/module_4960.py                                                                                                                                                             pending│
+tool     editing src/module_4961.py                                                                                                                                                             pending│
+tool     editing src/module_4962.py                                                                                                                                                             pending│
+tool     editing src/module_4963.py                                                                                                                                                             pending│
+tool     editing src/module_4964.py                                                                                                                                                             pending│
+tool     editing src/module_4965.py                                                                                                                                                             pending│
+tool     editing src/module_4966.py                                                                                                                                                             pending│
+tool     editing src/module_4967.py                                                                                                                                                             pending│
+tool     editing src/module_4968.py                                                                                                                                                             pending│
+tool     editing src/module_4969.py                                                                                                                                                             pending│
+tool     editing src/module_4970.py                                                                                                                                                             pending│
+tool     editing src/module_4971.py                                                                                                                                                             pending│
+tool     editing src/module_4972.py                                                                                                                                                             pending│
+tool     editing src/module_4973.py                                                                                                                                                             pending│
+tool     editing src/module_4974.py                                                                                                                                                             pending│
+tool     editing src/module_4975.py                                                                                                                                                             pending│
+tool     editing src/module_4976.py                                                                                                                                                             pending│
+tool     editing src/module_4977.py                                                                                                                                                             pending│
+tool     editing src/module_4978.py                                                                                                                                                             pending│
+tool     editing src/module_4979.py                                                                                                                                                             pending│
+tool     editing src/module_4980.py                                                                                                                                                             pending│
+tool     editing src/module_4981.py                                                                                                                                                             pending│
+tool     editing src/module_4982.py                                                                                                                                                             pending│
+tool     editing src/module_4983.py                                                                                                                                                             pending│
+tool     editing src/module_4984.py                                                                                                                                                             pending│
+tool     editing src/module_4985.py                                                                                                                                                             pending│
+tool     editing src/module_4986.py                                                                                                                                                             pending│
+tool     editing src/module_4987.py                                                                                                                                                             pending│
+tool     editing src/module_4988.py                                                                                                                                                             pending│
+tool     editing src/module_4989.py                                                                                                                                                             pending│
+tool     editing src/module_4990.py                                                                                                                                                             pending│
+tool     editing src/module_4991.py                                                                                                                                                             pending│
+tool     editing src/module_4992.py                                                                                                                                                             pending│
+tool     editing src/module_4993.py                                                                                                                                                             pending│
+tool     editing src/module_4994.py                                                                                                                                                             pending│
+tool     editing src/module_4995.py                                                                                                                                                             pending│
+tool     editing src/module_4996.py                                                                                                                                                             pending│
+tool     editing src/module_4997.py                                                                                                                                                             pending│
+tool     editing src/module_4998.py                                                                                                                                                             pending│
+tool     editing src/module_4999.py                                                                                                                                                             pending│
+notice ▾ status                                                                                                                                                                                        │
+         active (planning)                                                                                                                                                                             │
+         PR     none yet                                                                                                                                                                               │
+notice ▸ agents 5000                                                                                                                                                                                   ┃
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

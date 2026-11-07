@@ -1,0 +1,10 @@
+{
+    "Parameter": {
+        "Name": "/cdk-bootstrap/hnb659fds/version",
+        "Type": "String",
+        "Value": "{version}",
+        "Version": 3,
+        "LastModifiedDate": "2026-10-29T16:00:00.000000+00:00",
+        "DataType": "text"
+    }
+}

@@ -1,0 +1,36 @@
+{
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "version": 9,
+  "admission": "open",
+  "generation": "01M5A0000000000000000000GE",
+  "epoch": "sess-3",
+  "epochNo": 3,
+  "sessionNumber": 3,
+  "retired": [
+    "01M59Y0000000000000000000A"
+  ],
+  "seq": 3,
+  "bytesTotal": 150,
+  "rateMinute": 29869322,
+  "rateCount": 1,
+  "open": [
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT2P",
+      "seq": 2,
+      "mode": "next",
+      "state": "held",
+      "epoch": "sess-2",
+      "bytes": 51,
+      "acceptedAt": "2026-10-16T14:02:11Z"
+    },
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT3Q",
+      "seq": 3,
+      "mode": "next",
+      "state": "pending",
+      "epoch": "sess-3",
+      "bytes": 41,
+      "acceptedAt": "2026-10-16T14:02:11Z"
+    }
+  ]
+}

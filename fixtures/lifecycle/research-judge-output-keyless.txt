@@ -1,0 +1,19 @@
+DIRECT-RESEARCH TRIGGER PRESENT ok objects=5
+DIRECT-RESEARCH CLASSES key-dependent=E0,E3,E4,E13 key-free=E1,E2,E5,E6,E7,E8,E9,E10,E11,E12,E14,E15
+E2E-R0 NOTRUN precheck needs the Tavily key; deferred
+E2E-R1 PASS trigger-absent-when-off audit=0 items=0 searches=0
+E2E-R2 PASS delivered outcome=reported_done zip_members=21
+E2E-R3 NOTRUN search needs the Tavily key; deferred
+E2E-R4 NOTRUN fetch needs the Tavily key; deferred
+E2E-R5 PASS repo commit=666df7c10035 licence=MIT files=12 recomputed=12/12
+E2E-R6 PASS placed verify ok (ham-research verify) route-placed=1 items=1
+E2E-R7 PASS read-outside-tree sha256 of index.js in the note equals the manifest's
+E2E-R8 PASS citation cited=1 fetched=1 unfetched-marked=0
+E2E-R9 PASS index rows=1 repo-sha=1ae3b378e9fa
+E2E-R10 PASS not-in-zip third-party-in-delivery=0 blobs-scanned=23
+E2E-R11 PASS gate blocked=index.js (https://github.com/sindresorhus/is-plain-obj, licence MIT) equals a st small=pass
+E2E-R12 PASS network-closed a7=9/9 a5-unlisted-allowed=0 curl=failed firewall=88cb977024b1
+E2E-R13 NOTRUN key-out-of-reach needs the Tavily key; deferred
+E2E-R14 NA refusals the record has no selftest result
+E2E-R15 PASS counters route-final searches=0 fetched-urls=0 repos=1 outbound=84 context=2953
+DIRECT-RESEARCH PASS 11/11 key-free notrun-key-dependent=precheck,search,fetch,key-out-of-reach (deferred)

@@ -1,0 +1,64 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active · updated 0s ago
+progress feed only: not the full conversation
+notice ▾ status
+         active (planning)
+         PR     none yet
+notice ▸ agents 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

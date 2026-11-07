@@ -1,0 +1,22 @@
+# esbuild 0.25.12, the bundler of the goal plugin. The native binary of each build platform comes from its npm package (a plain tarball of
+# three files) and is pinned by the SHA-256 of the archive and of the binary inside it, so the build needs no Node, no npm and no npx. The
+# archive hashes equal the registry's `integrity` (sha512) and `shasum` (sha1) of the packages.
+schema = "1"
+name = "esbuild"
+kind = "release-asset"
+license = "MIT"
+recipe = "none"
+version = "0.25.12"
+description = "esbuild 0.25.12 native binaries from the npm registry"
+
+[assets.linux-x64]
+url = "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.25.12.tgz"
+sha256 = "f7efc127658a108dcda9d4210b01804ee8f5d6b3acbd6d63f20aa51d3b50bd5f"
+member = "package/bin/esbuild"
+member_sha256 = "bab29b2ca7a9e89b67cf720b77b2d743f9f31f5cf0d5bd74ee8c8de30ced7014"
+
+[assets.linux-arm64]
+url = "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.25.12.tgz"
+sha256 = "d5e01d210e026823d559e2b82554cdcdab6fd87c4a57b519b392ef183c1f87fd"
+member = "package/bin/esbuild"
+member_sha256 = "840ad255d6fd587b126d8b2d59ab506d8562785b9bc76249dc3b0e1bdd2ca449"

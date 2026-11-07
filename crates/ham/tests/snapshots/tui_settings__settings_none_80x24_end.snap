@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_settings.rs
+expression: "screen_text(&app, 80, 24)"
+---
+ham · Settings · config.toml (no file yet)
+ Run limits
+   Stall: calls         30 calls                   default  next run
+   Stall: minutes       20 minutes                 default  next run
+   Stall: least calls   10 calls                   default  next run
+   Command grace        120 minutes                default  next run
+   Final message        on                         default  next run
+   Review round         auto                       default  next run
+   Machine              auto                       default  next run
+   Stall: new calls     100 calls                  default  next run
+   No debug info        on                         default  next run
+   No incremental       on                         default  next run
+   Exclude target/      on                         default  next run
+   Outside-work note    on                         default  next run
+   Total run time       24 hours                   default  next run
+ Connection
+   Service address      none                       default  restart
+   Region               AWS chain                  default  restart
+   AWS profile          AWS chain                  default  restart
+   Default backend      none                       default  restart
+   Customer content     no                         default  restart
+ ▶ Locked by the harness  credentials · provider · telemetry · +4 more
+
+Enter show why · e edit the file · Esc back · q quit

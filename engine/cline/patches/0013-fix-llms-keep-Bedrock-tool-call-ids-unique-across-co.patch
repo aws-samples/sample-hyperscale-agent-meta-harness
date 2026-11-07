@@ -1,0 +1,395 @@
+From 2bfae2d44d73edcd1d35a3bee14e57dbb13ad998 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Wed, 14 Oct 2026 02:12:31 +0000
+Subject: [PATCH 13/13] fix(llms): keep Bedrock tool call ids unique across
+ conversation turns
+
+- Check Bedrock ids against earlier tool calls, results, and session ids.
+- Keep the 128 most recent sessions under metadata.sessionId, the session id.
+- Add the smallest free suffix: call_0 becomes call_0-2, then call_0-3.
+- Keep replacement ids within 64 characters using Bedrock's [a-zA-Z0-9_-] pattern.
+- Keep matching ids for tool calls, results, and same-call errors.
+- Leave other providers unchanged.
+- Prevent repeats after GLM 5.3 reused call_0 three times across turns.
+- Add 9 cases in ai-sdk.tool-call-ids.test.ts, with initial failures recorded.
+---
+ .../providers/ai-sdk.tool-call-ids.test.ts    | 222 ++++++++++++++++++
+ sdk/packages/llms/src/providers/ai-sdk.ts     |  26 +-
+ .../llms/src/providers/tool-call-ids.ts       |  76 ++++++
+ 3 files changed, 318 insertions(+), 6 deletions(-)
+ create mode 100644 sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/tool-call-ids.ts
+
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts b/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+new file mode 100644
+index 0000000..2261ccf
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/ai-sdk.tool-call-ids.test.ts
+@@ -0,0 +1,222 @@
++import type {
++	AgentModelEvent,
++	AgentToolDefinition,
++	GatewayProviderContext,
++	GatewayStreamRequest,
++} from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { createOpenAICompatibleProvider } from "./ai-sdk";
++
++/**
++ * GLM 5.3 on Bedrock Converse numbers its tool calls call_0, call_1, ... from
++ * zero in every response, so the id of its first call repeats across turns.
++ * The ACP spec asks for a toolCallId that is unique in the session, and
++ * clients (the harness, ACP UIs) key tool calls by it, so two distinct calls
++ * with one id merge into one. The adapter keeps the id the model chose until
++ * that id already belongs to an earlier call in the conversation, then adds a
++ * numeric suffix (call_0-2). The suffix uses only characters Bedrock accepts in
++ * a toolUseId ([a-zA-Z0-9_-]), and the same id is what the conversation
++ * history carries on the next request, so toolUse and toolResult still match.
++ */
++
++const TOOL: AgentToolDefinition = {
++	name: "run_commands",
++	description: "Run shell commands",
++	inputSchema: {
++		type: "object",
++		properties: { commands: { type: "array", items: { type: "string" } } },
++		required: ["commands"],
++	},
++};
++
++function sseCalls(ids: readonly string[]): string {
++	const chunk = (delta: unknown, finish: string | null = null) =>
++		`data: ${JSON.stringify({
++			id: "cmpl-1",
++			object: "chat.completion.chunk",
++			created: 1,
++			model: "test-model",
++			choices: [{ index: 0, delta, finish_reason: finish }],
++		})}\n\n`;
++	let body = "";
++	ids.forEach((id, index) => {
++		body += chunk({
++			...(index === 0 ? { role: "assistant" } : {}),
++			tool_calls: [
++				{
++					index,
++					id,
++					type: "function",
++					function: {
++						name: "run_commands",
++						arguments: `{"commands":["echo ${index}"]}`,
++					},
++				},
++			],
++		});
++	});
++	return `${body}${chunk({}, "tool_calls")}data: [DONE]\n\n`;
++}
++
++/** The history of earlier turns: one assistant tool call and its result each. */
++function history(
++	priorIds: readonly string[],
++): GatewayStreamRequest["messages"] {
++	const messages: GatewayStreamRequest["messages"] = [
++		{
++			id: "u0",
++			role: "user",
++			content: [{ type: "text", text: "do the thing" }],
++			createdAt: 0,
++		},
++	];
++	priorIds.forEach((id, index) => {
++		messages.push(
++			{
++				id: `a${index}`,
++				role: "assistant",
++				content: [
++					{
++						type: "tool-call",
++						toolCallId: id,
++						toolName: "run_commands",
++						input: { commands: ["echo old"] },
++					},
++				],
++				createdAt: index + 1,
++			},
++			{
++				id: `t${index}`,
++				role: "tool",
++				content: [
++					{
++						type: "tool-result",
++						toolCallId: id,
++						toolName: "run_commands",
++						output: "old",
++					},
++				],
++				createdAt: index + 1,
++			},
++		);
++	});
++	return messages;
++}
++
++async function callIds(
++	responseIds: readonly string[],
++	priorIds: readonly string[],
++	options: { providerId?: string; sessionId?: string } = {},
++): Promise<string[]> {
++	const config = {
++		providerId: "openai-compatible",
++		apiKey: "test-key",
++		baseUrl: "http://fake.local/v1",
++		fetch: (async () =>
++			new Response(sseCalls(responseIds), {
++				status: 200,
++				headers: { "content-type": "text/event-stream" },
++			})) as unknown as typeof fetch,
++	};
++	const provider = await createOpenAICompatibleProvider(config);
++	const model = {
++		id: "test-model",
++		providerId: "openai-compatible",
++		name: "test-model",
++	};
++	const context = {
++		provider: {
++			id: "openai-compatible",
++			name: "OpenAI Compatible",
++			defaultModelId: "test-model",
++			models: [model],
++		},
++		model,
++		config,
++	} as unknown as GatewayProviderContext;
++	// The stub speaks the OpenAI-compatible wire; the request names the provider
++	// whose ids are under test (the allocator is scoped to Bedrock).
++	const request = {
++		providerId: options.providerId ?? "bedrock",
++		modelId: "test-model",
++		messages: history(priorIds),
++		tools: [TOOL],
++		...(options.sessionId
++			? { metadata: { sessionId: options.sessionId } }
++			: {}),
++	} as unknown as GatewayStreamRequest;
++	const ids: string[] = [];
++	for await (const event of await provider.stream(request, context)) {
++		const delta = event as AgentModelEvent & { toolCallId?: string };
++		if (delta.type === "tool-call-delta" && delta.toolCallId) {
++			if (!ids.includes(delta.toolCallId)) ids.push(delta.toolCallId);
++		}
++	}
++	return ids;
++}
++
++describe("ai-sdk adapter tool call ids", () => {
++	it("keeps the model's ids on the first turn", async () => {
++		expect(await callIds(["call_0", "call_1", "call_2"], [])).toEqual([
++			"call_0",
++			"call_1",
++			"call_2",
++		]);
++	});
++
++	it("keeps an id no earlier call used", async () => {
++		expect(await callIds(["call_7"], ["call_0"])).toEqual(["call_7"]);
++	});
++
++	it("suffixes an id an earlier turn already used", async () => {
++		expect(await callIds(["call_0"], ["call_0"])).toEqual(["call_0-2"]);
++	});
++
++	it("counts on past suffixes the history already carries", async () => {
++		expect(await callIds(["call_0"], ["call_0", "call_0-2"])).toEqual([
++			"call_0-3",
++		]);
++	});
++
++	it("renames only the colliding calls of one response", async () => {
++		expect(await callIds(["call_0", "call_1"], ["call_0"])).toEqual([
++			"call_0-2",
++			"call_1",
++		]);
++	});
++
++	it("produces ids Bedrock accepts as a toolUseId", async () => {
++		const [id] = await callIds(["call_0"], ["call_0"]);
++		expect(id).not.toBe("call_0");
++		expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
++	});
++
++	it("leaves ids of other providers untouched", async () => {
++		expect(
++			await callIds(["call_0"], ["call_0"], {
++				providerId: "openai-compatible",
++			}),
++		).toEqual(["call_0"]);
++	});
++
++	it("keeps an id unique for the whole session when the history lost the earlier call", async () => {
++		// After compaction the history no longer holds the first call, but the
++		// ACP client still shows it: the next call_0 must not repeat it.
++		const session = { sessionId: "sess-compaction" };
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0"]);
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0-2"]);
++		expect(await callIds(["call_0"], [], session)).toEqual(["call_0-3"]);
++		expect(await callIds(["call_0"], [], { sessionId: "sess-other" })).toEqual([
++			"call_0",
++		]);
++	});
++
++	it("never grows an id past Bedrock's 64 characters", async () => {
++		const long = `call_${"x".repeat(59)}`;
++		expect(long).toHaveLength(64);
++		const [id] = await callIds([long], [long]);
++		expect(id).not.toBe(long);
++		expect(id.length).toBeLessThanOrEqual(64);
++		expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.ts b/sdk/packages/llms/src/providers/ai-sdk.ts
+index 9e8df40..41cf53f 100644
+--- a/sdk/packages/llms/src/providers/ai-sdk.ts
++++ b/sdk/packages/llms/src/providers/ai-sdk.ts
+@@ -79,6 +79,7 @@ import {
+ 	type AiSdkProviderOptionsTarget,
+ 	composeAiSdkProviderOptions,
+ } from "./routing/provider-options";
++import { createToolCallIdAllocator } from "./tool-call-ids";
+ import type {
+ 	AiSdkStreamPart,
+ 	AiSdkStreamResult,
+@@ -1538,6 +1539,17 @@ async function* emitAiSdkEvents(
+ 	modelToolAdapters?: BuiltModelTools,
+ ): AsyncIterable<AgentModelEvent> {
+ 	const emittedToolCallIds = new Set<string>();
++	// Only Bedrock models are known to repeat ids across turns (GLM 5.3); other
++	// providers keep the ids they send.
++	const allocateToolCallId =
++		request.providerId === "bedrock"
++			? createToolCallIdAllocator(
++					request.messages,
++					typeof request.metadata?.sessionId === "string"
++						? request.metadata.sessionId
++						: undefined,
++				)
++			: (rawId: string) => rawId;
+ 	let finishReason: unknown;
+ 	let rawFinishReason: unknown;
+ 	let requestId: string | undefined;
+@@ -1706,10 +1718,11 @@ async function* emitAiSdkEvents(
+ 						continue;
+ 					}
+ 					sawVisibleContent = true;
+-					const toolCallId =
++					const toolCallId = allocateToolCallId(
+ 						(part.toolCallId as string | undefined) ??
+-						(part.id as string | undefined) ??
+-						`tool_${nanoid()}`;
++							(part.id as string | undefined) ??
++							`tool_${nanoid()}`,
++					);
+ 					emittedToolCallIds.add(toolCallId);
+ 					const input = (part.input ?? part.args ?? {}) as unknown;
+ 					const inputText =
+@@ -1860,10 +1873,11 @@ async function* emitAiSdkEvents(
+ 							continue;
+ 						}
+ 					}
+-					const toolCallId =
++					const toolCallId = allocateToolCallId(
+ 						(part.toolCallId as string | undefined) ??
+-						(part.id as string | undefined) ??
+-						`tool_${nanoid()}`;
++							(part.id as string | undefined) ??
++							`tool_${nanoid()}`,
++					);
+ 					const alreadyEmitted = emittedToolCallIds.has(toolCallId);
+ 					emittedToolCallIds.add(toolCallId);
+ 					const input = (part.input ?? part.args ?? {}) as unknown;
+diff --git a/sdk/packages/llms/src/providers/tool-call-ids.ts b/sdk/packages/llms/src/providers/tool-call-ids.ts
+new file mode 100644
+index 0000000..f591a1e
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/tool-call-ids.ts
+@@ -0,0 +1,76 @@
++import type { GatewayStreamRequest } from "@cline/shared";
++
++/**
++ * Tool call ids for one model response.
++ *
++ * Some models number their calls from zero in every response (GLM 5.3 on
++ * Bedrock sends call_0, call_1, ... each turn), so the id of an early call
++ * repeats across turns. ACP asks for a toolCallId that is unique in the
++ * session and clients key tool calls by it, so the adapter keeps the id the
++ * model chose until an earlier call of the conversation already owns it, then
++ * adds the smallest numeric suffix that is free (call_0-2, call_0-3, ...). The
++ * suffix uses only characters Bedrock accepts in a toolUseId ([a-zA-Z0-9_-],
++ * 64 characters at most; a longer raw id is cut to make room for the suffix),
++ * and the new id is what the conversation history carries from then on, so a
++ * toolUse and its toolResult still match. One raw id maps to one result within
++ * a response.
++ *
++ * "Owns" means the id appears in the request's message history or was handed
++ * out earlier in the same session (`metadata.sessionId`): compaction can drop
++ * an earlier call from the history while an ACP client still shows it, and a
++ * retried request must not reuse the ids of the attempt before it. The session
++ * table holds the most recent sessions only.
++ */
++const MAX_TOOL_CALL_ID_LENGTH = 64;
++const MAX_TRACKED_SESSIONS = 128;
++const sessionToolCallIds = new Map<string, Set<string>>();
++
++function sessionIds(sessionId: string): Set<string> {
++	const known = sessionToolCallIds.get(sessionId) ?? new Set<string>();
++	sessionToolCallIds.delete(sessionId);
++	sessionToolCallIds.set(sessionId, known);
++	while (sessionToolCallIds.size > MAX_TRACKED_SESSIONS) {
++		const oldest = sessionToolCallIds.keys().next().value;
++		if (oldest === undefined) {
++			break;
++		}
++		sessionToolCallIds.delete(oldest);
++	}
++	return known;
++}
++
++export function createToolCallIdAllocator(
++	messages: GatewayStreamRequest["messages"],
++	sessionId?: string,
++): (rawId: string) => string {
++	const used =
++		sessionId !== undefined ? sessionIds(sessionId) : new Set<string>();
++	for (const message of messages) {
++		if (!Array.isArray(message.content)) {
++			continue;
++		}
++		for (const part of message.content) {
++			if (
++				(part.type === "tool-call" || part.type === "tool-result") &&
++				typeof part.toolCallId === "string"
++			) {
++				used.add(part.toolCallId);
++			}
++		}
++	}
++	const assigned = new Map<string, string>();
++	return (rawId) => {
++		const known = assigned.get(rawId);
++		if (known !== undefined) {
++			return known;
++		}
++		let id = rawId;
++		for (let n = 2; used.has(id); n++) {
++			const suffix = `-${n}`;
++			id = `${rawId.slice(0, Math.max(1, MAX_TOOL_CALL_ID_LENGTH - suffix.length))}${suffix}`;
++		}
++		used.add(id);
++		assigned.set(rawId, id);
++		return id;
++	};
++}
+-- 
+2.47.3
+

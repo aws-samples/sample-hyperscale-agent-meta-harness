@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active
+progress feed only: not the full conversation
+tool     修复 数据库 连接 🚀 并添加测试                                 pending
+tool     👩‍💻 writes tests ✓ for ütf-8 naïve café                         pending
+tool     مرحبا <U+202E>word<U+202C> text                                pending
+notice ▾ status
+         active (planning)
+         PR     none yet
+notice ▸ agents 3
+
+
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

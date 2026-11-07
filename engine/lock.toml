@@ -1,0 +1,27 @@
+# Engine pins for the worker images. The Cline patch series itself is pinned in
+# engine/cline/lock.toml (read by scripts/build-cline-fork.sh); this file records the promoted
+# linux-arm64 binary every worker image COPYs, and the OpenCode release. Worker images, the
+# engine profiles (engine/profiles/*.toml) and images/codebuild/worker-python.yml must carry the
+# same values (harness-core tests/real_profiles.rs). deploymentDigest and imageDigest hash this file.
+schema = "1"
+
+[cline]
+# The series is cli-v3.0.71 with 15 patches (tag, commit and tree below follow engine/cline/lock.toml); the binary
+# below is the promoted linux-arm64 build of exactly that tree (engine/cline/AGENTS.md, "Promoting a series").
+tag = "cli-v3.0.71"
+commit = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
+tree = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+seriesLock = "engine/cline/lock.toml"
+target = "linux-arm64"
+binarySha256 = "248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da"
+artifact = "s3://cah-live-harness-700000000011/engine/cline/248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da/cline"
+# FORK-BUILD PASS series=15 tree=f8990b674540 bin=248ea4c01c87 telemetry=off leaks=0
+builtBy = "CodeBuild ARM build of the pinned source"
+
+[opencode]
+version = "1.18.32"
+target = "linux-arm64"
+# The GitHub release asset (verified against its release digest) stands in for npm integrity.
+asset = "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-arm64.tar.gz"
+assetSha256 = "568461b7d4d8c19865c97e9a1102e613049c6039d01fe772154de873c1865840"
+binarySha256 = "7c6e67883fcb230b7d4cb1bfea821756ed8b320c1fb44e9c36c8e7fc8725826b"

@@ -1,0 +1,745 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tools": [
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "read_files: src/lib.rs",
+        "kind": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        },
+        "output": [
+          {
+            "query": "src/lib.rs",
+            "result": "// module 00\npub struct Module00;\nimpl Module00 {\n    pub fn id() -> u32 { 0 }\n}\n",
+            "success": true
+          }
+        ]
+      }
+    ],
+    "tool_gap_ms": 300,
+    "text": "I read the file again and again.",
+    "iterations": 41,
+    "edit": {
+      "path": "notes/result.txt",
+      "text": "the work after the reading\n"
+    }
+  },
+  "rounds": [
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ],
+  "queued": {
+    "text": "I stopped while I was still reading. Nothing was written.",
+    "status": "completed"
+  }
+}

@@ -1,0 +1,22 @@
+# CodeBuild x86_64 (hamh-setup-runner, infra/setup-runner.yaml): the account-local runner of the setup wizard. `setup.sh` starts it with the source
+# archive of the commit it was cloned at, so the buildspec of a run is the one of that commit. All the work is in scripts/setup/runner-build.sh, which builds and deploys the
+# stage, fills the Go module store, publishes the scanner rules and builds the client and the operator tool, and ends with SETUP-PASS or SETUP-FAIL. The first command is the hook every buildspec of
+# this folder starts with; a run of this project gets its account file from the setup bucket, so the hook changes nothing here.
+# After a build that passed, runner-build.sh has written <work>/anchor.env with the SHA-256 of the result.json it uploaded; the last command reads it, and CodeBuild keeps the
+# exported variable SETUP_RESULT_SHA256 with the build, where nothing that writes the setup bucket can change it. `setup.sh` believes a result.json only when it hashes to
+# that value. The variable starts as `none`, so it exists on every path and `none` means the build recorded nothing.
+version: 0.2
+env:
+  shell: bash
+  exported-variables:
+    - SETUP_RESULT_SHA256
+phases:
+  install:
+    runtime-versions:
+      python: '3.12'
+  build:
+    commands:
+      - . scripts/lib/child-build-env.sh
+      - export SETUP_RESULT_SHA256=none RUNNER_BUILD_WORK=$CODEBUILD_SRC_DIR/../hamh-setup-work
+      - bash scripts/setup/runner-build.sh
+      - . $RUNNER_BUILD_WORK/anchor.env

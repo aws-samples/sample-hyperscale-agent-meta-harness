@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_tags.rs
+expression: "screen_text(&app, 80, 24)"
+---
+ham · Tags
+┌ tags · all 212 runs loaded at 14:05 ─────────────────────────────────────────┐
+│   TAG                     RUNS                                               │
+│ + project:billing-export    12                                               │
+│   tech:python               11                                               │
+│   tech:dynamodb              7                                               │
+│▶  topic:csv-export           5                                               │
+│   tech:aws-lambda            4                                               │
+│   tech:csv                   3                                               │
+│   topic:nightly-export       3                                               │
+│   tech:s3                    2                                               │
+│   topic:backfill             1                                               │
+│   topic:tax-rounding         1                                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+12 of 212 runs match +project:billing-export · 10 tags
+Space pick · Enter show runs · / find · d remove · r reload · Esc back

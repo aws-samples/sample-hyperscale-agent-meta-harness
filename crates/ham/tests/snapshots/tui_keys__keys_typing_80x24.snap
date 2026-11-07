@@ -1,0 +1,9 @@
+---
+source: crates/ham/tests/tui_keys.rs
+expression: "bottom(&screen(&typing, w, h), 5)"
+---
+
+┌ ▶ Message to Cline · Enter: Send next to run 01K6A000 ───────────────────────┐
+│fix the bug                                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+Enter send · Ctrl-J new line · Esc browse (c c cancel) · Ctrl-C clear, then quit

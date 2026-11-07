@@ -1,0 +1,23 @@
+{
+  "outcome": "claimed",
+  "messages": [
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "seq": 1,
+      "mode": "next",
+      "epochNo": 3,
+      "attempt": 1,
+      "text": "Please also add a README section on the retry rules.",
+      "acceptedAt": "2026-10-16T14:02:11Z"
+    },
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT3Q",
+      "seq": 3,
+      "mode": "next",
+      "epochNo": 3,
+      "attempt": 1,
+      "text": "Use the same style as the other modules.",
+      "acceptedAt": "2026-10-16T14:02:11Z"
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+# OpenCode 1.18.32: the qualified alternate, installed at /opt/harness/bin/opencode
+# from the pinned release asset. ACP through `opencode acp`; rows are the QG-O qualification set.
+schemaVersion = 1
+name = "opencode"
+version = "1.18.32"
+hiddenPaths = ["opencode.json", ".opencode/**"]
+envRemove = ["AWS_BEARER_TOKEN_BEDROCK"]
+
+[binary]
+path = "/opt/harness/bin/opencode"
+# engine/lock.toml [opencode].binarySha256
+sha256 = "7c6e67883fcb230b7d4cb1bfea821756ed8b320c1fb44e9c36c8e7fc8725826b"
+
+# OpenCode kill switches; config and state live under the per-session dirs.
+[env]
+OPENCODE_DISABLE_AUTOUPDATE = "1"
+OPENCODE_DISABLE_SHARE = "1"
+OPENCODE_DISABLE_MODELS_FETCH = "1"
+OPENCODE_DISABLE_LSP_DOWNLOAD = "1"
+OPENCODE_DISABLE_CLAUDE_CODE = "1"
+OPENCODE_CONFIG = "{configDir}/opencode.json"
+XDG_CONFIG_HOME = "{configDir}"
+XDG_DATA_HOME = "{dataDir}/share"
+XDG_CACHE_HOME = "{dataDir}/cache"
+XDG_STATE_HOME = "{dataDir}/state"
+
+[transports.acp]
+argv = ["/opt/harness/bin/opencode", "acp"]
+stdin = "pipe"
+cancel = { method = "acp-cancel", killAfterS = 5 }
+
+[gate]
+name = "QG-O"
+
+[[rows]]
+id = "K0-O"
+class = "gating"
+local = true
+check = "Local binary: ACP initialize and session/new succeed; agentInfo.version 1.18.32"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K1-O"
+class = "gating"
+check = "microVM smoke on OpenCode: /ping HealthyBusy during the turn; hidden tests green on a clean clone; repo on /mnt/workspace"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K3-O"
+class = "gating"
+check = "the model and every catalog route OpenCode serves pass one tool-using turn"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K5-O"
+class = "gating"
+check = "cancel within 10 s and the next prompt succeeds"
+pass = { minPass = 1, runs = 1, thresholds = { cancelWithinS = 10.0 } }
+
+[[rows]]
+id = "K6-O"
+class = "gating"
+check = "rules applied; repo opencode.json and .opencode/ quarantined; the repo hook's marker file is never written"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K7-O"
+class = "gating"
+check = "reject-and-continue on OpenCode, counted as K7: 8 of 9 exercised runs within maxRuns; every run's diff only test_*.py with 0 reverts"
+pass = { minPass = 8, runs = 9, thresholds = { maxRuns = 30.0 } }
+
+[[rows]]
+id = "K10-O"
+class = "gating"
+check = "egress capture on OpenCode: 0 alerts, flows or queries outside the allowlist"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K13-O"
+class = "gating"
+check = "credential binding on OpenCode: every Bedrock call is harness-worker-session <run>.<agent>; broker stopped fails closed"
+pass = { minPass = 1, runs = 1 }

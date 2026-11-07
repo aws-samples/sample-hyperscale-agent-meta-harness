@@ -1,0 +1,17 @@
+{
+    "id": "{id}",
+    "arn": "arn:aws:codebuild:{region}:{account}:build/{id}",
+    "buildNumber": "{number}",
+    "currentPhase": "{phase}",
+    "buildStatus": "{status}",
+    "projectName": "{project}",
+    "environment": {
+        "type": "LINUX_CONTAINER",
+        "computeType": "BUILD_GENERAL1_LARGE",
+        "environmentVariables": "{environment}"
+    },
+    "logs": {
+        "groupName": "{group}",
+        "streamName": "{stream}"
+    }
+}

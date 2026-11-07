@@ -1,0 +1,39 @@
+# CodeBuild ARM (hamh-<stage>-image-build): the Cline fork's linux-arm64 build, run once per
+# promotion. Run with:
+#   scripts/codebuild-run.sh --buildspec images/codebuild/cline-fork-arm64.yml --env HARNESS_BUCKET=hamh-live-harness-<account>
+# The build must print FORK-BUILD PASS series=15; the smoke test is the first native execution of
+# the linux-arm64 binary. Outputs go to s3://$HARNESS_BUCKET/builds/out/cline-fork/$SOURCE_SHA/;
+# promotion to engine/cline/<sha256>/ is a separate builder step.
+version: 0.2
+env:
+  variables:
+    CLINE_FORK_WORK_DIR: /codebuild/output/fork-work
+phases:
+  pre_build:
+    commands:
+      - . scripts/lib/child-build-env.sh
+      - test "$(uname -m)" = aarch64
+      - docker version --format '{{.Server.Version}}'
+      - git --version
+  build:
+    commands:
+      - mkdir -p "$CLINE_FORK_WORK_DIR"
+      - OUT="$CLINE_FORK_WORK_DIR/out-$SOURCE_SHA"
+      - scripts/build-cline-fork.sh --target linux-arm64 --out "$OUT" 2>&1 | tee "$CLINE_FORK_WORK_DIR/fork-build.log"
+      - tail -n 1 "$CLINE_FORK_WORK_DIR/fork-build.log" | grep -E '^FORK-BUILD PASS series=15 '
+      - '"$OUT/cline" --version | tee "$OUT/smoke-version.txt"'
+      - |
+        SMOKE_HOME="$CLINE_FORK_WORK_DIR/smoke-home"; mkdir -p "$SMOKE_HOME"
+        printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}' \
+          | HOME="$SMOKE_HOME" timeout 60 "$OUT/cline" --acp --data-dir "$SMOKE_HOME/data" | head -n 1 | tee "$OUT/smoke-acp-initialize.json"
+        grep -q '"agentInfo":{"name":"cline","version":"3.0.71"}' "$OUT/smoke-acp-initialize.json" \
+          || python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["result"]["agentInfo"]; assert r["version"]=="3.0.71", r' "$OUT/smoke-acp-initialize.json"
+      - sha256sum "$OUT/cline" | tee "$OUT/cline.sha256.check"
+      # What scripts/lib/deploy.py reads back when a stage builds its fork from source: the record under a fixed name, and the id of this build, so that the output of another build is never accepted.
+      - cp "$OUT"/*-cline-fork-build-arm64-*.json "$OUT/build-record.json"
+      - printf '%s\n' "$CODEBUILD_BUILD_ID" > "$OUT/build-id.txt"
+    finally:
+      # Always keep the evidence, gate logs included, whether the build passed or failed.
+      - OUT="$CLINE_FORK_WORK_DIR/out-$SOURCE_SHA"
+      - 'if [ -d "$OUT" ]; then aws s3 cp "$OUT/" "s3://$HARNESS_BUCKET/builds/out/cline-fork/$SOURCE_SHA/" --recursive --only-show-errors; fi'
+      - 'if [ -f "$CLINE_FORK_WORK_DIR/fork-build.log" ]; then aws s3 cp "$CLINE_FORK_WORK_DIR/fork-build.log" "s3://$HARNESS_BUCKET/builds/out/cline-fork/$SOURCE_SHA/fork-build.log" --only-show-errors; fi'

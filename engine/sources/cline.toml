@@ -1,0 +1,16 @@
+# Cline, the coding engine of the worker image. Contract: engine/sources/AGENTS.md. The release tag, the commit and the tag object
+# are pinned here once; engine/cline/lock.toml (the patch series, the tree it gives, the toolchain) and engine/lock.toml (the promoted
+# binary) name the same tag and commit, and `engine-fetch check` fails when they differ. A new tag is a rebase: engine/cline/rebase.sh.
+schema = "1"
+name = "cline"
+kind = "git-tag"
+license = "Apache-2.0"
+recipe = "cline-fork"
+description = "Cline CLI at cli-v3.0.71 plus the patch series of engine/cline/patches; telemetry compiled off"
+
+[source]
+url = "https://github.com/cline/cline.git"
+tag = "cli-v3.0.71"
+tag_object = "7418804b1460929f3ff701bcccc8184fb69c8e26"
+commit = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
+patches_lock = "engine/cline/lock.toml"

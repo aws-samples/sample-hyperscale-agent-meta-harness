@@ -1,0 +1,20 @@
+{
+  "transcripts": "writes_files",
+  "repeat_last": true,
+  "rounds": [
+    {
+      "text": "Working.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 3
+    },
+    {
+      "status": "aborted",
+      "iterations": 5
+    }
+  ]
+}

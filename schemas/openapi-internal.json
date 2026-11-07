@@ -1,0 +1,2875 @@
+{
+  "components": {
+    "schemas": {
+      "Admission": {
+        "description": "Whether new messages are admitted. It closes once, in the seal (or at finalize or cancel), and never opens again.",
+        "enum": [
+          "open",
+          "closed"
+        ],
+        "type": "string"
+      },
+      "ApiError": {
+        "description": "Error body for every non-2xx response.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "description": "The exact reason shown in `ham`.",
+            "type": "string"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecision": {
+        "description": "Answer to a relayed permission request (`--approvals relay`).",
+        "enum": [
+          "allow",
+          "deny"
+        ],
+        "type": "string"
+      },
+      "Authority": {
+        "description": "Who wrote an event: the deterministic harness or an (untrusted) agent.",
+        "enum": [
+          "harness",
+          "agent"
+        ],
+        "type": "string"
+      },
+      "ClaimRefusal": {
+        "description": "Why the server would not hand out a message.",
+        "oneOf": [
+          {
+            "const": "cancel-queued",
+            "description": "A run-level Cancel is queued: it wins, and the pending messages end `rejected` with `run-cancelled`.",
+            "type": "string"
+          },
+          {
+            "const": "admission-closed",
+            "description": "The seal closed admission: nothing is pending and nothing will be.",
+            "type": "string"
+          }
+        ]
+      },
+      "ClaimRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/message-claim`: \"give me the next pending message of this session\". With `messageId` it claims that message (a `now`\nmessage agentd was told about); without it, the oldest `now` message, else the oldest `next` message, in server order. `limit` (1 to\n[`MAX_CLAIM_BATCH`], default 1) takes several at once. A claim is one conditional write per message, fenced by `generation` and `epoch`.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "limit": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "generation",
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "ClaimResponse": {
+        "description": "The answer to a claim. The fencing errors (a stale generation or session) are HTTP 409 with their own codes, not an outcome: they mean\nthis agentd must stop acting on messages.",
+        "oneOf": [
+          {
+            "description": "The messages are `dispatching` now and belong to this generation, interrupts first, then oldest first.\n\n`redelivered` is true when these are messages this generation claimed earlier and has posted no outcome for: the retry of a claim whose\nanswer was lost. agentd that already sent one of them must not send it again; it posts the outcome it has.",
+            "properties": {
+              "messages": {
+                "items": {
+                  "$ref": "#/components/schemas/ClaimedMessage"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "claimed",
+                "type": "string"
+              },
+              "redelivered": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "outcome",
+              "messages"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Nothing is eligible in this session.",
+            "properties": {
+              "admission": {
+                "$ref": "#/components/schemas/Admission"
+              },
+              "outcome": {
+                "const": "nothing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "admission"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The message named is not pending any more (withdrawn, claimed, rejected ...): `state` says what it is.",
+            "properties": {
+              "outcome": {
+                "const": "not-pending",
+                "type": "string"
+              },
+              "state": {
+                "$ref": "#/components/schemas/MessageState"
+              }
+            },
+            "required": [
+              "outcome",
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "outcome": {
+                "const": "refused",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/ClaimRefusal"
+              }
+            },
+            "required": [
+              "outcome",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ClaimedMessage": {
+        "description": "A message agentd claimed: its text, which agentd sends exactly once.",
+        "properties": {
+          "acceptedAt": {
+            "type": "string"
+          },
+          "attempt": {
+            "description": "Which claim of the message this is: 1 for the first, one more each time a claim was given back (`released`) and taken again. The\noutcome names it, so a late retry of an earlier attempt's outcome cannot settle a later attempt. A redelivery repeats the number.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epochNo": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MessageMode"
+          },
+          "seq": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "seq",
+          "mode",
+          "epochNo",
+          "attempt",
+          "text",
+          "acceptedAt"
+        ],
+        "type": "object"
+      },
+      "CompletenessEntry": {
+        "description": "One declared range of loss or exclusion.",
+        "properties": {
+          "count": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fromSeq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CompletenessKind"
+          },
+          "toSeq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "CompletenessKind": {
+        "description": "Why a range of the stored conversation is not shown in full. The words a writer may declare; the reader adds two of its own\n(`unreadable`, `missing`) that are never written.",
+        "oneOf": [
+          {
+            "const": "excluded",
+            "description": "Thoughts, binary output and replayed history: left out on purpose.",
+            "type": "string"
+          },
+          {
+            "const": "truncated",
+            "description": "A size cap cut it.",
+            "type": "string"
+          },
+          {
+            "const": "shed",
+            "description": "The writer shed it under load.",
+            "type": "string"
+          },
+          {
+            "const": "suppressed",
+            "description": "Redaction withheld it.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Storage failed.",
+            "type": "string"
+          },
+          {
+            "const": "conflict",
+            "description": "Another writer held the key, or two writers overlapped.",
+            "type": "string"
+          },
+          {
+            "const": "unsupported",
+            "description": "An older image stores no transcript.",
+            "type": "string"
+          },
+          {
+            "const": "tail-unknown",
+            "description": "A writer ended without a final flush.",
+            "type": "string"
+          }
+        ]
+      },
+      "CredsRequest": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "nonce": {
+            "description": "The rotating nonce from the previous response.",
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "runtimeSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "runtimeSessionId",
+          "nonce"
+        ],
+        "type": "object"
+      },
+      "CredsResponse": {
+        "properties": {
+          "credentials": {
+            "$ref": "#/components/schemas/ProcessCredentials"
+          },
+          "nextNonce": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "credentials",
+          "nextNonce"
+        ],
+        "type": "object"
+      },
+      "Envelope": {
+        "additionalProperties": false,
+        "description": "One event in the run log (DynamoDB `EVT#<runId>#<shard>`, sort key `eventId`).",
+        "properties": {
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authority": {
+            "$ref": "#/components/schemas/Authority"
+          },
+          "eventId": {
+            "description": "ULID, the event's sort key.",
+            "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/Payload"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "description": "Per-agent sequence number.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "taskId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ts": {
+            "description": "RFC 3339 UTC timestamp.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/EventType"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "eventId",
+          "runId",
+          "seq",
+          "ts",
+          "type",
+          "authority",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "EventType": {
+        "description": "Event types in architecture table order.",
+        "enum": [
+          "run.created",
+          "session.started",
+          "turn.started",
+          "turn.progress",
+          "tool.summary",
+          "turn.ended",
+          "agent.flag_blocked",
+          "permission.requested",
+          "gate.result",
+          "evaluator.verdict",
+          "merge.result",
+          "goal.status",
+          "goal.blocked",
+          "delivery.pr",
+          "delivery.ready",
+          "run.completed",
+          "run.aborted",
+          "route.changed",
+          "run.waiting",
+          "hidden.admission",
+          "session.capabilities"
+        ],
+        "type": "string"
+      },
+      "EventsBatchRequest": {
+        "description": "A batch of agent events. Stored with `authority=agent` only.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            "type": "array"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "takeControls": {
+            "description": "`false` on a turn's final flush: the response carries no controls, so they stay queued for\nthe next turn. Absent means the response carries them.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "events"
+        ],
+        "type": "object"
+      },
+      "EventsBatchResponse": {
+        "properties": {
+          "accepted": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PendingControl"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "type": "object"
+      },
+      "FaultHint": {
+        "additionalProperties": false,
+        "description": "Structured evidence of a provider fault, as agentd reads it from the ACP error data (Cline\npatch 0011, OpenCode) or from its own watchdog. Every member is optional; a hint with none set\nis the same as no hint.",
+        "properties": {
+          "awsErrorType": {
+            "description": "The AWS exception type (`ThrottlingException`, `ServiceUnavailableException`, ...).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "A short machine code: `stall` from the watchdog, else what the engine named.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "httpStatus": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retryAfterS": {
+            "description": "The provider's `Retry-After`, in seconds.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "silentS": {
+            "description": "For a stall: how long, in seconds, the engine was silent.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "transport": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FaultTransport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "FaultTransport": {
+        "description": "Where in agentd the engine failure was seen: only failures on the engine transport can be\ninfrastructure-unknown; agentd-local ones (worktree, engine start, credential socket,\nwrite-policy) set none and keep the ordinary failed-turn path.",
+        "oneOf": [
+          {
+            "const": "rpc-32603",
+            "description": "The engine answered a request with a JSON-RPC internal error (-32603).",
+            "type": "string"
+          },
+          {
+            "const": "io",
+            "description": "Reading or writing the engine's pipes failed.",
+            "type": "string"
+          },
+          {
+            "const": "closed",
+            "description": "The engine closed its output.",
+            "type": "string"
+          }
+        ]
+      },
+      "FetchFailure": {
+        "description": "One URL of a fetch that produced no item.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ResearchErrorCode"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "code"
+        ],
+        "type": "object"
+      },
+      "FetchRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/research/fetch`: each URL must already appear in this run's search results, in the prompt or as a link of a page the\nrun fetched (the provenance gate).",
+        "properties": {
+          "idempotencyKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "What the caller wants from the pages; Tavily returns focused chunks (smaller files).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "urls": {
+            "description": "1 to [`MAX_FETCH_URLS`].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "urls"
+        ],
+        "type": "object"
+      },
+      "FetchResponse": {
+        "properties": {
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/FetchFailure"
+            },
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemRef"
+            },
+            "type": "array"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "HeartbeatRequest": {
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "turn": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "turn"
+        ],
+        "type": "object"
+      },
+      "HeartbeatResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "InstructAction": {
+        "description": "What the user (or, later, the analyzer) asks the machine to do. Wire words: `continue_with_prompt`, `new_session_with_prompt`,\n`try_model`, `finish`. One control carries all four so a person and the analyzer share one path.",
+        "enum": [
+          "continue_with_prompt",
+          "new_session_with_prompt",
+          "try_model",
+          "finish"
+        ],
+        "type": "string"
+      },
+      "InstructOrigin": {
+        "description": "Who answered. control-api always writes `user`; `analyzer` is written only inside agentd.",
+        "enum": [
+          "user",
+          "analyzer"
+        ],
+        "type": "string"
+      },
+      "ItemKind": {
+        "description": "What a stored item is.",
+        "enum": [
+          "page",
+          "repo",
+          "attachment"
+        ],
+        "type": "string"
+      },
+      "ItemRef": {
+        "description": "A stored item as an answer names it: where its manifest and body are, and the hashes the reader checks. Content is never in an\nanswer.",
+        "properties": {
+          "bodyKey": {
+            "type": "string"
+          },
+          "bodySha256": {
+            "type": "string"
+          },
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dropped": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "Files kept and dropped (a repository).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`i-0002`",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ItemKind"
+          },
+          "licence": {
+            "description": "The SPDX id of the licence, or `NOASSERTION`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifestKey": {
+            "type": "string"
+          },
+          "manifestSha256": {
+            "description": "SHA-256 of the manifest's canonical bytes ([`ItemManifest::sha256`]): the item's index hash.",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "origin",
+          "manifestKey",
+          "manifestSha256",
+          "bodyKey",
+          "bodySha256",
+          "bytes",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "JobRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/research/job`: ask after a job. Another run's or agent's job answers `not_found`.",
+        "properties": {
+          "jobId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "type": "object"
+      },
+      "JobResponse": {
+        "description": "The answer to `repo` and to `job`: HTTP 202 while the job is queued or running, 200 once it has ended.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when `state` is `failed`."
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ItemRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when `state` is `succeeded`."
+          },
+          "jobId": {
+            "type": "string"
+          },
+          "pollAfterMs": {
+            "description": "While pending: when to ask again.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "jobId",
+          "state"
+        ],
+        "type": "object"
+      },
+      "JobState": {
+        "description": "The state of an asynchronous job (a repository download).",
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "LimitsRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/research/limits`: read-only; it touches no counter and calls no upstream. A run with research off gets the\n`disabled` error, which is how agentd learns not to start its loopback server.",
+        "type": "object"
+      },
+      "LimitsResponse": {
+        "properties": {
+          "enabled": {
+            "description": "Always true in an answer: a run with research off gets the `disabled` error instead.",
+            "type": "boolean"
+          },
+          "expiresAt": {
+            "description": "Epoch seconds after which the policy row refuses every call.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ResearchLimits"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchProvider"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ResearchUsage"
+          }
+        },
+        "required": [
+          "enabled",
+          "limits",
+          "usage"
+        ],
+        "type": "object"
+      },
+      "MessageMode": {
+        "description": "When a message is delivered.",
+        "oneOf": [
+          {
+            "const": "next",
+            "description": "At the end of the current turn, as its own user turn (the default).",
+            "type": "string"
+          },
+          {
+            "const": "now",
+            "description": "Now: agentd cancels the current turn, waits for it to settle and prompts on the same session.",
+            "type": "string"
+          }
+        ]
+      },
+      "MessageNotice": {
+        "description": "A pending message as agentd is told about it: no text (the claim returns that). It is handed out in every events response while the\nmessage is pending in the current session; the hand-out changes nothing, so it can repeat, and agentd treats a repeat as the same message.",
+        "properties": {
+          "acceptedAt": {
+            "type": "string"
+          },
+          "bytes": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch": {
+            "description": "The session it is pending in.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/MessageMode"
+          },
+          "seq": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "messageId",
+          "seq",
+          "mode",
+          "bytes",
+          "acceptedAt"
+        ],
+        "type": "object"
+      },
+      "MessageOutcome": {
+        "description": "What agentd tells the server about a message it claimed (or, for `rejected`, one it will not take).",
+        "oneOf": [
+          {
+            "description": "The prompt was sent to the engine in `turn`: `dispatching` becomes `delivered`.",
+            "properties": {
+              "kind": {
+                "const": "submitted",
+                "type": "string"
+              },
+              "turn": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "turn"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The message was not sent and cannot be: `dispatching` becomes `failed`. `detail` is cut to [`MAX_DETAIL_CHARS`].",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "detail"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The claim is given back (an interrupt that could not cancel the turn): `dispatching` becomes `pending` again, in mode `next`.",
+            "properties": {
+              "kind": {
+                "const": "released",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "agentd will not take it: `pending` or `dispatching` becomes `rejected`. Only the reasons [`RejectReason::agent_may_set`] names.",
+            "properties": {
+              "kind": {
+                "const": "rejected",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/RejectReason"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MessageState": {
+        "description": "The status of a message, as the server holds it. HTTP 202 on the send means `pending` and nothing more: Cline has not\nread the message yet. `delivered` means agentd sent the prompt to the engine, not that the engine acted on it.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Durably accepted and eligible: it will be claimed at the end of the turn (`next`) or now (`now`).",
+            "type": "string"
+          },
+          {
+            "const": "held",
+            "description": "Pending when the session changed: it waits for the user to confirm it again and never makes the run wait.",
+            "type": "string"
+          },
+          {
+            "const": "dispatching",
+            "description": "agentd won the claim and is submitting it.",
+            "type": "string"
+          },
+          {
+            "const": "delivered",
+            "description": "agentd reported sending the prompt; `deliveredTurn` names the turn.",
+            "type": "string"
+          },
+          {
+            "const": "withdrawn",
+            "description": "The user withdrew it before it was claimed.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The run could not take it; `reason` says why.",
+            "type": "string"
+          },
+          {
+            "const": "superseded",
+            "description": "A confirmed copy replaced it (the only way into this state).",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "agentd could not submit it (it was never sent); `detail` says why.",
+            "type": "string"
+          },
+          {
+            "const": "delivery-unknown",
+            "description": "It was claimed, then the worker was lost before the outcome was known: it may have reached Cline. It is never sent again by itself.",
+            "type": "string"
+          }
+        ]
+      },
+      "OutcomeRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/message-outcome`.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "attempt": {
+            "description": "The `attempt` of the claim this answers ([`ClaimedMessage::attempt`]); for `rejected` of a message agentd never claimed, 0.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch": {
+            "description": "The session agentd is in now. It is informative: an outcome is fenced by the incarnation and the attempt, because a session may\nchange between a claim and its outcome.",
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/MessageOutcome"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "generation",
+          "epoch",
+          "messageId",
+          "attempt",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "OutcomeResponse": {
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MessageState"
+          }
+        },
+        "required": [
+          "messageId",
+          "state"
+        ],
+        "type": "object"
+      },
+      "Payload": {
+        "description": "Event body: inline JSON up to [`MAX_INLINE_PAYLOAD_BYTES`], or a claim check on an S3 object.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "inline",
+                "type": "string"
+              },
+              "value": true
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "claimCheck",
+                "type": "string"
+              },
+              "s3Uri": {
+                "pattern": "^s3://[^/]+/.+$",
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "sizeBytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "s3Uri",
+              "sha256",
+              "sizeBytes"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PendingControl": {
+        "description": "Controls waiting for the agent, delivered in the events response.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "steer",
+                "type": "string"
+              },
+              "now": {
+                "type": "boolean"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "text",
+              "now"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "cancel",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/components/schemas/ApprovalDecision"
+              },
+              "kind": {
+                "const": "approvalAnswer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "approvalId",
+              "decision"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Protocol 1.37.0: a person's (later the analyzer's) answer to a `needs-input` question of a\ndirect run. The `ControlItem`'s `control_id` is the request id, which is the nonce: one answer per request.",
+            "properties": {
+              "action": {
+                "$ref": "#/components/schemas/InstructAction"
+              },
+              "kind": {
+                "const": "instruct",
+                "type": "string"
+              },
+              "model": {
+                "description": "`try_model` only: a route id of this run (the `models` list of the question).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "origin": {
+                "$ref": "#/components/schemas/InstructOrigin",
+                "default": "user",
+                "description": "control-api always writes `user`."
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "text": {
+                "description": "`continue_with_prompt` needs it; `new_session_with_prompt` and `try_model` take it optionally; `finish` takes none.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "requestId",
+              "action"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/MessageNotice",
+            "description": "Protocol 1.38.0: a message of the user is pending in the current session. worker-api adds one to the `pending` list of\nevery events response while the message is pending; it is a notice (no text), it is never stored as a control item and handing it out\nchanges nothing, so it repeats until agentd claims the message (`POST /internal/message-claim`). An agentd built before 1.38.0 sets the\nitem aside (`lenient_pending`) and acts on the rest of the list.",
+            "properties": {
+              "kind": {
+                "const": "message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProcessCredentials": {
+        "description": "AWS `credential_process` output format (PascalCase field names, `Version` 1).",
+        "properties": {
+          "AccessKeyId": {
+            "type": "string"
+          },
+          "Expiration": {
+            "type": "string"
+          },
+          "SecretAccessKey": {
+            "type": "string"
+          },
+          "SessionToken": {
+            "type": "string"
+          },
+          "Version": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "Version",
+          "AccessKeyId",
+          "SecretAccessKey",
+          "SessionToken",
+          "Expiration"
+        ],
+        "type": "object"
+      },
+      "Refusal": {
+        "description": "One kind of permission request agentd's role policy refused in a turn: the tool, what the\nfirst such request asked for, agentd's reason, and how many requests of the turn got it.",
+        "properties": {
+          "action": {
+            "description": "The first such request's command or paths, the worktree path shown as `.`, control\ncharacters escaped, secrets redacted; at most [`MAX_REFUSAL_ACTION_CHARS`] characters.",
+            "type": "string"
+          },
+          "count": {
+            "description": "Requests of the turn refused with this tool and reason (1 or more).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "description": "agentd's reason, the same way; at most [`MAX_REFUSAL_REASON_CHARS`] characters.",
+            "type": "string"
+          },
+          "tool": {
+            "description": "The tool the engine named (`run_commands`, `editor`, `read_files`), `-` when none.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "action",
+          "reason",
+          "count"
+        ],
+        "type": "object"
+      },
+      "RejectReason": {
+        "description": "Why a message was rejected. Every reason but `engine-busy` and `continuation-limit` is the server's alone.",
+        "oneOf": [
+          {
+            "const": "run-sealed",
+            "description": "The run was sealed: it ended or was ending when the message was about to be sent.",
+            "type": "string"
+          },
+          {
+            "const": "run-cancelled",
+            "description": "The user stopped the run; a Cancel wins over a message.",
+            "type": "string"
+          },
+          {
+            "const": "engine-busy",
+            "description": "agentd could not take the message into its queue.",
+            "type": "string"
+          },
+          {
+            "const": "no-message-control",
+            "description": "The run's Agent registered no message control (a run on an older image).",
+            "type": "string"
+          },
+          {
+            "const": "continuation-limit",
+            "description": "The allowance of message-driven turns after \"done\" is used up.",
+            "type": "string"
+          },
+          {
+            "const": "limit",
+            "description": "A limit (the cap on messages or bytes of one run).",
+            "type": "string"
+          }
+        ]
+      },
+      "RepoRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/research/repo`: download one GitHub repository at a ref as a job. The idempotency key is required: the route starts\nthe job once per key.",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "paths": {
+            "description": "Keep only these path prefixes (at most [`MAX_REPO_PATHS`]); absent keeps the whole filtered tree.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ref": {
+            "description": "A branch, a tag or a commit; absent means the default branch. The manifest records the commit id the archive carries.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "`https://github.com/<owner>/<repo>`",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "idempotencyKey"
+        ],
+        "type": "object"
+      },
+      "ResearchError": {
+        "description": "The body of a non-2xx answer: the shape of [`crate::api::ApiError`] plus a retry hint, so a client that reads only `code` and\n`message` works. Also the `error` of a failed job and the reason of a failed URL in a fetch.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ResearchErrorCode"
+          },
+          "message": {
+            "description": "One plain sentence; never a key, a header or fetched text beyond a short excerpt.",
+            "type": "string"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryAfterS": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ResearchErrorCode": {
+        "description": "The closed set of words a research route answers with when it does not do what was asked. Each has one HTTP status (the route's\nanswer), and one `ham-research` exit code (2 usage, 3 policy, 4 limit, 5 upstream). The words are the product's: a client shows\nthem and a test pins them.",
+        "enum": [
+          "usage",
+          "conflict",
+          "disabled",
+          "no_key",
+          "refused_secret",
+          "refused_url",
+          "refused_unseen_url",
+          "refused_host",
+          "limit_calls",
+          "limit_bytes",
+          "limit_rate",
+          "too_large",
+          "upstream_error",
+          "upstream_rate_limited",
+          "not_found",
+          "not_started",
+          "timeout",
+          "internal"
+        ],
+        "type": "string"
+      },
+      "ResearchLimits": {
+        "additionalProperties": false,
+        "description": "The per-run limits. They are abuse and exfiltration bounds, not budgets (spend is approved), settable in the stage configuration and\ncopied into the run's policy row when the run starts. `Default` is the numbers",
+        "properties": {
+          "callsPerMinute": {
+            "description": "Calls of any kind per minute and run.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contextBytes": {
+            "description": "Bytes of all research material of one run.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fetchedUrls": {
+            "description": "URLs fetched per run.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outboundBytes": {
+            "description": "Bytes of model-chosen outbound text (queries, URLs, repository paths) per run.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pageBytes": {
+            "description": "Bytes of one stored page.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queryChars": {
+            "description": "Characters of a query.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoCompressedBytes": {
+            "description": "Bytes of the filtered archive that is stored.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoDownloadBytes": {
+            "description": "Bytes downloaded for one repository archive.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoFiles": {
+            "description": "Files kept from one archive.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoReadBytes": {
+            "description": "Bytes read from one archive after decompression, kept or not.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoReadEntries": {
+            "description": "Entries read from one archive.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repoUnpackedBytes": {
+            "description": "Bytes of the files kept from one archive.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repos": {
+            "description": "Repository jobs per run.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "searches": {
+            "description": "Search calls per run.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "urlBytes": {
+            "description": "Bytes of a URL.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "searches",
+          "fetchedUrls",
+          "repos",
+          "callsPerMinute",
+          "queryChars",
+          "urlBytes",
+          "outboundBytes",
+          "pageBytes",
+          "repoDownloadBytes",
+          "repoReadBytes",
+          "repoReadEntries",
+          "repoCompressedBytes",
+          "repoUnpackedBytes",
+          "repoFiles",
+          "contextBytes"
+        ],
+        "type": "object"
+      },
+      "ResearchProvider": {
+        "description": "Where an answer came from. The stage configuration chooses the search provider; a caller cannot. Every response, audit object and\nmanifest records it, so each record can be checked against the provider the stage is configured for (`tavily`\nunless the stage names another).",
+        "enum": [
+          "tavily",
+          "tavily-keyless",
+          "agentcore",
+          "fixture",
+          "github-archive",
+          "user"
+        ],
+        "type": "string"
+      },
+      "ResearchUsage": {
+        "description": "What a run has used so far. The route's counters are conditional updates, so concurrent calls cannot pass a cap.",
+        "properties": {
+          "contextBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fetchedUrls": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outboundBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repos": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "searches": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "searches",
+          "fetchedUrls",
+          "repos",
+          "outboundBytes",
+          "contextBytes"
+        ],
+        "type": "object"
+      },
+      "RuleDelivery": {
+        "description": "How a rule reaches the engine.",
+        "oneOf": [
+          {
+            "enum": [
+              "systemPrompt"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "native",
+            "description": "The engine loads the file itself.",
+            "type": "string"
+          },
+          {
+            "const": "compiled",
+            "description": "Written into agentd's compiled rules file.",
+            "type": "string"
+          }
+        ]
+      },
+      "RuleEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery": {
+            "$ref": "#/components/schemas/RuleDelivery"
+          },
+          "layer": {
+            "$ref": "#/components/schemas/RuleLayer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source": {
+            "description": "A repository-relative path, a rule name, or `system prompt`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layer",
+          "source",
+          "sha256",
+          "delivery"
+        ],
+        "type": "object"
+      },
+      "RuleLayer": {
+        "description": "Precedence, highest first.",
+        "oneOf": [
+          {
+            "const": "harness",
+            "description": "Harness invariants, carried by the supplied system prompt.",
+            "type": "string"
+          },
+          {
+            "const": "tenant",
+            "description": "Tenant and run rules sent with the run.",
+            "type": "string"
+          },
+          {
+            "const": "repository",
+            "description": "`AGENTS.md`, `CLAUDE.md`, `.clinerules/**`, `.cline/rules/**`, `.roo/rules-<role>/**`,\n`.cursorrules` in the repository.",
+            "type": "string"
+          },
+          {
+            "const": "role",
+            "description": "The role's customInstructions.",
+            "type": "string"
+          }
+        ]
+      },
+      "RulesManifest": {
+        "additionalProperties": false,
+        "description": "The per-session rules manifest: every rule in precedence order and how it was delivered.",
+        "properties": {
+          "compiledSha256": {
+            "description": "SHA-256 of the compiled rules file, when one was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/RuleEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "type": "object"
+      },
+      "SealMode": {
+        "description": "How a seal asks.",
+        "oneOf": [
+          {
+            "const": "normal",
+            "description": "\"Anything pending? if not, the run is done\": pending messages come back; none closes admission.",
+            "type": "string"
+          },
+          {
+            "const": "limit-reached",
+            "description": "The allowance of message-driven turns is used up: pending and held messages end `rejected` with `continuation-limit`\nand admission closes.",
+            "type": "string"
+          },
+          {
+            "const": "terminal",
+            "description": "The run is ending whatever is pending (shutdown, finalize): pending and held messages end `rejected` with `run-sealed`, a\ndispatching one becomes `delivery-unknown`, admission closes, nothing comes back.",
+            "type": "string"
+          }
+        ]
+      },
+      "SealRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/message-seal`: agentd's last question before it declares the run done, and its closing call at shutdown. The server\nanswers with one conditional write.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SealMode",
+            "default": "normal"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "generation",
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "SealResponse": {
+        "oneOf": [
+          {
+            "description": "Eligible messages exist in this session, in server order: agentd claims and sends them, then asks again. Admission stays open.",
+            "properties": {
+              "messages": {
+                "items": {
+                  "$ref": "#/components/schemas/MessageNotice"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "messages"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Admission is closed. After this a send is 409 `run-sealed` and stores nothing. `watermark` is how many messages the run admitted.",
+            "properties": {
+              "deliveryUnknown": {
+                "description": "Dispatching messages this seal turned into `delivery-unknown`.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome": {
+                "const": "sealed",
+                "type": "string"
+              },
+              "rejected": {
+                "description": "Pending and held messages this seal rejected.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "watermark": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "outcome",
+              "watermark",
+              "rejected",
+              "deliveryUnknown"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SearchDepth": {
+        "description": "Tavily's search depth: basic costs 1 credit, advanced 2.",
+        "enum": [
+          "basic",
+          "advanced"
+        ],
+        "type": "string"
+      },
+      "SearchRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/research/search`",
+        "properties": {
+          "depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SearchDepth"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent means `basic`."
+          },
+          "idempotencyKey": {
+            "description": "A repeat with the same key and the same body returns the first answer; the same key with another body is `conflict`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "includeDomains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxResults": {
+            "description": "1 to [`MAX_SEARCH_RESULTS`]; absent means 5.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "timeRange": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "credits": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`s-0001`: the search record under `searches/` holds what was shown.",
+            "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ResearchProvider"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "results",
+          "requestId"
+        ],
+        "type": "object"
+      },
+      "SearchResult": {
+        "description": "One search hit. `snippet` is cut to 1 KiB by the route and is third-party text: a client marks it untrusted.",
+        "properties": {
+          "published": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "score": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "snippet": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "url",
+          "snippet"
+        ],
+        "type": "object"
+      },
+      "SessionAck": {
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
+          },
+          "deliveryUnknown": {
+            "description": "Messages this report moved from `dispatching` to `delivery-unknown`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epochNo": {
+            "description": "The number of the session within the run.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "held": {
+            "description": "Messages this report moved from `pending` to `held`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epochNo",
+          "held",
+          "deliveryUnknown",
+          "admission"
+        ],
+        "type": "object"
+      },
+      "SessionReport": {
+        "additionalProperties": false,
+        "description": "`POST /internal/message-session`: agentd tells the server which incarnation of agentd (`generation`, a ULID made at its start) holds\nwhich session (`epoch`, the engine's session id). An incarnation the server has not seen replaces the current one, unless its ULID is\nolder than the current one's by more than [`GENERATION_CLOCK_SKEW_MS`]; one the server has replaced is refused for good. The server\ncommits it before any later claim: a message pending in an older session becomes `held`, a message the replaced incarnation was\ndispatching becomes `delivery-unknown`.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "number": {
+            "description": "The ordinal of this session within the incarnation: 1 for its first session, then 2, 3 ... A report whose number is lower than the\nlast one of the incarnation is the late retry of an older report and changes nothing; the same number with another `epoch` is refused.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "generation",
+          "epoch",
+          "number"
+        ],
+        "type": "object"
+      },
+      "TimeRange": {
+        "description": "A search restricted to recent pages.",
+        "enum": [
+          "day",
+          "week",
+          "month",
+          "year"
+        ],
+        "type": "string"
+      },
+      "TranscriptSummary": {
+        "description": "What the worker declares at `turn-complete` (protocol 1.38.0): the last chunk it stored and what it left out or lost. It is the\nworker's report, written by a process the engine can reach; the state `complete` means \"the worker reports no loss\".",
+        "properties": {
+          "entries": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CompletenessEntry"
+            },
+            "type": "array"
+          },
+          "lastTranscriptSeq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TurnCompleteRequest": {
+        "description": "End of a turn. It carries no verdict: the harness gates and evaluates independently.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "bundleUri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "faultHint": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FaultHint"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What agentd could tell about a provider fault that ended the turn:\nstructured evidence for the goal step's classifier. Absent for every turn that ended\nwithout one and for an agentd that sets none."
+          },
+          "finishReason": {
+            "description": "Engine finish reason, recorded as telemetry only.",
+            "type": "string"
+          },
+          "handoff": {
+            "description": "`true` when the slice ended at its prompt deadline and the invocation said more time was left (`slice.last` false): the work is\ncommitted, bundled and uploaded, and the service starts the next slice. Absent for every other end, so an agentd that predates the member\nis read as a slice that ended the run.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "lastCommitSha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "maxSilentGapS": {
+            "description": "The longest silence, in seconds, between two engine updates in the turn (1.22.0): the data\nfor tightening the stall budget.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the turn ended as `agentd` observed it: telemetry, never a verdict."
+          },
+          "refused": {
+            "description": "The kinds of permission request agentd's role policy refused this turn, grouped by tool and\nreason with secrets redacted; the goal step lists them in the agent's\nnext prompt. At most [`MAX_REFUSALS`] ([`cap_refused`]); absent when none.",
+            "items": {
+              "$ref": "#/components/schemas/Refusal"
+            },
+            "type": "array"
+          },
+          "refusedTruncated": {
+            "description": "`refused` left kinds out or shortened a field.",
+            "type": "boolean"
+          },
+          "reverted": {
+            "description": "Repository paths the engine changed outside the role's write globs, which agentd restored\nbefore the commit;\nbuild outputs of the role's own commands are not listed. At most [`MAX_REVERTED_PATHS`],\neach at most [`MAX_REVERTED_PATH_CHARS`] characters ([`cap_reverted`]); absent when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revertedTruncated": {
+            "description": "`reverted` left paths out or shortened one.",
+            "type": "boolean"
+          },
+          "rulesDigest": {
+            "description": "SHA-256 of the canonical JSON of `rulesManifest`, when an engine ran.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rulesManifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RulesManifest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The turn's rules manifest: every rule in precedence order and how it was delivered."
+          },
+          "runId": {
+            "type": "string"
+          },
+          "snapshotUri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "description": "The agent's final message of the turn (its text, control characters removed, the last\n[`MAX_TURN_SUMMARY_CHARS`] characters): a read-only task's report, a claim otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the transcript writer declares: the last chunk it stored and what it left out or lost.\nAbsent from an agentd that writes no transcript."
+          },
+          "turn": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Engine-reported tokens; absent when the engine reported none."
+          }
+        },
+        "required": [
+          "runId",
+          "agentId",
+          "turn",
+          "finishReason"
+        ],
+        "type": "object"
+      },
+      "TurnCompleteResponse": {
+        "properties": {
+          "accepted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "type": "object"
+      },
+      "TurnOutcome": {
+        "description": "How a turn ended, as `agentd` observed it. Telemetry only: the harness owns \"done\" (invariant 1).",
+        "enum": [
+          "completed",
+          "failed",
+          "cancelled",
+          "timed_out"
+        ],
+        "type": "string"
+      },
+      "Usage": {
+        "description": "Token accounting for one turn.",
+        "properties": {
+          "cacheReadInputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cacheWriteInputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outputTokens": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inputTokens",
+          "outputTokens",
+          "cacheReadInputTokens",
+          "cacheWriteInputTokens"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "sigv4": {
+        "description": "AWS Signature Version 4 (API Gateway AWS_IAM authorization).",
+        "in": "header",
+        "name": "Authorization",
+        "type": "apiKey",
+        "x-amazon-apigateway-authtype": "awsSigv4"
+      }
+    }
+  },
+  "info": {
+    "title": "Hyperscale Agent Meta Harness internal API",
+    "version": "1.56.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/internal/creds": {
+      "post": {
+        "operationId": "refreshCredentials",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Re-mint session credentials after the goal, session and nonce checks"
+      }
+    },
+    "/internal/events": {
+      "post": {
+        "operationId": "postEvents",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsBatchResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Store agent events; returns pending steer, cancel and approval answers and the notices of pending messages"
+      }
+    },
+    "/internal/heartbeat": {
+      "post": {
+        "operationId": "heartbeat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "SendTaskHeartbeat for the caller's open turn"
+      }
+    },
+    "/internal/message-claim": {
+      "post": {
+        "operationId": "claimMessages",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "agentd claims pending messages before it sends them: one conditional write each, fenced by generation and session"
+      }
+    },
+    "/internal/message-outcome": {
+      "post": {
+        "operationId": "postMessageOutcome",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "agentd reports that a claimed message was submitted, failed, released or rejected"
+      }
+    },
+    "/internal/message-seal": {
+      "post": {
+        "operationId": "sealMessages",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SealRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SealResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "agentd asks whether anything is pending; if not, admission closes in the same write"
+      }
+    },
+    "/internal/message-session": {
+      "post": {
+        "operationId": "reportMessageSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAck"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "agentd reports its incarnation and its session (the epoch); messages pending in an older session become held"
+      }
+    },
+    "/internal/research/fetch": {
+      "post": {
+        "operationId": "researchFetch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Fetch pages the run has seen as stored research items; served by research-api"
+      }
+    },
+    "/internal/research/job": {
+      "post": {
+        "operationId": "researchJob",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Ask after a research job; served by research-api"
+      }
+    },
+    "/internal/research/limits": {
+      "post": {
+        "operationId": "researchLimits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LimitsResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Read the run's research limits and use; research-api answers disabled when research is off for the run"
+      }
+    },
+    "/internal/research/repo": {
+      "post": {
+        "operationId": "researchRepo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RepoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Start the download of one public GitHub repository as a stored research item (a job); served by research-api"
+      }
+    },
+    "/internal/research/search": {
+      "post": {
+        "operationId": "researchSearch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "Search the web through the stage's research route (Tavily); served by the research-api Lambda, not worker-api"
+      }
+    },
+    "/internal/turn-complete": {
+      "post": {
+        "operationId": "completeTurn",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnCompleteResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "SendTaskSuccess for the caller's open turn; carries no verdict"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/internal"
+    }
+  ]
+}

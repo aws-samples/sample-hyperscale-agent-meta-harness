@@ -1,0 +1,5 @@
+{
+  "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+  "action": "new_session_with_prompt",
+  "text": "Run the sleeps in the background and poll the log file instead of waiting on the command."
+}

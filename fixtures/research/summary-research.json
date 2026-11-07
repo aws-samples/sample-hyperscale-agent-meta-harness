@@ -1,0 +1,23 @@
+{
+  "research": {
+    "enabled": true,
+    "provider": "fixture",
+    "usage": {
+      "searches": 2,
+      "fetchedUrls": 1,
+      "repos": 0,
+      "outboundBytes": 412,
+      "contextBytes": 1380
+    },
+    "counts": {
+      "searches": 2,
+      "fetches": 2,
+      "repos": 1,
+      "waits": 0,
+      "placed": 0,
+      "refused": 1,
+      "errors": 2,
+      "placedBytes": 0
+    }
+  }
+}

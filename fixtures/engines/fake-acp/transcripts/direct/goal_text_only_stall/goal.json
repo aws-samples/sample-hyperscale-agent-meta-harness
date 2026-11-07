@@ -1,0 +1,10 @@
+{
+  "transcripts": "writes_files",
+  "repeat_last": true,
+  "rounds": [
+    {
+      "text": "Not sure yet; checking.",
+      "iterations": 1
+    }
+  ]
+}

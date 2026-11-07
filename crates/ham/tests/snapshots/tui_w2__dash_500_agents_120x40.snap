@@ -1,0 +1,44 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active · updated 0s ago
+tool     editing src/module_469.py                                                                              pending│
+tool     editing src/module_470.py                                                                              pending│
+tool     editing src/module_471.py                                                                              pending│
+tool     editing src/module_472.py                                                                              pending│
+tool     editing src/module_473.py                                                                              pending│
+tool     editing src/module_474.py                                                                              pending│
+tool     editing src/module_475.py                                                                              pending│
+tool     editing src/module_476.py                                                                              pending│
+tool     editing src/module_477.py                                                                              pending│
+tool     editing src/module_478.py                                                                              pending│
+tool     editing src/module_479.py                                                                              pending│
+tool     editing src/module_480.py                                                                              pending│
+tool     editing src/module_481.py                                                                              pending│
+tool     editing src/module_482.py                                                                              pending│
+tool     editing src/module_483.py                                                                              pending│
+tool     editing src/module_484.py                                                                              pending│
+tool     editing src/module_485.py                                                                              pending│
+tool     editing src/module_486.py                                                                              pending│
+tool     editing src/module_487.py                                                                              pending│
+tool     editing src/module_488.py                                                                              pending│
+tool     editing src/module_489.py                                                                              pending│
+tool     editing src/module_490.py                                                                              pending│
+tool     editing src/module_491.py                                                                              pending│
+tool     editing src/module_492.py                                                                              pending│
+tool     editing src/module_493.py                                                                              pending│
+tool     editing src/module_494.py                                                                              pending│
+tool     editing src/module_495.py                                                                              pending│
+tool     editing src/module_496.py                                                                              pending│
+tool     editing src/module_497.py                                                                              pending│
+tool     editing src/module_498.py                                                                              pending│
+tool     editing src/module_499.py                                                                              pending│
+notice ▾ status                                                                                                        │
+         active (planning)                                                                                             │
+         PR     none yet                                                                                               ┃
+notice ▸ agents 500                                                                                                    ┃
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

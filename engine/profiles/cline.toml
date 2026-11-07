@@ -1,0 +1,153 @@
+# Cline fork: tag cli-v3.0.71 plus patches 0001-0015, built once per promotion on
+# CodeBuild ARM and installed at /opt/harness/bin/cline in every worker image. Transport A
+# (ACP) only for now; transport B is added with its agentd support.
+# Rows follow; classes agree with harness-core policy::GATING_ROWS (QG-C).
+schemaVersion = 1
+name = "cline"
+version = "3.0.71"
+hiddenPaths = [".cline/hooks/**", ".cline/plugins/**", ".cline/agents/**", ".clinerules/hooks/**"]
+envRemove = ["AWS_BEARER_TOKEN_BEDROCK", "CLINE_API_KEY"]
+
+[binary]
+path = "/opt/harness/bin/cline"
+# The promoted linux-arm64 artifact (engine/lock.toml [cline].binarySha256).
+sha256 = "248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da"
+
+# The hardened environment as amended.
+[env]
+CLINE_NO_AUTO_UPDATE = "1"
+CLINE_SESSION_BACKEND_MODE = "local"
+# Bedrock is the only provider (invariant 6). Patch 0006 skips the Cline-account gate for a named
+# non-Cline provider only: isSessionReady(CLINE_PROVIDER ?? authenticate result).
+CLINE_PROVIDER = "bedrock"
+
+[transports.acp]
+argv = ["/opt/harness/bin/cline", "--acp", "--config", "{configDir}", "--data-dir", "{dataDir}"]
+stdin = "pipe"
+cancel = { method = "acp-cancel", killAfterS = 5 }
+# Patch 0004 reads the model pin at session/new from here (ModelPin::SessionNew turns only).
+modelEnv = "CLINE_MODEL"
+
+# The harness's tool server (code_search today). Cline reads its tool servers from this file in its data directory at the start of each session;
+# agentd renders the template once it has bound the server's port. The template says streamableHttp (an entry with a bare url is read as the
+# legacy event-stream form), the call timeout is 120 s (the default 60 s is shorter than a tool call may wait), and a serialized result is cut at
+# 7,500 characters because Cline cuts what it passes on at 8,000.
+[mcp]
+via = "file"
+path = "{dataDir}/settings/cline_mcp_settings.json"
+template = "engine/profiles/templates/mcp-cline.json"
+maxResultChars = 7500
+shadow = []
+
+[gate]
+name = "QG-C"
+
+[[rows]]
+id = "K0"
+class = "gating"
+local = true
+check = "Local binary: exit 0; agentInfo.version equals the lock tag version"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K1"
+class = "gating"
+trigger = "T5"
+check = "microVM smoke: /ping HealthyBusy during the turn; hidden tests green on a clean clone; SQLite on local disk; repo on /mnt/workspace"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K2"
+class = "scoped"
+trigger = "T3"
+check = "ACP model pin (0005): currentValue equals the request; every Bedrock or Mantle call carries the requested modelId"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K3"
+class = "scoped"
+trigger = "T4"
+check = "which models Cline serves: passing Converse routes (and Mantle rows after K14) listed; 0 calls to minimax.minimax-m2.5"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K4"
+class = "outside"
+check = "cold start and burst: 50 complete; no 429 above the 25/s bucket"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K5"
+class = "gating"
+trigger = "T5"
+check = "steer, cancel, approve relay: cancelled within 10 s and the next prompt succeeds; relay resolves by timeout policy"
+pass = { minPass = 1, runs = 1, thresholds = { cancelWithinS = 10.0 } }
+
+[[rows]]
+id = "K6"
+class = "gating"
+trigger = "T5"
+check = "rules and repo-hook quarantine: canary rule applied; the repo hook's marker file is never written; hidden paths caught; system text starts with the harness prompt (0004)"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K7"
+class = "scoped"
+trigger = "T1"
+check = "ACP reject-and-continue: of 9 exercised runs (agentd rejected a permission or reverted a write; round-robin top-ups up to maxRuns), 8 reject then make a further tool call in the same turn with no cancel, JSON-RPC error or mistake_limit; every run's diff only test_*.py with 0 reverts"
+pass = { minPass = 8, runs = 9, thresholds = { maxRuns = 30.0 } }
+
+[[rows]]
+id = "K8"
+class = "scoped"
+trigger = "T1"
+check = "beforeTool plugin skip: the model's next message reflects the reason"
+pass = { minPass = 8, runs = 9 }
+
+[[rows]]
+id = "K9"
+class = "outside"
+trigger = "T5"
+check = "mandated-path loop on Cline: complete only with gates, evaluator and delivery; a completion claim without the harness event leaves the run active; zip SHA-256 matches S3"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K10"
+class = "gating"
+trigger = "T2"
+check = "egress capture (0002): 0 alerts, flows or Resolver queries for *.cline.bot or any non-allowlisted name in W1 and W2"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K11"
+class = "gating"
+trigger = "T6"
+check = "pin integrity: the fork binary SHA-256 equals engine/lock.toml in every image and at session start and end; no npm, bun or pnpm exec"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K12"
+class = "gating"
+trigger = "T6"
+check = "no hub daemon (0006): 0 cline-hub-daemon processes and no :25463 listener after each of 5 turns; settings from --data-dir"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K13"
+class = "gating"
+trigger = "T7"
+check = "credential binding: every Bedrock and Mantle call is harness-worker-session <run>.<agent>; broker stopped fails closed; no placeholder bearer (0007)"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K14"
+class = "outside"
+check = "Mantle-route SigV4 inside AgentCore (0001): two tool calls and the file present on each Mantle model; currentValue equals aws-mantle/<id>"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K15"
+class = "scoped"
+trigger = "T10"
+check = "token gate (0003, 0004): at least 5 verified successes per engine and model; fork tokens per verified task at most 1.25x OpenCode"
+pass = { minPass = 5, runs = 9, thresholds = { maxRatio = 1.25 } }

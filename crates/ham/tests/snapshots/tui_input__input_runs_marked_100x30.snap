@@ -1,0 +1,34 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Runs
+┌ runs ────────────────────────────────────────────────────────────────────────────────────────────┐
+│    RUN                        STATUS         NAME                            CREATED             │
+│! ▶ 01K6A0000000000000000000R1 needs input    -                               2026-10-15T13:00:00Z│
+│>   01K6A0000000000000000000R0 active         -                               2026-10-15T12:00:00Z│
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└────────────────────────────────────────────────────────────────────────────────────── run 1 of 2 ┘
+2 runs · 1 needs input · needs input: Cline stopped its own prompt · target s3-only · phase green
+n new run · Enter open · ↑↓ · / find · t tags · p only s3-only · s settings · r refresh · q quit

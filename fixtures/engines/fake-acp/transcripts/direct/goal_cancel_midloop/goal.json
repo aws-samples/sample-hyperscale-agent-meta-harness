@@ -1,0 +1,31 @@
+{
+  "transcripts": "writes_files",
+  "repeat_last": true,
+  "rounds": [
+    {
+      "text": "ROUND-TWO-WORKING",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "hold_ms": 700,
+      "iterations": 3
+    },
+    {
+      "text": "more work",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "edit": {
+        "path": "x.txt",
+        "text": "a\n"
+      },
+      "iterations": 2
+    }
+  ]
+}

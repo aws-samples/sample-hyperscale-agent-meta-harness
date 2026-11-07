@@ -1,0 +1,20 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "text": "Not sure yet; running the checks.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 3
+    },
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

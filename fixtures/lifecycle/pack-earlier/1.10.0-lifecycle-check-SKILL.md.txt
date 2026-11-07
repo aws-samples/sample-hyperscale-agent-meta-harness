@@ -1,0 +1,41 @@
+---
+name: lifecycle-check
+description: Check your own lifecycle records with the bundled script before your last message, and run the scanner kit on the files you changed. Use just before delivering, and again after any fix. The script reports which of the eight checks, LC-1 to LC-8, fail; the kit prints the findings of the pinned python and bash scanner rules, which this session cannot otherwise see.
+---
+# Self-check
+
+1. From the repository root run: python3 .agents/skills/lifecycle-check/scripts/lifecycle_check.py
+   If this skill was loaded from another folder, use the script's real path; --repo DIR names the repository to check, and
+   --base REF names the commit your work started from (the "Base commit:" at the start of the goal card's ACHIEVABLE line does the same). If you cannot find
+   the script, write "Not run: script not found" and check the list below by hand. The skills are not in the repository: find
+   the script with find / -name lifecycle_check.py -not -path '/proc/*' 2>/dev/null. If you cannot run it, log
+   NOT RUN | lifecycle_check.py | <reason>.
+2. It prints one line per check and a last line LIFECYCLE-CHECK PASS or FAIL, exits 1 on a failure, and writes nothing. When .cah/records names a folder it
+   starts with a line LAYOUT records in <folder> (from .cah/records) and reads that folder; with `off` it starts with LAYOUT records off, prints NA: records off for
+   the checks that need a record (LC-1, LC-2, LC-3, LC-5, LC-6 and the order part of LC-8) and runs the others; a value it cannot use is an ERROR line and exit 2.
+   Without the file it reads the hidden default folders and prints no LAYOUT line. The paths below are the default ones:
+   LC-1 research: .cah/research notes have question, sources, labelled findings and a decision
+   LC-2 context: .cah/context/INDEX.md rows have origin, date, sha256 and licence; hashes of files in the repository recompute
+   LC-3 red-first: red records exist, and a commit with tests only comes before the first code commit
+   LC-4 tests-kept: no test deleted, no skip added, the number of assertions not lower
+   LC-5 build-test: .cah/lifecycle/LOG.md is well formed, its last run green and made after the last code commit
+   LC-6 loop: GOAL.md has the five labels and numbered checks with commands; BLOCKED: names what is missing
+   LC-7 delivery: AGENTS.md, README.md and the last commit message are in order
+   LC-8 order: research or context came before code; no secret-shaped string in the records
+3. Fix genuine defects in the work, commit, and run it again. Paste its last line into your closing message.
+4. Do not backfill a red record or a log line from memory, edit the script, or rewrite history to make a line pass. If a step
+   was missed and cannot be repeated, leave the line failing and say so in your closing message.
+5. If the script cannot run (no python3, no git), write "Not run: <reason>" and check the list above by hand.
+6. A pass shows that the records are in order. It does not show that the code is right: the checks of the goal card do that.
+
+# Scanner kit
+
+7. If the folder of that script also holds scanner_kit.py, run it before your last commit: python3 .agents/skills/lifecycle-check/scripts/scanner_kit.py
+   It scans the python and shell files changed since the Base commit of the goal card (--base REF or PATH arguments name other files). The first call installs
+   semgrep and the pinned rules, which takes minutes: start it in the background with its output in a file and read the file when it ends; later calls take seconds.
+8. KIT-FINDING lines give file:line, rule and message, and the last lines are KIT-FINDINGS or KIT-PASS. Fix the code, or excuse a false positive in the form the repository
+   uses for that scanner: copy an existing excuse with its reason. Run the kit again until it prints KIT-PASS.
+9. The kit is not a test run: write no RUN line for it, and after you change code for a finding run the repository's tests again and log that run as usual.
+10. A KIT-NOT-RUN line is not a failure: log NOT RUN | scanner_kit.py | <the reason on that line> and copy the line into your last message. CAH_SCANNER_KIT=off
+    switches the kit off and it prints KIT-OFF.
+11. A pass covers the pinned python and bash rules of one semgrep version. It is not the repository's own scanner check, which can hold more.

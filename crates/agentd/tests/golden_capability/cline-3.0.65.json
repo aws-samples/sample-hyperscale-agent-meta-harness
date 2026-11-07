@@ -1,0 +1,65 @@
+{
+  "acpVersion": 1,
+  "agent": {
+    "name": "cline",
+    "version": "3.0.65"
+  },
+  "configOptions": [
+    {
+      "current": "bedrock",
+      "id": "provider",
+      "name": "Provider",
+      "type": "select"
+    },
+    {
+      "current": "minimax.minimax-m2.5",
+      "id": "model",
+      "name": "Model",
+      "type": "select"
+    },
+    {
+      "current": "act",
+      "id": "mode",
+      "name": "Session Mode",
+      "type": "select"
+    },
+    {
+      "current": false,
+      "id": "auto_approve",
+      "name": "Auto-approve tools",
+      "type": "boolean"
+    }
+  ],
+  "engine": "Cline",
+  "harness": {
+    "controls": [
+      "message.next",
+      "message.now"
+    ],
+    "features": [
+      "transcript.v1"
+    ]
+  },
+  "loadSession": true,
+  "modes": {
+    "available": [
+      {
+        "id": "plan",
+        "name": "Plan"
+      },
+      {
+        "id": "act",
+        "name": "Act"
+      }
+    ],
+    "current": "act"
+  },
+  "promptCapabilities": {
+    "audio": false,
+    "embeddedContext": false,
+    "image": true
+  },
+  "session": 1,
+  "sessionId": "s-1",
+  "v": 1
+}

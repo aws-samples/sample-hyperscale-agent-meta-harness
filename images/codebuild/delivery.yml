@@ -1,0 +1,45 @@
+# CodeBuild ARM (hamh-<stage>-image-build): the delivery image.
+# Run with scripts/codebuild-run.sh --buildspec images/codebuild/delivery.yml and
+#   --env HARNESS_BUCKET=<bucket> --env REPO_URI=<account>.dkr.ecr.<region>.amazonaws.com/hamh-<stage>-delivery
+#   --env REPO_GATEWAY_SHA256=<sha> --env BUNDLE_VALIDATOR_SHA256=<sha> --env PACKAGER_SHA256=<sha> [--env IMAGE_TAG=<tag>]
+# The image is tagged IMAGE_TAG (scripts/deploy.sh passes dl-<delivery key>) or else SOURCE_SHA.
+# The three bootstraps come from s3://$HARNESS_BUCKET/builds/out/delivery/$SOURCE_SHA/<name> (cargo
+# lambda arm64 builds on a Linux machine); gitleaks built from source (images/tools/build-gitleaks.sh: the release binary of 8.30.1 carries the standard
+# library of Go 1.24.11). Each is checked before and inside the image build.
+version: 0.2
+env:
+  variables:
+    # Built from the source of the tools.lock version with the Go toolchain of images/tools/gitleaks.lock; the build is reproducible, so its SHA-256 is a pin.
+    GITLEAKS_SHA256: c1e5d7312000dc63d44357fd290e5cd50d1ad2de071ca2f9fd2fd7e8df9944cd
+    IMAGE_MAX_MB: "600"
+phases:
+  pre_build:
+    commands:
+      - . scripts/lib/child-build-env.sh
+      - test "$(uname -m)" = aarch64
+      - test -n "$HARNESS_BUCKET" && test -n "$REPO_URI" && test -n "$REPO_GATEWAY_SHA256" && test -n "$BUNDLE_VALIDATOR_SHA256" && test -n "$PACKAGER_SHA256"
+      - mkdir -p build
+      - for b in repo-gateway bundle-validator packager; do aws s3 cp "s3://$HARNESS_BUCKET/builds/out/delivery/$SOURCE_SHA/$b" "build/$b" --only-show-errors; done
+      - GITLEAKS_BUILD_DIR=/tmp/gitleaks-build bash images/tools/build-gitleaks.sh build/gitleaks arm64
+      - >-
+        printf '%s  build/repo-gateway\n%s  build/bundle-validator\n%s  build/packager\n%s  build/gitleaks\n'
+        "$REPO_GATEWAY_SHA256" "$BUNDLE_VALIDATOR_SHA256" "$PACKAGER_SHA256" "$GITLEAKS_SHA256" | sha256sum -c -
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${REPO_URI%%/*}"
+  build:
+    commands:
+      - >-
+        docker build --platform linux/arm64 -f images/delivery/Dockerfile
+        --build-arg REPO_GATEWAY_SHA256 --build-arg BUNDLE_VALIDATOR_SHA256 --build-arg PACKAGER_SHA256
+        --build-arg GITLEAKS_SHA256 --build-arg SOURCE_SHA
+        -t "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" .
+      - SIZE_MB=$(( $(docker image inspect --format '{{.Size}}' "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}") / 1048576 )); echo "image size ${SIZE_MB} MB"; test "$SIZE_MB" -lt "$IMAGE_MAX_MB"
+      - docker run --rm --entrypoint /usr/bin/git "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" --version
+      - docker run --rm --entrypoint /usr/bin/test "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -x /usr/libexec/git-core/git-remote-https
+      - docker run --rm --entrypoint /opt/delivery/bin/gitleaks "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" version
+      - docker run --rm --entrypoint /bin/sh "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}" -c 'for b in repo-gateway bundle-validator packager; do test -x /opt/delivery/bin/$b || exit 1; done'
+      - docker push "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"
+      - DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "$REPO_URI:${IMAGE_TAG:-$SOURCE_SHA}"); echo "IMAGE $DIGEST"
+      - >-
+        printf '{"image": "%s", "sizeMB": %s, "source": "%s", "pins": {"repo-gateway": "%s", "bundle-validator": "%s", "packager": "%s", "gitleaks": "%s"}}\n'
+        "$DIGEST" "$SIZE_MB" "$SOURCE_SHA" "$REPO_GATEWAY_SHA256" "$BUNDLE_VALIDATOR_SHA256" "$PACKAGER_SHA256" "$GITLEAKS_SHA256" > image.json
+      - aws s3 cp image.json "s3://$HARNESS_BUCKET/builds/out/images/delivery/$SOURCE_SHA/image.json" --only-show-errors

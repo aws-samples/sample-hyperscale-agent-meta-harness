@@ -1,0 +1,9 @@
+# The message broker of the direct worker image, read by install-broker.sh. One asset per line:
+#   <tool> <version> <arch: aarch64 | any> <sha256 of the downloaded file> <url>
+# install-broker.sh refuses any other bytes. Update a row only with its measured hash.
+# erlang: the RabbitMQ team's Erlang/OTP build for Amazon Linux 2023 (rabbitmq/erlang-rpm). RabbitMQ 3.13 runs on Erlang 26.0 to 26.2.x
+#   (https://www.rabbitmq.com/docs/which-erlang). Its RPM needs libcrypto.so.3(OPENSSL_3.4.0), which the pinned base image provides.
+# rabbitmq: the generic-unix tarball of RabbitMQ 3.13.7, the last 3.13 release (the events prompt asks for the rabbitmq:3.13 image).
+#   The release publishes no SHA-256, only a GPG signature; the hash below was computed on 2026-10-14 from the downloaded file.
+erlang 26.2.5.19 aarch64 7b581eb0397eae92314a29e6edb1c9cc7be75f6673b6cd13a5e8053b7e7c9ac4 https://github.com/rabbitmq/erlang-rpm/releases/download/v26.2.5.19/erlang-26.2.5.19-1.amzn2023.aarch64.rpm
+rabbitmq 3.13.7 any 45e5423c43f15c9d2b6ee5947f8e4f256fcfa0c1e7743e60c473cd006954e1fa https://github.com/rabbitmq/rabbitmq-server/releases/download/v3.13.7/rabbitmq-server-generic-unix-3.13.7.tar.xz

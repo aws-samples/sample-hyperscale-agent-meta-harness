@@ -1,0 +1,573 @@
+---
+source: crates/harness-protocol/tests/schemas.rs
+expression: value
+---
+{
+  "$defs": {
+    "CapabilityAgent": {
+      "description": "The engine, as ACP's `initialize` names it.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "CapabilityCommand": {
+      "description": "One command the engine advertises.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "CapabilityConfigOption": {
+      "description": "One session option (`session/new` `configOptions`): its name and, while the record has room, the value it holds now.",
+      "properties": {
+        "current": true,
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "CapabilityMode": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "CapabilityModes": {
+      "properties": {
+        "available": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CapabilityMode"
+          },
+          "type": "array"
+        },
+        "current": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DeliveryPrPayload": {
+      "description": "`delivery.pr`.",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
+    "DeliveryReadyPayload": {
+      "description": "`delivery.ready`.",
+      "properties": {
+        "artifactId": {
+          "type": "string"
+        },
+        "prUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifactId",
+        "sha256",
+        "sizeBytes"
+      ],
+      "type": "object"
+    },
+    "DirectObservation": {
+      "description": "A fact the harness read at the end of the run (protocol 1.38.0). Its `text` is one plain sentence the harness wrote; no field holds a\nword of [`BANNED_CLAIM_WORDS`].",
+      "properties": {
+        "command": {
+          "description": "`last_log_entry_red`: the command of the logged run as the log wrote it, cleaned and cut; left out when it holds a banned claim word.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit": {
+          "description": "`last_log_entry_red`: the exit code as logged (a number or `unknown`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failed": {
+          "description": "`last_log_entry_red`: the failed count as logged, when it was above zero.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/DirectObservationKind"
+        },
+        "text": {
+          "description": "The sentence the card shows beside the label, at most [`MAX_OBSERVATION_CHARS`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "DirectObservationKind": {
+      "description": "What kinds of fact [`DirectObservation`] records. An observation is something the harness read and writes down as it found\nit; it says nothing about whether the work is good.",
+      "oneOf": [
+        {
+          "const": "last_log_entry_red",
+          "description": "The last entry of the run log (`docs/lifecycle/LOG.md`) is a run with a non-zero exit code or failed tests.",
+          "type": "string"
+        }
+      ]
+    },
+    "DirectOutcome": {
+      "description": "How a direct session ended, as the harness records it. The word is the wire form (`snake_case`); the label is\nthe text the product shows. The labels are frozen: a change to one needs the maintainers' decision.\n\nOnly [`DirectOutcome::ReportedDone`] says \"Cline reported done\", and that is the sentence the product uses when\nCline's own stop reason is `end_turn` with a message. The harness never claims more.",
+      "enum": [
+        "reported_done",
+        "stopped_setup_failed",
+        "stopped_no_message",
+        "stopped_max_tokens",
+        "stopped_max_requests",
+        "stopped_refusal",
+        "stopped_by_user",
+        "stopped_engine_cancelled",
+        "stopped_provider_error",
+        "stopped_engine_died",
+        "stopped_silence",
+        "stopped_timeout",
+        "stopped_other",
+        "stopped_session_lost",
+        "stopped_no_changes"
+      ],
+      "type": "string"
+    },
+    "Engine": {
+      "description": "Coding-agent engine: the name of its profile engine/profiles/<name>.toml (production: cline, opencode).",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "type": "string"
+    },
+    "ExecutionEnd": {
+      "description": "How a `run` execution ended without the run finishing, in Step Functions' own status words\n(the Execution Status Change event's `detail.status`): an operator's or `ham cancel`'s\nStopExecution (`ABORTED`), an uncaught error (`FAILED`) or the machine's timeout (`TIMED_OUT`).\nA finished run ends `SUCCEEDED` through MarkComplete or RunBlocked.",
+      "enum": [
+        "ABORTED",
+        "FAILED",
+        "TIMED_OUT"
+      ],
+      "type": "string"
+    },
+    "GoalBlockedPayload": {
+      "description": "`goal.blocked`.",
+      "properties": {
+        "fingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "needs": {
+          "description": "What would unblock it (the worker's `flag_blocked` needs).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "GoalPhase": {
+      "description": "Sub-state of `active`: planning, the TDD work phases, then VERIFY and delivery.",
+      "enum": [
+        "planning",
+        "red",
+        "green",
+        "refactor",
+        "gating",
+        "evaluating",
+        "integrating",
+        "delivering"
+      ],
+      "type": "string"
+    },
+    "GoalStatus": {
+      "description": "Goal status of a run: `active`, `paused`, `stalled`, `blocked`, `usage_limited`, `budget_limited`, `complete` or `cleared`. `complete` and\n`cleared` are terminal.\n\n`paused` is a stop on purpose: the run reached the total time it was given, or the person or the harness stopped it, and the work\nis saved and delivered. `stalled` is a stop the service had to make because the run lost its progress: the session stopped answering, a\nrestore failed, several sessions in a row produced nothing, or Cline went silent. Both name a reason and a way to resume\n([`ResumeMode`]) on the run.",
+      "oneOf": [
+        {
+          "enum": [
+            "active",
+            "paused",
+            "blocked",
+            "usage_limited",
+            "budget_limited",
+            "complete",
+            "cleared"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "stalled",
+          "description": "See the type's text. Appended last so the declaration order of the older words does not move.",
+          "type": "string"
+        }
+      ]
+    },
+    "GoalStatusPayload": {
+      "description": "`goal.status`.",
+      "properties": {
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalPhase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/GoalStatus"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "HarnessCapabilities": {
+      "description": "The word lists a worker registers on its Agent item: the harness's own controls and the features of its image.",
+      "properties": {
+        "controls": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "features": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RunAbortedPayload": {
+      "description": "`run.aborted` (harness) and the Run item's `aborted`: the run's `run` execution\nended ABORTED, FAILED or TIMED_OUT before the run finished, so the run-ended reaper cleared the\nrun and stopped its workers, sessions and leases. `error` and `cause` are the execution's,\nsingle-line and bounded ([`RunAbortedPayload::new`]); `stoppedAt` is the execution's stop time.",
+      "properties": {
+        "cause": {
+          "maxLength": 1024,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "maxLength": 256,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ExecutionEnd"
+        },
+        "stoppedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "stoppedAt"
+      ],
+      "type": "object"
+    },
+    "RunCompletedPayload": {
+      "description": "`run.completed`.",
+      "properties": {
+        "detail": {
+          "description": "The specifics behind the outcome, at most 300 characters (1.30.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "`outcome.label()`: the sentence the product shows instead of a bare \"complete\" (1.30.0).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observations": {
+          "description": "Facts the harness read at the end of the run and records as it found them (1.38.0): the last entry of the run log when it is red.\nNever a claim about the work; left out when there is none.",
+          "items": {
+            "$ref": "#/$defs/DirectObservation"
+          },
+          "type": "array"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How a direct run's Cline session ended (1.30.0); absent when the event records none."
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SessionCapabilitiesPayload": {
+      "description": "`session.capabilities`: what the engine says it can do in this session, in ACP's\nown words, and the harness's own lists. One per session. The client reads it to decide what to show; control-api and worker-api\nread `harness` to register the Agent item.",
+      "properties": {
+        "acpVersion": {
+          "description": "ACP `protocolVersion`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityAgent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/CapabilityCommand"
+          },
+          "type": "array"
+        },
+        "configOptions": {
+          "items": {
+            "$ref": "#/$defs/CapabilityConfigOption"
+          },
+          "type": "array"
+        },
+        "engine": {
+          "description": "The engine's display label.",
+          "type": "string"
+        },
+        "harness": {
+          "$ref": "#/$defs/HarnessCapabilities"
+        },
+        "loadSession": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "modes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityModes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "promptCapabilities": true,
+        "session": {
+          "description": "1 for the run's first session, 2 after a fresh session, and so on.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionCapabilities": true,
+        "sessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "description": "Sections were dropped to fit the event's payload limit.",
+          "type": "boolean"
+        },
+        "v": {
+          "description": "The record's format version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "v",
+        "engine",
+        "session",
+        "harness"
+      ],
+      "type": "object"
+    },
+    "SessionStartedPayload": {
+      "description": "`session.started`.",
+      "properties": {
+        "agentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "description": "The effective context window of the session's model, in tokens: the\nlower of the run's `--context` for the model and its proven window. Absent when the engine's\nown window applies.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "engine": {
+          "$ref": "#/$defs/Engine"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "role": {
+          "description": "The session's role slug; absent from a dispatcher that does not name it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "engine",
+        "modelId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The `orchestration.schema.json` contract document.",
+  "properties": {
+    "delivery_pr": {
+      "$ref": "#/$defs/DeliveryPrPayload"
+    },
+    "delivery_ready": {
+      "$ref": "#/$defs/DeliveryReadyPayload"
+    },
+    "goal_blocked": {
+      "$ref": "#/$defs/GoalBlockedPayload"
+    },
+    "goal_status": {
+      "$ref": "#/$defs/GoalStatusPayload"
+    },
+    "run_aborted": {
+      "$ref": "#/$defs/RunAbortedPayload"
+    },
+    "run_completed": {
+      "$ref": "#/$defs/RunCompletedPayload"
+    },
+    "session_capabilities": {
+      "$ref": "#/$defs/SessionCapabilitiesPayload",
+      "description": "`session.capabilities` (1.38.0): written by agentd, an agent-authority event."
+    },
+    "session_started": {
+      "$ref": "#/$defs/SessionStartedPayload"
+    }
+  },
+  "required": [
+    "goal_status",
+    "goal_blocked",
+    "delivery_pr",
+    "delivery_ready",
+    "run_completed",
+    "run_aborted",
+    "session_started",
+    "session_capabilities"
+  ],
+  "title": "OrchestrationContract",
+  "type": "object"
+}

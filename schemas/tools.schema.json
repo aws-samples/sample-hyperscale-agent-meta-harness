@@ -1,0 +1,128 @@
+{
+  "$defs": {
+    "codeSearchDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "const": "Search file contents in the work tree with ripgrep. Use it for exact names, strings and patterns; read a file to see more than the matched lines. Returns path:line:text matches, or file names, or counts. Skips hidden and git-ignored files unless asked. Stops at maxResults and says so."
+        },
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "description": "Lines of context around each match.",
+              "maximum": 5,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "count": {
+              "description": "Return match counts per file.",
+              "type": "boolean"
+            },
+            "filesOnly": {
+              "description": "Return only the names of files that match.",
+              "type": "boolean"
+            },
+            "fixed": {
+              "description": "Treat pattern as a literal string.",
+              "type": "boolean"
+            },
+            "glob": {
+              "description": "Include globs; a leading ! excludes.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array"
+            },
+            "includeHidden": {
+              "description": "Search hidden files and directories.",
+              "type": "boolean"
+            },
+            "includeIgnored": {
+              "description": "Search files that .gitignore excludes.",
+              "type": "boolean"
+            },
+            "maxPerFile": {
+              "default": 10,
+              "description": "At most this many matches per file; default 10.",
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "maxResults": {
+              "default": 50,
+              "description": "Stop after this many matches; default 50.",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "paths": {
+              "description": "Files or directories to search; default is the work tree.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array"
+            },
+            "pattern": {
+              "description": "Regular expression (Rust syntax), or a literal when fixed is true.",
+              "maxLength": 1000,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        },
+        "name": {
+          "const": "code_search"
+        }
+      },
+      "required": [
+        "description",
+        "inputSchema",
+        "name"
+      ],
+      "type": "object"
+    },
+    "failureWord": {
+      "description": "The first word after `error: ` in the text of a failed call.",
+      "enum": [
+        "busy",
+        "disabled",
+        "refused",
+        "timeout",
+        "unavailable",
+        "usage"
+      ],
+      "type": "string"
+    },
+    "serverName": {
+      "const": "ham",
+      "description": "The MCP server name; an engine shows a tool as <server>__<tool>."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The result of tools/list of the harness's tool server: the tools, with the text and input schema a model is shown.",
+  "properties": {
+    "tools": {
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/codeSearchDescriptor"
+          }
+        ]
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "tools"
+  ],
+  "title": "ToolsContract",
+  "type": "object"
+}

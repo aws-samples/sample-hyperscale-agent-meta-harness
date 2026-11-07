@@ -1,0 +1,60 @@
+Hyperscale Agent Meta Harness
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Released under the MIT No Attribution license (MIT-0); the text is in LICENSE.
+
+Third-party and derived material
+
+Cline, https://github.com/cline/cline, Copyright Cline Bot Inc., Apache License 2.0.
+Cline itself is not stored in this repository. The build fetches it from upstream at the commit pinned in
+engine/cline/lock.toml (tag cli-v3.0.71, commit 1a5c3f84e0933268a9dba14a55a6383a6578414d), checks it, and applies the
+patches below. One part of this repository derives from Cline and keeps its license, and the worker image also carries two Cline
+sources that are fetched at build and not stored here:
+
+1. engine/cline/patches/ (the series and, under patches/tdd/, the test-only patches). These are git format-patch files that
+   change Cline source. They carry lines of Cline's source as context and as changed code. The lines taken from Cline stay
+   under the Apache License 2.0. The lines this project wrote are MIT-0.
+
+2. The goal plugin of the Cline project (https://github.com/cline/plugins, plugins/goal/index.ts, commit
+   96bde661f630ec23c1ce0cd86a2361a9959ef65a) and createTool of the Cline SDK (https://github.com/cline/cline,
+   sdk/packages/shared/src/tools/create.ts, tag cli-v3.0.71, commit 1a5c3f84e0933268a9dba14a55a6383a6578414d). Apache License 2.0, the same
+   licence text in both repositories. Neither is stored in this repository. The image build fetches both at the pins of
+   engine/sources/goal-plugin.toml, bundles them with two small stand-ins we wrote (engine/sources/recipes/goal-plugin/) into the goal plugin
+   folder of the worker image, and checks the five files against engine/plugins/lock.json. The folder carries the licence text and a notice
+   that says what was changed, and the worker image carries the licence text and this file under /opt/harness/licenses/.
+
+The DOX framework, https://github.com/agent0ai/dox, Copyright (c) 2026 Agent Zero, MIT License.
+The 79 lines of the framework text (from "# DOX framework" to the sentence under "## User Preferences") are used unchanged, from
+upstream commit 765ae4ac02cc884eefcd41a3d0f71941721adb89. They are in AGENTS.md (lines 3 to 81) and in the starter that the
+lifecycle pack ships with its delivery skill (lifecycle/pack/.agents/skills/lifecycle-delivery/references/dox-root.md). Every project
+that skill sets up carries the same text and a THIRD-PARTY-NOTICES.md that holds the license below
+(lifecycle/pack/.agents/skills/lifecycle-delivery/references/dox-notice.md). The license text of the DOX project:
+
+    MIT License
+
+    Copyright (c) 2026 Agent Zero
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+is-plain-obj, https://github.com/sindresorhus/is-plain-obj (commit 666df7c10035f7e26f27ec214fe5ae3173435f34), Copyright (c) Sindre Sorhus, MIT License.
+A test fixture stores an unchanged copy of its four files (index.js, test.js, readme.md and license) as a base64 archive under
+fixtures/research/real-run/ (the sample repository of a recorded research run), and crates/research-api/examples/research_sim.rs
+carries its MIT license text.
+
+Other coding engines named in this repository (OpenCode, Pi, Codex, Claude Code, Gemini CLI, Goose) are not included.
+engine/sources/opencode.toml and engine/lock.toml pin an OpenCode release asset by URL and SHA-256; nothing of it is stored here.

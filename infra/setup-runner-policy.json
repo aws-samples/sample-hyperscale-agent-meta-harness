@@ -1,0 +1,407 @@
+{
+  "schema": "1",
+  "note": "What the setup runner role may call. `statements` is the inline policy of the runner role in infra/setup-runner.yaml, `boundary` the permissions boundary policy next to it; the template and this file are held equal by scripts/tests/test_setup_runner_policy.py. `calls` lists every AWS CLI call made by the scripts that run with the runner role's credentials, with the IAM actions each needs; the test scans those scripts and fails on a call the table lacks and on a table entry whose call is gone, so a script cannot start to call an API this file does not allow. `unscopable` explains each action allowed on every resource. `platform` lists actions that CodeBuild, the CDK CLI or an HTTPS upload use with the role and that no aws call names. Tokens {partition}, {region} and {account} stand for the pseudo parameters of the template, and {authorityExpires} for its parameter AuthorityExpires: the two statements that assume a role hold only before that UTC time, which setup.sh sets a number of hours ahead at every install. The role has no IAM permission at all, it assumes the four CDK bootstrap roles of the account and the Go module store filler role, and what those roles can do is set by the CDK bootstrap stack, which this file does not bound (see the header of the template).",
+  "statements": [
+    {
+      "Sid": "OwnBuildLog",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:{partition}:logs:{region}:{account}:log-group:/hamh/setup-runner:log-stream:*"
+    },
+    {
+      "Sid": "ReadImageBuildLogs",
+      "Effect": "Allow",
+      "Action": "logs:GetLogEvents",
+      "Resource": "arn:{partition}:logs:{region}:{account}:log-group:/hamh/direct/codebuild/image-build:log-stream:*"
+    },
+    {
+      "Sid": "ReadSourceAndConfig",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": [
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}/source/*",
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}/config/*"
+      ]
+    },
+    {
+      "Sid": "WriteResultsAndClient",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": [
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}/results/*",
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}/client/*",
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}/bootstrap/*"
+      ]
+    },
+    {
+      "Sid": "ListResultsAndClient",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:{partition}:s3:::hamh-setup-{account}-{region}",
+      "Condition": {"StringLike": {"s3:prefix": ["results/*", "client/*"]}}
+    },
+    {
+      "Sid": "SetupBucketMetadata",
+      "Effect": "Allow",
+      "Action": ["s3:GetBucketLocation", "s3:GetBucketVersioning"],
+      "Resource": "arn:{partition}:s3:::hamh-setup-{account}-{region}"
+    },
+    {
+      "Sid": "StageBucketObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": [
+        "arn:{partition}:s3:::hamh-direct-harness-{account}/builds/*",
+        "arn:{partition}:s3:::hamh-direct-harness-{account}/engine/cline/*",
+        "arn:{partition}:s3:::hamh-direct-harness-{account}/deploy/direct/*"
+      ]
+    },
+    {
+      "Sid": "StageBucketList",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": [
+        "arn:{partition}:s3:::hamh-direct-harness-{account}",
+        "arn:{partition}:s3:::hamh-direct-gomod-{account}"
+      ]
+    },
+    {
+      "Sid": "StageDataKeyThroughS3",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "Resource": "arn:{partition}:kms:{region}:{account}:key/*",
+      "Condition": {
+        "StringEquals": {"kms:ViaService": "s3.{region}.amazonaws.com"},
+        "ForAnyValue:StringEquals": {"kms:ResourceAliases": "alias/hamh-direct-data"}
+      }
+    },
+    {
+      "Sid": "ReadBootstrapVersion",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:{partition}:ssm:{region}:{account}:parameter/cdk-bootstrap/hnb659fds/version"
+    },
+    {
+      "Sid": "StageParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:PutParameter", "ssm:AddTagsToResource"],
+      "Resource": "arn:{partition}:ssm:{region}:{account}:parameter/hamh/direct/*"
+    },
+    {
+      "Sid": "AssumeCdkBootstrapRoles",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-deploy-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-file-publishing-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-image-publishing-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-lookup-role-{account}-{region}"
+      ],
+      "Condition": {"DateLessThan": {"aws:CurrentTime": "{authorityExpires}"}}
+    },
+    {
+      "Sid": "AssumeGomodFiller",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:{partition}:iam::{account}:role/hamh-direct-gomod-filler",
+      "Condition": {"DateLessThan": {"aws:CurrentTime": "{authorityExpires}"}}
+    },
+    {
+      "Sid": "ReadStageStacks",
+      "Effect": "Allow",
+      "Action": ["cloudformation:DescribeStacks", "cloudformation:GetTemplate"],
+      "Resource": "arn:{partition}:cloudformation:{region}:{account}:stack/hamh-direct-*/*"
+    },
+    {
+      "Sid": "WorkerRuntimeEndpoints",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetAgentRuntime",
+        "bedrock-agentcore:GetAgentRuntimeEndpoint",
+        "bedrock-agentcore:ListAgentRuntimeEndpoints",
+        "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+        "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
+        "bedrock-agentcore:TagResource"
+      ],
+      "Resource": "arn:{partition}:bedrock-agentcore:{region}:{account}:runtime/hamh_direct_*"
+    },
+    {
+      "Sid": "StageImageLookups",
+      "Effect": "Allow",
+      "Action": ["ecr:DescribeImages", "ecr:DescribeRepositories"],
+      "Resource": "arn:{partition}:ecr:{region}:{account}:repository/hamh-direct-*"
+    },
+    {
+      "Sid": "ListRunningRuns",
+      "Effect": "Allow",
+      "Action": "states:ListExecutions",
+      "Resource": "arn:{partition}:states:{region}:{account}:stateMachine:hamh-direct-run"
+    },
+    {
+      "Sid": "ReadRunPins",
+      "Effect": "Allow",
+      "Action": "dynamodb:GetItem",
+      "Resource": "arn:{partition}:dynamodb:{region}:{account}:table/hamh-direct-harness"
+    },
+    {
+      "Sid": "StartImageBuilds",
+      "Effect": "Allow",
+      "Action": ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
+      "Resource": "arn:{partition}:codebuild:{region}:{account}:project/hamh-direct-image-build"
+    },
+    {
+      "Sid": "CodeArtifactToken",
+      "Effect": "Allow",
+      "Action": "codeartifact:GetAuthorizationToken",
+      "Resource": "arn:{partition}:codeartifact:{region}:{account}:domain/hamh-direct"
+    },
+    {
+      "Sid": "CodeArtifactEndpoint",
+      "Effect": "Allow",
+      "Action": "codeartifact:GetRepositoryEndpoint",
+      "Resource": "arn:{partition}:codeartifact:{region}:{account}:repository/hamh-direct/packages"
+    },
+    {
+      "Sid": "CodeArtifactRulesPackage",
+      "Effect": "Allow",
+      "Action": [
+        "codeartifact:ListPackageVersionAssets",
+        "codeartifact:DescribePackage",
+        "codeartifact:PutPackageOriginConfiguration",
+        "codeartifact:PublishPackageVersion",
+        "codeartifact:PutPackageMetadata"
+      ],
+      "Resource": "arn:{partition}:codeartifact:{region}:{account}:package/hamh-direct/packages/pypi/*/hamh-semgrep-rules"
+    },
+    {
+      "Sid": "CodeArtifactBearerToken",
+      "Effect": "Allow",
+      "Action": "sts:GetServiceBearerToken",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"sts:AWSServiceName": "codeartifact.amazonaws.com"}}
+    },
+    {
+      "Sid": "RegionalReadsWithoutResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcs",
+        "bedrock:GetModelInvocationLoggingConfiguration"
+      ],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "{region}"}}
+    },
+    {
+      "Sid": "NeverIamOrganizationsOrAccount",
+      "Effect": "Deny",
+      "Action": ["iam:*", "organizations:*", "account:*"],
+      "Resource": "*"
+    }
+  ],
+  "unscopable": {
+    "sts:GetServiceBearerToken": "STS accepts no resource in this permission; the condition sts:AWSServiceName limits the token to CodeArtifact, which scripts/scanner_kit_rules.py uses to publish the rules package.",
+    "ec2:DescribeAvailabilityZones": "EC2 Describe actions accept no resource-level permission; scripts/lib/deploy.py reads the zone names and ids of the stage account, and the condition pins the Region.",
+    "ec2:DescribeVpcs": "EC2 Describe actions accept no resource-level permission; scripts/lib/deploy.py checks that no other VPC of the account overlaps the stage CIDR, and the condition pins the Region.",
+    "bedrock:GetModelInvocationLoggingConfiguration": "The invocation logging setting is one per account and Region and has no resource ARN; scripts/lib/deploy.py reads it and writes nothing for an accounts file in read-only mode."
+  },
+  "platform": {
+    "logs:CreateLogStream": "CodeBuild writes the build log to the project's log group with the service role.",
+    "logs:PutLogEvents": "CodeBuild writes the build log to the project's log group with the service role.",
+    "s3:GetObjectVersion": "CodeBuild downloads the S3 source object, a version of source/<commit>.zip, with the service role.",
+    "s3:GetBucketLocation": "CodeBuild reads the location of the source bucket before it downloads the S3 source.",
+    "s3:GetBucketVersioning": "CodeBuild reads the versioning of the source bucket before it downloads the S3 source.",
+    "kms:Decrypt": "Reads of the stage bucket, whose default encryption uses the stage data key, decrypt through S3 with the role (the stage's own image-build role holds the same pair).",
+    "kms:GenerateDataKey": "Writes to the stage bucket, whose default encryption uses the stage data key, take a data key through S3 with the role (the stage's own image-build role holds the same pair).",
+    "sts:AssumeRole": "The CDK CLI assumes the deploy, file-publishing, image-publishing and lookup roles of the CDK bootstrap stack.",
+    "codeartifact:PublishPackageVersion": "scripts/scanner_kit_rules.py uploads the wheel over HTTPS to the repository endpoint with the bearer token; CodeArtifact authorizes the upload with this action.",
+    "codeartifact:PutPackageMetadata": "scripts/scanner_kit_rules.py uploads the wheel over HTTPS to the repository endpoint with the bearer token; CodeArtifact authorizes the metadata of the upload with this action."
+  },
+  "boundary": [
+    {
+      "Sid": "BoundaryLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents", "logs:GetLogEvents"],
+      "Resource": "arn:{partition}:logs:{region}:{account}:log-group:/hamh/*"
+    },
+    {
+      "Sid": "BoundaryObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
+      "Resource": ["arn:{partition}:s3:::hamh-setup-{account}-{region}/*", "arn:{partition}:s3:::hamh-direct-harness-{account}/*"]
+    },
+    {
+      "Sid": "BoundaryBuckets",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketVersioning"],
+      "Resource": [
+        "arn:{partition}:s3:::hamh-setup-{account}-{region}",
+        "arn:{partition}:s3:::hamh-direct-harness-{account}",
+        "arn:{partition}:s3:::hamh-direct-gomod-{account}"
+      ]
+    },
+    {
+      "Sid": "BoundaryDataKey",
+      "Effect": "Allow",
+      "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "Resource": "arn:{partition}:kms:{region}:{account}:key/*"
+    },
+    {
+      "Sid": "BoundaryParameters",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:PutParameter", "ssm:AddTagsToResource"],
+      "Resource": [
+        "arn:{partition}:ssm:{region}:{account}:parameter/hamh/*",
+        "arn:{partition}:ssm:{region}:{account}:parameter/cdk-bootstrap/hnb659fds/version"
+      ]
+    },
+    {
+      "Sid": "BoundaryAssume",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-deploy-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-file-publishing-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-image-publishing-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/cdk-hnb659fds-lookup-role-{account}-{region}",
+        "arn:{partition}:iam::{account}:role/hamh-direct-gomod-filler"
+      ]
+    },
+    {
+      "Sid": "BoundaryStacks",
+      "Effect": "Allow",
+      "Action": ["cloudformation:DescribeStacks", "cloudformation:GetTemplate"],
+      "Resource": "arn:{partition}:cloudformation:{region}:{account}:stack/hamh-direct-*/*"
+    },
+    {
+      "Sid": "BoundaryRuntimes",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:GetAgentRuntime",
+        "bedrock-agentcore:GetAgentRuntimeEndpoint",
+        "bedrock-agentcore:ListAgentRuntimeEndpoints",
+        "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+        "bedrock-agentcore:DeleteAgentRuntimeEndpoint",
+        "bedrock-agentcore:TagResource"
+      ],
+      "Resource": "arn:{partition}:bedrock-agentcore:{region}:{account}:runtime/hamh_direct_*"
+    },
+    {
+      "Sid": "BoundaryImages",
+      "Effect": "Allow",
+      "Action": ["ecr:DescribeImages", "ecr:DescribeRepositories"],
+      "Resource": "arn:{partition}:ecr:{region}:{account}:repository/hamh-direct-*"
+    },
+    {
+      "Sid": "BoundaryRuns",
+      "Effect": "Allow",
+      "Action": "states:ListExecutions",
+      "Resource": "arn:{partition}:states:{region}:{account}:stateMachine:hamh-direct-run"
+    },
+    {
+      "Sid": "BoundaryRunTable",
+      "Effect": "Allow",
+      "Action": "dynamodb:GetItem",
+      "Resource": "arn:{partition}:dynamodb:{region}:{account}:table/hamh-direct-harness"
+    },
+    {
+      "Sid": "BoundaryImageBuilds",
+      "Effect": "Allow",
+      "Action": ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
+      "Resource": "arn:{partition}:codebuild:{region}:{account}:project/hamh-direct-image-build"
+    },
+    {
+      "Sid": "BoundaryCodeArtifact",
+      "Effect": "Allow",
+      "Action": [
+        "codeartifact:GetAuthorizationToken",
+        "codeartifact:GetRepositoryEndpoint",
+        "codeartifact:ListPackageVersionAssets",
+        "codeartifact:DescribePackage",
+        "codeartifact:PutPackageOriginConfiguration",
+        "codeartifact:PublishPackageVersion",
+        "codeartifact:PutPackageMetadata"
+      ],
+      "Resource": [
+        "arn:{partition}:codeartifact:{region}:{account}:domain/hamh-direct",
+        "arn:{partition}:codeartifact:{region}:{account}:repository/hamh-direct/packages",
+        "arn:{partition}:codeartifact:{region}:{account}:package/hamh-direct/packages/pypi/*"
+      ]
+    },
+    {
+      "Sid": "BoundaryBearerToken",
+      "Effect": "Allow",
+      "Action": "sts:GetServiceBearerToken",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"sts:AWSServiceName": "codeartifact.amazonaws.com"}
+      }
+    },
+    {
+      "Sid": "BoundaryRegionalReads",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeAvailabilityZones", "ec2:DescribeVpcs", "bedrock:GetModelInvocationLoggingConfiguration"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"aws:RequestedRegion": "{region}"}
+      }
+    },
+    {
+      "Sid": "NeverIamOrganizationsOrAccount",
+      "Effect": "Deny",
+      "Action": ["iam:*", "organizations:*", "account:*"],
+      "Resource": "*"
+    }
+  ],
+  "calls": [
+    {"script": "scripts/lib/deploy.py", "service": "sts", "operation": "get-caller-identity", "actions": [], "open": "STS GetCallerIdentity needs no permission."},
+    {"script": "scripts/lib/deploy.py", "service": "ec2", "operation": "describe-availability-zones", "actions": ["ec2:DescribeAvailabilityZones"]},
+    {"script": "scripts/lib/deploy.py", "service": "ec2", "operation": "describe-vpcs", "actions": ["ec2:DescribeVpcs"]},
+    {"script": "scripts/lib/deploy.py", "service": "ssm", "operation": "get-parameter", "actions": ["ssm:GetParameter"]},
+    {"script": "scripts/lib/deploy.py", "service": "ssm", "operation": "put-parameter", "actions": ["ssm:PutParameter"]},
+    {"script": "scripts/lib/deploy.py", "service": "ssm", "operation": "add-tags-to-resource", "actions": ["ssm:AddTagsToResource"]},
+    {"script": "scripts/lib/deploy.py", "service": "s3", "operation": "cp", "actions": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]},
+    {"script": "scripts/lib/deploy.py", "service": "s3api", "operation": "head-object", "actions": ["s3:GetObject", "s3:ListBucket"]},
+    {"script": "scripts/lib/deploy.py", "service": "s3api", "operation": "put-object", "actions": ["s3:PutObject"]},
+    {"script": "scripts/lib/deploy.py", "service": "s3api", "operation": "list-objects-v2", "actions": ["s3:ListBucket"]},
+    {"script": "scripts/lib/deploy.py", "service": "configure", "operation": "list-profiles", "actions": [], "local": "Reads the AWS CLI configuration of the machine; no API call."},
+    {"script": "scripts/lib/deploy.py", "service": "cloudformation", "operation": "describe-stacks", "actions": ["cloudformation:DescribeStacks"]},
+    {"script": "scripts/lib/deploy.py", "service": "cloudformation", "operation": "get-template", "actions": ["cloudformation:GetTemplate"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock-agentcore-control", "operation": "get-agent-runtime", "actions": ["bedrock-agentcore:GetAgentRuntime"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock-agentcore-control", "operation": "get-agent-runtime-endpoint", "actions": ["bedrock-agentcore:GetAgentRuntimeEndpoint"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock-agentcore-control", "operation": "list-agent-runtime-endpoints", "actions": ["bedrock-agentcore:ListAgentRuntimeEndpoints"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock-agentcore-control", "operation": "create-agent-runtime-endpoint", "actions": ["bedrock-agentcore:CreateAgentRuntimeEndpoint", "bedrock-agentcore:TagResource"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock-agentcore-control", "operation": "delete-agent-runtime-endpoint", "actions": ["bedrock-agentcore:DeleteAgentRuntimeEndpoint"]},
+    {"script": "scripts/lib/deploy.py", "service": "ecr", "operation": "describe-images", "actions": ["ecr:DescribeImages"]},
+    {"script": "scripts/lib/deploy.py", "service": "ecr", "operation": "describe-repositories", "actions": ["ecr:DescribeRepositories"]},
+    {"script": "scripts/lib/deploy.py", "service": "dynamodb", "operation": "get-item", "actions": ["dynamodb:GetItem"]},
+    {"script": "scripts/lib/deploy.py", "service": "stepfunctions", "operation": "list-executions", "actions": ["states:ListExecutions"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock", "operation": "get-model-invocation-logging-configuration", "actions": ["bedrock:GetModelInvocationLoggingConfiguration"]},
+    {"script": "scripts/lib/deploy.py", "service": "bedrock", "operation": "put-model-invocation-logging-configuration", "actions": [], "denied": ["bedrock:PutModelInvocationLoggingConfiguration"], "guarded": "deploy.py makes this call only for an accounts entry whose invocationLogging is enable-and-restore; scripts/setup/runner-build.sh refuses that mode in the account-file phase, before any deploy, so the runner is not given the permission."},
+    {"script": "scripts/codebuild-run.sh", "service": "s3", "operation": "cp", "actions": ["s3:PutObject"]},
+    {"script": "scripts/codebuild-run.sh", "service": "codebuild", "operation": "start-build", "actions": ["codebuild:StartBuild"]},
+    {"script": "scripts/codebuild-run.sh", "service": "codebuild", "operation": "batch-get-builds", "actions": ["codebuild:BatchGetBuilds"]},
+    {"script": "scripts/codebuild-run.sh", "service": "logs", "operation": "get-log-events", "actions": ["logs:GetLogEvents"]},
+    {"script": "scripts/lib/gomod_store.py", "service": "sts", "operation": "get-caller-identity", "actions": [], "open": "STS GetCallerIdentity needs no permission."},
+    {"script": "scripts/lib/gomod_store.py", "service": "sts", "operation": "assume-role", "actions": ["sts:AssumeRole"]},
+    {"script": "scripts/lib/gomod_store.py", "service": "s3api", "operation": "put-object", "actions": [], "role": "hamh-direct-gomod-filler"},
+    {"script": "scripts/lib/gomod_store.py", "service": "s3api", "operation": "get-object", "actions": [], "role": "hamh-direct-gomod-filler"},
+    {"script": "scripts/lib/gomod_store.py", "service": "s3api", "operation": "head-object", "actions": [], "role": "hamh-direct-gomod-filler"},
+    {"script": "scripts/lib/gomod_store.py", "service": "s3api", "operation": "list-objects-v2", "actions": [], "role": "hamh-direct-gomod-filler"},
+    {"script": "scripts/scanner_kit_rules.py", "service": "sts", "operation": "get-caller-identity", "actions": [], "open": "STS GetCallerIdentity needs no permission."},
+    {"script": "scripts/scanner_kit_rules.py", "service": "configure", "operation": "get", "actions": [], "local": "Reads the AWS CLI configuration of the machine; no API call."},
+    {"script": "scripts/scanner_kit_rules.py", "service": "codeartifact", "operation": "get-authorization-token", "actions": ["codeartifact:GetAuthorizationToken", "sts:GetServiceBearerToken"]},
+    {"script": "scripts/scanner_kit_rules.py", "service": "codeartifact", "operation": "get-repository-endpoint", "actions": ["codeartifact:GetRepositoryEndpoint"]},
+    {"script": "scripts/scanner_kit_rules.py", "service": "codeartifact", "operation": "list-package-version-assets", "actions": ["codeartifact:ListPackageVersionAssets"]},
+    {"script": "scripts/scanner_kit_rules.py", "service": "codeartifact", "operation": "describe-package", "actions": ["codeartifact:DescribePackage"]},
+    {"script": "scripts/scanner_kit_rules.py", "service": "codeartifact", "operation": "put-package-origin-configuration", "actions": ["codeartifact:PutPackageOriginConfiguration"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "sts", "operation": "get-caller-identity", "actions": [], "open": "STS GetCallerIdentity needs no permission."},
+    {"script": "scripts/setup/runner-build.sh", "service": "ssm", "operation": "get-parameter", "actions": ["ssm:GetParameter"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "s3", "operation": "cp", "actions": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "s3api", "operation": "get-object", "actions": ["s3:GetObjectVersion"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "s3api", "operation": "head-object", "actions": ["s3:GetObject", "s3:ListBucket"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "s3api", "operation": "list-objects-v2", "actions": ["s3:ListBucket"]},
+    {"script": "scripts/setup/runner-build.sh", "service": "cloudformation", "operation": "describe-stacks", "actions": ["cloudformation:DescribeStacks"]},
+    {"script": "scripts/setup/build-client.sh", "service": "s3", "operation": "cp", "actions": ["s3:PutObject"]},
+    {"script": "scripts/node.sh", "service": "configure", "operation": "export-credentials", "actions": [], "local": "Reads the credentials the CLI resolves for the profile on the machine (the container credentials of CodeBuild); no API call."}
+  ]
+}

@@ -1,0 +1,117 @@
+{
+ "all-bytes.gz": {
+  "gz": 442,
+  "len": 20480,
+  "sha256": "a4759e7aa20338328866a2ea17eaf8c7fe4ec6bbe3bb71cee7df7c0461b3c22f"
+ },
+ "all-flags.gz": {
+  "gz": 1304,
+  "len": 5000,
+  "sha256": "d4f1e8336f092b7d5cd5abd80c37ed550c7ece97ef56d89fd996561fe377b4cf"
+ },
+ "bomb-16mib.gz": {
+  "gz": 16303,
+  "len": 16777216,
+  "sha256": "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e"
+ },
+ "empty.gz": {
+  "gz": 20,
+  "len": 0,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "fcomment.gz": {
+  "gz": 1304,
+  "len": 5000,
+  "sha256": "d4f1e8336f092b7d5cd5abd80c37ed550c7ece97ef56d89fd996561fe377b4cf"
+ },
+ "fextra.gz": {
+  "gz": 1304,
+  "len": 5000,
+  "sha256": "d4f1e8336f092b7d5cd5abd80c37ed550c7ece97ef56d89fd996561fe377b4cf"
+ },
+ "fhcrc.gz": {
+  "gz": 1298,
+  "len": 5000,
+  "sha256": "d4f1e8336f092b7d5cd5abd80c37ed550c7ece97ef56d89fd996561fe377b4cf"
+ },
+ "fname.gz": {
+  "gz": 1307,
+  "len": 5000,
+  "sha256": "d4f1e8336f092b7d5cd5abd80c37ed550c7ece97ef56d89fd996561fe377b4cf"
+ },
+ "ndjson-l1.gz": {
+  "gz": 4031,
+  "len": 30000,
+  "sha256": "dd0b6e4b8132e130f1fc9d6176408629fbe33ff52b7e48acb0e702e051af029a"
+ },
+ "ndjson-l6.gz": {
+  "gz": 3580,
+  "len": 30000,
+  "sha256": "dd0b6e4b8132e130f1fc9d6176408629fbe33ff52b7e48acb0e702e051af029a"
+ },
+ "one-byte.gz": {
+  "gz": 21,
+  "len": 1,
+  "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+ },
+ "python-gzipfile.gz": {
+  "gz": 3471,
+  "len": 30000,
+  "sha256": "dd0b6e4b8132e130f1fc9d6176408629fbe33ff52b7e48acb0e702e051af029a"
+ },
+ "random-l6.gz": {
+  "gz": 20023,
+  "len": 20000,
+  "sha256": "7ffc2267fe81784be322018103834e95cd63403e5970fb3194a98327e0522283"
+ },
+ "repeat-abc.gz": {
+  "gz": 135,
+  "len": 99999,
+  "sha256": "c08fdca49838c38ba05a7f2e12553ee5132df1e518fe35ddf3d86d6627b439c5"
+ },
+ "text-300k.gz": {
+  "gz": 55643,
+  "len": 300000,
+  "sha256": "251de99a3905aaf35d8c0cd83fb5a33b07eff3c763fb0c40ac49d4b9c8bcb59b"
+ },
+ "text-fixed.gz": {
+  "gz": 9893,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-huffman-only.gz": {
+  "gz": 20939,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-l0.gz": {
+  "gz": 40028,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-l1.gz": {
+  "gz": 10357,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-l6.gz": {
+  "gz": 8016,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-l9.gz": {
+  "gz": 7999,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "text-rle.gz": {
+  "gz": 20939,
+  "len": 40000,
+  "sha256": "e5a8096dcb0efa380bbe97cff73096f7f99b8d01a6d3e406d4c0e0a12e4bdea2"
+ },
+ "zeros-100k.gz": {
+  "gz": 132,
+  "len": 100000,
+  "sha256": "9192c25b734fcbadbe32dadc28089c60db0e39f90cc20ce2e5733f57261acc0c"
+ }
+}

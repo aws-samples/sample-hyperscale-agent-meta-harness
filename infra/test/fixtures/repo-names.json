@@ -1,0 +1,67 @@
+{
+  "comment": "The one table of the repository-name rule of a stage. A stage lets a run open a pull request only in a CodeCommit repository whose name the rule covers (and that the operator allowed). The rule is a list of 1 to 8 entries. An entry is a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix of up to 99 characters followed by one '*', or '*' alone. A name is covered when it equals an exact entry, starts with the prefix of a prefix entry, or an entry is '*'. Names are case sensitive. The account-file entry gives the list as `repoNames`; the environment variable `HAMH_REPO_NAMES` (comma separated, spaces around an entry are dropped) wins for one run when it is set and not empty; without either the rule is the default `hamh-e2e-*`. infra/test/repo-names.test.ts runs the rows through infra/lib/repo-names.ts and lib/config.ts `selectTarget`; scripts/tests/test_repo_names.py runs them through scripts/lib/aws_target.py; crates/control-api/tests/repo_names.rs and crates/delivery/tests/repo_names.rs run them through the two Rust copies of the matcher; scripts/tests/test_setup_repo_names.py runs the cover rows through setup.sh. `entry` is merged into a valid account-file entry, `rule` is the list the rule gives, `reason` is the text a refusal carries after `accounts.json accounts[0]: ` (or `HAMH_REPO_NAMES: ` for an environment refusal). `refusal` rows are the exact text of the refusal a Lambda gives for a name the rule does not cover.",
+  "default": ["hamh-e2e-*"],
+  "accept": [
+    {"why": "no repoNames: the default", "entry": {}, "rule": ["hamh-e2e-*"]},
+    {"why": "one exact name", "entry": {"repoNames": ["my-app"]}, "rule": ["my-app"]},
+    {"why": "one prefix", "entry": {"repoNames": ["team-*"]}, "rule": ["team-*"]},
+    {"why": "an exact name, a prefix and the default prefix", "entry": {"repoNames": ["my-app", "team-*", "hamh-e2e-*"]}, "rule": ["my-app", "team-*", "hamh-e2e-*"]},
+    {"why": "every name", "entry": {"repoNames": ["*"]}, "rule": ["*"]},
+    {"why": "dots, underscores and dashes", "entry": {"repoNames": ["my.app_1-b"]}, "rule": ["my.app_1-b"]},
+    {"why": "a name of 100 characters", "entry": {"repoNames": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}, "rule": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]},
+    {"why": "a prefix of 99 characters", "entry": {"repoNames": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*"]}, "rule": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*"]},
+    {"why": "eight entries", "entry": {"repoNames": ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]}, "rule": ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]}
+  ],
+  "refuse": [
+    {"why": "a string instead of a list", "entry": {"repoNames": "my-app"}, "reason": "repoNames must be a list of 1 to 8 repository names, like [\"my-app\", \"team-*\"]"},
+    {"why": "an empty list", "entry": {"repoNames": []}, "reason": "repoNames must be a list of 1 to 8 repository names, like [\"my-app\", \"team-*\"]"},
+    {"why": "nine entries", "entry": {"repoNames": ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"]}, "reason": "repoNames must be a list of 1 to 8 repository names, like [\"my-app\", \"team-*\"]"},
+    {"why": "an entry that is not a string", "entry": {"repoNames": [5]}, "reason": "repoNames entry 5 must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "an empty entry", "entry": {"repoNames": [""]}, "reason": "repoNames entry \"\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a space inside", "entry": {"repoNames": ["my app"]}, "reason": "repoNames entry \"my app\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a slash", "entry": {"repoNames": ["team/app"]}, "reason": "repoNames entry \"team/app\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a scheme", "entry": {"repoNames": ["cc:my-app"]}, "reason": "repoNames entry \"cc:my-app\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a star in the middle", "entry": {"repoNames": ["te*am"]}, "reason": "repoNames entry \"te*am\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "two stars", "entry": {"repoNames": ["team-**"]}, "reason": "repoNames entry \"team-**\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a star in front", "entry": {"repoNames": ["*-app"]}, "reason": "repoNames entry \"*-app\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a name of 101 characters", "entry": {"repoNames": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}, "reason": "repoNames entry \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a prefix of 100 characters", "entry": {"repoNames": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*"]}, "reason": "repoNames entry \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "the same entry twice", "entry": {"repoNames": ["my-app", "my-app"]}, "reason": "repoNames lists \"my-app\" twice"}
+  ],
+  "env": [
+    {"why": "one name", "entry": {}, "env": "my-app", "rule": ["my-app"]},
+    {"why": "spaces around the entries are dropped", "entry": {}, "env": "my-app, team-*", "rule": ["my-app", "team-*"]},
+    {"why": "it wins over the entry", "entry": {"repoNames": ["a-*"]}, "env": "b-*", "rule": ["b-*"]},
+    {"why": "it can name every name", "entry": {"repoNames": ["a-*"]}, "env": "*", "rule": ["*"]}
+  ],
+  "envRefuse": [
+    {"why": "an empty entry between commas", "entry": {}, "env": "a,,b", "reason": "repoNames entry \"\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "only a comma", "entry": {}, "env": ",", "reason": "repoNames entry \"\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "a space inside an entry", "entry": {}, "env": "my app", "reason": "repoNames entry \"my app\" must be a repository name (1 to 100 letters, digits, '.', '_' or '-'), such a prefix followed by '*', or '*'"},
+    {"why": "nine entries", "entry": {}, "env": "a1,a2,a3,a4,a5,a6,a7,a8,a9", "reason": "repoNames must be a list of 1 to 8 repository names, like [\"my-app\", \"team-*\"]"},
+    {"why": "the same entry twice", "entry": {}, "env": "a,a", "reason": "repoNames lists \"a\" twice"}
+  ],
+  "cover": [
+    {"why": "the default rule", "rule": ["hamh-e2e-*"],
+      "allows": ["hamh-e2e-python-calc", "hamh-e2e-new-20260925", "hamh-e2e-x"],
+      "refuses": ["python-calc", "xhamh-e2e-y", "hamh-e2e", "HAMH-E2E-x", "a-hamh-e2e-x"]},
+    {"why": "one exact name", "rule": ["my-app"],
+      "allows": ["my-app"],
+      "refuses": ["my-app2", "my-ap", "My-app", "xmy-app", "hamh-e2e-x"]},
+    {"why": "one prefix", "rule": ["team-*"],
+      "allows": ["team-a", "team-x.y", "team-"],
+      "refuses": ["teams", "a-team-x", "hamh-e2e-x", "Team-a"]},
+    {"why": "an exact name and a prefix", "rule": ["my-app", "team-*"],
+      "allows": ["my-app", "team-b"],
+      "refuses": ["my-app-2", "other"]},
+    {"why": "every name", "rule": ["*"],
+      "allows": ["anything", "a", "hamh-e2e-x", "my_repo.1"],
+      "refuses": []}
+  ],
+  "refusal": [
+    {"rule": ["hamh-e2e-*"], "name": "python-calc", "text": "refused: cc:python-calc is outside the hamh-e2e- prefix"},
+    {"rule": ["my-app"], "name": "other", "text": "refused: cc:other is outside the repository names this stage allows (my-app)"},
+    {"rule": ["team-*", "my-app"], "name": "other", "text": "refused: cc:other is outside the repository names this stage allows (team-*, my-app)"},
+    {"rule": ["hamh-e2e-*", "team-*"], "name": "other", "text": "refused: cc:other is outside the repository names this stage allows (hamh-e2e-*, team-*)"}
+  ]
+}

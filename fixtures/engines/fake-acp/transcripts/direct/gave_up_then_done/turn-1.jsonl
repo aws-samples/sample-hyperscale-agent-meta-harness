@@ -1,0 +1,5 @@
+{"direction": "client", "message": {"id": 3, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "read", "sessionUpdate": "tool_call", "status": "completed", "title": "Read src/calc.py", "toolCallId": "gave-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": {"text": "I read the code. This task cannot be done: the function it asks for contradicts the module's tests, and I changed nothing.", "type": "text"}, "sessionUpdate": "agent_message_chunk"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "usage_update", "usage": {"inputTokens": 400, "outputTokens": 60}}}}}
+{"direction": "agent", "message": {"id": 3, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

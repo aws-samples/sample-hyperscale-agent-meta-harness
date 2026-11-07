@@ -1,0 +1,1 @@
+engine error -32603: Internal error: The format of the value at messages.7.content.0.toolUse.input is invalid. Provide a json object for the field and try again.

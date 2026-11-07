@@ -1,0 +1,30 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: dump(&r)
+---
+  ⟦b,u:Plan⟧
+  
+  I will ⟦b:start with the tests⟧, then write the code. See the ⟦u:docs⟧
+␣ ⟦d:(https://docs.example/todo)⟧ for the API, and ⟦yellow:pytest -q⟧ to run them.
+  
+  ⟦b:Steps⟧
+  
+  1. Write the failing test for ⟦yellow:add⟧
+  2. Make it pass
+     ◦ keep the change small
+     ◦ run the whole suite
+  3. Refactor
+  
+  ⟦d:│ ⟧Note: the old ⟦i:client⟧ is not touched.
+  
+  ⟦yellow:def add(a, b):⟧
+  ⟦yellow:    return a + b⟧
+  
+  | ⟦b:file⟧               | ⟦b:status⟧ |
+  ⟦d:|--------------------|:------:|⟧
+  | src/todo.py        |  done  |
+  | tests/test_todo.py |  ⟦b:new⟧   |
+  
+  ⟦d:────────────────────────────────────────⟧
+  
+  ⟦s:Old plan⟧ replaced. Done.

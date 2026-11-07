@@ -1,0 +1,37 @@
+# Fake ACP engine. The `fake-acp-engine` executable is built by the workspace (ham-e2e) and found
+# on PATH.
+schemaVersion = 1
+name = "fake-acp"
+version = "0.1.0"
+hiddenPaths = [".fake-acp"]
+envRemove = ["AWS_BEARER_TOKEN_BEDROCK"]
+
+[binary]
+path = "fake-acp-engine"
+
+[env]
+FAKE_ACP_LOG = "{dataDir}/fake-acp.log"
+
+[transports.acp]
+argv = ["fake-acp-engine", "--transcripts", "{fixtures}/transcripts", "--workspace", "{workspace}"]
+stdin = "pipe"
+cancel = { method = "acp-cancel", killAfterS = 5 }
+modelEnv = "FAKE_ACP_MODEL"
+
+[gate]
+name = "QG-FAKE"
+
+[[rows]]
+id = "K0"
+class = "gating"
+local = true
+check = "ACP initialize and session/new succeed; agentInfo.version equals the profile version"
+pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K1"
+class = "gating"
+trigger = "T5"
+local = true
+check = "the staged agentd starts, answers /ping Healthy and refuses a request that is not a direct invocation with HTTP 400"
+pass = { minPass = 1, runs = 1 }

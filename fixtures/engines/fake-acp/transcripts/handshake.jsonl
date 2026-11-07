@@ -1,0 +1,4 @@
+{"direction":"client","message":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
+{"direction":"agent","message":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"fake-acp","version":"0.1.0"},"agentCapabilities":{"loadSession":false,"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false}},"authMethods":[]}}}
+{"direction":"client","message":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"{workspace}","mcpServers":[],"_meta":{"harness":{"systemPrompt":"<compiled role prompt>"}}}}}
+{"direction":"agent","message":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fake-session-0001"}}}

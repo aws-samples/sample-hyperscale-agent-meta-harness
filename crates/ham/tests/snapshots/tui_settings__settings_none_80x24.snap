@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_settings.rs
+expression: "screen_text(&app, cols, rows)"
+---
+ham · Settings · config.toml (no file yet)
+ Run
+ ▶ Model                Claude Sonnet 5.5          default  next run
+   Answer wait          30 (terminal), 0 (script)  default  next run
+   Test report          on                         default  next run
+   Goal loop            stage default (on)         default  next run
+   Rules                on                         default  next run
+   Skills               on                         default  next run
+   Web research         stage default              default  next run
+   Test command limit   5 (the stage's own limit)  default  next run
+   Lifecycle flow       auto                       default  next run
+ Cline engine
+   Reasoning effort     model default              default  next run
+   Command time limit   600 s                      default  next run
+   Compaction           agentic                    default  next run
+   Compaction trigger   0.90                       default  next run
+   Tools switched off   none                       default  next run
+ Interface
+   Mouse                on                         default  restart
+   Notifications        off                        default  now
+   Bell                 on                         default  now
+   Mascot               auto                       default  now
+ no config.toml yet: every setting is at its default; a change makes the file
+Enter change · u use the default · e edit the file · Esc back · q quit

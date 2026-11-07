@@ -1,0 +1,4 @@
+| Origin | Date read | sha256 | Licence | Why it matters |
+| --- | --- | --- | --- | --- |
+| https://docs.example.org/a%7Cb | 2026-10-16 | 66c70ccec3475741e941aa1b4f87070e8780ef8a4ff3180405b16962f9938125 | MIT | stored copy at research/pages/i-0001.txt (item i-0001) |
+| https://github.com/acme/widgets@666df7c10035f7e26f27ec214fe5ae3173435f34 | 2026-10-16 | 86a4bc1019ece93647b2d093a973d3c8479c58508f05e18a6e2e3bc88ac0fb7e | MIT | stored copy at research/repos/acme__widgets__666df7c10035 (item i-0002) |

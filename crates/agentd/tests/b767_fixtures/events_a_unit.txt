@@ -1,0 +1,14 @@
+go: downloading gotest.tools/gotestsum v1.13.0
+go: downloading github.com/dnephin/pflag v1.0.7
+✓  cmd/api (4ms)
+∅  cmd/worker
+✓  internal/api (6ms)
+∅  internal/app
+✓  internal/broker (67ms)
+✓  internal/config (5ms)
+✓  internal/order (2ms)
+∅  internal/store
+✓  internal/worker (4ms)
+✓  tests/contracts (33ms)
+
+DONE 80 tests in 1.065s
