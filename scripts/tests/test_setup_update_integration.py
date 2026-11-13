@@ -9,6 +9,7 @@ The rows of the inventory have their tests in `test_setup_deploy_settings.py` (t
 - the deploy lock on the local route (C6): read before the question, taken after it, its token handed to `deploy.sh`, released at every end.
 - the build never skips a deploy that carries settings or `--force-deploy` (C7).
 - the stage of a release before the record keeps the zone of its network (Addendum 3, A3.2).
+- the commit order of an update whose record names a commit that no clone holds: the record deploy.py writes is judged by its VERSION.
 
 They run the real `setup.sh` from a stand-in checkout against the stand-in AWS CLI, and `runner-build.sh` in the rig of `test_setup_runner_build.py`.
 """
@@ -24,6 +25,7 @@ from pathlib import Path
 import setup_fake_aws as fake
 from setup_waits import limit
 import test_setup_runner_build as rb
+from test_setup_script import STUB_HAM
 from test_setup_update_guard import RUNS
 from test_setup_update_runner import NOW, RunnerUpdateBase, fake_now, inputs_digest
 import test_setup_deploy_settings as ds
@@ -458,7 +460,7 @@ class RecordCommitCase(IntBase):
         self.assertIn("the stage already runs this commit", p.stdout + p.stderr)
         self.assertEqual(self.deploy_starts()[-1].get("SETUP_CLIENT_ONLY"), "1")
         self.assertEqual(self.deploys(), deploys)
-        # another source tree: git cannot place the recorded commit, so the update stops before anything is created and names git pull and --revision (C8)
+        # another source tree: git cannot place the recorded commit and this clone has no VERSION to compare, so the update stops before anything is created and names a new clone and --revision
         newer = self.write_commit({"infra/change.yaml": "a: 1\n"}, "a change the stage deploys")
         before = len(self.mutations())
         q = self.run_full(*self.UPDATE)
@@ -535,6 +537,48 @@ class SourceCommitSeamCase(IntBase):
         self.assertIn("is not in this clone", self.flat(q))
         self.assertIn(f"--revision {last}", self.flat(q))
         self.assertEqual(len(self.mutations()), before, "nothing is created")
+
+    def test_b838_fix_the_record_deploy_py_writes_for_a_commit_no_clone_holds_is_judged_by_its_version(self) -> None:
+        """The control of the test above, with VERSIONs: without HAMH_SOURCE_COMMIT deploy.py records the HEAD of the tree it deployed, which no clone holds, and `version=` is the
+        VERSION file of that tree (5.13 on the stand-in of the deploy engine), in the form setup reads. The history of the public repository was started again once, so a stage
+        deployed before has such a record. The VERSION of the clone decides, and git is asked nothing about the recorded commit."""
+        self.set_scenario(nine_stacks=True)
+        self.with_registry(REAL_REGISTRY.read_text())
+        self.deployed()
+        text, archive_head = self.deploy_writes_record()
+        rec = fake.parse_record(text)
+        self.assertEqual(rec["version"], "5.13", "the VERSION file of the tree deploy.py deployed, in the form N.NN")
+        self.assertFalse(self.in_clone(archive_head), "TRIGGER PRESENT: the commit the record names is in no clone")
+        # a clone with a higher VERSION goes ahead and the plan says why
+        self.stage_record_is(text)
+        newer = self.write_commit({"VERSION": "5.17\n", "infra/change.yaml": "a: 1\n"}, "release 5.17")
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", "ham v5.17"))
+        deploys = self.world().get("n_deploys", 0)
+        p = self.run_full(*self.UPDATE_AS)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        plan = self.plan(p)
+        self.assertIn(f"commit: {archive_head[:12]} (VERSION 5.13) -> {newer[:12]} (VERSION 5.17)", plan)
+        self.assertIn("its VERSION 5.13 is lower than this clone's 5.17", plan)
+        self.assertEqual(self.deploy_starts()[-1]["SETUP_SOURCE_KEY"], f"source/{newer}.zip")
+        self.assertEqual(self.world().get("n_deploys", 0), deploys + 1)
+        # a clone with the same VERSION or a lower one stops before anything is created, and names the way that works
+        for version in ("5.13", "5.12"):
+            with self.subTest(clone_version=version):  # 5.13: the same VERSION; 5.12: the stage runs a later release than the clone
+                self.stage_record_is(text)
+                head = self.write_commit({"VERSION": f"{version}\n", "infra/change.yaml": f"a: {version}\n"}, f"a clone at {version}")
+                self.client_file.write_text(STUB_HAM.replace("ham v9.99", f"ham v{version}"))
+                before = len(self.mutations())
+                q = self.run_full(*self.UPDATE_AS)
+                self.assertEqual(q.returncode, 7, self.out(q))
+                flat = self.flat(q)
+                for needle in (f"runs commit {archive_head}", "is not in this clone", "new clone of the repository", f"--revision {head}"):
+                    self.assertIn(needle, flat)
+                if version == "5.13":
+                    self.assertNotIn("git pull", self.out(q))
+                else:
+                    self.assertIn("so the stage runs a later release than this clone", flat)
+                    self.assertIn("git pull", self.out(q))
+                self.assertEqual(len(self.mutations()), before, "nothing is created")
 
 
 class PlanLinesCase(IntBase):

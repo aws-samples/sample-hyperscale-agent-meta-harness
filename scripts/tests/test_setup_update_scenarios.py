@@ -677,12 +677,14 @@ class B812RowsCase(ScenarioBase):
         self.assertEqual(len(self.mutations()), before)
         for needle in ("git pull", new[:12], old[:12], "5.20", "--revision"):
             self.assertIn(needle, p.stderr)
-        # the recorded commit is not in this clone: git cannot tell, so the same stop
+        # the recorded commit is not in this clone: git cannot tell, so the VERSIONs decide. This clone has no VERSION file, so the
+        # answer is the stop, and its way forward is the one that works for a commit no pull can bring: a new clone
         self.git("checkout", "-q", newer)
         self.seed_record(commit="f" * 40, version="5.30")
         p = self.run_full(*self.UPDATE)
         self.assertEqual(p.returncode, 7, self.out(p))
-        self.assertIn("git pull", p.stderr)
+        self.assertIn("new clone of the repository", self.flat(p))
+        self.assertNotIn("git pull", p.stderr)
         # --revision says the older commit is meant
         self.seed_record(commit=new, version="5.20")
         p = self.run_full(*self.UPDATE, "--revision", old)
@@ -1396,6 +1398,401 @@ class B833DefaultChangeCase(ScenarioBase):
         self.assertEqual(sorted(unread), sorted(pinned))
         for name in unread:
             self.assertEqual(d.SETTING_DEFAULTS[name], pinned[name], f"{name}: a new default of a setting the plan cannot read needs a reader in pf_live_get first")
+
+
+class B838OldHistoryCase(ScenarioBase):
+    """Rows U45 to U54: the stage records a commit that this clone does not hold (the public history was started again once, so no clone of the new
+    history has the commits that a stage was deployed from before). Git cannot place such a commit, so the VERSIONs decide (Addendum 7): a recorded VERSION that is lower than
+    the clone's goes ahead; the same, a higher one or one that is no N.NN stops with the way forward that works (a new clone, or --revision on purpose). The tree rule (A4.1) and
+    --revision come before that rule, and a recorded commit that the clone holds is judged by git alone. The form N.NN is the one of `ham_core::update::parse_version`
+    (`b804_versions_compare_as_numbers` pins its examples in Rust)."""
+
+    SETUP_DIR = REAL_REGISTRY.parents[1] / "setup"
+    MISSING = "f" * 40
+    DRY = ("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
+
+    def stage_at(self, recorded: str, target: str, status: str = "deployed", commit: str | None = None) -> str:
+        """The stage a full setup deployed, whose record then says it runs `commit` (default: a commit that no clone holds) at VERSION `recorded`; this clone gets a commit that is
+        release `target` (its VERSION file, and a change to a file the stage deploys). Returns the target commit. It may run again after `reset_world` in one test."""
+        if not (self.repo / "scripts" / "lib" / "stage-settings.tsv").exists():
+            self.with_registry()
+        self.deployed()
+        self.releases = getattr(self, "releases", 0) + 1
+        head = self.write_commit({"VERSION": f"{target}\n", "infra/release.yaml": f"release {target} ({self.releases})\n"}, f"release {target}")
+        self.seed_record(commit=commit or self.MISSING, version=recorded, status=status)
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", f"ham v{target}"))
+        return head
+
+    def stopped(self, p, target: str, before: int, *needles: str, older: bool = False) -> str:
+        """The update ended with exit 7 before anything was created, with the way forward that works. A pull cannot join two histories, so it is not the advice for a commit this
+        clone does not hold, except where the stop says that the clone is older than the stage (older=True: the stage runs a later release): there it is one of two ways, with a new clone."""
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before, "nothing is created")
+        flat = self.flat(p)
+        for needle in ("is not in this clone", "new clone of the repository", f"--revision {target}", "Nothing was changed.", *needles):
+            self.assertIn(needle, flat)
+        if older:
+            self.assertIn("git pull", flat)
+            self.assertNotIn("another history of the repository", flat, "the stop says that the clone is older: it does not blame another history")
+        else:
+            for banned in ("git pull", "Bring your clone up to date"):
+                self.assertNotIn(banned, self.out(p), "a pull cannot join two histories, so it is not the advice for a commit this clone does not hold")
+        return flat
+
+    # ---- U45 ---------------------------------------------------------------------------------------------
+    def test_b838_a_missing_recorded_commit_with_a_lower_version_proceeds_and_the_plan_says_why(self) -> None:
+        target = self.stage_at("5.15", "5.17")
+        p = self.run_full(*self.DRY)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        plan = self.plan(p)
+        self.assertIn(f"commit: {self.MISSING[:12]} (VERSION 5.15) -> {target[:12]} (VERSION 5.17)", plan)
+        for needle in ("the commit the stage records is not in this clone", "its VERSION 5.15 is lower than this clone's 5.17", "image: not compared"):
+            self.assertIn(needle, plan)
+        self.assertNotIn("git pull", plan)
+        starts = self.count_calls("codebuild", "start-build")
+        p = self.run_full(*self.UPDATE)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        env = self.start_build_env(starts)
+        self.assertEqual(env["SETUP_SOURCE_KEY"], f"source/{target}.zip", "the update deploys the commit of this clone")
+        self.assertNotIn("SETUP_CLIENT_ONLY", env, "a full build: the stage runs another source tree")
+        self.assertEqual(self.open_world().stage_record()["commit"], target)
+        self.assertFalse(self.runner_installed(), "the runner is removed as after every update")
+        self.assertTrue(self.installed().is_file())
+
+    # ---- U46 ---------------------------------------------------------------------------------------------
+    def test_b838_a_missing_recorded_commit_with_the_same_version_stops_and_names_a_new_clone(self) -> None:
+        target = self.stage_at("5.17", "5.17")
+        before = len(self.mutations())
+        p = self.run_full(*self.UPDATE)
+        flat = self.stopped(p, target, before, "(VERSION 5.17)", "its VERSION is the same as this clone's", "so setup cannot tell whether", "If this clone is old or shallow",
+                            "A new clone that stops the same way means that the stage was deployed from another history of the repository")
+        self.assertIn(f"commit {self.MISSING}", flat)
+        # a user who already runs from a new clone (as `ham update` does) reads the way that can change the outcome first
+        self.assertLess(flat.index(f"--revision {target}"), flat.index("new clone of the repository"))
+
+    # ---- U47 ---------------------------------------------------------------------------------------------
+    def test_b838_a_missing_recorded_commit_with_a_higher_version_stops_and_says_the_clone_is_older(self) -> None:
+        target = self.stage_at("5.18", "5.17")
+        before = len(self.mutations())
+        p = self.run_full(*self.UPDATE)
+        flat = self.stopped(p, target, before, "(VERSION 5.18)", "that VERSION is higher than this clone's (VERSION 5.17)", "so the stage runs a later release than this clone",
+                            "Bring this clone up to date first", older=True)
+        self.assertNotIn("cannot tell whether", flat, "a clone that is older than the stage can tell that its commit is not newer")
+        self.assertNotIn("so this clone is older than the stage, so", flat)
+        self.assertIn("git clone <the repository URL>", flat)
+
+    # ---- U48 ---------------------------------------------------------------------------------------------
+    def test_b838_a_version_that_is_no_n_nn_stops_and_says_what_cannot_be_read(self) -> None:
+        target = self.stage_at("5.15", "5.17")
+        before = len(self.mutations())
+        # the stage's record: no VERSION, a VERSION that is no N.NN, a counter of one or three digits, an extra part
+        for recorded in ("", "5.x", "5", "5.9", "5.015", "v5.15", "5.15.1", "5.15-dev"):
+            with self.subTest(recorded=recorded):
+                self.seed_record(commit=self.MISSING, version=recorded)
+                p = self.run_full(*self.UPDATE)
+                flat = self.stopped(p, target, before, "a VERSION cannot be read as N.NN")
+                self.assertIn("this clone has 5.17", flat)
+                self.assertIn(f"the stage records {recorded or 'none'}", flat)
+                self.assertNotIn("looks like", flat, "no example VERSION that a later release makes wrong")
+                self.assertLess(flat.index(f"--revision {target}"), flat.index("new clone of the repository"))
+        # this clone's own VERSION: no file, or a text that is no N.NN
+        self.seed_record(commit=self.MISSING, version="5.15")
+        for version in (None, "5.x", "5.7"):
+            with self.subTest(clone=version):
+                files = {"infra/release.yaml": f"release {version}\n"}
+                if version is not None:
+                    files["VERSION"] = f"{version}\n"
+                else:
+                    (self.repo / "VERSION").unlink()
+                head = self.write_commit(files, f"a clone whose VERSION is {version}")
+                p = self.run_full(*self.UPDATE)
+                flat = self.stopped(p, head, before, "cannot be read")
+                self.assertIn(f"this clone has {version or 'none'}", flat)
+
+    # ---- U49 ---------------------------------------------------------------------------------------------
+    def test_b838_the_versions_are_compared_as_numbers_per_part(self) -> None:
+        driver = '. "$1/lib.sh"; . "$1/preflight.sh"; pf_version_cmp "$2" "$3"'
+        cases = [("5.15", "5.17", "lower"), ("5.17", "5.17", "equal"), ("5.18", "5.17", "higher"), ("5.08", "5.09", "lower"), ("5.09", "5.10", "lower"),
+                 ("5.10", "5.09", "higher"), ("5.09", "5.09", "equal"), ("5.99", "6.00", "lower"), ("6.00", "5.99", "higher"), ("4.42", "5.00", "lower"),
+                 ("5.00", "4.42", "higher"), ("9.99", "10.00", "lower"), ("10.00", "9.99", "higher"), ("05.17", "5.17", "equal"), ("10.02", "10.02", "equal"),
+                 # unreadable: the forms `ham_core::update::parse_version` also refuses, and the forms setup refuses in addition (a major of ten digits cannot be added up)
+                 ("", "5.17", "unreadable"), ("5.17", "", "unreadable"), ("5.1", "5.17", "unreadable"), ("5.140", "5.17", "unreadable"), ("v5.14", "5.17", "unreadable"),
+                 ("5", "5.17", "unreadable"), ("15", "5.17", "unreadable"), ("5.1x", "5.17", "unreadable"), (" 5.14", "5.17", "unreadable"), ("5.15 ", "5.17", "unreadable"),
+                 ("5.15\n", "5.17", "unreadable"), ("5.15.1", "5.17", "unreadable"), (".15", "5.17", "unreadable"), ("5.", "5.17", "unreadable"), ("-5.15", "5.17", "unreadable"),
+                 ("5.17", "5.x", "unreadable"), ("1234567890.00", "5.17", "unreadable")]
+        for recorded, clone, want in cases:
+            with self.subTest(recorded=recorded, clone=clone):
+                p = subprocess.run(["bash", "-c", driver, "driver", str(self.SETUP_DIR), recorded, clone], capture_output=True, text=True, timeout=limit(60))  # nosec B603: bash with an argument list, the values are arguments and never part of the script; B607: bash looked up on PATH, as the scripts under test use it
+                self.assertEqual((p.returncode, p.stdout.strip()), (0, want), p.stderr)
+        # the same through setup, on a counter below and above ten and across a major
+        for recorded, clone, code in (("5.09", "5.10", 0), ("5.10", "5.09", 7), ("5.99", "6.00", 0), ("6.00", "5.99", 7), ("4.42", "5.00", 0)):
+            with self.subTest(update=f"{recorded} -> {clone}"):
+                self.reset_world()
+                shutil.rmtree(self.home / ".config", ignore_errors=True)
+                shutil.rmtree(self.prefix, ignore_errors=True)
+                self.stage_at(recorded, clone)
+                p = self.run_full(*self.DRY)
+                self.assertEqual(p.returncode, code, self.out(p))
+
+    # ---- U50 ---------------------------------------------------------------------------------------------
+    def test_b838_the_tree_and_revision_rules_come_before_the_version_rule(self) -> None:
+        # regression: passes before the change. A target with the source tree the record names is never refused, whatever the VERSIONs say.
+        self.set_scenario(nine_stacks=True)
+        self.with_registry(REAL_REGISTRY.read_text())
+        self.deployed()
+        w = self.open_world()
+        record = w.w["params"][SETTINGS_PARAM]
+        lines = [ln for ln in record.splitlines() if not ln.startswith(("commit=", "version="))]
+        w.w["params"][SETTINGS_PARAM] = "\n".join([*lines, f"commit={self.MISSING}", "version=5.30"])
+        w.save()
+        self.commit_more("NOTES.md")
+        deploys = self.world().get("n_deploys", 0)
+        p = self.run_full(*self.UPDATE)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.start_build_env(self.count_calls("codebuild", "start-build") - 1).get("SETUP_CLIENT_ONLY"), "1")
+        self.assertEqual(self.world().get("n_deploys", 0), deploys, "the stage already runs this source tree")
+        # --revision names the commit on purpose: no VERSION decides, whichever way it points
+        for recorded in ("5.30", "5.17", "5.15", ""):
+            with self.subTest(revision_with=recorded):
+                self.reset_world()
+                shutil.rmtree(self.home / ".config", ignore_errors=True)
+                shutil.rmtree(self.prefix, ignore_errors=True)
+                target = self.stage_at(recorded, "5.17")
+                starts = self.count_calls("codebuild", "start-build")
+                p = self.run_full(*self.UPDATE, "--revision", target)
+                self.assertEqual(p.returncode, 0, self.out(p))
+                self.assertEqual(self.start_build_env(starts)["SETUP_SOURCE_KEY"], f"source/{target}.zip")
+
+    # ---- U51 ---------------------------------------------------------------------------------------------
+    def test_b838_a_recorded_commit_that_the_clone_holds_is_judged_by_git_and_not_by_version(self) -> None:
+        # regression: passes before the change. The VERSION plays no part when git can place the recorded commit.
+        self.with_registry()
+        self.deployed()
+        high = self.write_commit({"VERSION": "5.30\n", "infra/release.yaml": "release 5.30\n"}, "release 5.30")
+        low = self.write_commit({"VERSION": "5.20\n", "infra/release.yaml": "release 5.20\n"}, "a later commit whose VERSION is lower")
+        # the target is an ancestor of the recorded commit: it stops, although its VERSION is the higher one, and it names git pull
+        self.git("checkout", "-q", high)
+        self.seed_record(commit=low, version="5.20")
+        before = len(self.mutations())
+        p = self.run_full(*self.UPDATE)
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before)
+        for needle in ("git pull", "older commit", f"--revision {high}"):
+            self.assertIn(needle, self.flat(p))
+        self.assertNotIn("is not in this clone", self.flat(p))
+        # the target is a descendant: it goes ahead, although its VERSION is the lower one
+        self.git("checkout", "-q", low)
+        self.seed_record(commit=high, version="5.30")
+        p = self.run_full(*self.DRY)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn(f"commit: {high[:12]} (VERSION 5.30) -> {low[:12]} (VERSION 5.20)", self.plan(p))
+        self.assertNotIn("is not in this clone", self.plan(p))
+        # a commit on another branch (neither an ancestor nor a descendant) goes ahead as before; the plan shows both commits
+        self.git("checkout", "-q", "-b", "side", high)
+        side = self.write_commit({"side.md": "a branch\n"}, "a commit on another branch")
+        self.git("checkout", "-q", low)
+        self.seed_record(commit=side, version="5.40")
+        p = self.run_full(*self.DRY)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn(f"commit: {side[:12]} (VERSION 5.40) -> {low[:12]} (VERSION 5.20)", self.plan(p))
+
+    # ---- U52 ---------------------------------------------------------------------------------------------
+    def test_b838_the_record_of_an_unfinished_update_is_judged_the_same_way(self) -> None:
+        # the commit of such a record is the one the unfinished update was given: it is judged like a finished one
+        target = self.stage_at("5.15", "5.17", status="deploying")
+        p = self.run_full(*self.DRY)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn("its VERSION 5.15 is lower than this clone's 5.17", self.plan(p))
+        self.seed_record(commit=self.MISSING, version="5.17", status="deploying")
+        before = len(self.mutations())
+        p = self.run_full(*self.UPDATE)
+        self.stopped(p, target, before, "its VERSION is the same as this clone's")
+
+    # ---- U53 ---------------------------------------------------------------------------------------------
+    def test_b838_the_other_guards_still_judge_an_update_that_the_version_rule_lets_through(self) -> None:
+        target = self.stage_at("5.15", "5.17")
+        self.set_scenario(executions={"hamh-direct-run": RUNS})
+        before = len(self.mutations())
+        p = self.run_full(*self.UPDATE)
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before, "nothing is created")
+        flat = self.flat(p)
+        self.assertIn("running run(s)", flat)
+        self.assertNotIn("is not in this clone", flat, "the commit order let the update through; the active runs stop it")
+        # with --allow-active-runs the build's own guard decides: the plan says that the image is not compared and that the build refuses a changed worker runtime
+        p = self.run_full(*self.DRY, "--allow-active-runs")
+        self.assertEqual(p.returncode, 0, self.out(p))
+        plan = self.plan(p)
+        for needle in ("image: not compared", "the build refuses only when the worker runtime changes", f"-> {target[:12]} (VERSION 5.17)"):
+            self.assertIn(needle, plan)
+
+    # ---- U54 ---------------------------------------------------------------------------------------------
+    def test_b838_the_update_ham_runs_from_a_fresh_clone_of_the_new_history_goes_ahead(self) -> None:
+        """`ham update` fetches a clone of the public main and runs `<clone>/setup.sh --update --prefix <prefix> --yes` in it (crates/ham/src/update.rs, run_setup): no --profile,
+        no --region, no --revision. The clone here is the one a user gets after the history was started again: a new root commit with the files of the old tree, and a release
+        commit on top. Its commits are not the ones the stage records."""
+        self.with_registry()
+        old = self.deployed()
+        self.seed_record(commit=old, version="5.15")
+        fresh = self.tmp / "fresh-clone"
+        head = self.new_history_tree(fresh)
+        self.assertFalse(subprocess.run(["git", "-C", str(fresh), "cat-file", "-e", f"{old}^{{commit}}"], capture_output=True, timeout=limit(60)).returncode == 0,  # nosec B603: git with an argument list, no shell; B607: bare name of git looked up on PATH, as the scripts under test do
+                         "TRIGGER PRESENT: the clone of the new history does not hold the commit the stage records")
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", "ham v5.17"))
+        starts = self.count_calls("codebuild", "start-build")
+        p = self.run_setup("--update", "--prefix", str(self.prefix), "--yes", script=fresh / "setup.sh", AWS_PROFILE="work", AWS_REGION="us-east-1")
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.start_build_env(starts)["SETUP_SOURCE_KEY"], f"source/{head}.zip")
+        self.assertEqual(self.open_world().stage_record()["commit"], head)
+        self.assertIn("its VERSION 5.15 is lower than this clone's 5.17", " ".join(p.stdout.split()))
+        # the same clone with a stage that runs the same VERSION stops, and names a new clone: the way ham itself cannot help
+        self.seed_record(commit=old, version="5.17")
+        before = len(self.mutations())
+        p = self.run_setup("--update", "--prefix", str(self.prefix), "--yes", script=fresh / "setup.sh", AWS_PROFILE="work", AWS_REGION="us-east-1")
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before)
+        self.assertIn("new clone of the repository", self.flat(p))
+        self.assertIn(f"--revision {head}", self.flat(p))
+
+    # ---- U54 and U51, the git side of the rule (review finding: the answer of git does not depend on the kind of clone or on the version of git) ----------------------------
+    def new_history_tree(self, dest: Path, release: str = "5.17") -> str:
+        """A repository `dest` that holds the new history after a restart: a root commit with the files of the old tree, and a release commit on top. Returns its head."""
+        dest.mkdir()
+        for rel in self.git("ls-files").splitlines():
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.repo / rel, dest / rel)
+        self.git("init", "-q", "-b", "main", cwd=dest)
+        self.git("add", "-A", cwd=dest)
+        self.git("commit", "-q", "-m", "root of the new history", cwd=dest)
+        (dest / "VERSION").write_text(f"{release}\n")
+        (dest / "infra").mkdir(exist_ok=True)
+        (dest / "infra" / "release.yaml").write_text(f"release {release}\n")
+        self.git("add", "-A", cwd=dest)
+        self.git("commit", "-q", "-m", f"release {release}", cwd=dest)
+        return self.git("rev-parse", "HEAD", cwd=dest)
+
+    def blobless_clone(self, old: str, name: str) -> tuple[Path, str]:
+        """The clone `ham update` makes (`git clone --no-checkout --filter=blob:none`, then a detached checkout) of an origin that holds the new history on main and still serves
+        the old commit `old` by its id: its branch was deleted, as after a history restart, but the commit stays in the object store of the origin. Returns the clone and its head."""
+        new = self.tmp / f"new-history-{name}"
+        head = self.new_history_tree(new)
+        origin = self.tmp / f"origin-{name}.git"
+        self.git("init", "-q", "--bare", str(origin), cwd=self.tmp)
+        self.git("config", "uploadpack.allowFilter", "true", cwd=origin)
+        self.git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=origin)
+        self.git("push", "-q", str(origin), f"{old}:refs/heads/old")
+        self.git("push", "-q", str(origin), "HEAD:refs/heads/main", cwd=new)
+        self.git("push", "-q", str(origin), ":refs/heads/old")
+        clone = self.tmp / f"clone-{name}"
+        self.git("clone", "-q", "--no-checkout", "--filter=blob:none", f"file://{origin}", str(clone), cwd=self.tmp)
+        self.git("checkout", "-q", "--detach", "origin/main", cwd=clone)
+        return clone, head
+
+    def holds(self, clone: Path, commit: str, lazy: bool) -> bool:
+        """Whether `git cat-file -e` finds the commit in the clone; with lazy=True it may fetch a missing commit from the origin (which changes the clone)."""
+        env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        env.pop("GIT_NO_LAZY_FETCH", None)
+        if not lazy:
+            env["GIT_NO_LAZY_FETCH"] = "1"
+        p = subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{commit}^{{commit}}"], capture_output=True, env=env, timeout=limit(60))  # nosec B603: git with an argument list, no shell; B607: bare name of git looked up on PATH, as the scripts under test do
+        return p.returncode == 0
+
+    def update_from(self, clone: Path, *extra: str):
+        """The update `ham update` runs: the setup.sh of the clone, with --prefix and --yes, and no --profile, --region or --revision."""
+        return self.run_setup("--update", "--prefix", str(self.prefix), "--yes", *extra, script=clone / "setup.sh", AWS_PROFILE="work", AWS_REGION="us-east-1")
+
+    def test_b838_a_blobless_clone_whose_origin_serves_the_old_commit_still_judges_it_missing(self) -> None:
+        """The clone `ham update` makes is a blobless partial clone, and a lookup of a missing commit in it fetches the commit from the origin when the origin serves it by id
+        (GitHub may). The answer for the recorded commit must not depend on that: it is not in the clone, so the VERSIONs decide, as in a full clone."""
+        self.with_registry()
+        old = self.deployed()
+        probe, _ = self.blobless_clone(old, "probe")
+        self.assertTrue(self.holds(probe, old, lazy=True), "TRIGGER PRESENT: the origin serves the old commit by its id, so a plain lookup fetches it into the clone")
+        clone, head = self.blobless_clone(old, "ham")
+        if self.holds(clone, old, lazy=False):
+            self.fail("a clone of the new history holds the old commit")
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", "ham v5.17"))
+        # the same VERSION stops: git is not asked to place a commit that the clone does not hold
+        self.seed_record(commit=old, version="5.17")
+        before = len(self.mutations())
+        p = self.update_from(clone)
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before, "nothing is created")
+        flat = self.flat(p)
+        for needle in (f"runs commit {old}", "is not in this clone", "its VERSION is the same as this clone's", f"--revision {head}"):
+            self.assertIn(needle, flat)
+        self.assertFalse(self.holds(clone, old, lazy=False), "the lookup of setup left the clone as it was: it fetched nothing")
+        # a lower VERSION goes ahead and the plan says that the commit is not in the clone
+        self.seed_record(commit=old, version="5.15")
+        starts = self.count_calls("codebuild", "start-build")
+        p = self.update_from(clone)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn("the commit the stage records is not in this clone", self.plan(p))
+        self.assertEqual(self.start_build_env(starts)["SETUP_SOURCE_KEY"], f"source/{head}.zip")
+        self.assertFalse(self.holds(clone, old, lazy=False), "the update did not fetch the old commit either")
+
+    def test_b838_a_git_that_ignores_the_no_lazy_fetch_variable_reaches_the_same_answer(self) -> None:
+        """Git before 2.44 ignores GIT_NO_LAZY_FETCH, so the lookup of the recorded commit fetches it from an origin that serves it. The commit is then held, with no history in
+        common with the clone's, and setup judges it by the VERSIONs as it does a commit the clone does not hold."""
+        self.with_registry()
+        old = self.deployed()
+        clone, head = self.blobless_clone(old, "old-git")
+        real = shutil.which("git")
+        wrapper = self.stub / "git"
+        wrapper.unlink()
+        wrapper.write_text(f'#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec "{real}" "$@"\n')
+        wrapper.chmod(0o755)
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", "ham v5.17"))
+        self.seed_record(commit=old, version="5.17")
+        before = len(self.mutations())
+        p = self.update_from(clone)
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before, "nothing is created")
+        flat = self.flat(p)
+        for needle in (f"runs commit {old}", "has no history in common with this clone", "its VERSION is the same as this clone's", f"--revision {head}"):
+            self.assertIn(needle, flat)
+        self.seed_record(commit=old, version="5.15")
+        starts = self.count_calls("codebuild", "start-build")
+        p = self.update_from(clone)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        plan = self.plan(p)
+        for needle in ("the commit the stage records has no history in common with this clone", "its VERSION 5.15 is lower than this clone's 5.17"):
+            self.assertIn(needle, plan)
+        self.assertEqual(self.start_build_env(starts)["SETUP_SOURCE_KEY"], f"source/{head}.zip")
+
+    def test_b838_a_recorded_commit_that_the_clone_holds_without_history_in_common_is_judged_by_version(self) -> None:
+        """A commit of another history that the clone holds (fetched into it) cannot be placed by git either: no common ancestor. Before this check it went ahead whatever its VERSION."""
+        self.with_registry()
+        old = self.deployed()
+        fresh = self.tmp / "fresh-clone"
+        head = self.new_history_tree(fresh)
+        self.git("fetch", "-q", str(self.repo), old, cwd=fresh)
+        self.assertTrue(self.holds(fresh, old, lazy=False), "TRIGGER PRESENT: the clone holds the old commit")
+        self.client_file.write_text(STUB_HAM.replace("ham v9.99", "ham v5.17"))
+        self.seed_record(commit=old, version="5.17")
+        before = len(self.mutations())
+        p = self.update_from(fresh)
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertEqual(len(self.mutations()), before, "nothing is created")
+        flat = self.flat(p)
+        for needle in (f"runs commit {old}", "has no history in common with this clone", "its VERSION is the same as this clone's", f"--revision {head}"):
+            self.assertIn(needle, flat)
+        self.seed_record(commit=old, version="5.15")
+        p = self.update_from(fresh)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn("the commit the stage records has no history in common with this clone", self.plan(p))
+
+    def test_b838_the_plan_says_that_a_version_orders_releases_only(self) -> None:
+        """The plan of an update that goes ahead on the VERSIONs alone says what the VERSION is worth: it orders releases and says nothing about the content of a commit. A stage
+        deployed from the user's own fork or from commits that were never published, with a lower VERSION, goes ahead too, so the plan asks the user to check the line."""
+        self.stage_at("5.15", "5.17")
+        p = self.run_full(*self.DRY)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        plan = self.plan(p)
+        for needle in ("so setup treats this update as a newer release", "A VERSION orders releases only",
+                       "if the stage was deployed from your own fork or from commits that you did not publish, check this line before you answer"):
+            self.assertIn(needle, plan)
+        self.assertNotIn("takes this update as a newer release", plan)
 
 
 if __name__ == "__main__":

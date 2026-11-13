@@ -41,7 +41,9 @@
 #                   needs consent: PF_HOLDS; on a record of an update that did not finish, what the deploy carries on (PF_TAKES) or must ask you about
 #                   (PF_ASKS, which full_default_asks turns into exit 7); PF_HOLD_WHY and PF_HOLD_NAMES when the stage's values could not be read
 #   pf_settings_refuse  an exported setting that would remove a part the stage has (HAMH_COMPUTE_INSTANCES=off on a stage with the Instances part): exit 7
-#   pf_commit_order  an update to a commit that is older than the one the stage records, or one git cannot place: exit 7 unless --revision names it
+#   pf_commit_held  whether this clone holds a commit, answered from the clone alone (a blobless clone does not fetch it)
+#   pf_commit_order  an update to a commit that is older than the one the stage records: exit 7 unless --revision names it. A recorded commit that git cannot place (it is not in this
+#                   clone, or it shares no history with it) is judged by the VERSIONs (pf_version_cmp): a lower recorded VERSION goes ahead (COMMIT_ORDER_NOTE), any other answer is exit 7
 #   pf_image_plan   whether the update needs no new worker image, a new one, or a rebuild of the Cline binary (IMG_PLAN), from the pins of the two commits
 
 SRC_COMMIT=""
@@ -82,6 +84,7 @@ ZONE_FROM=""
 IMG_PLAN=unknown
 IMG_TEXT=""
 COMMIT_CHANGE=""
+COMMIT_ORDER_NOTE=""
 # The settings whose values the deploy writes in one form (NUMBER_SETTINGS, LOWER_SETTINGS and LIST_SETTINGS of the deploy engine, scripts/lib/deploy.py;
 # scripts/tests/test_setup_update_scenarios.py keeps these three lists equal to them): whole numbers without leading zeros, case-free words in lower case, comma lists without
 # the spaces around their commas and without empty items. pf_canonical gives that form, so setup shows, sends and compares the value the stage's record holds (A4.8).
@@ -631,13 +634,72 @@ pf_principal() {
   [ -n "$PR_ACCOUNT" ] && [ -n "$PR_NAME" ]
 }
 
-# pf_commit_order: an update to a commit older than the one the stage records (an ancestor of it), or to one git cannot place against it (the recorded commit is not in this clone),
-# ends here with exit 7 unless --revision says it is meant; COMMIT_CHANGE is the change the plan names. A target with the source tree the record names is never refused
-# (Addendum 4, A4.1): it deploys nothing the stage does not run already, whatever the two commits are (a commit that changes no deployed file, or a record whose commit= is
-# the one a runner build before A4.1 made of the archive, which no clone holds).
+# pf_version_parts <text>: PF_VER_MAJOR and PF_VER_MINOR, as whole numbers, of a VERSION in the form N.NN of the root VERSION file: digits, a dot and a counter of exactly two digits,
+# the form that `ham_core::update::parse_version` reads. A major number of more than nine digits is refused as well, so that the comparison cannot overflow. Returns 1 for any other
+# text (empty, 5.9, 5.015, v5.15, 5.x, 5.15.1, one with a space or a line end in it).
+pf_version_parts() {
+  local text=$1 major minor
+  PF_VER_MAJOR=""
+  PF_VER_MINOR=""
+  case $text in
+    ''|*[!0123456789.]*|.*|*.|*.*.*) return 1 ;;
+  esac
+  major=${text%%.*}
+  minor=${text#*.}
+  [ "$major" != "$text" ] || return 1
+  [ "${#minor}" -eq 2 ] && [ "${#major}" -le 9 ] || return 1
+  PF_VER_MAJOR=$((10#$major))
+  PF_VER_MINOR=$((10#$minor))
+}
+
+# pf_version_cmp <first> <second>: prints lower, equal or higher (the first VERSION against the second: the major number, then the counter, each as a number, so 5.09 is lower than
+# 5.10 and 5.99 is lower than 6.00), or unreadable when either text is no N.NN. It always returns 0.
+pf_version_cmp() {
+  local a_major a_minor
+  if ! pf_version_parts "$1"; then
+    echo unreadable
+    return 0
+  fi
+  a_major=$PF_VER_MAJOR
+  a_minor=$PF_VER_MINOR
+  if ! pf_version_parts "$2"; then
+    echo unreadable
+    return 0
+  fi
+  if [ "$a_major" -lt "$PF_VER_MAJOR" ]; then
+    echo lower
+  elif [ "$a_major" -gt "$PF_VER_MAJOR" ]; then
+    echo higher
+  elif [ "$a_minor" -lt "$PF_VER_MINOR" ]; then
+    echo lower
+  elif [ "$a_minor" -gt "$PF_VER_MINOR" ]; then
+    echo higher
+  else
+    echo equal
+  fi
+}
+
+# pf_commit_held <commit>: 0 when this clone holds the commit, answered from the clone alone. A blobless partial clone (the clone `ham update` makes) fetches a commit that it lacks
+# from its origin when a plain lookup asks for it and the origin serves it by id; GIT_NO_LAZY_FETCH=1 (git 2.44 and later) turns that off, so that the answer does not depend on the
+# kind of clone. Git before 2.44 ignores the variable: pf_commit_order then meets a commit that the lookup fetched like any commit of another history (no common ancestor).
+# It is used for commits only: a lookup of a file (a blob) in a partial clone needs the fetch.
+pf_commit_held() {
+  GIT_NO_LAZY_FETCH=1 git -C "$SELF_DIR" cat-file -e "$1^{commit}" 2>/dev/null
+}
+
+# pf_commit_order: an update to a commit older than the one the stage records (an ancestor of it) ends here with exit 7 unless --revision says it is meant; COMMIT_CHANGE is the change
+# the plan names. A target with the source tree the record names is never refused (Addendum 4, A4.1): it deploys nothing the stage does not run already, whatever the two commits are
+# (a commit that changes no deployed file, or a record whose commit= is the one a runner build before A4.1 made of the archive, which no clone holds).
+# A recorded commit that is not in this clone, or that has no common ancestor with the commit to deploy, cannot be placed by git: the public history was started again
+# once, so a stage deployed before records a commit that no clone of the new history holds, and a pull cannot join the two histories. The VERSIONs decide then. A recorded VERSION that is
+# lower than this clone's means that this update goes to a later release, and it goes ahead (COMMIT_ORDER_NOTE says so in the plan; a commit that the clone does not hold has no pins to
+# compare, so the image plan stays unknown). The other answers stop with exit 7, and the text names the cause that fits: a higher VERSION says that the clone is older than the stage (a new
+# clone, or a pull in a clone of the current history), the same VERSION covers many commits and a text that is no N.NN cannot be compared (--revision to choose on purpose first, then a
+# new clone, which helps only a clone that is old, shallow or damaged).
 pf_commit_order() {
-  local rec ver
+  local rec ver order gone stop newer
   COMMIT_CHANGE=""
+  COMMIT_ORDER_NOTE=""
   [ "$REC_HAVE" = 1 ] || return 0
   rec=$(pf_rec_get commit)
   setup_is_commit "$rec" || return 0
@@ -647,15 +709,42 @@ pf_commit_order() {
   COMMIT_CHANGE="$(rn_first12 "$rec")${ver:+ (VERSION $ver)} -> $(rn_first12 "$SRC_COMMIT")${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)}"
   [ -z "${REVISION:-}" ] || return 0
   [ "$(pf_rec_get tree)" != "$(rn_target_tree)" ] || return 0
-  if git -C "$SELF_DIR" cat-file -e "$rec^{commit}" 2>/dev/null; then
-    git -C "$SELF_DIR" merge-base --is-ancestor "$SRC_COMMIT" "$rec" 2>/dev/null || return 0
-    setup_exit 7 "the stage $STAGE runs commit $rec${ver:+ (VERSION $ver)}, and this clone would update it to the older commit $SRC_COMMIT${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)}" \
-      "Bring your clone up to date first:  git pull   then run ./setup.sh --update again." \
-      "To go back to the older commit on purpose, name it:  ./setup.sh --update --revision $SRC_COMMIT" "Nothing was changed."
+  if pf_commit_held "$rec"; then
+    # git places two commits that have a common ancestor; a commit of another history that the clone holds (fetched into it, or by a lookup of an old git) has none
+    if git -C "$SELF_DIR" merge-base "$SRC_COMMIT" "$rec" >/dev/null 2>&1; then
+      git -C "$SELF_DIR" merge-base --is-ancestor "$SRC_COMMIT" "$rec" 2>/dev/null || return 0
+      setup_exit 7 "the stage $STAGE runs commit $rec${ver:+ (VERSION $ver)}, and this clone would update it to the older commit $SRC_COMMIT${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)}" \
+        "Bring your clone up to date first:  git pull   then run ./setup.sh --update again." \
+        "To go back to the older commit on purpose, name it:  ./setup.sh --update --revision $SRC_COMMIT" "Nothing was changed."
+    fi
+    gone="has no history in common with this clone that git can find"
+  else
+    gone="is not in this clone"
   fi
-  setup_exit 7 "the stage $STAGE runs commit $rec${ver:+ (VERSION $ver)}, which is not in this clone, so setup cannot tell whether $SRC_COMMIT${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)} is newer" \
-    "Bring your clone up to date first:  git pull   then run ./setup.sh --update again." \
-    "To deploy this commit anyway, name it:  ./setup.sh --update --revision $SRC_COMMIT" "Nothing was changed."
+  order=$(pf_version_cmp "$ver" "$SRC_VERSION_TEXT")
+  if [ "$order" = lower ]; then
+    COMMIT_ORDER_NOTE="the commit the stage records $gone, so git cannot place it; its VERSION $ver is lower than this clone's $SRC_VERSION_TEXT, so setup treats this update as a newer release. A VERSION orders releases only: if the stage was deployed from your own fork or from commits that you did not publish, check this line before you answer"
+    log_line "commit order: $COMMIT_ORDER_NOTE"
+    return 0
+  fi
+  stop="the stage $STAGE runs commit $rec${ver:+ (VERSION $ver)}, which $gone, and"
+  newer="$SRC_COMMIT${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)}"
+  case $order in
+    higher)
+      setup_exit 7 "$stop that VERSION is higher than this clone's${SRC_VERSION_TEXT:+ (VERSION $SRC_VERSION_TEXT)}, so the stage runs a later release than this clone" \
+        "Bring this clone up to date first: make a new clone of the repository (git clone <the repository URL>), or run  git pull  in a clone that has the repository's current history, then run ./setup.sh --update again." \
+        "To go back to this clone's commit on purpose, name it:  ./setup.sh --update --revision $SRC_COMMIT" "Nothing was changed." ;;
+    equal)
+      setup_exit 7 "$stop its VERSION is the same as this clone's, so setup cannot tell whether $newer is newer" \
+        "To deploy this clone's commit on purpose, name it:  ./setup.sh --update --revision $SRC_COMMIT" \
+        "If this clone is old or shallow, a new clone of the repository holds the commits it lacks: git clone <the repository URL>, then run ./setup.sh --update from it. A new clone that stops the same way means that the stage was deployed from another history of the repository (the history was started again once); only --revision goes on then." \
+        "Nothing was changed." ;;
+    *)
+      setup_exit 7 "$stop a VERSION cannot be read as N.NN (the stage records ${ver:-none}, this clone has ${SRC_VERSION_TEXT:-none}), so setup cannot tell whether $newer is newer" \
+        "To deploy this clone's commit on purpose, name it:  ./setup.sh --update --revision $SRC_COMMIT" \
+        "A new clone of the repository has the VERSION file as the repository ships it: git clone <the repository URL>, then run ./setup.sh --update from it. It does not change a VERSION that the stage's record holds in another form." \
+        "Nothing was changed." ;;
+  esac
 }
 
 # pf_pin_of <commit> <image|cline>: the worker image key of engine/policy/image-key.pin, or the binarySha256 of the [cline] table of engine/lock.toml, at that commit; nothing when
@@ -672,6 +761,7 @@ pf_pin_of() {
 
 # pf_image_plan: IMG_PLAN none (the worker image key and the Cline binary are the ones the stage runs), image (a new worker image, the binary reused), fork (the Cline binary is
 # rebuilt too) or unknown (the stage records no commit, the commit is not in this clone, or a pin cannot be read), compared between the recorded commit and the one that is built.
+# IMG_TEXT says why for a commit that is not in this clone: the VERSION rule of pf_commit_order lets such an update go ahead, but its pins cannot be read.
 pf_image_plan() {
   local rec k1 k2 b1 b2
   IMG_PLAN=unknown
@@ -679,7 +769,10 @@ pf_image_plan() {
   [ "$REC_HAVE" = 1 ] || return 0
   rec=$(pf_rec_get commit)
   setup_is_commit "$rec" || return 0
-  git -C "$SELF_DIR" cat-file -e "$rec^{commit}" 2>/dev/null || return 0
+  if ! pf_commit_held "$rec"; then
+    IMG_TEXT="not compared: the commit the stage records is not in this clone, so setup cannot tell whether this update needs a new worker image or a rebuild of the Cline binary"
+    return 0
+  fi
   k1=$(pf_pin_of "$rec" image)
   k2=$(pf_pin_of "$SRC_COMMIT" image)
   b1=$(pf_pin_of "$rec" cline)

@@ -43,7 +43,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// The stand-in of `setup.sh --update`: it records its arguments, folder and commit, keeps the installed client as `ham.prev` and installs a
 /// client that prints `ham v$B804_INSTALL_VERSION`, the way the real setup installs one (a new file, then one rename). Switches for the
 /// failure cases: `B804_PREV` (`other`: a `ham.prev` that is not the client that ran; `none`: no `ham.prev`), `B804_INSTALL_KIND` (`broken`: the
-/// installed client fails to start; `hangs`: it never answers; `odd`: it prints a line that is no version), `B804_SETUP_SLEEP` (seconds before it ends) and `B804_SETUP_EXIT` (its exit code).
+/// installed client fails to start; `hangs`: it never answers; `odd`: it prints a line that is no version), `B804_SETUP_SLEEP` (seconds before it ends) and `B804_SETUP_EXIT` (its exit code),
+/// `B804_SETUP_SAYS` (a line it prints on standard output first, as setup prints its plan) and `B804_SETUP_STOPS` (a text it prints on standard error before it ends with
+/// `B804_SETUP_EXIT`, 7 by default, without installing anything, as setup does when it refuses before it changes anything).
 const SETUP: &str = r#"#!/bin/sh
 printf '%s\n' "$*" > "$B804_RECORD"
 pwd -P >> "$B804_RECORD"
@@ -53,6 +55,11 @@ while [ $# -gt 0 ]; do
   case $1 in --prefix) prefix=$2; shift ;; esac
   shift
 done
+[ -z "${B804_SETUP_SAYS:-}" ] || printf '%s\n' "$B804_SETUP_SAYS"
+if [ -n "${B804_SETUP_STOPS:-}" ]; then
+  printf '%s\n' "$B804_SETUP_STOPS" >&2
+  exit "${B804_SETUP_EXIT:-7}"
+fi
 bin=$prefix/bin
 case ${B804_PREV:-keep} in
   keep) ln "$bin/ham" "$bin/ham.prev" 2>/dev/null || cp -p "$bin/ham" "$bin/ham.prev" ;;
@@ -733,6 +740,121 @@ async fn fix515_a_setup_that_failed_is_passed_through_without_a_result_line() {
             "exit {code}: {out}"
         );
     }
+}
+
+/// A stage whose recorded commit no clone of the new history holds. The rule is setup's alone (its VERSION comparison has rows U45 to U54 in the setup tests); `ham update`
+/// runs the setup of the clone it fetched and copies none of it. A setup that goes ahead after it could not place the commit is an update like any other: its plan line reaches the
+/// terminal and both versions are checked afterwards.
+#[tokio::test]
+async fn b838_a_setup_that_goes_ahead_after_a_commit_it_cannot_place_is_checked_like_any_update() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b838-ahead-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b838-ahead", &url(&repo));
+    let bin = installed(&h);
+    let says = "  order:         the commit the stage records is not in this clone, so git cannot place it; its VERSION 5.15 is lower than this clone's 5.17, so setup treats this update as a newer release. A VERSION orders releases only: if the stage was deployed from your own fork or from commits that you did not publish, check this line before you answer";
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes"],
+        &[("B804_INSTALL_VERSION", &newest), ("B804_SETUP_SAYS", says)],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+    assert!(
+        out.contains(says),
+        "setup's own line reaches the terminal:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("Updated: ham v{newest} | backend v{newest}")),
+        "{out}"
+    );
+    nothing_cancelled(&fake);
+}
+
+/// Setup stops with exit 7, before it changes anything, for a recorded commit it cannot place when the VERSION does not show the clone to be newer. `ham update` passes the exit
+/// code and setup's text through, installs and checks nothing, and names the folder of the clone it ran setup in, because the command setup names (`--revision`) runs there.
+/// Its own words do not name a pull: the clone is a fresh one.
+#[tokio::test]
+async fn b838_a_stop_of_setup_for_a_commit_it_cannot_place_is_passed_through_and_names_its_folder()
+{
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b838-stop-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b838-stop", &url(&repo));
+    let bin = installed(&h);
+    let before = ham::update::sha256_file(&bin).unwrap();
+    let stops = format!(
+        "setup.sh: the stage direct runs commit 17e2019dbc7b0d9abf4bcd669e5241b7e10982b5 (VERSION {newest}), which is not in this clone, and its VERSION is the same as this clone's, so setup cannot tell whether {sha} (VERSION {newest}) is newer\n      To deploy this clone's commit on purpose, name it:  ./setup.sh --update --revision {sha}\n      If this clone is old or shallow, a new clone of the repository holds the commits it lacks: git clone <the repository URL>, then run ./setup.sh --update from it.\n      Nothing was changed."
+    );
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes"],
+        &[
+            ("B804_INSTALL_VERSION", &newest),
+            ("B804_SETUP_STOPS", &stops),
+            ("B804_SETUP_EXIT", "7"),
+        ],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(7), "{out}\n{err}");
+    for needle in [
+        "which is not in this clone",
+        "a new clone of the repository",
+        &format!("--revision {sha}"),
+        "Nothing was changed.",
+    ] {
+        assert!(
+            err.contains(needle),
+            "setup's text is passed through ({needle}):\n{err}"
+        );
+    }
+    let clone = h
+        .downloads
+        .canonicalize()
+        .unwrap()
+        .join(format!("ham-update-{}", &sha[..12]));
+    let given = h.downloads.join(format!("ham-update-{}", &sha[..12]));
+    let own: Vec<&str> = err
+        .lines()
+        .filter(|l| l.starts_with("ham update:"))
+        .collect();
+    assert!(
+        own.iter()
+            .any(|l| l.contains("exit 7") && l.contains("conflicting operation")),
+        "{err}"
+    );
+    assert!(
+        own.iter()
+            .any(|l| l.contains("once it is gone") && l.contains("stops the same way")),
+        "ham says when running it again helps (a conflict that ends) and when it does not (a stage commit the clone cannot place): {own:?}"
+    );
+    assert!(
+        own.iter().any(|l| l.contains(&clone.display().to_string())
+            || l.contains(&given.display().to_string())),
+        "ham names the folder setup ran in, where the command setup names runs: {own:?}"
+    );
+    assert!(
+        own.iter().all(|l| !l.contains("git pull")),
+        "ham's own words do not send the user to a pull: {own:?}"
+    );
+    assert!(
+        !out.contains("Updated:") && !out.contains("After the update"),
+        "{out}"
+    );
+    assert_eq!(
+        ham::update::sha256_file(&bin).unwrap(),
+        before,
+        "the client that ran is the client that stays"
+    );
+    nothing_cancelled(&fake);
 }
 
 /// The config of `h` rewritten with its one backend as a `[[backend]]` table and no top-level address.

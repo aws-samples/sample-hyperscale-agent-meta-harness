@@ -1466,7 +1466,7 @@ The runner is a CodeBuild project in your AWS account.
 | Later life | `--status` | Report stage, build, setup and client state. Exit codes: 0, 5, 6 and 8 as listed under Commands. |
 | Later life | `--doctor` | Run AWS and client diagnostic checks. |
 | Later life | `--update` | Build and deploy a revision of this clone, and install its client. Runs in progress block the update: setup exits 7 and lists the runs. |
-| Later life | `--revision ID` | Select a full 40-digit commit ID for `--update`. The default is `HEAD`. An update needs it to deploy a commit older than the one the stage runs. |
+| Later life | `--revision ID` | Select a full 40-digit commit ID for `--update`. The default is `HEAD`. An update needs it to deploy a commit older than the one the stage runs, and to deploy any commit when the stage records a commit that your clone does not hold and whose `VERSION` is not lower than the clone's. |
 | Later life | `--allow-active-runs` | Skip the early active-run check of `--update`. With active runs, the build refuses only an update that changes the worker runtime. |
 | Later life | `--force-deploy` | With `--update`, deploy even when the stage already runs the commit. |
 | Later life | `--change-operator` | With `--update`, make your identity the stage's operator. Without it, an update by an identity other than the recorded operator exits 7 before it creates anything. |
@@ -1517,7 +1517,7 @@ Setup reads `AWS_PROFILE`, `AWS_REGION` and AWS credential environment variables
 | 4 | You cancel, or a required confirmation is missing. Examples: full setup with `--yes` without `--acknowledge-costs`, full setup with `--no-input` without `--yes`, or a teardown with `--yes --acknowledge-teardown` and no `--account-id`. |
 | 5 | Bootstrap, deployment or initialization fails. After `The stage is unchanged.`, the deploy refused for a reason that waiting does not cure. |
 | 6 | An operation continues and is safe to resume. `--status` also returns it while a build is running or the stage is being changed. |
-| 7 | A conflicting operation, source mismatch or configuration mismatch blocks setup. Examples include a dirty clone, account mismatch, active runs during an update, a deploy lock that another setup holds, a commit older than the stage's, another operator without `--change-operator`, or a result or endpoint mismatch. |
+| 7 | A conflicting operation, source mismatch or configuration mismatch blocks setup. Examples include a dirty clone, account mismatch, active runs during an update, a deploy lock that another setup holds, a commit older than the stage's, a stage commit that your clone does not hold and whose VERSION is not lower than yours, another operator without `--change-operator`, or a result or endpoint mismatch. |
 | 8 | Cleanup is incomplete. A stack, a retained resource, the runner, another resource of the stage, a failed step or a failed read remains. |
 | 9 | Teardown removed everything except the network resources that an AgentCore-managed network interface holds. Run it again after AWS releases the interface. |
 
@@ -1548,7 +1548,7 @@ The optional `operator` field contains `kind` (`role` or `user`) and the IAM ide
 
 **What a second machine needs**
 
-Run `./setup.sh --update` from a clean clone to get a client on another machine. When the stage already runs the clone's commit, the update only gets the client. A clone older than the stage's commit stops the update with exit 7, and the message names `git pull`; `--revision` deploys an older commit on purpose. An update takes about 20 to 25 minutes when it reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt. The receipt is a cache. AWS holds the setup state, so a fresh machine recovers without copying the receipt.
+Run `./setup.sh --update` from a clean clone to get a client on another machine. When the stage already runs the clone's commit, the update only gets the client. A clone older than the stage's commit stops the update with exit 7, and the message names `git pull`; `--revision` deploys an older commit on purpose. A stage commit that your clone does not hold goes ahead when its `VERSION` is lower than the clone's. Otherwise the update stops with exit 7, and the message names a new clone or `git pull` when the stage runs a later release than your clone, and `--revision` when the VERSION is the same or cannot be read. An update takes about 20 to 25 minutes when it reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt. The receipt is a cache. AWS holds the setup state, so a fresh machine recovers without copying the receipt.
 
 **Resuming**
 

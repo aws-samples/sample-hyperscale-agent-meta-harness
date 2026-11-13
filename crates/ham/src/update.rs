@@ -643,7 +643,10 @@ fn setup_code_text(code: i32, dir: &Path) -> String {
             "the update is still running in your AWS account. To follow it again: cd {} && ./setup.sh --update",
             dir.display()
         ),
-        7 => "setup stopped before the update: a conflicting operation, for example runs of other people that are still active, another deploy or a source it refuses. Its message is above. Run ham update again when the cause is gone.".into(),
+        7 => format!(
+            "setup stopped before the update, and its message is above. If the cause is a conflicting operation (for example runs of other people that are still active, or another deploy), run ham update again once it is gone. If the cause is a stage commit that this clone cannot be shown to be newer than, ham update fetches the same clone again and stops the same way: run the command that the message names in {}, for example ./setup.sh --update --revision <commit>.",
+            dir.display()
+        ),
         _ => "its message is above.".into(),
     }
 }

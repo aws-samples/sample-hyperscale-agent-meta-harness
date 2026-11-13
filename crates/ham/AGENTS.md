@@ -194,9 +194,8 @@ Owned by `crates/AGENTS.md`.
   `status --porcelain --ignored` is not empty, naming the folder (ham deletes nothing). `run` order: head, peek, one `GET /v1/runs` for the backend header,
   `ham_core::update::plan` (refusal exit 7, up to date exit 0), `--check` report (text or `--json`) and stop; else the install folder (the running program's folder must be
   `bin`; the prefix is its parent), the plan lines and one question (no terminal and no `--yes`: exit 4), `fetch`, `drain` (the caller's `active` runs, a line every 30 s,
-  60 minutes or `--wait`, `--no-wait`, Ctrl-C exit 4; it only reads the list), then `setup.sh --update --prefix <prefix> --yes` in the clone with the terminal handed over
-  (Ctrl-C goes to setup; setup's code is passed through, with a line for 3, 4, 6, 7 and 8; after 3 and 8, `SETUP_DONE_CODES`, setup deployed the backend and installed the client, so
-  the checks below still run and the exit code stays setup's unless a check fails), then `client_fit` (the installed client's `--version`; another version renames
+  60 minutes or `--wait`, `--no-wait`, Ctrl-C exit 4; it only reads the list), then `setup.sh --update --prefix <prefix> --yes` in the clone with the terminal handed over,
+  then `client_fit` (the installed client's `--version`; another version renames
   `ham.prev` back only when its SHA-256 is the one the running ham had before setup started; exit 3) and `backend_after` (the client first forgets the version it read before setup, then the header is read again for up to 90 s; exit 3; when no answer since setup gave a version and the last read failed, the line says that the backend did not answer, with the failure, and the result line reads `backend v?.??`; a read that fails after its answer carried the header still gives that version).
   The chat box answers every form of `/update` at once with a usage line: the command runs from a shell (`cli::execute`). `App::command_outcome` arms no
   preview for it and `App::execute` keeps it out of the terminal hand-over, so no child `ham` is started.

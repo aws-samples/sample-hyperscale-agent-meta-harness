@@ -50,7 +50,8 @@ Later life of the system (they read or change this deployment only; --profile, -
                   --allow-active-runs skips that check; the build then refuses only an update that changes the worker runtime.
                   An update takes about 20 to 25 minutes when it reuses the Cline binary, and about 21 to 27 minutes more when it rebuilds it.
   --revision ID        the full 40-digit commit id to deploy with --update (it must be in this clone). An update to a commit older than the one the stage runs
-                       stops with exit 7 unless --revision names it; a commit whose setup files differ from this clone's stops with exit 2 (run its own setup.sh)
+                       stops with exit 7 unless --revision names it; a commit whose setup files differ from this clone's stops with exit 2 (run its own setup.sh).
+                       A commit the stage records that this clone does not hold is judged by VERSION: a lower recorded VERSION goes ahead, any other stops with exit 7
   --change-operator    with --update: make the identity of your credentials the operator of the stage. Without it an update by another identity than the one the
                        stage was deployed with stops with exit 7
   --force-deploy       with --update: deploy even when the stage already runs this commit

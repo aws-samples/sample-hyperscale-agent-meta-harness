@@ -358,6 +358,7 @@ full_plan() {
   elif [ -n "${COMMIT_CHANGE:-}" ]; then
     say "  commit:        $COMMIT_CHANGE (the commit the stage records, then the one this update deploys)"
   fi
+  [ -z "${COMMIT_ORDER_NOTE:-}" ] || say "  order:         $COMMIT_ORDER_NOTE"
   full_settings_lines "$action"
   [ "${INSTANCES_PRESENT:-0}" != 1 ] || say "  Instances part: present, kept (the capacity provider and the second worker runtime stay; the deploy keeps the part from the stage's record or the live stage)"
   full_client_lines "$action"
@@ -410,6 +411,9 @@ full_plan() {
         # A4.14: without a record the stage names no commit, so the pins of the two commits cannot be compared and the order of the commits is not known
         if [ "${REC_HAVE:-0}" != 1 ]; then
           say "  image:         not compared: the stage has no record of the commit it runs (a release before the record deployed it), so setup cannot tell whether this update needs a new worker image or a rebuild of the Cline binary, or whether this commit is newer than the one the stage runs"
+        elif [ "${SETUP_CLIENT_ONLY:-0}" != 1 ] && [ -n "${IMG_TEXT:-}" ]; then
+          # The recorded commit is not in this clone, so its pins cannot be read (the VERSION rule of pf_commit_order let the update go ahead)
+          say "  image:         $IMG_TEXT"
         fi
         say "  duration:      about 20 to 25 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt" ;;
     esac

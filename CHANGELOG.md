@@ -6,6 +6,16 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.18] - 2026-11-13
+
+### Changed
+
+- When an update stops for a stage commit that the clone cannot place, the message names the cause that fits: a clone older than the stage, the same version, or a version that cannot be read. `ham update` says whether running it again helps and names the folder of its clone.
+
+### Fixed
+
+- `./setup.sh --update` and `ham update` now update a stage that was deployed from a public commit that the repository history no longer holds. Setup compares the stage's version with the clone's, part by part as numbers, and goes ahead when the stage's version is lower.
+
 ## [5.17] - 2026-11-13
 
 ### Added
