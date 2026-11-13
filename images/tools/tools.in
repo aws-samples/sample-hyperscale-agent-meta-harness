@@ -1,0 +1,9 @@
+# Gate tools for harness-gates, installed into <HARNESS_GATES_TOOLS>/venv.
+# Compile tools.txt from this file with the pinned uv (tools.lock) on a Linux machine:
+#   uv pip compile --universal --python-version 3.12 --generate-hashes tools.in -o tools.txt
+bandit==1.9.4
+diff-cover==10.6.0
+mypy==2.3.1
+pip==26.3
+pip-audit==2.10.1
+ruff==0.16.9

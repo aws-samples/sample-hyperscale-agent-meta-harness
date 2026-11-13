@@ -1,0 +1,6 @@
+# The test runtime harness-gates installs into each repository venv from <HARNESS_GATES_TOOLS>/wheels.
+# Compile runtime.txt from this file with the pinned uv (tools.lock) on a Linux machine:
+#   uv pip compile --universal --python-version 3.12 --generate-hashes runtime.in -o runtime.txt
+coverage==7.16.1
+pytest==9.1.1
+pytest-cov==7.1.0

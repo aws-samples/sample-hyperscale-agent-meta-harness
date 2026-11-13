@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active
+progress feed only: not the full conversation
+notice   Every model route is down
+notice ▾ status
+         active (green)
+         Model  Claude Sonnet 5.5
+         PR     none yet
+notice ▸ agents 1
+notice ▾ Every model route is down
+         The run keeps probing until its time limit. c c stops it and delivers
+         what exists. 212 tool calls, 9 files changed so far.
+         Last error: ThrottlingException
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

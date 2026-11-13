@@ -1,0 +1,76 @@
+# Semgrep ignore file. A project file replaces the default list of Semgrep, so the default entries come first and unchanged. Do not edit that block.
+#
+# Below the defaults only exact files are named: no directory, no glob. They are files that cannot carry an inline suppression comment (stored patches),
+# and build recipes that run fixed steps at image build time. Source code takes an inline `nosemgrep` comment with the short rule id and a reason.
+# Each entry has `<rule id>: <reason>` in the comment directly above it.
+
+# Administrative folder or file used by popular version control systems
+.git
+.svn
+.hg
+_darcs
+CVS
+
+# Paths to files and folders that are typically large and ignorable
+build/
+vendor/
+dist/
+*.min.js
+.env/
+.tox/
+
+# Package managers
+node_modules/
+.npm/
+.yarn/
+.venv/
+_opam/
+_build/
+_cargo/
+# Note that PHP composer uses vendor/ and C++ conan uses build/
+# .venv is used both by Go and Python.
+
+# Common test paths
+test/
+tests/
+testsuite/
+*_test.go
+
+# Named files. One exact file for each entry.
+
+# generic-api-key: the patch adds a unit test that passes the literal text bedrock-api-key to a mock as a placeholder option, which is no
+# credential. The patch is stored byte for byte and pinned by its SHA-256 in engine/cline/lock.toml, so it cannot carry a suppression comment.
+engine/cline/patches/0001-feat-llms-route-Bedrock-Mantle-models-through-SigV4-.patch
+
+# aws-access-token: the patch adds a test that holds a made-up example key id, which is no credential. The patch is stored byte for byte and
+# pinned by its SHA-256 in engine/cline/lock.toml, so it cannot carry a suppression comment.
+engine/cline/patches/0006-fix-cli-never-send-the-ACP-placeholder-key-as-a-bear.patch
+
+# aws-access-token: the test-only export of the same patch, with the same made-up example key id and no credential. It is stored byte for
+# byte and pinned by its SHA-256 in engine/cline/lock.toml, so it cannot carry a suppression comment.
+engine/cline/patches/tdd/0006-test-only.patch
+
+# set-pipefail, use-workdir: images/worker-python/Dockerfile builds the worker image. The flagged RUN steps change into a fixed directory and
+# check a pinned SHA-256 with a pipe that ends in `sha256sum -c`, whose exit code decides the step. They run at image build with fixed
+# arguments, never in a running worker.
+images/worker-python/Dockerfile
+
+# ifs-tampering: the flagged line declares `local IFS` in retry_run and sets it to the default value, a guard against an inherited IFS and not
+# tampering. images/services/install.sh installs the native services at image build with fixed arguments, never in a running worker.
+images/services/install.sh
+
+# ifs-tampering: the flagged line declares `local IFS` in retry_run and sets it to the default value, a guard against an inherited IFS and not
+# tampering. images/tools/fetch.sh downloads pinned release assets at image build with fixed arguments, never in a running worker.
+images/tools/fetch.sh
+
+# detected-aws-account-id: the file is the committed record of one model smoke test and names the account it ran in. An account id is an identifier
+# in a data record and no credential, and JSON has no comment form for an inline suppression.
+engine/catalog/smoke-us.zai.glm-5.3.json
+
+# detected-aws-account-id: accounts.json is the list of the AWS accounts, profiles, Regions and availability zone ids of the stages. An account id is
+# an identifier in a data file and no credential, and JSON has no comment form for an inline suppression.
+accounts.json
+
+# dangerous-subprocess-use-audit: scripts/lib/agentd_build.py is a build-time helper (the worker image build, deploy and the fake-engine test step),
+# not product runtime logic. It runs cargo, zig and git through argument lists, never a shell. The matching bandit exclude is in .bandit.
+scripts/lib/agentd_build.py

@@ -1,0 +1,12 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: dump(&r)
+---
+  ⟦b:--- a/src/todo.py⟧
+  ⟦b:+++ b/src/todo.py⟧
+  ⟦cyan:@@ -1,3 +1,3 @@⟧
+   def add(a, b):
+  ⟦red:-    return a ⟧⟦r,red:-⟧⟦red: b⟧
+  ⟦green:+    return a ⟧⟦r,green:+⟧⟦green: b⟧
+   # end
+  ⟦d:\ No newline at end of file⟧

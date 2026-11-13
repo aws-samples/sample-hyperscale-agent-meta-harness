@@ -1,0 +1,136 @@
+{
+ "model": "Claude Haiku 5.5",
+ "vendor": "Anthropic",
+ "bedrockBaseModelId": "anthropic.claude-haiku-5-5",
+ "profileId": "us.anthropic.claude-haiku-5-5",
+ "protocol": "converse",
+ "purpose": "utility model: run names (U1)",
+ "region": "us-east-1",
+ "profileRegions": [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2"
+ ],
+ "date": "2026-10-20",
+ "startedAt": "2026-10-20T18:03:30Z",
+ "endedAt": "2026-10-20T18:04:28Z",
+ "smokeRecordId": "s6:us.anthropic.claude-haiku-5-5:us-east-1:converse+u1:2026-10-20/smoke-utility-us.anthropic.claude-haiku-5-5.json",
+ "promptVersion": "rn-1",
+ "systemTextSha256": "bf928d6c6fdd675971125548c65ef89b428e917d9f3e9531d1dd627e862b27d6",
+ "requestShape": {
+  "temperatureAccepted": false,
+  "thinkingDisabledAccepted": true,
+  "bareIdAccepted": false,
+  "maxTokens": 64,
+  "stopSequences": [
+   "</title>"
+  ],
+  "additionalModelRequestFields": {
+   "thinking": {
+    "type": "disabled"
+   }
+  }
+ },
+ "contract": {
+  "temperature": {
+   "accepted": false,
+   "status": 400,
+   "errorClass": "ValidationException",
+   "message": "The model returned the following errors: `temperature` is deprecated for this model."
+  },
+  "bareId": {
+   "accepted": false,
+   "status": 400,
+   "errorClass": "ValidationException",
+   "message": "Invocation of model ID anthropic.claude-haiku-5-5 with on-demand throughput isn’t supported. Retry your request with the ID or ARN of an inference profile that contains this model."
+  }
+ },
+ "s6": {
+  "status": "pass",
+  "route": "us.anthropic.claude-haiku-5-5",
+  "region": "us-east-1",
+  "protocol": "converse",
+  "routesPassing": [
+   "global.anthropic.claude-haiku-5-5",
+   "us.anthropic.claude-haiku-5-5"
+  ],
+  "checkedAt": "2026-10-20T18:00:47Z",
+  "source": "probes/smoke.py --only anthropic.claude-haiku-5-5 --all-candidates"
+ },
+ "u1": {
+  "prompts": 27,
+  "repetitions": 2,
+  "calls": 54,
+  "realistic": {
+   "prompts": 24,
+   "calls": 48,
+   "accepted": 48,
+   "acceptedPct": 100.0,
+   "acceptedFailingStoredCheck": 0
+  },
+  "vague": {
+   "prompts": 3,
+   "calls": 6,
+   "inventedTopics": 0,
+   "ends": {
+    "short_prompt": 6
+   }
+  },
+  "validationErrors": 0,
+  "unhandledShapes": 0,
+  "ends": {
+   "ai": 32,
+   "ai_squeezed": 16,
+   "short_prompt": 6
+  },
+  "stopReasons": {
+   "stop_sequence": 54
+  },
+  "errors": {},
+  "retriedCalls": 0
+ },
+ "gate": {
+  "1": {
+   "pass": true,
+   "detail": "validationErrors=0 temperatureRefused=True bareIdRefused=True thinkingDisabledAccepted=True"
+  },
+  "2": {
+   "pass": true,
+   "detail": "unhandledShapes=0 missingReplies=0"
+  },
+  "3": {
+   "pass": true,
+   "detail": "accepted=48/48 (100.0%) needs 95% acceptedFailingStoredCheck=0 withoutVerdict=0"
+  },
+  "4": {
+   "pass": true,
+   "detail": "inventedTopics=0 withoutVerdict=0"
+  }
+ },
+ "latency": {
+  "clientMs": {
+   "p50": 935,
+   "p95": 1443,
+   "p99": 1895,
+   "worst": 1895
+  },
+  "serviceMs": {
+   "p50": 920,
+   "p95": 1415,
+   "p99": 1887,
+   "worst": 1887
+  }
+ },
+ "tokens": {
+  "inputMean": 565.8,
+  "outputMean": 20.6,
+  "outputMax": 31
+ },
+ "rawFiveToSevenRate": 0.5926,
+ "requestIds": {
+  "text": "873f1c8b-bcf3-4a1b-b679-4e7bb64b527d",
+  "temperatureRefusal": "a412657f-3971-466a-beb7-b1b9a0e014f3",
+  "bareIdRefusal": "cefb6e97-f50a-4ce8-ae0e-b3b1839c990a"
+ },
+ "result": "pass"
+}

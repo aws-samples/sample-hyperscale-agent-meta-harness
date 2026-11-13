@@ -1,0 +1,6 @@
+# Must equal tools.lock [rust] toolchain.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+profile = "minimal"

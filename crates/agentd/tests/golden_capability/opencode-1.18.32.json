@@ -1,0 +1,58 @@
+{
+  "acpVersion": 1,
+  "agent": {
+    "name": "OpenCode",
+    "version": "1.18.32"
+  },
+  "commands": [
+    {
+      "description": "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/open",
+      "name": "customize-opencode"
+    },
+    {
+      "description": "guided AGENTS.md setup",
+      "name": "init"
+    },
+    {
+      "description": "review changes [commit|branch|pr], defaults to uncommitted",
+      "name": "review"
+    }
+  ],
+  "configOptions": [
+    {
+      "current": "opencode/big-pickle",
+      "id": "model",
+      "name": "Model",
+      "type": "select"
+    },
+    {
+      "current": "build",
+      "id": "mode",
+      "name": "Session Mode",
+      "type": "select"
+    }
+  ],
+  "engine": "the engine",
+  "harness": {
+    "controls": [
+      "message.next",
+      "message.now"
+    ],
+    "features": [
+      "transcript.v1"
+    ]
+  },
+  "loadSession": true,
+  "promptCapabilities": {
+    "embeddedContext": true,
+    "image": true
+  },
+  "session": 1,
+  "sessionCapabilities": {
+    "close": {},
+    "fork": {},
+    "list": {},
+    "resume": {}
+  },
+  "v": 1
+}

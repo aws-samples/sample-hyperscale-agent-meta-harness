@@ -1,0 +1,63 @@
+{
+ "engine": "opencode",
+ "engineBinarySha256": "50503d24577fa4117a7c95ee85b2cd679606a87eacf20ca54ed5db5c9e1cf895",
+ "engineVersion": "2.2.6",
+ "fixture": null,
+ "kind": "engine-smoke",
+ "model": {
+  "acpValue": "amazon-bedrock/us.openai.gpt-6-astra",
+  "alias": "astra",
+  "id": "us.openai.gpt-6-astra"
+ },
+ "result": "pass",
+ "route": {
+  "protocol": "converse",
+  "region": "us-east-1"
+ },
+ "schemaVersion": 1,
+ "smokeRecordId": "smoke-opencode:2.2.6:us.openai.gpt-6-astra:us-east-1:converse:20261108",
+ "smokedAt": "2026-11-08T14:20:12Z",
+ "turn": {
+  "cachedReadTokens": [
+   14728,
+   15085
+  ],
+  "fileOk": true,
+  "turns": [
+   {
+    "finalMessage": "It printed `hello-from-the-recording`.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 14728,
+     "inputTokens": 6,
+     "outputTokens": 70,
+     "totalTokens": 14804
+    }
+   },
+   {
+    "finalMessage": "It printed `hello-from-the-recording` on the first line and `second-turn-edit` on the second line.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 15085,
+     "cachedWriteTokens": 186,
+     "inputTokens": 6,
+     "outputTokens": 92,
+     "totalTokens": 15369
+    }
+   }
+  ]
+ },
+ "why": []
+}

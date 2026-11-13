@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active
+⟳ Connection lost, retrying (2 s): network: GET http://127.0.0.1/live/v1/runs/R…
+progress feed only: not the full conversation
+tool     editing src/module_0.py                                        pending
+tool     editing src/module_1.py                                        pending
+tool     editing src/module_2.py                                        pending
+notice ▾ status
+         active (planning)
+         PR     none yet
+notice ▸ agents 3
+
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

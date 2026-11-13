@@ -1,0 +1,26 @@
+---
+name: lifecycle-build-test
+description: Build, lint, type-check and test the whole project, run one real path through anything visible from outside, read the output, and log every run in .ham/lifecycle/LOG.md. Use after each green focused test and before you say any step is done.
+---
+# Build, test, read, log
+
+The record paths below (.ham/lifecycle, .ham/research, .ham/context) follow `.ham/records` (lifecycle-loop): a folder takes the place of .ham, and `off` means write no records.
+
+1. Run the build, the linter, the type check and the whole test suite, not only the new tests. Keep one entry script (for
+   example scripts/test-all.sh) that runs them all and ends with a line that says pass or fail. Better still, let that script
+   append its own RUN line to the log, using the exit code of the test command itself and not of a pipe.
+2. For anything visible from outside (an API, a CLI, a page, a network call), run it once through the real code path and read
+   the output and the logs. A mock does not count. If you cannot run it, log "NOT RUN" with the reason and say the result is
+   verified at unit level only. Use only targets you are allowed to use and data that is safe.
+3. After you change a service or its configuration, restart it, then test again.
+4. Read what each run printed: errors, warnings, timestamps that are stale. Do not write "passed" from an exit code alone.
+5. Append to .ham/lifecycle/LOG.md right after each run and before any other edit, one line each, in these forms:
+   RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <the runner's summary line, copied>
+   NOT RUN | <what> | <reason>
+   Write unknown for a count the tool does not print. When a command printed nothing, write "(no output)" as the last field;
+   never leave a field empty, and never put the runner's counts in place of pass unknown fail unknown. Never write a line for
+   a run you did not just make.
+6. Commit the log with the work it describes. On success the last RUN line is a green run made after the last code change.
+7. Install packages from the source your session provides. Do not write a local address of that source (such as 127.0.0.1)
+   into a lockfile, a config file or a commit.
+8. When all checks of the goal card pass, go to lifecycle-delivery; when one fails, go back to lifecycle-loop.

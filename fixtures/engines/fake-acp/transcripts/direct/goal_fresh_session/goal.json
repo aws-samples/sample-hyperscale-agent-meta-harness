@@ -1,0 +1,11 @@
+{
+  "transcripts": "replay_rejected_then_fresh_done",
+  "gap_ms": 200,
+  "rounds": [
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

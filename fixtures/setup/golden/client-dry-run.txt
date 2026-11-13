@@ -1,0 +1,45 @@
+exit 0
+--- stdout
+DRY RUN: nothing is written and no ham command runs.
+
+== Checking this machine
+ok    platform Linux x86_64
+ok    git works
+ok    AWS profile work uses credential_process
+ok    Region us-east-1 (from --region or your answer)
+warn  unzip was not found; you need it only to open the zip that ham pull downloads (ham clone does not)
+ok    checksum of <TMP>/artifact/ham matches (fba1667b6a91d07e575bd5b87711662afb3bde26164627bbf5e380a26cb62617)
+
+== Plan
+  binary:  install <TMP>/artifact/ham to <TMP>/home/.local/bin/ham
+  link:    <TMP>/home/.local/bin/<earlier command> to ham, a relative link with the earlier command name
+  config:  set api_endpoint aws_profile region default_repo in <TMP>/home/.config/ham/config.toml
+  rules:   ham rules init (the default rules when you have none, the lifecycle rules and its seven skills; it replaces only an unedited earlier default or pack file)
+  checks:  ham models, ham --version, and ham doctor when an endpoint is set
+
+== Installing ham
+would install <TMP>/artifact/ham to <TMP>/home/.local/bin/ham (sha256 fba1667b6a91d07e575bd5b87711662afb3bde26164627bbf5e380a26cb62617)
+warn  <TMP>/home/.local/bin is not on your PATH. Add this line to your shell profile (setup.sh does not edit it):
+        export PATH="<TMP>/home/.local/bin:$PATH"
+would link <TMP>/home/.local/bin/<earlier command> to ham with a relative link
+
+== Checking the binary (offline)
+would run: ham models
+would run: ham --version
+
+== Config
+config file: <TMP>/home/.config/ham/config.toml
+would run: ham config set api_endpoint https://abc123.execute-api.us-east-1.amazonaws.com/direct
+would run: ham config set aws_profile work
+would run: ham config set region us-east-1
+would run: ham config set default_repo cc:hamh-e2e-demo
+
+== Rules
+would run: ham rules init
+
+== Smoke check (ham doctor)
+would run: ham doctor
+
+== Dry run finished
+Nothing was written. Run again without --dry-run to do it.
+--- stderr

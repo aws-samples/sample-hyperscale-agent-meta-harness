@@ -1,0 +1,5 @@
+{"direction": "client", "message": {"id": 4, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "edit", "name": "write", "sessionUpdate": "tool_call", "status": "pending", "title": "write", "toolCallId": "fake-call-4-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": [{"newText": "B\n", "oldText": null, "path": "{workspace}/src/c.txt", "type": "diff"}], "sessionUpdate": "tool_call_update", "status": "completed", "toolCallId": "fake-call-4-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": {"text": "Rewrote the file, round 2.", "type": "text"}, "sessionUpdate": "agent_message_chunk"}}}}
+{"direction": "agent", "message": {"id": 4, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

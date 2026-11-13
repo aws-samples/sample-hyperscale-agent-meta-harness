@@ -1,0 +1,78 @@
+# Shaped like ~/.aws/config. Profile kinds that ham (crates/ham/src/awsprofile.rs) and setup.sh (profile_kind) must name the same way.
+# kinds.tsv lists the expected kind of each profile name below. No key here is a real key.
+# proc-and-sso and role-and-sso are not recommended setups; they pin the order in which the kinds are tried:
+# credential_process, static keys, SSO, assume-role.
+[default]
+region = us-east-1
+credential_process = /usr/bin/env helper print
+
+[profile proc]
+region = eu-west-1
+credential_process = helper print --json
+
+[profile proc-nospace]
+credential_process=helper print
+
+[profile proc-and-sso]
+sso_session = corp
+credential_process = helper print
+
+[profile sso-new]
+region = eu-west-1
+sso_session = corp
+sso_account_id = 123456789012
+sso_role_name = Developer
+
+[profile sso-legacy]
+sso_start_url = https://example.invalid/start
+sso_region = us-east-1
+sso_account_id = 123456789012
+sso_role_name = Developer
+
+[sso-session corp]
+sso_start_url = https://example.invalid/start
+sso_region = us-east-1
+sso_registration_scopes = sso:account:access
+
+[profile role-source]
+role_arn = arn:aws:iam::123456789012:role/example
+source_profile = keys
+
+[profile role-envsrc]
+role_arn = arn:aws:iam::123456789012:role/example
+credential_source = Ec2InstanceMetadata
+
+[profile role-web]
+role_arn = arn:aws:iam::123456789012:role/example
+web_identity_token_file = /var/run/example/token
+
+[profile role-and-sso]
+role_arn = arn:aws:iam::123456789012:role/example
+sso_session = corp
+
+[profile region-only]
+region = us-east-1
+
+[profile commented]
+# credential_process = helper print
+; aws_access_key_id = AKIDNOTAKEY
+region = us-east-1
+
+[profile sso-lookalike]
+sso-account = 123456789012
+region = us-east-1
+
+[profile trailing] # a comment after the header
+credential_process = helper print
+
+[profile both]
+region = us-east-1
+
+[profile with.dot_and-dash+plus@at:colon]
+credential_process = helper print
+
+[profile empty]
+
+[services example]
+dynamodb =
+  endpoint_url = http://localhost:8000

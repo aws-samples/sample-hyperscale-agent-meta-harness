@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · choose another…
+┌ ▶ Other model (↑↓ select · Enter choose) ────────────────────────────────────┐
+│Cline keeps its conversation and continues on the model you choose.           │
+│                                                                              │
+│› Claude Opus 5.5      ctx 1,000,000                                          │
+│  Claude Sonnet 5.5    ctx 1,000,000                                          │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+↑↓ select · Enter choose · Esc back

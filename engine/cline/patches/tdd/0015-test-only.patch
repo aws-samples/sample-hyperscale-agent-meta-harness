@@ -1,0 +1,683 @@
+From f8d2de76d353bae72fc292fd6e9dc65815db59c2 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Fri, 16 Oct 2026 17:48:28 +0000
+X-Harness-Test-Only: commit=f8d2de76d353bae72fc292fd6e9dc65815db59c2 parent=46733ed73dadbef5e3b3fa1396126c0c7370a776 tree=a9a46ef099c1866e3089d2375eb3270c710c6c5e
+Subject: [PATCH] test(core): Add tests for fork patch 0015 (red first)
+
+- Add 41 tests under `sdk/packages/core/src/extensions/tools/`. Change no source files.
+- Target run_commands, the model command tool, and its 30 seconds limit. A 45 second command stopped at 29.85 seconds.
+- Add 11 resolver and stderr reporter tests in `shell-timeout.test.ts`.
+- Add 21 fake-timer tests in `builtin-shell-timeout.test.ts` for shared limits and descriptions.
+- Add 6 real shell executor tests in `builtin-shell-executor-timeout.test.ts`.
+- Add 3 timer cleanup tests in `with-timeout.test.ts`.
+- Without changes, 3 files cannot load. In `with-timeout.test.ts`, 2 of the 3 tests fail.
+- With the 30000 stub, all four files load. Of 41 tests, 33 fail on assertion and 8 pass.
+---
+ .../builtin-shell-executor-timeout.test.ts    | 139 +++++++++
+ .../tools/builtin-shell-timeout.test.ts       | 279 ++++++++++++++++++
+ .../extensions/tools/shell-timeout.test.ts    | 174 +++++++++++
+ .../src/extensions/tools/with-timeout.test.ts |  39 +++
+ 4 files changed, 631 insertions(+)
+ create mode 100644 sdk/packages/core/src/extensions/tools/builtin-shell-executor-timeout.test.ts
+ create mode 100644 sdk/packages/core/src/extensions/tools/builtin-shell-timeout.test.ts
+ create mode 100644 sdk/packages/core/src/extensions/tools/shell-timeout.test.ts
+ create mode 100644 sdk/packages/core/src/extensions/tools/with-timeout.test.ts
+
+diff --git a/sdk/packages/core/src/extensions/tools/builtin-shell-executor-timeout.test.ts b/sdk/packages/core/src/extensions/tools/builtin-shell-executor-timeout.test.ts
+new file mode 100644
+index 0000000..d38fc0c
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/tools/builtin-shell-executor-timeout.test.ts
+@@ -0,0 +1,139 @@
++import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import {
++	afterEach,
++	beforeEach,
++	describe,
++	expect,
++	it,
++	type MockInstance,
++	vi,
++} from "vitest";
++import { createShellExecutor } from "./executors/bash";
++import { createBuiltinTools } from "./index";
++import { SHELL_TIMEOUT_ENV } from "./shell-timeout";
++
++type RunCommandsResult = Array<{
++	query: string;
++	result: string;
++	error?: string;
++	success: boolean;
++}>;
++
++const ctx = { agentId: "agent-1", conversationId: "conv-1", iteration: 1 };
++
++function runCommands(options: Parameters<typeof createBuiltinTools>[0] = {}) {
++	const tool = createBuiltinTools({ cwd: process.cwd(), ...options }).find(
++		(t) => t.name === "run_commands",
++	);
++	if (!tool) throw new Error("Expected the run_commands tool");
++	return (command: string) =>
++		tool.execute(
++			{ commands: [command] } as never,
++			ctx,
++		) as Promise<RunCommandsResult>;
++}
++
++/** The delays of every setTimeout armed while `fn` ran. */
++async function armedDelays(fn: () => Promise<unknown>): Promise<number[]> {
++	const spy = vi.spyOn(globalThis, "setTimeout");
++	try {
++		await fn();
++		return spy.mock.calls.map((call) => Number(call[1]));
++	} finally {
++		spy.mockRestore();
++	}
++}
++
++const count = (delays: number[], value: number) =>
++	delays.filter((d) => d === value).length;
++
++function isAlive(pid: number): boolean {
++	try {
++		process.kill(pid, 0);
++		return true;
++	} catch {
++		return false;
++	}
++}
++
++describe("the built-in run_commands tool with the real shell executor", () => {
++	let errSpy: MockInstance;
++
++	beforeEach(() => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "");
++		errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
++	});
++	afterEach(() => {
++		errSpy.mockRestore();
++		vi.unstubAllEnvs();
++	});
++
++	it("arms 600000 ms in the tool and in the executor, and not the old 30000 ms", async () => {
++		const run = runCommands();
++		const delays = await armedDelays(() => run("echo hi"));
++		expect(count(delays, 600_000)).toBeGreaterThanOrEqual(2);
++		expect(delays).not.toContain(30_000);
++	});
++
++	it("arms the value of the environment variable in both", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "45000");
++		const delays = await armedDelays(() => runCommands()("echo hi"));
++		expect(count(delays, 45_000)).toBeGreaterThanOrEqual(2);
++		expect(delays).not.toContain(600_000);
++	});
++
++	it("caps a value above the ceiling at 1800000 ms in both", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "99999999999");
++		const delays = await armedDelays(() => runCommands()("echo hi"));
++		expect(count(delays, 1_800_000)).toBeGreaterThanOrEqual(2);
++		expect(delays.some((delay) => delay > 1_800_000)).toBe(false);
++	});
++
++	it("uses a timeout the host gives the executor in both", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "45000");
++		const run = runCommands({
++			executorOptions: { bash: { timeoutMs: 70_000 } },
++		});
++		const delays = await armedDelays(() => run("echo hi"));
++		expect(count(delays, 70_000)).toBeGreaterThanOrEqual(2);
++		expect(delays).not.toContain(45_000);
++	});
++
++	it("keeps the SDK default of a stand-alone shell executor at 30000 ms", async () => {
++		const shell = createShellExecutor();
++		const delays = await armedDelays(() =>
++			shell("echo hi", process.cwd(), ctx),
++		);
++		expect(delays).toContain(30_000);
++		expect(delays).not.toContain(600_000);
++	});
++
++	it("kills a command that never ends when the limit passes, and reports it", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "1500");
++		const dir = await mkdtemp(join(tmpdir(), "shell-timeout-"));
++		try {
++			const pidFile = join(dir, "pid");
++			await writeFile(pidFile, "");
++			const run = runCommands();
++			const startedAt = Date.now();
++
++			const result = await run(`echo $$ > '${pidFile}'; exec sleep 120`);
++
++			const elapsedMs = Date.now() - startedAt;
++			expect(result[0].success).toBe(false);
++			expect(result[0].error).toContain("Command timed out after 1500ms");
++			expect(elapsedMs).toBeGreaterThanOrEqual(1_400);
++			expect(elapsedMs).toBeLessThan(8_000);
++			const pid = Number((await readFile(pidFile, "utf8")).trim());
++			expect(pid).toBeGreaterThan(1);
++			await vi.waitFor(() => expect(isAlive(pid)).toBe(false), {
++				timeout: 5_000,
++				interval: 50,
++			});
++		} finally {
++			await rm(dir, { recursive: true, force: true });
++		}
++	});
++});
+diff --git a/sdk/packages/core/src/extensions/tools/builtin-shell-timeout.test.ts b/sdk/packages/core/src/extensions/tools/builtin-shell-timeout.test.ts
+new file mode 100644
+index 0000000..a290ae3
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/tools/builtin-shell-timeout.test.ts
+@@ -0,0 +1,279 @@
++import {
++	afterEach,
++	beforeEach,
++	describe,
++	expect,
++	it,
++	type MockInstance,
++	vi,
++} from "vitest";
++import { buildRunCommandsDescription, createShellTool } from "./definitions";
++import { createBuiltinTools } from "./index";
++import { SHELL_TIMEOUT_ENV } from "./shell-timeout";
++
++type RunCommandsResult = Array<{
++	query: string;
++	result: string;
++	error?: string;
++	success: boolean;
++}>;
++
++const ctx = { agentId: "agent-1", conversationId: "conv-1", iteration: 1 };
++
++function runCommandsTool(options: Parameters<typeof createBuiltinTools>[0]) {
++	const tool = createBuiltinTools(options).find(
++		(t) => t.name === "run_commands",
++	);
++	if (!tool) throw new Error("Expected the run_commands tool");
++	return tool;
++}
++
++function run(tool: ReturnType<typeof runCommandsTool>) {
++	return tool.execute(
++		{ commands: ["make test"] } as never,
++		ctx,
++	) as Promise<RunCommandsResult>;
++}
++
++/** Tells "still running" from "settled" without awaiting the promise. */
++function watch<T>(promise: Promise<T>): { settled: () => boolean } {
++	let done = false;
++	void promise.then(
++		() => {
++			done = true;
++		},
++		() => {
++			done = true;
++		},
++	);
++	return { settled: () => done };
++}
++
++const never = (): Promise<string> => new Promise<string>(() => {});
++
++describe("run_commands limit in the built-in tools", () => {
++	let errSpy: MockInstance;
++
++	beforeEach(() => {
++		vi.useFakeTimers();
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "");
++		errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
++	});
++	afterEach(() => {
++		errSpy.mockRestore();
++		vi.unstubAllEnvs();
++		vi.useRealTimers();
++	});
++
++	it("lets a 120 second command finish (the old default ended every command at 30 seconds)", async () => {
++		const execute = vi.fn(
++			() =>
++				new Promise<string>((resolve) =>
++					setTimeout(() => resolve("built"), 120_000),
++				),
++		);
++		const pending = run(runCommandsTool({ executors: { bash: execute } }));
++		const watched = watch(pending);
++
++		await vi.advanceTimersByTimeAsync(30_001);
++		expect(watched.settled()).toBe(false);
++		await vi.advanceTimersByTimeAsync(90_000);
++
++		const result = await pending;
++		expect(result[0]).toMatchObject({ result: "built", success: true });
++		expect(result[0].error).toBeUndefined();
++	});
++
++	it("ends a command that never returns at exactly 600000 ms", async () => {
++		const pending = run(runCommandsTool({ executors: { bash: never } }));
++		const watched = watch(pending);
++
++		await vi.advanceTimersByTimeAsync(599_999);
++		expect(watched.settled()).toBe(false);
++		await vi.advanceTimersByTimeAsync(1);
++
++		const result = await pending;
++		expect(result[0].success).toBe(false);
++		expect(result[0].error).toContain("Command timed out after 600000ms");
++	});
++
++	it("gives the agent runtime twice the command limit before it cuts the tool call", () => {
++		expect(runCommandsTool({ executors: { bash: never } }).timeoutMs).toBe(
++			1_200_000,
++		);
++	});
++
++	it("follows the environment variable, in the limit, the tool call limit and the description", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "45000");
++		const tool = runCommandsTool({ executors: { bash: never } });
++		const pending = run(tool);
++		const watched = watch(pending);
++
++		await vi.advanceTimersByTimeAsync(44_999);
++		expect(watched.settled()).toBe(false);
++		await vi.advanceTimersByTimeAsync(1);
++
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 45000ms");
++		expect(tool.timeoutMs).toBe(90_000);
++		expect(tool.description).toContain(
++			"Each command is stopped after 45 seconds.",
++		);
++	});
++
++	it("caps a value above the ceiling at 1800000 ms, so a hung command still ends", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "99999999999");
++		const tool = runCommandsTool({ executors: { bash: never } });
++		const pending = run(tool);
++		const watched = watch(pending);
++
++		await vi.advanceTimersByTimeAsync(1_799_999);
++		expect(watched.settled()).toBe(false);
++		await vi.advanceTimersByTimeAsync(1);
++
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 1800000ms");
++		expect(tool.timeoutMs).toBe(3_600_000);
++		expect(tool.description).toContain(
++			"Each command is stopped after 1800 seconds.",
++		);
++	});
++
++	it.each([
++		"0",
++		"999",
++		"-5",
++		"abc",
++		"1.5",
++		"600000ms",
++		"20m",
++	])("ignores the unusable value %j and keeps the 600000 ms default", async (value) => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, value);
++		const pending = run(runCommandsTool({ executors: { bash: never } }));
++
++		await vi.advanceTimersByTimeAsync(600_000);
++
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 600000ms");
++	});
++
++	it("lets bashTimeoutMs win over the environment, for the tool and its description", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "45000");
++		const tool = runCommandsTool({
++			bashTimeoutMs: 5_000,
++			executors: { bash: never },
++		});
++		const pending = run(tool);
++
++		await vi.advanceTimersByTimeAsync(5_000);
++
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 5000ms");
++		expect(tool.description).toContain(
++			"Each command is stopped after 5 seconds.",
++		);
++	});
++
++	it("applies an executor timeout of the host to the tool as well, so the two cannot disagree", async () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "45000");
++		const tool = runCommandsTool({
++			executorOptions: { bash: { timeoutMs: 70_000 } },
++			executors: { bash: never },
++		});
++		const pending = run(tool);
++
++		await vi.advanceTimersByTimeAsync(70_000);
++
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 70000ms");
++		expect(tool.timeoutMs).toBe(140_000);
++		expect(tool.description).toContain(
++			"Each command is stopped after 70 seconds.",
++		);
++	});
++
++	it("does not resolve the limit when run_commands is off", () => {
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "value-for-the-off-test");
++		const names = createBuiltinTools({ enableBash: false }).map((t) => t.name);
++		expect(names).not.toContain("run_commands");
++		expect(errSpy).not.toHaveBeenCalled();
++	});
++
++	it("warns once on stderr about an unusable value and keeps working", async () => {
++		vi.resetModules();
++		vi.stubEnv(SHELL_TIMEOUT_ENV, "10 minutes");
++		errSpy.mockClear();
++		const fresh = await import("./index");
++		fresh.createBuiltinTools({ executors: { bash: never } });
++		fresh.createBuiltinTools({ executors: { bash: never } });
++		const lines = errSpy.mock.calls.map((call) => String(call[0]));
++		expect(lines).toHaveLength(1);
++		expect(lines[0]).toContain(SHELL_TIMEOUT_ENV);
++		expect(lines[0]).toContain("600000");
++		expect(lines[0].endsWith("\n")).toBe(true);
++	});
++
++	it("keeps the SDK default of a stand-alone shell tool at 30000 ms and its description unchanged", async () => {
++		const tool = createShellTool(never);
++		expect(tool.timeoutMs).toBe(60_000);
++		expect(tool.description).not.toContain("Each command is stopped after");
++		const pending = tool.execute(
++			{ commands: ["make"] } as never,
++			ctx,
++		) as Promise<RunCommandsResult>;
++		await vi.advanceTimersByTimeAsync(30_000);
++		const result = await pending;
++		expect(result[0].error).toContain("Command timed out after 30000ms");
++	});
++});
++
++describe("run_commands description with a limit", () => {
++	it("keeps the two-argument form free of a limit sentence", () => {
++		const description = buildRunCommandsDescription("/bin/bash", false);
++		expect(description).not.toContain("Each command is stopped after");
++		expect(description).toContain(
++			"For long-running commands, run them in background",
++		);
++	});
++
++	it("names the limit, keeps finite non-interactive work in the foreground and sends the rest to the background", () => {
++		const description = buildRunCommandsDescription(
++			"/bin/bash",
++			false,
++			600_000,
++		);
++		expect(description).toContain("Each command is stopped after 600 seconds.");
++		expect(description).toContain(
++			"Run builds, installs and test suites in the foreground when they are expected to finish within that time, using non-interactive, single-run flags.",
++		);
++		expect(description).toContain(
++			"Do not run servers, watchers or commands that wait for input in the foreground.",
++		);
++		expect(description).toContain(
++			"Run those, and any work expected to take longer, in background and redirect output to a tmp file that you can read from later.",
++		);
++		expect(description).not.toContain(
++			"For long-running commands, run them in background",
++		);
++	});
++
++	it("shows the limit exactly, in seconds", () => {
++		expect(buildRunCommandsDescription("/bin/bash", false, 1_000)).toContain(
++			"after 1 second.",
++		);
++		expect(buildRunCommandsDescription("/bin/bash", false, 1_500)).toContain(
++			"after 1.5 seconds.",
++		);
++		expect(buildRunCommandsDescription("/bin/bash", false, 1)).toContain(
++			"after 0.001 seconds.",
++		);
++		expect(
++			buildRunCommandsDescription("/bin/bash", false, 1_800_000),
++		).toContain("after 1800 seconds.");
++	});
++
++	it("names the limit in the Windows form too", () => {
++		const description = buildRunCommandsDescription("cmd", true, 600_000);
++		expect(description).toContain("Each command is stopped after 600 seconds.");
++	});
++});
+diff --git a/sdk/packages/core/src/extensions/tools/shell-timeout.test.ts b/sdk/packages/core/src/extensions/tools/shell-timeout.test.ts
+new file mode 100644
+index 0000000..1461940
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/tools/shell-timeout.test.ts
+@@ -0,0 +1,174 @@
++import { describe, expect, it, vi } from "vitest";
++import {
++	DEFAULT_SHELL_TIMEOUT_MS,
++	MAX_SHELL_TIMEOUT_MS,
++	MIN_SHELL_TIMEOUT_MS,
++	reportShellTimeoutWarning,
++	resolveShellTimeout,
++	SHELL_TIMEOUT_ENV,
++} from "./shell-timeout";
++
++const fromDefault = { timeoutMs: 600_000, source: "default_setting" };
++
++describe("shell timeout limits", () => {
++	it("pins the default at 10 minutes, the floor at 1 second, the ceiling at 30 minutes and the variable name", () => {
++		expect(DEFAULT_SHELL_TIMEOUT_MS).toBe(600_000);
++		expect(MIN_SHELL_TIMEOUT_MS).toBe(1_000);
++		expect(MAX_SHELL_TIMEOUT_MS).toBe(1_800_000);
++		expect(SHELL_TIMEOUT_ENV).toBe("CLINE_RUN_COMMANDS_TIMEOUT_MS");
++	});
++});
++
++describe("resolveShellTimeout", () => {
++	it("uses the default, without a warning, when the variable is unset or blank", () => {
++		for (const env of [
++			{},
++			{ [SHELL_TIMEOUT_ENV]: "" },
++			{ [SHELL_TIMEOUT_ENV]: "   " },
++		]) {
++			expect(resolveShellTimeout(env)).toEqual(fromDefault);
++		}
++	});
++
++	it("reads a whole number of milliseconds from the floor to the ceiling", () => {
++		expect(resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: "45000" })).toEqual({
++			timeoutMs: 45_000,
++			source: "configured_setting",
++		});
++		expect(resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: " 90000 " })).toEqual({
++			timeoutMs: 90_000,
++			source: "configured_setting",
++		});
++		expect(resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: "1000" }).timeoutMs).toBe(
++			1_000,
++		);
++		expect(resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: "1800000" })).toEqual({
++			timeoutMs: 1_800_000,
++			source: "configured_setting",
++		});
++		expect(
++			resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: "0000600000" }).timeoutMs,
++		).toBe(600_000);
++	});
++
++	it("caps a value above the ceiling and says so", () => {
++		for (const raw of [
++			"1800001",
++			"99999999999",
++			"9007199254740993",
++			"9".repeat(400),
++		]) {
++			const out = resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: raw });
++			expect(out.timeoutMs, raw.slice(0, 20)).toBe(1_800_000);
++			expect(out.source).toBe("configured_setting");
++			expect(out.warning, raw.slice(0, 20)).toContain(SHELL_TIMEOUT_ENV);
++			expect(out.warning).toContain("ceiling");
++			expect(out.warning).toContain("1800000");
++		}
++	});
++
++	it("falls back to the default, and says so, for a value that is not a whole number of milliseconds from the floor up", () => {
++		for (const bad of [
++			"0",
++			"00",
++			"1",
++			"999",
++			"-1",
++			"-600000",
++			"+5000",
++			"1.5",
++			"1e6",
++			"0x10",
++			"600000ms",
++			"10 minutes",
++			"20m",
++			"abc",
++			"NaN",
++			"Infinity",
++			"-Infinity",
++			"null",
++			"undefined",
++		]) {
++			const out = resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: bad });
++			expect(out, `value ${JSON.stringify(bad)}`).toMatchObject(fromDefault);
++			expect(out.warning, bad).toContain(SHELL_TIMEOUT_ENV);
++			expect(out.warning).toContain("1000");
++			expect(out.warning).toContain("600000");
++		}
++	});
++
++	it("shows at most a short piece of an odd value in the warning", () => {
++		const out = resolveShellTimeout({
++			[SHELL_TIMEOUT_ENV]: `x${"y".repeat(5000)}`,
++		});
++		expect(out.warning?.length).toBeLessThan(400);
++	});
++
++	it("never returns a value outside the floor and the ceiling", () => {
++		for (const raw of [
++			"1",
++			"999",
++			"1000",
++			"599999",
++			"600000",
++			"1799999",
++			"1800000",
++			"5000000",
++			"abc",
++			"",
++		]) {
++			const { timeoutMs } = resolveShellTimeout({ [SHELL_TIMEOUT_ENV]: raw });
++			expect(timeoutMs).toBeGreaterThanOrEqual(1_000);
++			expect(timeoutMs).toBeLessThanOrEqual(1_800_000);
++		}
++	});
++
++	it("reads process.env when no environment is passed", () => {
++		const before = process.env[SHELL_TIMEOUT_ENV];
++		try {
++			process.env[SHELL_TIMEOUT_ENV] = "12345";
++			expect(resolveShellTimeout().timeoutMs).toBe(12_345);
++			delete process.env[SHELL_TIMEOUT_ENV];
++			expect(resolveShellTimeout().timeoutMs).toBe(600_000);
++		} finally {
++			if (before === undefined) delete process.env[SHELL_TIMEOUT_ENV];
++			else process.env[SHELL_TIMEOUT_ENV] = before;
++		}
++	});
++});
++
++describe("reportShellTimeoutWarning", () => {
++	it("writes nothing for no warning", () => {
++		const write = vi.fn();
++		reportShellTimeoutWarning(undefined, write);
++		expect(write).not.toHaveBeenCalled();
++	});
++
++	it("writes one line, once per distinct warning", () => {
++		const write = vi.fn();
++		reportShellTimeoutWarning("report-test warning A", write);
++		reportShellTimeoutWarning("report-test warning A", write);
++		reportShellTimeoutWarning("report-test warning B", write);
++		expect(write.mock.calls).toEqual([
++			["report-test warning A\n"],
++			["report-test warning B\n"],
++		]);
++	});
++
++	it("writes to stderr, never stdout, by default (stdout carries the ACP protocol)", () => {
++		const err = vi
++			.spyOn(process.stderr, "write")
++			.mockImplementation(() => true);
++		const out = vi
++			.spyOn(process.stdout, "write")
++			.mockImplementation(() => true);
++		try {
++			reportShellTimeoutWarning("report-test default sink");
++			expect(err).toHaveBeenCalledWith("report-test default sink\n");
++			expect(out).not.toHaveBeenCalled();
++		} finally {
++			err.mockRestore();
++			out.mockRestore();
++		}
++	});
++});
+diff --git a/sdk/packages/core/src/extensions/tools/with-timeout.test.ts b/sdk/packages/core/src/extensions/tools/with-timeout.test.ts
+new file mode 100644
+index 0000000..dfd7490
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/tools/with-timeout.test.ts
+@@ -0,0 +1,39 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { TimeoutError, withTimeout } from "./helpers";
++
++describe("withTimeout", () => {
++	beforeEach(() => {
++		vi.useFakeTimers();
++	});
++	afterEach(() => {
++		vi.useRealTimers();
++	});
++
++	it("leaves no timer behind once the promise has resolved", async () => {
++		const value = await withTimeout(Promise.resolve("ok"), 600_000, "too slow");
++		expect(value).toBe("ok");
++		expect(vi.getTimerCount()).toBe(0);
++	});
++
++	it("leaves no timer behind once the promise has rejected", async () => {
++		await expect(
++			withTimeout(Promise.reject(new Error("boom")), 600_000, "too slow"),
++		).rejects.toThrow("boom");
++		expect(vi.getTimerCount()).toBe(0);
++	});
++
++	it("rejects with a TimeoutError that carries the limit and the message", async () => {
++		const pending = withTimeout(
++			new Promise<string>(() => {}),
++			600_000,
++			"too slow",
++		);
++		const caught = pending.catch((error: unknown) => error);
++		await vi.advanceTimersByTimeAsync(600_000);
++		const error = await caught;
++		expect(error).toBeInstanceOf(TimeoutError);
++		expect((error as TimeoutError).message).toBe("too slow");
++		expect((error as TimeoutError).timeoutMs).toBe(600_000);
++		expect(vi.getTimerCount()).toBe(0);
++	});
++});
+-- 
+2.47.3
+

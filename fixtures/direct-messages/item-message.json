@@ -1,0 +1,33 @@
+{
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+  "seq": 1,
+  "principalArn": "arn:aws:sts::700000000011:assumed-role/Admin/testuser",
+  "text": "Please also add a README section on the retry rules.",
+  "mode": "next",
+  "epoch": "sess-3",
+  "epochNo": 3,
+  "state": "delivered",
+  "deliveredTurn": 4,
+  "claimedBy": "01M5A0000000000000000000GE",
+  "attempt": 1,
+  "payloadSha256": "fe4263efa47b3cbebdc8ac3191d9b0fa57df895278f0ef7aff521f3bcb35fec7",
+  "acceptedAt": "2026-10-16T14:02:11Z",
+  "updatedAt": "2026-10-16T14:09:40Z",
+  "history": [
+    {
+      "state": "pending",
+      "at": "2026-10-16T14:02:11Z"
+    },
+    {
+      "state": "dispatching",
+      "at": "2026-10-16T14:02:13Z"
+    },
+    {
+      "state": "delivered",
+      "at": "2026-10-16T14:09:40Z",
+      "turn": 4
+    }
+  ],
+  "version": 3
+}

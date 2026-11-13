@@ -1,0 +1,422 @@
+{
+  "$defs": {
+    "CancelMethod": {
+      "oneOf": [
+        {
+          "const": "acp-cancel",
+          "description": "ACP `session/cancel`.",
+          "type": "string"
+        },
+        {
+          "const": "sigterm",
+          "description": "SIGTERM to the process group.",
+          "type": "string"
+        }
+      ]
+    },
+    "CancelPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "killAfterS": {
+          "description": "SIGKILL this many seconds after the cancel if the engine is still running.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "method": {
+          "$ref": "#/$defs/CancelMethod"
+        }
+      },
+      "required": [
+        "method",
+        "killAfterS"
+      ],
+      "type": "object"
+    },
+    "ConfigEmitter": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ConfigFormat"
+        },
+        "path": {
+          "description": "Output path; may use placeholders (normally under `{configDir}` or `{dataDir}`).",
+          "type": "string"
+        },
+        "template": {
+          "description": "Repo-relative template path.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "template",
+        "format"
+      ],
+      "type": "object"
+    },
+    "ConfigFormat": {
+      "enum": [
+        "json",
+        "toml",
+        "yaml",
+        "text"
+      ],
+      "type": "string"
+    },
+    "EngineBinary": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Executable name or path; may use placeholders.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 of the promoted binary, when the profile pins one.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "EngineMcp": {
+      "additionalProperties": false,
+      "description": "The `[mcp]` table of an engine profile (protocol 1.40.0, wire B of the tool layer): how the engine learns of the harness's tool server.\n\n`via = \"file\"` names a settings file the engine reads its tool servers from. agentd renders `template` once it has bound the server's port and\nwrites the result to `path`; both are checked by `harness-core` (`path` under the engine's own `{dataDir}` or `{configDir}`, `template` under\nthe templates root). `via = \"none\"` says the engine takes no server, and the table holds nothing else. A profile with no table is an engine the\nlayer has not been wired to; the two behave the same, and `none` records that the choice was made.\n\n`maxResultChars` caps the serialized result of a call, from what the engine does to a long result (Cline cuts it at 8,000 characters). `shadow`\nnames engine built-in tools to switch off once their use is counted; it is empty today.",
+      "properties": {
+        "maxResultChars": {
+          "description": "The most characters of a serialized tool result, 1,000 to 16,000. Required for `file`.",
+          "format": "uint32",
+          "maximum": 16000,
+          "minimum": 1000,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Where the engine reads its tool servers from; may use `{dataDir}` and `{configDir}`. Required for `file`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shadow": {
+          "description": "Engine built-in tools to disable once their use is counted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "template": {
+          "description": "Repo-relative path of the registration template, under `engine/profiles/templates/`. Required for `file`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "via": {
+          "$ref": "#/$defs/McpVia"
+        }
+      },
+      "required": [
+        "via"
+      ],
+      "type": "object"
+    },
+    "EngineTransports": {
+      "additionalProperties": false,
+      "properties": {
+        "acp": {
+          "$ref": "#/$defs/Launch",
+          "description": "Transport A, the ACP seam; every engine has it."
+        },
+        "cli": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Launch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Transport B (the Cline CLI per turn), when the engine has one."
+        }
+      },
+      "required": [
+        "acp"
+      ],
+      "type": "object"
+    },
+    "Launch": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "cancel": {
+          "$ref": "#/$defs/CancelPolicy"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Launch-specific environment, applied over the profile `env`.",
+          "type": "object"
+        },
+        "modelEnv": {
+          "description": "The variable the engine reads its model from at `session/new` (Cline fork patch 0005:\n`CLINE_MODEL`); set only for `ModelPin::SessionNew` turns.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stdin": {
+          "$ref": "#/$defs/StdinMode"
+        }
+      },
+      "required": [
+        "argv",
+        "stdin",
+        "cancel"
+      ],
+      "type": "object"
+    },
+    "McpVia": {
+      "description": "How an engine is told about the tool server.",
+      "oneOf": [
+        {
+          "const": "file",
+          "description": "A settings file the engine reads.",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "The engine takes no server.",
+          "type": "string"
+        }
+      ]
+    },
+    "PassRule": {
+      "additionalProperties": false,
+      "properties": {
+        "minPass": {
+          "description": "Passing runs needed out of `runs`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runs": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "thresholds": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "description": "Named numeric pass values.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "minPass",
+        "runs"
+      ],
+      "type": "object"
+    },
+    "ProfileRow": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "description": "What the row checks, in one line.",
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/RowClass"
+        },
+        "id": {
+          "pattern": "^K[0-9]{1,2}(-[A-Z])?$",
+          "type": "string"
+        },
+        "local": {
+          "default": false,
+          "type": "boolean"
+        },
+        "pass": {
+          "$ref": "#/$defs/PassRule"
+        },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Trigger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trigger that fires when the row fails; required for scoped rows."
+        }
+      },
+      "required": [
+        "id",
+        "class",
+        "check",
+        "pass"
+      ],
+      "type": "object"
+    },
+    "QualificationGate": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^QG-[A-Z]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "RowClass": {
+      "description": "Gating rows must pass for the engine to hold any route; scoped rows restrict only\nthe routes their trigger names; outside rows gate something else.",
+      "enum": [
+        "gating",
+        "scoped",
+        "outside"
+      ],
+      "type": "string"
+    },
+    "StdinMode": {
+      "oneOf": [
+        {
+          "const": "pipe",
+          "description": "JSON-RPC over stdio (ACP).",
+          "type": "string"
+        },
+        {
+          "const": "null",
+          "description": "`/dev/null`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Trigger": {
+      "enum": [
+        "T1",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6",
+        "T7",
+        "T8-promotion",
+        "T8-terminal",
+        "T9",
+        "T10"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binary": {
+      "$ref": "#/$defs/EngineBinary"
+    },
+    "configEmitters": {
+      "default": [],
+      "description": "Engine config files `agentd` renders per session.",
+      "items": {
+        "$ref": "#/$defs/ConfigEmitter"
+      },
+      "type": "array"
+    },
+    "env": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "description": "Environment for every launch; values may use placeholders.",
+      "type": "object"
+    },
+    "envRemove": {
+      "default": [],
+      "description": "Variables removed from the inherited environment (for example `AWS_BEARER_TOKEN_BEDROCK`).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "gate": {
+      "$ref": "#/$defs/QualificationGate"
+    },
+    "hiddenPaths": {
+      "default": [],
+      "description": "Repo-relative paths `agentd` hides from every engine.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "mcp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EngineMcp"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "How the engine learns of the harness's tool server (protocol 1.40.0). Left out of a profile that has no table, which gets no tools."
+    },
+    "name": {
+      "description": "Engine name; equals the profile file stem.",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/ProfileRow"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "transports": {
+      "$ref": "#/$defs/EngineTransports"
+    },
+    "version": {
+      "description": "Version the engine reports as ACP `initialize` `agentInfo.version`.",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "name",
+    "version",
+    "binary",
+    "transports",
+    "gate",
+    "rows"
+  ],
+  "title": "EngineProfile",
+  "type": "object"
+}

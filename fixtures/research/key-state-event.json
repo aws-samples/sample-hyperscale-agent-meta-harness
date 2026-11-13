@@ -1,0 +1,24 @@
+{
+  "resource": "/internal/research/key-state",
+  "path": "/internal/research/key-state",
+  "httpMethod": "POST",
+  "headers": {"content-type": "application/json"},
+  "multiValueHeaders": {"content-type": ["application/json"]},
+  "queryStringParameters": null,
+  "multiValueQueryStringParameters": null,
+  "pathParameters": null,
+  "stageVariables": null,
+  "isBase64Encoded": false,
+  "body": "{}",
+  "requestContext": {
+    "accountId": "000000000000",
+    "resourceId": "operator",
+    "stage": "direct",
+    "requestId": "operator-key-state",
+    "resourcePath": "/internal/research/key-state",
+    "httpMethod": "POST",
+    "apiId": "operator",
+    "path": "/internal/research/key-state",
+    "identity": {}
+  }
+}

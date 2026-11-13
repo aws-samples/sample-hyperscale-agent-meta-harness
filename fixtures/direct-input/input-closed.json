@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A5ZD2Q8T6W4J1B9XNEHG3R",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 416,
+  "ts": "2026-10-15T14:11:07Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "input-closed",
+      "text": "Nobody answered within 30 min, so the run finishes with what exists.",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "how": "expired",
+      "waitedS": 1800
+    }
+  }
+}

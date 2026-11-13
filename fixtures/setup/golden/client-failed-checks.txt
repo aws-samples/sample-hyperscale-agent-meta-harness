@@ -1,0 +1,28 @@
+exit 1
+--- stdout
+
+== Checking this machine
+ok    platform Linux x86_64
+ok    git works
+warn  unzip was not found; you need it only to open the zip that ham pull downloads (ham clone does not)
+--- stderr
+FAIL  AWS profile nope was not found
+      looked in <TMP>/home/.aws/config and <TMP>/home/.aws/credentials
+      Make a profile with the AWS CLI, then run setup.sh again with  --profile NAME:
+          aws configure sso     a profile that signs in through IAM Identity Center (SSO): https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sso.html
+          aws configure         a profile with an access key pair: https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html
+      You can also add a profile with credential_process (a program that prints credentials as JSON) to <TMP>/home/.aws/config yourself,
+      or set the AWS_* environment variables. setup.sh runs none of these commands and edits no AWS file.
+FAIL  no AWS Region was found
+      ham signs every call for one Region and cannot guess it. It takes the first of: --region, region in <TMP>/home/.config/ham/config.toml, AWS_REGION,
+      or the region line of the AWS profile (nope). None of them is set.
+      The endpoint's host name says us-east-1. Run setup.sh again with  --region us-east-1
+FAIL  there is no ham binary to install
+      No downloadable release of ham is published. Pick one:
+        --full       deploy the backend in your AWS account; the client is built there and downloaded for you (./setup.sh --full)
+        --update     when the stage is already deployed: rebuild the client in your AWS account and download it
+                     (on an account whose stage was deployed under the previous names, --full and --update stop with the steps to take; there use --from or --build)
+        --from DIR   a directory with ham and SHA256SUMS, as scripts/build-macos-driver.sh writes it (a Mac build made on a Linux machine)
+        --build      compile ham on this machine from a checkout of the repository (Rust toolchain needed)
+      or put an existing ham on your PATH.
+setup.sh: 3 problem(s) found above. Nothing was changed.

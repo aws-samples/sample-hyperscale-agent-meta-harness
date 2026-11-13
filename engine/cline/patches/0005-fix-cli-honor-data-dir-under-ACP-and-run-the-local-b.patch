@@ -1,0 +1,339 @@
+From 2aa5e747fa35058bb27e7f632839ddc2073710f7 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Fri, 25 Sep 2026 02:49:31 +0000
+Subject: [PATCH 05/11] fix(cli): honor --data-dir under ACP and run the local
+ backend without a hub daemon
+
+Fork patch 0006. `cline --acp` returned before the sandbox setup, so --data-dir
+and CLINE_SANDBOX=1 had no effect: ACP read providers.json from
+$HOME/.cline/data/settings, wrote state under $HOME/.cline, and every session
+started a detached hub daemon (--port 25463) that outlived the ACP process.
+
+- resolveAcpSandbox runs configureSandboxEnvironment for ACP, so every state
+  path moves into the data dir as in --json mode.
+- A sandboxed ACP session (a data dir or CLINE_SANDBOX=1) creates its core with
+  forceLocalBackend: true and builds sandbox: true, so no hub daemon starts.
+- Without a data dir or sandbox flag, ACP keeps the default backend.
+---
+ .../src/acp/acpAgent.local-backend.test.ts    | 120 ++++++++++++++++++
+ apps/cli/src/acp/acpAgent.ts                  |  12 +-
+ apps/cli/src/acp/index.ts                     |  24 ++++
+ apps/cli/src/acp/sandbox.test.ts              |  57 +++++++++
+ apps/cli/src/main.ts                          |   9 +-
+ 5 files changed, 219 insertions(+), 3 deletions(-)
+ create mode 100644 apps/cli/src/acp/acpAgent.local-backend.test.ts
+ create mode 100644 apps/cli/src/acp/sandbox.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.local-backend.test.ts b/apps/cli/src/acp/acpAgent.local-backend.test.ts
+new file mode 100644
+index 0000000..8230f15
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.local-backend.test.ts
+@@ -0,0 +1,120 @@
++import type { AgentSideConnection } from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { Config } from "../utils/types";
++
++const mocks = vi.hoisted(() => ({
++	createCliCore: vi.fn(async () => ({
++		start: vi.fn(async () => ({ sessionId: "core-session" })),
++		readMessages: vi.fn(async () => []),
++		dispose: vi.fn(async () => {}),
++	})),
++}));
++
++vi.mock("../session/session", () => ({ createCliCore: mocks.createCliCore }));
++vi.mock("../runtime/session-events", () => ({
++	subscribeToAgentEvents: () => () => {},
++}));
++vi.mock("../runtime/prompt", () => ({
++	resolveSystemPrompt: vi.fn(async () => "PROMPT"),
++}));
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => ({
++				"us.anthropic.claude-sonnet-5": { name: "Claude Sonnet 5" },
++			})),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "us.anthropic.claude-sonnet-5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++
++type AgentInternals = {
++	sessions: Map<string, unknown>;
++	ensureSessionManager(
++		session: unknown,
++		acpSessionId: string,
++	): Promise<unknown>;
++	buildConfig(session: unknown): Promise<Config>;
++};
++
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++async function startSession(agent: AcpAgent): Promise<{ config: Config }> {
++	const inner = agent as unknown as AgentInternals;
++	const created = await agent.newSession({
++		cwd: process.cwd(),
++		mcpServers: [],
++	});
++	const session = inner.sessions.get(created.sessionId);
++	await inner.ensureSessionManager(session, created.sessionId);
++	return { config: await inner.buildConfig(session) };
++}
++
++// Fork patch 0006: with a data dir, ACP runs the local backend (no hub daemon).
++describe("ACP backend selection", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = "us.anthropic.claude-sonnet-5";
++		process.env.CLINE_API_KEY = "unused";
++		mocks.createCliCore.mockClear();
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("forces the local backend and sandbox config when ACP runs sandboxed", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, { localBackend: true }),
++		);
++		expect(mocks.createCliCore).toHaveBeenCalledWith(
++			expect.objectContaining({ forceLocalBackend: true }),
++		);
++		expect(config.sandbox).toBe(true);
++	});
++
++	it("keeps the default backend when ACP is not sandboxed", async () => {
++		const { config } = await startSession(new AcpAgent(conn));
++		const options = (
++			mocks.createCliCore.mock.calls[0] as unknown[] | undefined
++		)?.[0] as { forceLocalBackend?: boolean } | undefined;
++		expect(options?.forceLocalBackend).not.toBe(true);
++		expect(config.sandbox).toBe(false);
++	});
++
++	// The rebase onto cli-v3.0.71 met this patch's `localBackend` option with upstream's
++	// `reasoning` option (--thinking now applies under ACP): both must reach the session config.
++	it("applies --thinking together with the local backend", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, {
++				localBackend: true,
++				reasoning: { thinking: true, reasoningEffort: "high" },
++			}),
++		);
++		expect(config.sandbox).toBe(true);
++		expect(config.thinking).toBe(true);
++		expect(config.reasoningEffort).toBe("high");
++	});
++
++	it("keeps reasoning off under the local backend when --thinking is not given", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, { localBackend: true }),
++		);
++		expect(config.sandbox).toBe(true);
++		expect(config.thinking).toBe(false);
++		expect(config.reasoningEffort).toBeUndefined();
++	});
++});
+diff --git a/apps/cli/src/acp/acpAgent.ts b/apps/cli/src/acp/acpAgent.ts
+index 66e12c7..465e221 100644
+--- a/apps/cli/src/acp/acpAgent.ts
++++ b/apps/cli/src/acp/acpAgent.ts
+@@ -114,17 +114,24 @@ export class AcpAgent implements Agent {
+ 	private readonly providerSettingsManager = new ProviderSettingsManager();
+ 	private readonly defaultAutoApproveTools: boolean;
+ 	private readonly reasoning: ResolvedCliReasoning;
++	/** Run sessions on the local backend with sandbox config (no hub daemon). */
++	private readonly localBackend: boolean;
+ 
+ 	/** Set after a successful `authenticate` call. */
+ 	private authResult?: AcpAuthResult;
+ 
+ 	constructor(
+ 		conn: AgentSideConnection,
+-		options?: { autoApproveTools?: boolean; reasoning?: ResolvedCliReasoning },
++		options?: {
++			autoApproveTools?: boolean;
++			reasoning?: ResolvedCliReasoning;
++			localBackend?: boolean;
++		},
+ 	) {
+ 		this.conn = conn;
+ 		this.defaultAutoApproveTools = options?.autoApproveTools ?? false;
+ 		this.reasoning = options?.reasoning ?? {};
++		this.localBackend = options?.localBackend ?? false;
+ 	}
+ 
+ 	async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
+@@ -736,6 +743,7 @@ export class AcpAgent implements Agent {
+ 			},
+ 			cwd: config.cwd,
+ 			workspaceRoot: config.workspaceRoot,
++			forceLocalBackend: this.localBackend,
+ 		});
+ 
+ 		let initialMessages: MessageWithMetadata[] | undefined;
+@@ -807,7 +815,7 @@ export class AcpAgent implements Agent {
+ 			systemPrompt,
+ 			execution: undefined,
+ 			verbose: false,
+-			sandbox: false,
++			sandbox: this.localBackend,
+ 			// From `--thinking`; without the flag ACP sessions keep running without
+ 			// reasoning, as before.
+ 			thinking: this.reasoning.thinking ?? false,
+diff --git a/apps/cli/src/acp/index.ts b/apps/cli/src/acp/index.ts
+index 4aabec2..5e7bd28 100644
+--- a/apps/cli/src/acp/index.ts
++++ b/apps/cli/src/acp/index.ts
+@@ -1,11 +1,34 @@
+ import { Readable, Writable } from "node:stream";
+ import { registerClineClientIdentity } from "../utils/cline-client-identity";
++import { configureSandboxEnvironment } from "../utils/helpers";
+ import { writeDiagnostic } from "../utils/output";
+ import type { ResolvedCliReasoning } from "../utils/reasoning";
+ 
+ export interface AcpModeOptions {
+ 	autoApproveTools?: boolean;
+ 	reasoning?: ResolvedCliReasoning;
++	/** Run the in-process local backend (no hub daemon); set for sandboxed ACP. */
++	localBackend?: boolean;
++}
++
++/**
++ * Apply the CLI sandbox rules to ACP mode. `--data-dir`, or `CLINE_SANDBOX=1`
++ * with `CLINE_SANDBOX_DATA_DIR`, points every Cline state path (settings,
++ * sessions, db, logs) into the data dir, exactly as in `--json` mode, and a
++ * sandboxed ACP session runs the local backend so no process outlives it.
++ */
++export function resolveAcpSandbox(options: { dataDir?: string; cwd: string }): {
++	localBackend: boolean;
++	dataDir: string | undefined;
++} {
++	const enabled =
++		!!options.dataDir || process.env.CLINE_SANDBOX?.trim() === "1";
++	const dataDir = configureSandboxEnvironment({
++		enabled,
++		cwd: options.cwd,
++		explicitDir: options.dataDir,
++	});
++	return { localBackend: enabled, dataDir };
+ }
+ 
+ export async function runAcpMode(options?: AcpModeOptions): Promise<void> {
+@@ -27,6 +50,7 @@ export async function runAcpMode(options?: AcpModeOptions): Promise<void> {
+ 		return new AcpAgent(conn, {
+ 			autoApproveTools: options?.autoApproveTools,
+ 			reasoning: options?.reasoning,
++			localBackend: options?.localBackend,
+ 		});
+ 	}, stream);
+ 
+diff --git a/apps/cli/src/acp/sandbox.test.ts b/apps/cli/src/acp/sandbox.test.ts
+new file mode 100644
+index 0000000..9522b65
+--- /dev/null
++++ b/apps/cli/src/acp/sandbox.test.ts
+@@ -0,0 +1,57 @@
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { resolveAcpSandbox } from "./index";
++
++// Fork patch 0006: --acp honors --data-dir and CLINE_SANDBOX=1 the way --json does.
++describe("resolveAcpSandbox", () => {
++	const saved = { ...process.env };
++	let base: string;
++
++	beforeEach(() => {
++		base = mkdtempSync(join(tmpdir(), "acp-sandbox-"));
++		for (const key of [
++			"CLINE_SANDBOX",
++			"CLINE_SANDBOX_DATA_DIR",
++			"CLINE_DATA_DIR",
++			"CLINE_PROVIDER_SETTINGS_PATH",
++			"CLINE_SESSION_DATA_DIR",
++		]) {
++			delete process.env[key];
++		}
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("puts ACP state under --data-dir and selects the local backend", () => {
++		const dataDir = join(base, "data");
++		const result = resolveAcpSandbox({ dataDir, cwd: base });
++		expect(result).toEqual({ localBackend: true, dataDir });
++		expect(process.env.CLINE_DATA_DIR).toBe(dataDir);
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBe(
++			join(dataDir, "settings", "providers.json"),
++		);
++		expect(process.env.CLINE_SESSION_DATA_DIR).toBe(join(dataDir, "sessions"));
++	});
++
++	it("honors CLINE_SANDBOX=1 with CLINE_SANDBOX_DATA_DIR", () => {
++		const dataDir = join(base, "sandbox");
++		process.env.CLINE_SANDBOX = "1";
++		process.env.CLINE_SANDBOX_DATA_DIR = dataDir;
++		const result = resolveAcpSandbox({ cwd: base });
++		expect(result.localBackend).toBe(true);
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBe(
++			join(dataDir, "settings", "providers.json"),
++		);
++	});
++
++	it("leaves the environment alone without a data dir or sandbox flag", () => {
++		const result = resolveAcpSandbox({ cwd: base });
++		expect(result).toEqual({ localBackend: false, dataDir: undefined });
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBeUndefined();
++		expect(process.env.CLINE_DATA_DIR).toBeUndefined();
++	});
++});
+diff --git a/apps/cli/src/main.ts b/apps/cli/src/main.ts
+index b6a0e61..81bc877 100644
+--- a/apps/cli/src/main.ts
++++ b/apps/cli/src/main.ts
+@@ -797,7 +797,13 @@ export async function runCli(): Promise<void> {
+ 	// ACP mode: mutually exclusive with interactive/piped modes.
+ 	// Enters the Agent Client Protocol stdio transport and never falls through.
+ 	if (args.acpMode) {
+-		const { runAcpMode } = await import("./acp/index");
++		const { runAcpMode, resolveAcpSandbox } = await import("./acp/index");
++		// --data-dir and CLINE_SANDBOX=1 isolate ACP state and select the
++		// local backend, as they do for the other modes.
++		const sandbox = resolveAcpSandbox({
++			dataDir: args.dataDir,
++			cwd: args.cwd ?? process.cwd(),
++		});
+ 		// Only an explicit `--auto-approve true` (or `--yolo`) enables
+ 		// auto-approval in ACP mode; We do not respect the default to
+ 		// avoid accidental auto-approval in ACP mode.
+@@ -810,6 +816,7 @@ export async function runCli(): Promise<void> {
+ 				thinkingExplicitlySet: args.thinkingExplicitlySet,
+ 				reasoningEffort: args.reasoningEffort,
+ 			}),
++			localBackend: sandbox.localBackend,
+ 		});
+ 		return;
+ 	}
+-- 
+2.47.3
+

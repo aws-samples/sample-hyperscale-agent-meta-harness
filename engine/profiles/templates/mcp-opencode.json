@@ -1,0 +1,11 @@
+{
+  "mcp": {
+    "{toolsName}": {
+      "type": "remote",
+      "url": "{toolsUrl}",
+      "enabled": true,
+      "oauth": false,
+      "timeout": 120000
+    }
+  }
+}

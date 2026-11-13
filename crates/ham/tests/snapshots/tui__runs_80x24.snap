@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui.rs
+expression: "screen_text(&app, 80, 24)"
+---
+ham · Runs
+┌ runs ────────────────────────────────────────────────────────────────────────┐
+│    RUN                        STATUS         NAME                            │
+│  ▶ 01K6A0000000000000000000R1 complete       -                               │
+│>   01K6A0000000000000000000R0 active         -                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└────────────────────────────────────────────────────────────────── run 1 of 2 ┘
+2 runs · tags project:hamh-e2e-python-calc · target cc:hamh-e2e-python-calc · cr
+n new run · Enter open · ↑↓ · / find · t tags · p this repo · r refresh · q quit

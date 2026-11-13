@@ -1,0 +1,962 @@
+#!/usr/bin/env python3
+"""scanner_kit.py: run the pinned scanner checks on the files your work changed, before your last commit.
+
+A repository's own scanner check can reject a delivery for a finding that this session cannot see, because the session has no scanner. This kit
+reproduces three checks on the python and shell files that changed since the commit your work started from and prints one line per finding:
+  semgrep       the pinned python and bash rules (the package hamh-semgrep-rules, published to the package registry of this stage)
+  bandit        the same version as the repository's scanner check, with its skip list and the exclude of the repository's .bandit file
+  secret-shape  stdlib only, high precision: a URL with user:secret, a string literal assigned to a name that ends in password, secret, token or key,
+                an AWS access key id, a private key header
+semgrep and bandit are installed into a virtual environment under $TMPDIR.
+
+Usage: python3 scanner_kit.py [--base REF] [--timeout SECONDS] [PATH ...]
+
+  --base REF       the commit your work started from. Default: the "Base commit:" line of the goal card, as lifecycle_check.py reads it; else the commit HEAD
+                   pointed to before the first commit made in this repository (read from the reflog), with the uncommitted work; else the merge base with the
+                   upstream; else every python and shell file of the repository, the 300 newest at most
+  --timeout N      seconds allowed for each step, the install and the scan (default 600)
+  PATH             scan exactly these files, or the python and shell files below these folders, and ignore --base
+
+The first call installs semgrep, the rules and bandit (one to a few minutes: start it in the background with its output in a file, as for any long
+run) and later calls reuse the environment. The environment variable HAMH_SCANNER_KIT=off switches the kit off: it prints KIT-OFF and exits.
+(HAMH_SCANNER_KIT_SEMGREP and HAMH_SCANNER_KIT_BANDIT replace the command of one tool, or leave it out with the value off; the tests use them.)
+
+Output (one line each): KIT-AT <path of this script> first, so a later reader sees where the kit ran, then KIT-SCOPE base=<sha8> via=<arg|card|reflog|merge-base|all|paths> files=N,
+which files were chosen and why, then KIT-FINDING <path>:<line> <rule id> <severity> <message> (bandit/<test id> for bandit, no severity for secret-shape/<class>),
+then KIT-PASS files=N or KIT-FINDINGS n files=N, then KIT-LIMITS, and for each source with findings a line that says what to do. KIT-NOTE lines
+tell what the kit assumed. A part that cannot install or run prints KIT-NOT-RUN <part>: <reason>, the summary then ends with missing=<parts>, and the
+other parts still run; the kit never stops a run: copy a KIT-NOT-RUN line into your last message as NOT RUN with its reason.
+Exit codes: 0 pass, not run or off; 1 findings; 2 a usage error.
+
+What it covers: the pinned python and bash rules of one semgrep version, one bandit version and the secret shapes above. It is not the repository's other
+scanners and not its tests, so a pass here is no pass of the repository's own check.
+Standard library only; Python 3.8 or later. It writes only under a folder outside the repository: $TMPDIR, else the cache folder of the home folder, else the system temp folder.
+"""
+
+from __future__ import annotations
+
+import argparse
+import configparser
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess  # nosec B404: starts git, pip and semgrep with argument lists, never through a shell
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
+
+SEMGREP_VERSION = "1.78.0"
+RULES_PACKAGE = "hamh-semgrep-rules"
+RULES_VERSION = "1.0.0"
+# A stage set up under the earlier names published the rules under this package name. It is tried after RULES_PACKAGE; support ends with release 6.00.
+LEGACY_RULES_PACKAGE, LEGACY_RULES_MODULE = "cah-semgrep-rules", "cah_semgrep_rules"  # COMPAT-CAH-STAGE
+SWITCH = "HAMH_SCANNER_KIT"
+# The switch is also read under the earlier prefix (HAMH_ first); support ends with release 5.50. Only the switch has an earlier name: the test hooks below have none.
+LEGACY_PREFIX = "CAH_"  # COMPAT-CAH
+DEFAULT_BASE = ".ham"
+# The records folder of the runs made before the rename. It is the base of a run only when it alone holds records (records_base); support ends with release 6.00.
+EARLIER_BASE = ".cah"  # COMPAT-CAH-DATA
+STATE_FILES, STATE_DIRS = ("records", "test-command"), ("lifecycle", "research", "context")
+NO_NOTICES = "HAMH_NO_DEPRECATION_NOTICES"
+OVERRIDE = "HAMH_SCANNER_KIT_SEMGREP"   # tests: replaces the semgrep command and the install
+OVERRIDE_RULES = "HAMH_SCANNER_KIT_RULES"   # tests: the rules folder given to the replaced command
+DEFAULT_TIMEOUT = 600
+FILE_BYTES_MAX = 1_000_000
+ALL_FILES_MAX = 300
+FINDINGS_MAX = 40
+MESSAGE_MAX = 140
+REASON_MAX = 140
+SCAN_EXT = {".py", ".sh", ".bash"}
+SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages"}
+SHEBANG = re.compile(rb"^#!\s*(?:/usr/bin/env\s+(?:-S\s+)?)?(?:\S*/)?(?:python[0-9.]*|bash|sh|dash|zsh|ksh)(?:\s|$)")
+GOAL_BASE = re.compile(r"(?mi)\bbase commit:\s*`?([0-9a-f]{7,40})\b")
+BANDIT_VERSION = "1.8.3"
+BANDIT_SKIP = "B101"   # the skip list of the repository's scanner check
+OVERRIDE_BANDIT = "HAMH_SCANNER_KIT_BANDIT"   # tests: replaces the bandit command and its install; the value off leaves bandit out
+PARTS = ("semgrep", "bandit", "secret-shape")
+PY_SHEBANG = re.compile(rb"^#!\s*(?:/usr/bin/env\s+(?:-S\s+)?)?(?:\S*/)?python[0-9.]*(?:\s|$)")
+SH_SHEBANG = re.compile(r"^#!\s*(?:/usr/bin/env\s+(?:-S\s+)?)?(?:\S*/)?(?:bash|sh|dash|zsh|ksh)(?:\s|$)")
+HINT = "fix the code, or excuse a false positive in the repository's own form (search it with rg 'nosemgrep')"
+HINT_BANDIT = "bandit: fix the code, or excuse a false positive with a bandit comment in the form the repository already uses (copy one, with its test id and reason)"
+HINT_SHAPE = "secret-shape: in a test, build the value from pieces at run time or use ${NAME}; the repository tree scan flags a literal"
+SHAPE_NAME_ENDS = ("password", "passwd", "pwd", "secret", "token", "api_key", "apikey", "secret_key")
+SHAPE_TEXT = {
+    "url-password": "a URL holds a password in its user:secret@host part",
+    "secret-literal": "a string literal is assigned to a name that holds a secret",
+    "aws-key-id": "an AWS access key id shape",
+    "private-key": "a private key header",
+}
+LINE_MAX = 2000
+# A name, an optional type, then `=` or `:` and a quoted literal that ends the value (a closing quote followed by `+` or a call is no literal).
+SHAPE_ASSIGN = re.compile(r"""(?P<name>[A-Za-z_][A-Za-z0-9_]*)["']?\s*(?::[^=\n"']{0,40}?)?(?<![=!<>])[:=](?!=)\s*(?P<q>["'])(?P<val>[^"'\n]{4,200}?)(?P=q)\s*(?=$|[,)\]}#;])""")
+SHAPE_SHELL = re.compile(r"""(?:^|[\s;&|(])(?:(?:export|declare|local|readonly)\s+(?:-\w+\s+)?)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<val>[^\s"'`$;&|()<>#]{4,200})(?=\s|$|;)""")
+SHAPE_URL = re.compile(r"""\b[a-z][a-z0-9+.\-]*://(?P<user>[^\s:/@"'`<>{}$]+):(?P<val>[^\s@/"'`<>{}$]+)@""")
+SHAPE_AWS = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
+SHAPE_PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+SHAPE_NOT_A_VALUE = ("$", "{", "<", "%", "/", "\\", "*", ".", "~", "&", "arn:", "file:")
+
+
+class UsageError(Exception):
+    """A request the kit cannot read (exit 2)."""
+
+
+class NotRun(Exception):
+    """The kit could not install or run a part; the reason is one line (KIT-NOT-RUN, exit 0)."""
+
+
+# ------------------------------------------------------------------------------------------------------------- processes
+def last_line(text: str, limit: int = REASON_MAX) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return " ".join(lines[-1].split())[:limit] if lines else ""
+
+
+def run(cmd: Sequence[str], timeout: float, what: str, limit: int, env: Optional[Dict[str, str]] = None, cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+    """(exit code, stdout, stderr); NotRun when the command cannot start or runs longer than `timeout` seconds (`limit` is the number the message names)."""
+    try:
+        done = subprocess.run(list(cmd), capture_output=True, timeout=max(1.0, timeout), env=env, cwd=str(cwd) if cwd else None)  # nosec B603: argument list, no shell  # nosemgrep: dangerous-subprocess-use-audit -- argument list built by this script from python, pip, git or the semgrep command, no shell
+    except subprocess.TimeoutExpired:
+        raise NotRun("%s did not finish in %d seconds" % (what, limit)) from None
+    except OSError as exc:
+        raise NotRun("the command could not start: %s" % last_line(str(exc), 100)) from None
+    return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
+
+
+def git(root: Path, *args: str) -> Tuple[int, bytes]:
+    try:
+        done = subprocess.run(["git", "-C", str(root), "-c", "core.quotepath=false", *args], capture_output=True)  # nosec B603: argument list, no shell, program is git; B607: bare name git looked up on PATH
+    except OSError:
+        return 127, b""
+    return done.returncode, done.stdout
+
+
+def repo_root(cwd: Path) -> Optional[Path]:
+    code, out = git(cwd, "rev-parse", "--show-toplevel")
+    text = out.decode("utf-8", "replace").strip()
+    return Path(text).resolve() if code == 0 and text else None
+
+
+# ------------------------------------------------------------------------------------------------------- file selection
+def is_scannable(name: str, head: bytes) -> bool:
+    """A python or shell file by its extension, or one without an extension whose first line names python or a shell."""
+    suffix = os.path.splitext(os.path.basename(name))[1].lower()
+    if suffix:
+        return suffix in SCAN_EXT
+    return SHEBANG.match(head) is not None
+
+
+def _readable(root: Path, rel: str) -> Optional[bytes]:
+    """The first bytes of a regular file of the repository that is not a link and not too large, else None."""
+    p = root / rel
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > FILE_BYTES_MAX:
+            return None
+        with open(str(p), "rb") as fh:
+            return fh.read(128)
+    except OSError:
+        return None
+
+
+def _scannable(root: Path, names: Sequence[str]) -> List[str]:
+    out = set()
+    for rel in names:
+        head = _readable(root, rel)
+        if head is not None and is_scannable(rel, head):
+            out.add(rel)
+    return sorted(out)
+
+
+def _split(out: bytes) -> List[str]:
+    return [n.decode("utf-8", "replace") for n in out.split(b"\0") if n]
+
+
+def changed_files(root: Path, base: str) -> List[str]:
+    """The python and shell files that differ from `base` in the work tree (committed, staged or not) and the new ones that git does not ignore."""
+    code, tracked = git(root, "diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", base, "--")
+    _code, new = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    return _scannable(root, (_split(tracked) if code == 0 else []) + _split(new))
+
+
+def scannable_files(root: Path) -> List[str]:
+    """Every python and shell file of the repository that git tracks or does not ignore."""
+    _code, tracked = git(root, "ls-files", "-z")
+    _code2, new = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    return _scannable(root, _split(tracked) + _split(new))
+
+
+def newest(root: Path, files: Sequence[str], limit: int = ALL_FILES_MAX) -> List[str]:
+    if len(files) <= limit:
+        return list(files)
+    def age(rel: str) -> float:
+        try:
+            return -(root / rel).stat().st_mtime
+        except OSError:
+            return 0.0
+    return sorted(sorted(files, key=lambda rel: (age(rel), rel))[:limit])
+
+
+def all_files(root: Path) -> List[str]:
+    return newest(root, scannable_files(root))
+
+
+def expand_paths(paths: Sequence[str], root: Path) -> List[str]:
+    """The files named by the PATH arguments: a file as given, a folder as the python and shell files below it (hidden folders and caches skipped)."""
+    found = set()
+    for p in paths:
+        full = p if os.path.isabs(p) else os.path.join(str(root), p)
+        if os.path.isdir(full):
+            for base, dirs, names in os.walk(full):
+                dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
+                for n in sorted(names):
+                    path = os.path.join(base, n)
+                    try:
+                        with open(path, "rb") as fh:
+                            head = fh.read(128)
+                    except OSError:
+                        continue
+                    if not os.path.islink(path) and is_scannable(n, head):
+                        found.add(path)
+        elif os.path.isfile(full):
+            found.add(full)
+        else:
+            raise UsageError("no such file or folder: %s" % p)
+    out = []
+    root_abs = os.path.abspath(str(root))
+    for path in found:
+        path = os.path.abspath(path)
+        out.append(os.path.relpath(path, root_abs) if os.path.commonpath([root_abs, path]) == root_abs else path)
+    return sorted(set(out))
+
+
+# --------------------------------------------------------------------------------------------------------- the base commit
+def locator_folder(value: str) -> str:
+    """The folder a value of the `records` file names, or an empty string when it is unusable (the grammar of lifecycle_check.py)."""
+    folder = value.rstrip("/")
+    if not folder or len(folder) > 100 or folder.startswith("/") or not re.fullmatch(r"[A-Za-z0-9._/-]+", folder):
+        return ""
+    for part in folder.split("/"):
+        if not part or part in (".", "..") or part.startswith("-") or part.lower() == ".git":
+            return ""
+    return folder
+
+
+def holds_state(folder: Path) -> bool:
+    """True when `folder` is a real directory (no link) with a regular file named in STATE_FILES, or a regular file at any depth below a folder named in STATE_DIRS.
+    A link is nothing and an empty directory is nothing, so an empty `.ham` never hides records of the earlier folder. The self-check and the harness's own reader apply the same rule."""
+    if folder.is_symlink() or not folder.is_dir():
+        return False
+    for name in STATE_FILES:
+        entry = folder / name
+        if entry.is_file() and not entry.is_symlink():
+            return True
+    for name in STATE_DIRS:
+        top = folder / name
+        if top.is_symlink() or not top.is_dir():
+            continue
+        for dirpath, _dirs, files in os.walk(str(top), followlinks=False):
+            if any((Path(dirpath) / f).is_file() and not (Path(dirpath) / f).is_symlink() for f in files):
+                return True
+    return False
+
+
+def records_base(root: Path) -> str:
+    """The folder that holds the records of this run, chosen once as the self-check chooses it: exactly one of `.ham` and the earlier folder holds records: that one; neither: `.ham`;
+    both: a UsageError that names both."""
+    current, earlier = holds_state(root / DEFAULT_BASE), holds_state(root / EARLIER_BASE)
+    if current and earlier:
+        raise UsageError("records: both %s and %s hold records; keep the records of this run in one of them" % (DEFAULT_BASE, EARLIER_BASE))
+    return EARLIER_BASE if earlier else DEFAULT_BASE
+
+
+def records_folder(root: Path) -> str:
+    """The folder that holds the records: the base (`.ham`, or the earlier folder when it alone holds records), or the folder its `records` file names. `off` and an unusable value read the default place of the base."""
+    base = records_base(root)
+    folder, locator = root / base, root / base / "records"
+    if folder.is_symlink() or not folder.is_dir() or locator.is_symlink() or not locator.is_file():
+        return base
+    try:
+        data = locator.read_bytes()
+        text = data.decode("utf-8") if len(data) <= 4096 else ""
+    except (OSError, UnicodeDecodeError):
+        return base
+    for line in text.split("\n"):
+        value = line.strip(" \t\r")
+        if not value or value.startswith("#"):
+            continue
+        if value.isascii() and value.lower() == "off":
+            return base
+        return locator_folder(value) or base
+    return base
+
+
+def goal_base(root: Path) -> Tuple[str, str]:
+    """(base commit, note): the `Base commit:` of the goal card when it is a commit here; a note when it names something that is not."""
+    goal = records_folder(root) + "/lifecycle/GOAL.md"
+    try:
+        text = (root / goal).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    m = GOAL_BASE.search(text)
+    if not m:
+        return "", ""
+    base = m.group(1)
+    code, _out = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if code != 0:
+        return "", "the Base commit %s in %s is not a commit of this repository" % (base, goal)
+    return base, ""
+
+
+def full_sha(root: Path, rev: str) -> str:
+    """The full hash of the commit `rev` names in the repository, or an empty string."""
+    code, out = git(root, "rev-parse", "--verify", "--quiet", rev + "^{commit}")
+    return out.decode("utf-8", "replace").strip() if code == 0 else ""
+
+
+SESSION_COMMITS = ("commit:", "commit (merge):", "commit (amend):", "cherry-pick", "revert", "merge ")
+
+
+def reflog_base(root: Path) -> str:
+    """The commit HEAD pointed to before the first commit made in this repository since it was cloned or fetched, read from the reflog of HEAD: the parent of the
+    oldest commit entry; HEAD itself when the reflog has entries but no commit entry (the work is not committed yet); an empty string without a usable reflog."""
+    code, out = git(root, "log", "-g", "--format=%H%x09%gs", "HEAD", "--")
+    if code != 0 or not out.strip():
+        return ""
+    oldest = ""
+    for line in out.decode("utf-8", "replace").splitlines():   # newest first
+        sha, _tab, subject = line.partition("\t")
+        if subject.startswith(SESSION_COMMITS):
+            oldest = sha
+    base = full_sha(root, oldest + "^1") if oldest else full_sha(root, "HEAD")
+    if base and git(root, "merge-base", "--is-ancestor", base, "HEAD")[0] == 0:
+        return base
+    return ""
+
+
+def upstream_base(root: Path) -> str:
+    """The merge base of HEAD with its upstream branch, else with origin/HEAD, else an empty string."""
+    for ref in ("@{upstream}", "origin/HEAD"):
+        code, out = git(root, "merge-base", "HEAD", ref)
+        if code == 0 and out.strip():
+            return out.decode("utf-8", "replace").strip()
+    return ""
+
+
+def choose_base(root: Path, given: str) -> Tuple[str, str, str]:
+    """(base commit, where it came from, a note about a goal card that names no commit): `--base`, the goal card, the reflog, the upstream; no base means every file."""
+    if given:
+        sha = full_sha(root, given)
+        if not sha:
+            raise UsageError("--base %s is not a commit of %s" % (given, root))
+        return sha, "arg", ""
+    card, problem = goal_base(root)
+    if card:
+        return full_sha(root, card) or card, "card", ""
+    for via, found in (("reflog", reflog_base), ("merge-base", upstream_base)):
+        base = found(root)
+        if base:
+            return base, via, problem
+    return "", "all", problem
+
+
+# ------------------------------------------------------------------------------------------------------- the environment
+def _inside(root: Path, path: str) -> bool:
+    a, b = os.path.realpath(str(root)), os.path.realpath(path)
+    return os.path.commonpath([a, b]) == a
+
+
+def _usable_folder(base: Optional[str], root: Optional[Path]) -> Optional[Path]:
+    """`<base>/hamh-scanner-kit` when it can be made and written and `base` is not inside the repository, else None."""
+    if not base or (root is not None and _inside(root, base)):
+        return None
+    folder = Path(base) / "hamh-scanner-kit"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return folder if os.access(str(folder), os.W_OK | os.X_OK) else None
+
+
+def kit_folder(env: Dict[str, str], root: Optional[Path]) -> Path:
+    """The folder for the environment, never inside the repository: under $TMPDIR; when that is not set or cannot be written, under the cache
+    folder of the home folder, and last under the system temp folder."""
+    asked = env.get("TMPDIR")
+    if asked and root is not None and _inside(root, asked):
+        raise NotRun("the temp folder is inside the repository; set TMPDIR to a folder outside it")
+    home = env.get("HOME")
+    for base in (asked, env.get("XDG_CACHE_HOME") or (os.path.join(home, ".cache") if home else None)):
+        folder = _usable_folder(base, root)
+        if folder is not None:
+            return folder
+    try:
+        folder = _usable_folder(tempfile.gettempdir(), root)
+    except OSError:   # no usable system temp folder either
+        folder = None
+    if folder is None:
+        raise NotRun("no writable temp folder outside the repository; set TMPDIR to one")
+    return folder
+
+
+class Tools:
+    """What the install gave: the semgrep command with its rules folder, the bandit command, and for each part that could not be installed the reason."""
+
+    def __init__(self, env: Dict[str, str]) -> None:
+        self.env = env
+        self.command: Optional[List[str]] = None
+        self.rules_dir = ""
+        self.bandit: Optional[List[str]] = None
+        self.problems: Dict[str, str] = {}
+
+
+def _pip_args(requirements: Sequence[str]) -> List[str]:
+    return ["install", "--quiet", "--disable-pip-version-check", "--no-input", *requirements]
+
+
+def _mark(venv: Path) -> dict:
+    """What the environment holds, as recorded when each part was completed."""
+    try:
+        data = json.loads((venv / "kit-ready.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_mark(venv: Path, mark: dict) -> None:
+    partial = venv / ("kit-ready.json.%d" % os.getpid())
+    partial.write_text(json.dumps(mark), encoding="utf-8")
+    os.replace(str(partial), str(venv / "kit-ready.json"))
+
+
+def _semgrep_ready(venv: Path, mark: dict) -> Optional[str]:
+    """The rules folder recorded when semgrep was completed, if the environment still matches the pins."""
+    if mark.get("semgrep") != SEMGREP_VERSION or mark.get("rules") != RULES_VERSION:
+        return None
+    rules = mark.get("rules_dir")
+    if isinstance(rules, str) and os.path.isdir(rules) and (venv / "bin" / "semgrep").is_file():
+        return rules
+    return None
+
+
+def _bandit_ready(venv: Path, mark: dict) -> bool:
+    return mark.get("bandit") == BANDIT_VERSION and (venv / "bin" / "bandit").is_file()
+
+
+def _lock(folder: Path, key: str, deadline: float):
+    """An exclusive lock on the install of this environment; None where file locks do not exist. Waits for another run to finish."""
+    try:
+        import fcntl
+    except ImportError:   # no file locks on this platform: two kit runs at once may install twice
+        return None
+    fh = open(str(folder / ("lock-" + key)), "a+", encoding="utf-8")
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                raise NotRun("another run of the kit is still installing its tools") from None
+            time.sleep(1)  # nosemgrep: arbitrary-sleep -- bounded wait between polls, retries or settle checks in tooling, nothing depends on the delay
+
+
+def _make_venv(venv: Path, deadline: float, timeout: int, env: Dict[str, str]) -> None:
+    left = lambda: max(1.0, deadline - time.monotonic())  # noqa: E731
+    code, _so, _se = run([sys.executable, "-m", "venv", str(venv)], left(), "creating the virtual environment", timeout, env)
+    if code != 0:   # a Python without ensurepip: make the environment bare and let this interpreter's pip fill it
+        code, _so, se = run([sys.executable, "-m", "venv", "--without-pip", str(venv)], left(), "creating the virtual environment", timeout, env)
+        if code != 0:
+            raise NotRun("creating the virtual environment failed (exit %d): %s" % (code, last_line(se)))
+
+
+def _pip(venv: Path, requirements: Sequence[str], timeout: int, env: Dict[str, str]) -> None:
+    python = str(venv / "bin" / "python")
+    if (venv / "bin" / "pip").exists():
+        cmd = [python, "-m", "pip", *_pip_args(requirements)]
+    else:
+        cmd = [sys.executable, "-m", "pip", "--python", python, *_pip_args(requirements)]
+    code, so, se = run(cmd, timeout, "pip install", timeout, env)
+    if code != 0:
+        raise NotRun("pip install failed (exit %d): %s" % (code, last_line(se) or last_line(so)))
+
+
+def _install_semgrep(venv: Path, timeout: int, env: Dict[str, str], tools: Tools) -> None:
+    # The small rules package first in the list: a stage that has not published it fails at once, before pip fetches semgrep.
+    # The package of the earlier names is tried second, for a stage set up before the rename; when neither installs, the reason is the first one.
+    first: Optional[NotRun] = None
+    module = ""
+    for package, name in ((RULES_PACKAGE, "hamh_semgrep_rules"), (LEGACY_RULES_PACKAGE, LEGACY_RULES_MODULE)):
+        try:
+            _pip(venv, [package + "==" + RULES_VERSION, "semgrep==" + SEMGREP_VERSION], timeout, env)
+        except NotRun as exc:
+            first = first or exc
+            continue
+        module = name
+        break
+    if not module:
+        raise first or NotRun("pip install failed")
+    code, so, _se = run([str(venv / "bin" / "python"), "-c", "import %s as m; print(m.RULES_DIR)" % module], 60, "the rules package", 60, env)
+    rules = so.strip().splitlines()[-1] if code == 0 and so.strip() else ""
+    if not rules or not os.path.isdir(rules):
+        raise NotRun("the rules package is installed but holds no rules folder")
+    if not (venv / "bin" / "semgrep").is_file():
+        raise NotRun("semgrep was not installed into the environment")
+    mark = _mark(venv)
+    mark.update({"semgrep": SEMGREP_VERSION, "rules": RULES_VERSION, "rules_dir": rules})
+    _write_mark(venv, mark)
+    tools.command, tools.rules_dir = [str(venv / "bin" / "semgrep")], rules
+
+
+def _install_bandit(venv: Path, timeout: int, env: Dict[str, str], tools: Tools) -> None:
+    _pip(venv, ["bandit==" + BANDIT_VERSION], timeout, env)
+    if not (venv / "bin" / "bandit").is_file():
+        raise NotRun("bandit was not installed into the environment")
+    mark = _mark(venv)
+    mark["bandit"] = BANDIT_VERSION
+    _write_mark(venv, mark)
+    tools.bandit = [str(venv / "bin" / "bandit")]
+
+
+def ensure_tools(folder: Path, timeout: int, env: Dict[str, str], want: Sequence[str] = ("semgrep", "bandit")) -> Tools:
+    """The wanted tools in one environment under `folder`: reused when complete, else installed with pip, each part by its own install.
+
+    A failure that stops every part (no virtual environment, a lock that stays taken) is a NotRun; a part that fails alone is a reason in `problems`."""
+    key = hashlib.sha256(("%s|%s|%s|%s|%d.%d" % (SEMGREP_VERSION, RULES_PACKAGE, RULES_VERSION, BANDIT_VERSION, sys.version_info[0], sys.version_info[1])).encode("utf-8")).hexdigest()[:12]
+    venv = folder / ("venv-" + key)
+    sg_env = dict(env)
+    sg_env.setdefault("SEMGREP_SEND_METRICS", "off")
+    sg_env.setdefault("SEMGREP_ENABLE_VERSION_CHECK", "0")
+    sg_env.setdefault("SEMGREP_SETTINGS_FILE", str(folder / "semgrep-settings.yml"))
+    sg_env.setdefault("SEMGREP_LOG_FILE", str(folder / "semgrep.log"))
+    sg_env.setdefault("SEMGREP_VERSION_CACHE_PATH", str(folder / "semgrep-version-cache"))
+    tools = Tools(sg_env)
+
+    def pending() -> List[str]:
+        """The wanted parts the environment does not hold yet (the ones it holds are put into `tools`)."""
+        mark, todo = _mark(venv), []
+        if "semgrep" in want:
+            rules = _semgrep_ready(venv, mark)
+            if rules:
+                tools.command, tools.rules_dir = [str(venv / "bin" / "semgrep")], rules
+            else:
+                todo.append("semgrep")
+        if "bandit" in want:
+            if _bandit_ready(venv, mark):
+                tools.bandit = [str(venv / "bin" / "bandit")]
+            else:
+                todo.append("bandit")
+        return todo
+
+    if not pending():
+        return tools
+    deadline = time.monotonic() + timeout
+    lock = _lock(folder, key, deadline)
+    try:
+        todo = pending()   # another run may have finished while this one waited
+        if not todo:
+            return tools
+        pip_env = dict(env)
+        pip_env.setdefault("PIP_CACHE_DIR", str(folder / "pip-cache"))
+        if not (venv / "bin" / "python").exists():
+            _make_venv(venv, deadline, timeout, pip_env)
+        for part in todo:
+            try:
+                if part == "semgrep":
+                    _install_semgrep(venv, timeout, pip_env, tools)
+                else:
+                    _install_bandit(venv, timeout, pip_env, tools)
+            except NotRun as exc:
+                tools.problems[part] = str(exc)
+        return tools
+    finally:
+        if lock is not None:
+            lock.close()
+
+
+# ------------------------------------------------------------------------------------------------------------ the findings
+class Finding(NamedTuple):
+    """One line of output: where, which rule, how severe (empty for the secret check) and what to read."""
+
+    path: str
+    line: int
+    label: str
+    severity: str
+    message: str
+
+    def out(self) -> str:
+        head = "KIT-FINDING %s:%d %s" % (self.path, self.line, self.label)
+        return " ".join([head, self.severity, self.message]) if self.severity else head + " " + self.message
+
+    def source(self) -> str:
+        if self.label.startswith("bandit/"):
+            return "bandit"
+        return "secret-shape" if self.label.startswith("secret-shape/") else "semgrep"
+
+
+def _clean(path: object) -> str:
+    text = str(path or "")
+    return text[2:] if text.startswith("./") else text
+
+
+def _line_no(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+
+
+def semgrep_finding(result: dict) -> Finding:
+    extra = result.get("extra") or {}
+    rule = str(result.get("check_id", "")).rsplit(".", 1)[-1]
+    message = " ".join(str(extra.get("message", "")).split())[:MESSAGE_MAX]
+    return Finding(_clean(result.get("path")), _line_no((result.get("start") or {}).get("line", 0)), rule, str(extra.get("severity") or "INFO"), message)
+
+
+def finding_line(result: dict) -> str:
+    return semgrep_finding(result).out()
+
+
+def error_note(source: str, errors: Sequence[dict]) -> str:
+    """A KIT-NOTE for the errors a tool reported (semgrep: those of level error; bandit: every entry), or an empty string."""
+    hard = [e for e in errors if isinstance(e, dict) and (source != "semgrep" or str(e.get("level", "")).lower() == "error")]
+    if not hard:
+        return ""
+    first = hard[0]
+    where = _clean(first.get("path") or first.get("filename"))
+    text = " ".join(str(first.get("message") or first.get("reason") or "").split())[:100]
+    return "KIT-NOTE %s reported %d error%s: %s%s" % (source, len(hard), "" if len(hard) == 1 else "s", where + ": " if where else "", text)
+
+
+# ----------------------------------------------------------------------------------------------------- the secret-shape check
+def _variable_name(val: str) -> bool:
+    """An UPPER_SNAKE word (two or more parts): the name of another variable, not a secret."""
+    return val.isascii() and val[:1].isalpha() and all(part and part.isalnum() and part.upper() == part for part in val.split("_")) and "_" in val
+
+
+def _placeholder(val: str) -> bool:
+    """A value that is no committed secret: a variable or format placeholder, a path, an address, another name, or prose."""
+    if not val or val.startswith(SHAPE_NOT_A_VALUE) or "://" in val or "{" in val or "%s" in val or "%d" in val:
+        return True
+    return _variable_name(val) or any(ch.isspace() for ch in val)
+
+
+def _is_shell(path: str, text: str) -> bool:
+    suffix = os.path.splitext(os.path.basename(path))[1].lower()
+    if suffix:
+        return suffix in (".sh", ".bash")
+    return SH_SHEBANG.match(text.split("\n", 1)[0]) is not None
+
+
+def _shape_classes(line: str, shell: bool) -> List[str]:
+    found = set()
+    for m in SHAPE_URL.finditer(line):
+        if m.group("user").lower() != "aws" and not _placeholder(m.group("val")):   # user aws: the short-lived package registry token convention
+            found.add("url-password")
+    if SHAPE_AWS.search(line):
+        found.add("aws-key-id")
+    if SHAPE_PEM.search(line):
+        found.add("private-key")
+    for pattern in (SHAPE_ASSIGN, SHAPE_SHELL) if shell else (SHAPE_ASSIGN,):
+        for m in pattern.finditer(line):
+            if m.group("name").lower().endswith(SHAPE_NAME_ENDS) and not _placeholder(m.group("val")):
+                found.add("secret-literal")
+    return sorted(found)
+
+
+def scan_secret_text(path: str, text: str) -> List[Finding]:
+    """The secret shapes of one file's text, as findings sorted by line and class; text with a NUL byte is no text and gives none."""
+    if "\0" in text:
+        return []
+    shell = _is_shell(path, text)
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        for cls in _shape_classes(line[:LINE_MAX], shell):
+            out.append(Finding(path, n, "secret-shape/" + cls, "", SHAPE_TEXT[cls]))
+    return out
+
+
+def secret_findings(root: Path, files: Sequence[str]) -> List[Finding]:
+    """The secret shapes of the listed files (relative to `root`, or absolute); a file that cannot be read is skipped."""
+    out: List[Finding] = []
+    for rel in files:
+        try:
+            with open(str(root / rel), "rb") as fh:
+                data = fh.read(FILE_BYTES_MAX + 1)
+        except OSError:
+            continue
+        if len(data) > FILE_BYTES_MAX:
+            continue
+        out.extend(scan_secret_text(rel, data.decode("utf-8", "replace")))
+    return out
+
+
+# --------------------------------------------------------------------------------------------------------------- the scans
+def semgrep_command(command: Sequence[str], rules_dir: str, files: Sequence[str]) -> List[str]:
+    targets = ["./" + f if f.startswith("-") else f for f in files]
+    return [*command, "--metrics=off", "--disable-version-check", "--quiet", "--json", "--config", rules_dir, *targets]
+
+
+def parse_output(text: str) -> Tuple[List[dict], List[dict]]:
+    """(results, errors) from the JSON that semgrep printed; ValueError when it is not a semgrep report."""
+    doc = json.loads(text)
+    if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+        raise ValueError("no results list")
+    errors = doc.get("errors")
+    return doc["results"], errors if isinstance(errors, list) else []
+
+
+def run_semgrep(command: Sequence[str], rules_dir: str, env: Dict[str, str], files: Sequence[str], root: Path, timeout: int) -> Tuple[List[dict], List[dict]]:
+    code, so, se = run(semgrep_command(command, rules_dir, files), timeout, "the scan", timeout, env, root)
+    if code not in (0, 1):
+        raise NotRun("stopped with exit %d: %s" % (code, last_line(se) or last_line(so)))
+    try:
+        return parse_output(so)
+    except ValueError:
+        raise NotRun("printed no JSON result (exit %d)" % code) from None
+
+
+def is_python(name: str, head: bytes) -> bool:
+    suffix = os.path.splitext(os.path.basename(name))[1].lower()
+    return suffix == ".py" if suffix else PY_SHEBANG.match(head) is not None
+
+
+def bandit_excludes(root: Path) -> List[str]:
+    """The `exclude` list of the `[bandit]` section of the repository's .bandit file (bandit does not read it for single files); none when it is unusable."""
+    try:
+        text = (root / ".bandit").read_text(encoding="utf-8")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(text)
+        value = parser.get("bandit", "exclude", fallback="")
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def bandit_targets(root: Path, files: Sequence[str]) -> List[str]:
+    """The python files among `files` that bandit would look at: not named by the exclude list (as a pattern or as part of the path, as bandit reads it)."""
+    excludes = bandit_excludes(root)
+    out = []
+    for rel in files:
+        head = _readable(root, rel)
+        if head is None or not is_python(rel, head):
+            continue
+        if any(x in rel or fnmatch.fnmatch(rel, x) for x in excludes):
+            continue
+        out.append(rel)
+    return sorted(out)
+
+
+def bandit_command(command: Sequence[str], files: Sequence[str]) -> List[str]:
+    """The command line of the repository's scanner check, for single files."""
+    targets = ["./" + f if f.startswith("-") else f for f in files]
+    return [*command, "-f", "json", "-q", "-s", BANDIT_SKIP, *targets]
+
+
+def parse_bandit(text: str) -> Tuple[List[dict], List[dict]]:
+    """(results, errors) from the JSON that bandit printed; ValueError when it is not a bandit report."""
+    doc = json.loads(text)
+    if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+        raise ValueError("no results list")
+    errors = doc.get("errors")
+    return doc["results"], errors if isinstance(errors, list) else []
+
+
+def bandit_finding(result: dict) -> Finding:
+    message = " ".join(str(result.get("issue_text", "")).split())[:MESSAGE_MAX]
+    return Finding(_clean(result.get("filename")), _line_no(result.get("line_number")), "bandit/" + str(result.get("test_id", "")),
+                   str(result.get("issue_severity") or "").upper(), message)
+
+
+def run_bandit(command: Sequence[str], env: Dict[str, str], files: Sequence[str], root: Path, timeout: int) -> Tuple[List[dict], List[dict]]:
+    code, so, se = run(bandit_command(command, files), timeout, "the scan", timeout, env, root)
+    if code not in (0, 1):   # bandit exits 1 when it found something
+        raise NotRun("stopped with exit %d: %s" % (code, last_line(se) or last_line(so)))
+    try:
+        return parse_bandit(so)
+    except ValueError:
+        raise NotRun("printed no JSON result (exit %d)" % code) from None
+
+
+# ------------------------------------------------------------------------------------------------------------- the output
+def limits_line(parts: Sequence[str]) -> str:
+    items = []
+    if "semgrep" in parts:
+        items.append("the pinned python and bash rules of semgrep %s (%s %s)" % (SEMGREP_VERSION, RULES_PACKAGE, RULES_VERSION))
+    if "bandit" in parts:
+        items.append("bandit %s" % BANDIT_VERSION)
+    if "secret-shape" in parts:
+        items.append("a secret-shape check")
+    what = items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+    return "KIT-LIMITS reproduces %s, not the repository's other scanners" % what
+
+
+def render(findings: Sequence[Finding], nfiles: int, notes: Sequence[str] = (), missing: Sequence[str] = (), parts: Sequence[str] = PARTS) -> List[str]:
+    """The output lines: the findings (sorted, the first FINDINGS_MAX), what did not run or went wrong, the summary, the limits and a hint for each source with findings."""
+    ordered = sorted(findings, key=lambda f: (f.path, f.line, f.label))
+    lines = [f.out() for f in ordered[:FINDINGS_MAX]]
+    rest = len(ordered) - FINDINGS_MAX
+    if rest > 0:
+        lines.append("KIT-MORE %d more finding%s not shown" % (rest, "s are" if rest > 1 else " is"))
+    lines.extend(n for n in notes if n)
+    gone = [p for p in PARTS if p in missing]
+    tail = " missing=" + ",".join(gone) if gone else ""
+    lines.append("KIT-FINDINGS %d files=%d%s" % (len(ordered), nfiles, tail) if ordered else "KIT-PASS files=%d%s" % (nfiles, tail))
+    lines.append(limits_line([p for p in parts if p not in gone]))
+    sources = {f.source() for f in ordered}
+    for source, hint in (("semgrep", HINT), ("bandit", HINT_BANDIT), ("secret-shape", HINT_SHAPE)):
+        if source in sources:
+            lines.append(hint)
+    return lines
+
+
+def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="scanner_kit.py", description="Run the pinned scanner checks on the files your work changed.", allow_abbrev=False)
+    parser.add_argument("--base", default="", help="the commit your work started from (default: the Base commit line of the goal card)")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds allowed for the install and for the scan (default %d)" % DEFAULT_TIMEOUT)
+    parser.add_argument("paths", nargs="*", metavar="PATH", help="files or folders to scan instead of the changed files")
+    args = parser.parse_args(argv)
+    if args.timeout <= 0:
+        parser.error("--timeout must be a whole number of seconds above zero")
+    return args
+
+
+class Report:
+    """The output of one run. Its first line names the script that ran (KIT-AT), so a later reader sees where the kit was started from."""
+
+    def __init__(self) -> None:
+        self.started = False
+
+    def line(self, text: str) -> None:
+        if not self.started:
+            self.started = True
+            print("KIT-AT %s" % os.path.realpath(__file__))
+        print(text)
+
+
+def switch_value(env: Dict[str, str]) -> str:
+    """The value of the switch: HAMH_SCANNER_KIT, else the same name under the earlier prefix (one notice on standard error, unless HAMH_NO_DEPRECATION_NOTICES is 1)."""
+    if SWITCH in env:
+        return env[SWITCH]
+    earlier = LEGACY_PREFIX + SWITCH[len("HAMH_"):]
+    if earlier not in env:
+        return ""
+    if env.get(NO_NOTICES, "").strip() != "1":
+        sys.stderr.write("scanner_kit.py: %s is the earlier name of %s; set %s instead (%s=1 silences this notice)\n" % (earlier, SWITCH, SWITCH, NO_NOTICES))
+    return env[earlier]
+
+
+def main(argv: Optional[Sequence[str]] = None, environ: Optional[Dict[str, str]] = None) -> int:
+    env = dict(os.environ if environ is None else environ)
+    if switch_value(env).strip().lower() == "off":
+        print("KIT-OFF")
+        return 0
+    args = parse_args(argv)
+    report = Report()
+    try:
+        return _main(args, env, report)
+    except UsageError as exc:
+        sys.stderr.write("scanner_kit.py: error: %s\n" % exc)
+        return 2
+    except NotRun as exc:
+        report.line("KIT-NOT-RUN %s" % exc)
+        return 0
+
+
+def part_override(env: Dict[str, str], name: str) -> Tuple[bool, List[str]]:
+    """(the part is on, the command that replaces it); the value off switches the part off, an empty or missing value leaves it to the install."""
+    value = env.get(name, "").strip()
+    if value.lower() == "off":
+        return False, []
+    try:
+        return True, shlex.split(value) if value else []
+    except ValueError:
+        raise UsageError("%s does not hold a command" % name) from None
+
+
+def select_files(args: argparse.Namespace, cwd: Path, root: Optional[Path]) -> Tuple[List[str], Path, List[str], Tuple[str, str]]:
+    """(files, the folder the tools run in, the notes to print before the scan, (base commit, where it came from))."""
+    notes: List[str] = []
+    if args.paths:
+        where = root or cwd
+        return expand_paths([os.path.abspath(os.path.join(str(cwd), p)) for p in args.paths], where), where, notes, ("", "paths")
+    if root is None:
+        raise NotRun("not inside a git repository; give the files as PATH arguments")
+    base, via, problem = choose_base(root, args.base)
+    if base:
+        files = changed_files(root, base)
+        if problem:
+            notes.append("KIT-NOTE " + problem)
+        if via in ("reflog", "merge-base") and len(files) > ALL_FILES_MAX:
+            notes.append("KIT-NOTE only the %d newest of %d changed python and shell files are scanned" % (ALL_FILES_MAX, len(files)))
+            files = newest(root, files)
+        if not files:
+            notes.append("KIT-NOTE no python or shell file changed since %s" % base[:12])
+        return files, root, notes, (base, via)
+    everything = scannable_files(root)
+    files = newest(root, everything)
+    notes.append("KIT-NOTE %s: all python and shell files are scanned" % (problem or "no Base commit line in the goal card, no commit of this session in the reflog and no upstream"))
+    if len(files) < len(everything):
+        notes.append("KIT-NOTE only the %d newest of %d python and shell files are scanned" % (len(files), len(everything)))
+    return files, root, notes, ("", "all")
+
+
+def _main(args: argparse.Namespace, env: Dict[str, str], report: Report) -> int:
+    cwd = Path.cwd().resolve()
+    root = repo_root(cwd)
+    files, where, early, (base, via) = select_files(args, cwd, root)
+    report.line("KIT-SCOPE base=%s via=%s files=%d" % (base[:8] if base else "none", via, len(files)))
+    for line in early:
+        report.line(line)
+    if not files:
+        for line in render([], 0):
+            report.line(line)
+        return 0
+    sg_on, sg_cmd = part_override(env, OVERRIDE)
+    bd_on, bd_cmd = part_override(env, OVERRIDE_BANDIT)
+    bandit_files = bandit_targets(where, files) if bd_on else []
+    install = [p for p, wanted in (("semgrep", sg_on and not sg_cmd), ("bandit", bool(bandit_files) and not bd_cmd)) if wanted]
+    tools, shared = Tools(dict(env)), ""
+    if install:
+        try:
+            tools = ensure_tools(kit_folder(env, root), args.timeout, env, want=tuple(install))
+        except NotRun as exc:
+            shared = str(exc)
+    notes: List[str] = []
+    missing: List[str] = []
+    if shared:
+        notes.append("KIT-NOT-RUN %s: %s" % (",".join(install), shared))
+        missing.extend(install)
+    findings = secret_findings(where, files)
+    if sg_on and "semgrep" not in missing:
+        try:
+            if "semgrep" in tools.problems:
+                raise NotRun(tools.problems["semgrep"])
+            if sg_cmd:
+                results, errors = run_semgrep(sg_cmd, env.get(OVERRIDE_RULES, "rules"), dict(env), files, where, args.timeout)
+            else:
+                results, errors = run_semgrep(tools.command or [], tools.rules_dir, tools.env, files, where, args.timeout)
+            findings.extend(semgrep_finding(r) for r in results)
+            notes.append(error_note("semgrep", errors))
+        except NotRun as exc:
+            notes.append("KIT-NOT-RUN semgrep: %s" % exc)
+            missing.append("semgrep")
+    if bandit_files and "bandit" not in missing:
+        try:
+            if "bandit" in tools.problems:
+                raise NotRun(tools.problems["bandit"])
+            results, errors = run_bandit(bd_cmd or tools.bandit or [], dict(env), bandit_files, where, args.timeout)
+            findings.extend(bandit_finding(r) for r in results)
+            notes.append(error_note("bandit", errors))
+        except NotRun as exc:
+            notes.append("KIT-NOT-RUN bandit: %s" % exc)
+            missing.append("bandit")
+    parts = [p for p in PARTS if p == "secret-shape" or (p == "semgrep" and sg_on) or (p == "bandit" and bd_on)]
+    for line in render(findings, len(files), notes, missing, parts):
+        report.line(line)
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

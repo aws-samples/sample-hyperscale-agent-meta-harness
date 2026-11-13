@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+"""lifecycle_check.py: check your own lifecycle records before your last message.
+
+It reads the records this repository holds (the goal card, research notes, the context index, red records, the run log, the project
+AGENTS.md and README) and the git history, and prints one line per check:
+
+  LC-1 research    docs/research/*.md: Question, Sources, Findings with labels, Decision
+  LC-2 context     docs/context/INDEX.md: origin, date, sha256, licence per row; hashes recompute; size caps
+  LC-3 red-first   docs/lifecycle/red/*.txt: a failing run kept for each behavior; a test-only commit before the first code commit
+  LC-4 tests-kept  no test file deleted, no skip added, no fall in the number of assertions (commits that start "test-fix:" are exempt)
+  LC-5 build-test  docs/lifecycle/LOG.md: well formed, last run green, written after the last code commit, no uncommitted code
+  LC-6 loop        docs/lifecycle/GOAL.md: five labelled lines and numbered checks that name a command; a BLOCKED ending names what is missing
+  LC-7 delivery    root AGENTS.md (build and test), README.md (run), last commit message (what, why, evidence); a goal card that says to write no AGENTS.md
+                   asks for no root file and fails when the run wrote one
+  LC-8 order       research or context before the first code commit; no secret-shaped string in the records
+
+Each line reads `LC-n <name> PASS|FAIL|NA: <measured value>`. The last line reads `LIFECYCLE-CHECK PASS|FAIL ... pass=N na=N fail=N`.
+The exit code is 0 when no check failed, 1 when one did, 2 when the directory is not a git repository. The script writes nothing.
+It checks records, not the quality of the work: a pass does not show that the code is right.
+
+The checks judge the whole history unless you name where your work started. On an existing project, write "Base commit: <hash>" (the output
+of git rev-parse HEAD before your first change) in docs/lifecycle/GOAL.md, or pass `--base REF`: commits reachable from that commit are left out.
+
+Usage: lifecycle_check.py [--repo DIR] [--base REF]      (default repo: the current directory)
+
+`--structure` is a separate mode that needs no records and no git: it checks that the pack itself is installed in DIR (the repository named by --repo, default
+the current directory). It prints `ST-1 contract`, `ST-2 skills` and `ST-3 script` lines and a last line `LIFECYCLE-STRUCTURE PASS|FAIL ... pass=N fail=N`, and exits
+0, 1, or 2 when DIR is not a directory. It is for installing the pack, and it is not the self-check: it reads none of the records of a run, so run the
+default mode before your last message. A PASS says the files are present, inside DIR and well formed, not that they are the current version of the pack.
+Standard library only; Python 3.8 or later.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import subprocess  # nosec B404: runs git with an argument list, starts nothing else
+import sys
+from pathlib import Path
+
+RECORDS = "docs/lifecycle"
+GOAL, LOG, RED_DIR = RECORDS + "/GOAL.md", RECORDS + "/LOG.md", RECORDS + "/red"
+RESEARCH_DIR, CONTEXT_INDEX = "docs/research", "docs/context/INDEX.md"
+ITEM_MAX, FOLDER_MAX = 256 * 1024, 2 * 1024 * 1024
+GOAL_LABELS = ["SPECIFIC", "MEASURABLE", "ACHIEVABLE", "TIME-BOUND", "VERIFY"]
+CODE_EXT = {".py", ".rs", ".go", ".java", ".kt", ".scala", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".rb", ".php", ".c", ".cc",
+            ".cpp", ".h", ".hpp", ".cs", ".swift", ".sh", ".sql", ".lua", ".dart", ".ex", ".exs", ".clj"}
+TEST_DIRS = {"tests", "test", "__tests__", "spec", "specs", "e2e", "fixtures", "testdata"}
+TEST_SUFFIX = ("_test.py", "_test.go", "_test.rs", "_test.js", "_test.ts", "_spec.rb", "_spec.js", "_spec.ts")
+SCRIPT_EXT, SCRIPT_TEST_PREFIX = (".sh", ".bash", ".py"), ("test-", "check-", "check_", "verify-", "verify_")
+# The script that runs the tests of the project is named for it (`scripts/test.sh`, `run-tests.py`): its name without the extension is one of these.
+SCRIPT_TEST_STEMS = ("test", "tests", "check", "verify", "run-tests", "run_tests")
+SKIP = re.compile(r"@pytest\.mark\.(?:skip|xfail)|pytest\.(?:skip|xfail)\(|unittest\.skip|@skip\b|\bxfail\b|\.only\(|\bxit\(|\bxdescribe\(|"
+                  r"\b(?:it|test|describe)\.skip\b|@Ignore\b|@Disabled\b|\bt\.Skip(?:Now)?\(|#\[ignore\]|\bskipTest\(")
+ASSERTION = re.compile(r"\bassert\w*|\bexpect\s*\(")
+SECRETS = [
+    ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("bearer-token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{24,}")),
+    ("signed-url", re.compile(r"(?i)[?&](?:X-Amz-Signature|X-Amz-Credential|sig|token)=[A-Za-z0-9%/+=_-]{16,}")),
+    ("url-with-password", re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:(?P<pw>[^\s@/]+)@")),
+]
+# A connection URL in a README may show where the password goes: <pw>, ${PASSWORD}, $PASSWORD, {password}, {{password}}, %(password)s, %s or ****.
+# That names a place and holds no password. Any other text in that place is a finding.
+PLACEHOLDER = re.compile(r"^(?:<[^<>\s]+>|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^{}\s]*\}\}|\{[A-Za-z_][A-Za-z0-9_]*\}|%\([A-Za-z_][A-Za-z0-9_]*\)s|%s|\*+)$")
+COUNT = r"(?:\d+|unknown)"  # a tool that prints no count is logged as unknown, never as an invented number
+# The command, the exit code and the two counts are the record; the note is the runner's last line as it came, so it may be indented, empty (a command that printed
+# nothing) or written straight after the bar.
+RUN = re.compile(r"^RUN \| (?P<cmd>\S.*?) \| exit (?P<code>-?\d+) \| pass (?P<passed>%s) fail (?P<failed>%s) \|(?P<note>.*)$" % (COUNT, COUNT))
+NOT_RUN = re.compile(r"^NOT RUN \| (?P<what>\S.*?) \| (?P<why>\S.*)$")
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+EVIDENCE = re.compile(r"(?i)\b(?:tests?|pass(?:ed|es|ing)?|exit|checks?)\b")
+# A goal card that says to write no AGENTS.md ("Do not write AGENTS.md docs.", "No AGENTS.md.", "Build it without an AGENTS.md.", "The user asked for no AGENTS.md."). The list is short on
+# purpose: "DOX off", "no DOX", "no framework" and "no docs" are no prohibition of the file, and a sentence that only says there is none ("The repository has no AGENTS.md yet.") is not one.
+# Five forms: a refusal and a verb ("do not write", "never create"), a verb or a report of the request and "no" ("write no", "requested no", "asked for no"), "without", and "no" that
+# begins a sentence, a clause, a quotation or a list item. Between the word and the file name only "a", "an", "any", "the" and "root" may stand: one whitespace character, then any
+# number of whitespace characters and of those words, each with a word boundary on each side. The words are not matched as a repeated group that holds a run of whitespace, because the
+# pinned semgrep rule regex_dos flags that shape; this form has the same verdicts (scripts/tests/test_lifecycle_check.py, NoAgentsMdPatternCase, holds it to the first form).
+NO_AGENTS_MD = re.compile(r"(?mi)(?:\b(?:do not|don't|never)\s+(?:write|create|add|make|generate|include)"
+                          r"|\b(?:write|create|add|make|generate|include|requested|asked for|wants?)\s+no"
+                          r"|\bwithout"
+                          r"|(?:^|[.;:!?\n(\"'`*-])\s*no)"
+                          r"\s(?:\s|\b(?:a|an|any|the|root)\b)*agents\.md\b")
+CONTRACT_TITLE = "# Development lifecycle"
+STEP_NAMES = ["Goal card", "Research", "Context", "Test first", "Build and test", "Loop", "Deliver", "Self-check"]
+SKILL_NAMES = ["research", "context", "tdd", "build-test", "loop", "delivery", "check"]
+SKILL_DIR, SCRIPT_REL = ".agents/skills", ".agents/skills/lifecycle-check/scripts/lifecycle_check.py"
+SKILL_LINES_MAX, DESCRIPTION_MAX = 60, 1024
+
+
+class Context:
+    """What the checks look at: the repository, all commits, where the run starts, the run's commits and the paths they touched."""
+
+    def __init__(self, root: Path, commits: list, start: int) -> None:
+        self.root, self.commits, self.start = root, commits, start
+        self.run = commits[start:]
+        self.touched = {p for c in self.run for p in c.paths()}
+
+
+class Commit:
+    def __init__(self, sha: str, subject: str) -> None:
+        self.sha, self.subject, self.files = sha, subject, []
+
+    def paths(self) -> list:
+        return [p for _, p in self.files]
+
+
+def git(root: Path, *args: str) -> tuple:
+    done = subprocess.run(["git", "-C", str(root), "-c", "core.quotepath=false", *args], capture_output=True, text=True,  # nosec B603: argument list, no shell, program is git; B607: bare name git looked up on PATH
+                          encoding="utf-8", errors="replace")
+    return done.returncode, done.stdout
+
+
+def is_test(path: str) -> bool:
+    parts = path.split("/")
+    name = parts[-1]
+    low = name.lower()
+    # A file named AGENTS.md is a document about its folder, also in tests/ (a DOX project has one there): its words xfail and assert are prose, never a test.
+    if low == "agents.md":
+        return False
+    # A script that checks the contract of the work (`scripts/check-contract.sh`, `verify-contract.py`, `test-unit.sh`) is the test of that contract, and so is the script that
+    # runs the tests (`scripts/test.sh`, `run_tests.py`): a prompt asks for one and a model commits it with its first test.
+    script_test = low.endswith(SCRIPT_EXT) and (low.startswith(SCRIPT_TEST_PREFIX) or low.rsplit(".", 1)[0] in SCRIPT_TEST_STEMS)
+    return (any(p.lower() in TEST_DIRS for p in parts[:-1]) or low.startswith("test_") or low.endswith(TEST_SUFFIX) or ".test." in low
+            or ".spec." in low or low == "conftest.py" or script_test or re.search(r"(?:Tests?|IT)\.(?:java|kt|scala)$", name) is not None)
+
+
+def is_doc(path: str) -> bool:
+    return path.startswith("docs/") or Path(path).suffix.lower() in {".md", ".txt", ".rst"}
+
+
+def is_code(path: str) -> bool:
+    return not is_doc(path) and not is_test(path) and Path(path).suffix.lower() in CODE_EXT
+
+
+def history(root: Path) -> list:
+    """The commits, oldest first, each with its (status, path) list."""
+    code, out = git(root, "log", "--topo-order", "--reverse", "--name-status", "--no-renames", "--format=@@@%H%x09%s")
+    commits = []
+    if code != 0:
+        return commits
+    for line in out.split("\n"):
+        if line.startswith("@@@"):
+            sha, _, subject = line[3:].partition("\t")
+            commits.append(Commit(sha, subject))
+        elif line.strip() and commits:
+            status, _, path = line.partition("\t")
+            commits[-1].files.append((status[:1], path))
+    return commits
+
+
+def start_index(root: Path, commits: list, base: str) -> int:
+    """Where the run begins: after the commits reachable from `base`, or 0 (the whole history) when no base is named."""
+    if not base:
+        return 0
+    code, out = git(root, "rev-list", base)
+    reachable = set(out.split())
+    return next((i for i, c in enumerate(commits) if c.sha not in reachable), len(commits))
+
+
+def named_base(root: Path, option: str) -> tuple:
+    """(base commit or "", error text): the --base option, else the `Base commit: <hash>` of the goal card. A base must be a commit here."""
+    where = "--base"
+    base = option
+    if not base:
+        m = re.search(r"(?mi)\bbase commit:\s*`?([0-9a-f]{7,40})\b", read(root, GOAL))
+        base, where = (m.group(1), GOAL) if m else ("", "")
+    if base and git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")[0] != 0:
+        return "", "%s names %s, which is not a commit of %s" % (where, base, root)
+    return base, ""
+
+
+def read(root: Path, rel: str) -> str:
+    try:
+        return (root / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def last_touch(commits: list, rel: str) -> int:
+    hits = [i for i, c in enumerate(commits) if rel in c.paths()]
+    return hits[-1] if hits else -1
+
+
+def first_code(commits: list) -> int:
+    for i, c in enumerate(commits):
+        if any(is_code(p) for p in c.paths()):
+            return i
+    return -1
+
+
+def short(text: str, limit: int = 240) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def verdict(problems: list, ok: str) -> tuple:
+    return ("FAIL", short("; ".join(problems))) if problems else ("PASS", ok)
+
+
+# ---------------------------------------------------------------- the checks
+def check_research(root: Path, commits: list, start: int = 0) -> tuple:
+    touched = {p for c in commits for p in c.paths()}
+    notes = [n for n in (sorted((root / RESEARCH_DIR).glob("*.md")) if (root / RESEARCH_DIR).is_dir() else [])
+             if RESEARCH_DIR + "/" + n.name in touched]
+    if not notes:
+        return "FAIL", "no note written in %s/ by this run (write one per unfamiliar library, API or rule, or per design choice)" % RESEARCH_DIR
+    problems = []
+    for note in notes:
+        text = note.read_text(encoding="utf-8", errors="replace")
+        missing = [w for w in ("Question", "Sources", "Findings", "Decision")
+                   if not re.search(r"(?mi)^\s*(?:#+\s*|\*\*|[-*]\s*)?%s\b" % w, text)]
+        if missing:
+            problems.append("%s lacks %s" % (note.name, ", ".join(missing)))
+        elif not re.search(r"(?i)\b(?:verified|source-reported|inferred|unknown)\b", text):
+            problems.append("%s labels no finding (verified, source-reported, inferred or unknown)" % note.name)
+    return verdict(problems, "%d note(s), each with question, sources, labelled findings and a decision" % len(notes))
+
+
+def table_rows(text: str) -> tuple:
+    header, rows = None, []
+    for line in text.split("\n"):
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if all(re.fullmatch(r":?-{3,}:?", c) for c in cells if c) and any(cells):
+            continue
+        if header is None:
+            header = [c.lower() for c in cells]
+        else:
+            rows.append(cells)
+    return header, rows
+
+
+def column(header: list, *names: str) -> int:
+    for i, h in enumerate(header or []):
+        if any(n in h for n in names):
+            return i
+    return -1
+
+
+def check_context(root: Path, commits: list, start: int = 0) -> tuple:
+    text = read(root, CONTEXT_INDEX)
+    if not text:
+        return "FAIL", "%s not found (list what you keep reading, or write `None: <reason>`)" % CONTEXT_INDEX
+    header, rows = table_rows(text)
+    if not rows:
+        if re.search(r"(?m)^\s*None:\s*\S", text):
+            return "PASS", "no outside context, reason given"
+        return "FAIL", "%s has no table row and no `None: <reason>` line" % CONTEXT_INDEX
+    cols = {k: column(header, *v) for k, v in {"origin": ("origin",), "date": ("date",), "sha": ("sha",), "licence": ("licen",)}.items()}
+    absent = [k for k, i in cols.items() if i < 0]
+    if absent:
+        return "FAIL", "the table has no column for %s" % ", ".join(absent)
+    problems, total = [], 0
+    for cells in rows:
+        cells = cells + [""] * (len(header) - len(cells))
+        origin = cells[cols["origin"]].strip("` ")
+        label = origin or "(empty origin)"
+        if not origin:
+            problems.append("a row has no origin")
+        if not DATE.search(cells[cols["date"]]):
+            problems.append("%s: no date (YYYY-MM-DD)" % label)
+        if not cells[cols["licence"]].strip():
+            problems.append("%s: no licence" % label)
+        digest = cells[cols["sha"]].strip("` ").lower()
+        if digest != "unsaved" and not re.fullmatch(r"[0-9a-f]{64}", digest):
+            problems.append("%s: sha256 is neither 64 hex characters nor `unsaved`" % label)
+        local = root / origin if origin and "://" not in origin and not origin.startswith("/") and ".." not in origin else None
+        if local is not None and local.is_file():
+            data = local.read_bytes()
+            total += len(data)
+            if len(data) > ITEM_MAX:
+                problems.append("%s: %d bytes, over the %d-byte item cap" % (label, len(data), ITEM_MAX))
+            if re.fullmatch(r"[0-9a-f]{64}", digest) and hashlib.sha256(data).hexdigest() != digest:
+                problems.append("%s: sha256 does not match the file" % label)
+    folder = sum(p.stat().st_size for p in (root / "docs/context").rglob("*") if p.is_file())
+    if folder > FOLDER_MAX:
+        problems.append("docs/context holds %d bytes, over the %d-byte folder cap" % (folder, FOLDER_MAX))
+    return verdict(problems, "%d item(s), each with origin, date, sha256 and licence; hashes recompute" % len(rows))
+
+
+def red_record(path: Path) -> list:
+    fields = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").split("\n"):
+        m = re.match(r"^\s*([A-Za-z]+)\s*:\s*(.*)$", line)
+        if m:
+            fields.setdefault(m.group(1).lower(), m.group(2).strip())
+    problems = []
+    if not fields.get("command"):
+        problems.append("%s has no `command:` line" % path.name)
+    if not re.fullmatch(r"-?\d+", fields.get("exit", "")):
+        problems.append("%s has no integer `exit:` line" % path.name)
+    elif int(fields["exit"]) == 0:
+        problems.append("%s: exit 0 is not a red run" % path.name)
+    if not fields.get("failure"):
+        problems.append("%s has no `failure:` line (the failing assertion or the missing name)" % path.name)
+    return problems
+
+
+def check_red_first(root: Path, commits: list, start: int = 0) -> tuple:
+    code_at = first_code(commits)
+    if code_at < 0:
+        return "NA", "no code in the history"
+    problems = []
+    touched = {p for c in commits for p in c.paths()}
+    records = [r for r in (sorted((root / RED_DIR).glob("*.txt")) if (root / RED_DIR).is_dir() else [])
+               if RED_DIR + "/" + r.name in touched]
+    if not records:
+        problems.append("no red record in %s/" % RED_DIR)
+    for rec in records:
+        problems += red_record(rec)
+    tests_only = [i for i, c in enumerate(commits) if any(is_test(p) for p in c.paths()) and not any(is_code(p) for p in c.paths())]
+    mixed = sum(1 for c in commits if any(is_test(p) for p in c.paths()) and any(is_code(p) for p in c.paths()))
+    if not tests_only:
+        problems.append("no commit holds tests without code")
+    elif tests_only[0] > code_at:
+        problems.append("code was committed (%s) before the first test-only commit (%s)" % (commits[code_at].sha[:7], commits[tests_only[0]].sha[:7]))
+    return verdict(problems, "%d red record(s); test-only commit %s before first code commit %s; %d mixed commit(s)" % (
+        len(records), commits[tests_only[0]].sha[:7] if tests_only else "-", commits[code_at].sha[:7], mixed))
+
+
+def test_changes(root: Path, start: int = 0) -> tuple:
+    """(deleted test files, skip markers added, assertion count after each commit, test lines seen) over the history, from `git log -p`.
+    Deletions and skips are reported for the commits from index `start` on; the count includes the commits before it."""
+    code, out = git(root, "log", "--topo-order", "--reverse", "-p", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--format=@@@%H%x09%s")
+    deleted, skipped, totals = [], [], []
+    running, path, exempt, sha, seen_test, index = 0, None, False, "", False, -1
+    for line in out.split("\n") if code == 0 else []:
+        if line.startswith("@@@"):
+            if sha:
+                totals.append(running)
+            sha, _, subject = line[3:].partition("\t")
+            exempt, path, index = subject.startswith("test-fix:"), None, index + 1
+        elif line.startswith("diff --git "):
+            path = line.rsplit(" b/", 1)[-1]
+        elif line.startswith("deleted file mode") and path and is_test(path) and not exempt and index >= start:
+            deleted.append("%s (%s)" % (path, sha[:7]))
+        elif path and is_test(path) and not exempt and line and line[0] in "+-" and not line.startswith(("+++", "---")):
+            seen_test = seen_test or index >= start
+            if line[0] == "+" and SKIP.search(line) and index >= start:
+                skipped.append("%s (%s)" % (path, sha[:7]))
+            if ASSERTION.search(line):
+                running += 1 if line[0] == "+" else -1
+    if sha:
+        totals.append(running)
+    return deleted, skipped, totals, seen_test
+
+
+def check_tests_kept(root: Path, commits: list, start: int = 0) -> tuple:
+    deleted, skipped, totals, seen = test_changes(root, start)
+    if not seen and not deleted:
+        return "NA", "no test file in the history"
+    problems = []
+    if deleted:
+        problems.append("test file deleted: %s" % ", ".join(deleted[:3]))
+    if skipped:
+        problems.append("skip or xfail added: %s" % ", ".join(skipped[:3]))
+    window = totals[max(start - 1, 0):]  # the level the project had when the run began, then each commit of the run
+    if window and window[-1] < max(window):
+        problems.append("assertions fell from %d to %d" % (max(window), window[-1]))
+    return verdict(problems, "%d assertion(s) now; no test file deleted; no skip added" % (totals[-1] if totals else 0))
+
+
+def parse_log(text: str) -> tuple:
+    runs, not_runs, blocked, problems = [], 0, None, []
+    for number, line in enumerate(text.split("\n"), start=1):
+        if line.startswith("RUN"):
+            m = RUN.match(line)
+            if m:
+                runs.append(m)
+            else:
+                problems.append("line %d is not `RUN | <command> | exit <n> | pass <n or unknown> fail <n or unknown> | <note>`" % number)
+        elif line.startswith("NOT RUN"):
+            if NOT_RUN.match(line):
+                not_runs += 1
+            else:
+                problems.append("line %d is not `NOT RUN | <what> | <reason>`" % number)
+        elif line.startswith("BLOCKED:"):
+            blocked = line[len("BLOCKED:"):].strip()
+    return runs, not_runs, blocked, problems
+
+
+def dirty_code(root: Path) -> list:
+    code, out = git(root, "status", "--porcelain")
+    paths = [line[3:] for line in out.split("\n") if len(line) > 3]
+    return [p for p in paths if is_code(p) or is_test(p)] if code == 0 else []
+
+
+def check_build_test(root: Path, commits: list, start: int = 0) -> tuple:
+    text = read(root, LOG)
+    if not text:
+        return "FAIL", "%s not found (one `RUN | ...` line per run, `NOT RUN | ...` for what you did not run)" % LOG
+    runs, not_runs, blocked, problems = parse_log(text)
+    if not runs and not not_runs:
+        problems.append("no RUN or NOT RUN entry")
+    if problems:
+        return "FAIL", short("; ".join(problems))
+    code_at = first_code(commits)
+    if code_at < 0:
+        return "PASS", "%d NOT RUN entr(ies), no code in the history" % not_runs
+    if blocked is not None:
+        return "NA", "the run ended BLOCKED; the last recorded run is not required to be green"
+    last_code = max(i for i, c in enumerate(commits) if any(is_code(p) for p in c.paths()))
+    if not runs:
+        problems.append("no RUN entry although the history holds code")
+    else:
+        final = runs[-1]
+        failed = final.group("failed")
+        if int(final.group("code")) != 0 or (failed != "unknown" and int(failed) != 0):
+            problems.append("the last run is red (exit %s, fail %s)" % (final.group("code"), final.group("failed")))
+    if last_touch(commits, LOG) < last_code:
+        problems.append("%s was last committed before the last code commit (%s); run again and log it" % (LOG, commits[last_code].sha[:7]))
+    changed = dirty_code(root)
+    if changed:
+        problems.append("uncommitted changes to %s" % ", ".join(changed[:3]))
+    return verdict(problems, "%d run(s) logged; last run green and logged after the last code commit; no uncommitted code" % len(runs))
+
+
+def check_loop(root: Path, commits: list, start: int = 0) -> tuple:
+    text = read(root, GOAL)
+    if not text:
+        return "FAIL", "%s not found" % GOAL
+    lines = text.split("\n")
+    where = {}
+    problems = []
+    for label in GOAL_LABELS:
+        hits = [i for i, ln in enumerate(lines) if re.match(r"^\s*(?:[-*]\s*)?(?:\*\*)?%s(?:\*\*)?\s*:" % label, ln)]
+        if len(hits) != 1:
+            problems.append("%s appears %d times, want once" % (label, len(hits)))
+        else:
+            where[label] = hits[0]
+    if len(where) == len(GOAL_LABELS):
+        if [where[k] for k in GOAL_LABELS] != sorted(where.values()):
+            problems.append("labels are not in the order %s" % ", ".join(GOAL_LABELS))
+        else:
+            section = lines[where["MEASURABLE"] + 1: where["ACHIEVABLE"]]
+            checks = [ln for ln in section if re.match(r"^\s*\d+[.)]\s+\S", ln)]
+            if not checks:
+                problems.append("MEASURABLE has no numbered check")
+            for ln in checks:
+                if not re.search(r"`[^`]+`", ln):
+                    problems.append("a check names no command in backticks: %s" % short(ln.strip(), 50))
+    blocked = parse_log(read(root, LOG))[2]
+    if blocked is not None and not blocked:
+        problems.append("BLOCKED: names nothing; say what is missing")
+    return verdict(problems, "five labelled lines, %s numbered check(s) with commands%s" % (
+        len([ln for ln in lines if re.match(r"^\s*\d+[.)]\s+\S", ln)]), "; ended BLOCKED with the missing item named" if blocked else ""))
+
+
+def bans_agents_md(card: str) -> bool:
+    """Whether the goal card says, in one of the listed forms, to write no AGENTS.md."""
+    return NO_AGENTS_MD.search(card) is not None
+
+
+def agents_md_written(root: Path, commits: list) -> list:
+    """The files named AGENTS.md (any case, any folder) that the run's commits touched and that are still there, and those nobody committed yet. The user's own AGENTS.md is not the
+    run's unless a commit of the run touches it."""
+    code, out = git(root, "status", "--porcelain", "-z", "-uall")
+    entries = out.split("\0") if code == 0 else []
+    uncommitted, skip = [], False
+    for entry in entries:
+        if skip:  # the old name of a rename or a copy
+            skip = False
+        elif len(entry) > 3:
+            uncommitted.append(entry[3:])
+            skip = entry[0] in "RC" or entry[1] in "RC"
+    paths = {p for c in commits for p in c.paths()} | set(uncommitted)
+    return sorted(p for p in paths if p.split("/")[-1].lower() == "agents.md" and (root / p).is_file())
+
+
+def check_delivery(root: Path, commits: list, start: int = 0) -> tuple:
+    problems = []
+    agents, readme = read(root, "AGENTS.md"), read(root, "README.md")
+    banned = bans_agents_md(read(root, GOAL))
+    if banned:
+        written = agents_md_written(root, commits)
+        if written:
+            problems.append("the goal card says to write no AGENTS.md, and the run wrote %s" % ", ".join(written[:3]))
+    elif not agents:
+        problems.append("no root AGENTS.md")
+    elif not (re.search(r"(?i)\bbuild\b", agents) and re.search(r"(?i)\btests?\b", agents) and len(re.findall(r"`[^`\n]+`|```", agents)) >= 2):
+        problems.append("AGENTS.md does not give a build command and a test command")
+    if not readme:
+        problems.append("no README.md")
+    elif not (re.search(r"(?i)\brun\b", readme) and re.search(r"`[^`\n]+`|```", readme)):
+        problems.append("README.md gives no run command")
+    # The run ends with the harness's own `harness: turn N` commit for whatever the model left uncommitted. It is not the model's delivery commit.
+    code, message = git(root, "log", "-1", "--format=%B", "--invert-grep", "--grep=^harness: turn [0-9][0-9]*$")
+    if code != 0 or not commits:
+        problems.append("no commit")
+    else:
+        subject, _, body = message.strip().partition("\n")
+        if len(subject) > 72:
+            problems.append("the last commit subject is %d characters, over 72" % len(subject))
+        if not body.strip():
+            problems.append("the last commit has no body (what, why, evidence)")
+        elif not EVIDENCE.search(body):
+            problems.append("the last commit body names no test evidence")
+    return verdict(problems, "no AGENTS.md written, as the goal card says; README.md with run, last commit with subject and body" if banned
+                   else "AGENTS.md with build and test, README.md with run, last commit with subject and body")
+
+
+def holds_secret(name: str, rx, text: str) -> bool:
+    """Whether the text holds a secret of this shape. A password that is only a placeholder is not one."""
+    for found in rx.finditer(text):
+        if name == "url-with-password" and PLACEHOLDER.match(found.group("pw")):
+            continue
+        return True
+    return False
+
+
+def secret_hits(root: Path) -> list:
+    paths = ["AGENTS.md", "README.md"] + sorted(p.relative_to(root).as_posix() for p in (root / "docs").rglob("*") if p.is_file()) \
+        if (root / "docs").is_dir() else ["AGENTS.md", "README.md"]
+    hits = []
+    for rel in paths:
+        path = root / rel
+        if not path.is_file() or path.stat().st_size > 1024 * 1024:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        hits += ["%s (%s)" % (rel, name) for name, rx in SECRETS if holds_secret(name, rx, text)]
+    return hits
+
+
+def check_order(root: Path, commits: list, start: int = 0) -> tuple:
+    problems = ["secret-shaped string in %s" % h for h in secret_hits(root)[:3]]
+    code_at = first_code(commits)
+    if code_at < 0:
+        return ("FAIL", short("; ".join(problems))) if problems else ("NA", "no code in the history; records hold no secret-shaped string")
+    notes = [i for i, c in enumerate(commits) if any((p.startswith(RESEARCH_DIR + "/") and p.endswith(".md")) or p == CONTEXT_INDEX for p in c.paths())]
+    if not notes:
+        problems.append("no research note or context index in the history")
+    elif notes[0] > code_at:
+        problems.append("the first code commit (%s) comes before the first research or context commit (%s)" % (
+            commits[code_at].sha[:7], commits[notes[0]].sha[:7]))
+    return verdict(problems, "research or context first (%s), then code (%s); records hold no secret-shaped string" % (
+        commits[notes[0]].sha[:7] if notes else "-", commits[code_at].sha[:7]))
+
+
+# ---------------------------------------------------------------- the structure mode (the pack as installed, no records)
+def inside(root: Path, path: Path) -> bool:
+    """Whether the file, with every link followed, is below root: a pack made of links to files elsewhere is not installed in this folder."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def structure_contract(root: Path) -> tuple:
+    """ST-1: AGENTS.md holds the contract: its title line, then the eight numbered steps in order. A project part may follow, so the size is not judged."""
+    if (root / "AGENTS.md").exists() and not inside(root, root / "AGENTS.md"):
+        return "FAIL", "AGENTS.md is a link to a file outside the folder"
+    text = read(root, "AGENTS.md")
+    if not text:
+        return "FAIL", "AGENTS.md not found (the installer writes it, or the contract is added to the project AGENTS.md)"
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == CONTRACT_TITLE), -1)
+    if start < 0:
+        return "FAIL", "AGENTS.md has no line `%s`: the contract is not in it" % CONTRACT_TITLE
+    problems, at = [], start
+    for number, name in enumerate(STEP_NAMES, start=1):
+        step = re.compile(r"^%d\. %s\b" % (number, re.escape(name)))
+        found = next((i for i in range(at + 1, len(lines)) if step.match(lines[i])), -1)
+        if found < 0:
+            problems.append("step %d `%s` not found in order" % (number, name))
+        else:
+            at = found
+    return verdict(problems, "the contract title and its %d steps, in order" % len(STEP_NAMES))
+
+
+def frontmatter(text: str) -> dict:
+    """The `key: value` lines between the opening `---` line and the next one; empty when the file does not start with frontmatter."""
+    lines = text.lstrip("\ufeff").split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}
+    fields = {}
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            return fields
+        m = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$", ln)
+        if m:
+            fields[m.group(1)] = m.group(2).strip()
+    return {}
+
+
+def structure_skills(root: Path) -> tuple:
+    """ST-2: the seven skills: each folder has a SKILL.md with frontmatter `name` equal to the folder and a `description` of 1,024 characters or fewer, in 60 lines or fewer."""
+    problems = []
+    for name in SKILL_NAMES:
+        folder = "lifecycle-" + name
+        rel = "%s/%s/SKILL.md" % (SKILL_DIR, folder)
+        path = root / rel
+        if not path.is_file() or not inside(root, path):
+            problems.append("%s not found in this folder (a missing file, or a link to a file outside it)" % rel)
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        fields = frontmatter(text)
+        if not fields:
+            problems.append("%s has no frontmatter" % rel)
+            continue
+        if fields.get("name") != folder:
+            problems.append("%s: name is %r, want %r" % (rel, fields.get("name", ""), folder))
+        description = fields.get("description", "")
+        shown = description.strip("\"' ")
+        if not shown or shown[0] in "|>":
+            problems.append("%s has no single-line description" % rel)
+        elif len(description) > DESCRIPTION_MAX:
+            problems.append("%s: description is %d characters, over %d" % (rel, len(description), DESCRIPTION_MAX))
+        if text.count("\n") + 1 > SKILL_LINES_MAX:  # the count `check-rc4.py` makes: a final newline counts as one more line
+            problems.append("%s has more than %d lines" % (rel, SKILL_LINES_MAX))
+    return verdict(problems, "%d skills, each with its name, a description and at most %d lines" % (len(SKILL_NAMES), SKILL_LINES_MAX))
+
+
+def structure_script(root: Path) -> tuple:
+    """ST-3: the self-check script sits beside the skill that names it."""
+    path = root / SCRIPT_REL
+    if not path.is_file() or not inside(root, path):
+        return "FAIL", "%s not found in this folder (a missing file, or a link to a file outside it)" % SCRIPT_REL
+    if path.stat().st_size == 0:
+        return "FAIL", "%s is empty" % SCRIPT_REL
+    return "PASS", "%s is installed (%d bytes)" % (SCRIPT_REL, path.stat().st_size)
+
+
+STRUCTURE = [("ST-1", "contract", structure_contract), ("ST-2", "skills", structure_skills), ("ST-3", "script", structure_script)]
+
+
+def main_structure(repo: str) -> int:
+    root = Path(repo)
+    if not root.is_dir():
+        print("LIFECYCLE-STRUCTURE ERROR %s is not a directory" % root)
+        return 2
+    results = []
+    for ident, name, fn in STRUCTURE:
+        try:
+            status, value = fn(root)
+        except Exception as exc:  # a crashed check is a failed check, never a traceback in the log
+            status, value = "FAIL", "the check crashed: %s: %s" % (type(exc).__name__, exc)
+        results.append((ident, status))
+        print("%s %s %s: %s" % (ident, name, status, value))
+    failed = [i for i, s in results if s == "FAIL"]
+    print("LIFECYCLE-STRUCTURE %s%s pass=%d fail=%d" % ("FAIL" if failed else "PASS", " " + ",".join(failed) if failed else "", len(results) - len(failed), len(failed)))
+    return 1 if failed else 0
+
+
+CHECKS = [("LC-1", "research", check_research), ("LC-2", "context", check_context), ("LC-3", "red-first", check_red_first),
+          ("LC-4", "tests-kept", check_tests_kept), ("LC-5", "build-test", check_build_test), ("LC-6", "loop", check_loop),
+          ("LC-7", "delivery", check_delivery), ("LC-8", "order", check_order)]
+
+
+def main(argv: list) -> int:
+    # No abbreviations: `--struct` must not run the install check where the tool log shows a flag that the harness does not recognise as `--structure`.
+    parser = argparse.ArgumentParser(description="Check your own lifecycle records before your last message.", allow_abbrev=False)
+    parser.add_argument("--repo", default=".", help="the repository (default: the current directory)")
+    parser.add_argument("--base", default="", help="the commit the work started from (default: the Base commit line of the goal card, else none)")
+    parser.add_argument("--structure", action="store_true", help="check that the pack is installed (needs no records and no git); this is not the self-check")
+    args = parser.parse_args(argv)
+    if args.structure:
+        if args.base:
+            print("LIFECYCLE-STRUCTURE ERROR --base belongs to the records check, not to --structure")
+            return 2
+        return main_structure(args.repo)
+    start = Path(args.repo)
+    if not start.is_dir():
+        print("LIFECYCLE-CHECK ERROR %s is not a directory" % start)
+        return 2
+    code, top = git(start, "rev-parse", "--show-toplevel")
+    if code != 0 or not top.strip():
+        print("LIFECYCLE-CHECK ERROR %s is not a git repository" % start)
+        return 2
+    root = Path(top.strip())
+    base, problem = named_base(root, args.base)
+    if problem:
+        print("LIFECYCLE-CHECK ERROR %s" % problem)
+        return 2
+    commits = history(root)
+    start = start_index(root, commits, base)
+    results = []
+    for ident, name, fn in CHECKS:
+        try:
+            status, value = fn(root, commits[start:], start)
+        except Exception as exc:  # a crashed check is a failed check, never a traceback in the log
+            status, value = "FAIL", "the check crashed: %s: %s" % (type(exc).__name__, exc)
+        results.append((ident, status))
+        print("%s %s %s: %s" % (ident, name, status, value))
+    failed = [i for i, s in results if s == "FAIL"]
+    counts = "pass=%d na=%d fail=%d" % tuple(sum(1 for _, s in results if s == k) for k in ("PASS", "NA", "FAIL"))
+    print("LIFECYCLE-CHECK %s%s %s" % ("FAIL" if failed else "PASS", " " + ",".join(failed) if failed else "", counts))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

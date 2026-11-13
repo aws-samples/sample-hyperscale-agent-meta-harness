@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · active
+tool     editing src/module_4985.py                                     pending│
+tool     editing src/module_4986.py                                     pending│
+tool     editing src/module_4987.py                                     pending│
+tool     editing src/module_4988.py                                     pending│
+tool     editing src/module_4989.py                                     pending│
+tool     editing src/module_4990.py                                     pending│
+tool     editing src/module_4991.py                                     pending│
+tool     editing src/module_4992.py                                     pending│
+tool     editing src/module_4993.py                                     pending│
+tool     editing src/module_4994.py                                     pending│
+tool     editing src/module_4995.py                                     pending│
+tool     editing src/module_4996.py                                     pending│
+tool     editing src/module_4997.py                                     pending│
+tool     editing src/module_4998.py                                     pending│
+tool     editing src/module_4999.py                                     pending│
+notice ▾ status                                                                │
+         active (planning)                                                     │
+         PR     none yet                                                       │
+notice ▸ agents 5000                                                           ┃
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

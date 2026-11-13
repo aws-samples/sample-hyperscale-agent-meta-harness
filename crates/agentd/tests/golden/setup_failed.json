@@ -1,0 +1,110 @@
+{
+  "agentd_log": [
+    "direct turn started: run=01M4XTESTRUNDIRECT00000001 agent=direct engine=cline model=us.anthropic.claude-opus-5-5",
+    "direct turn ended: run=01M4XTESTRUNDIRECT00000001 outcome=stopped_setup_failed label=\"Cline did not start\"",
+    "direct transcript: last chunk 0 entries 0"
+  ],
+  "complete": [
+    {
+      "agentId": "direct",
+      "error": "request.json sha256 differs",
+      "finishReason": "failed",
+      "outcome": "failed",
+      "outputPins": {
+        "summary": {
+          "sha256": "<sha256>",
+          "versionId": "fake-1-summary.json"
+        }
+      },
+      "runId": "01M4XTESTRUNDIRECT00000001",
+      "transcript": {
+        "entries": [],
+        "lastTranscriptSeq": 0
+      },
+      "turn": 1
+    }
+  ],
+  "events": [
+    {
+      "payload": {
+        "engine": "cline",
+        "model": "us.anthropic.claude-opus-5-5",
+        "role": "direct",
+        "turn": 1
+      },
+      "type": "turn.started"
+    },
+    {
+      "payload": {
+        "directOutcome": "stopped_setup_failed",
+        "label": "Cline did not start",
+        "lastCommitSha": null,
+        "outcome": "failed",
+        "stopReason": null,
+        "turn": 1
+      },
+      "type": "turn.ended"
+    }
+  ],
+  "prompts": [],
+  "summary": {
+    "agentId": "direct",
+    "clineMessage": null,
+    "detail": "request.json sha256 differs",
+    "engine": {
+      "identity": "agentd",
+      "name": "cline"
+    },
+    "error": "request.json sha256 differs",
+    "faultHint": null,
+    "git": {
+      "committedByHarness": false,
+      "filesChanged": 0
+    },
+    "label": "Cline did not start",
+    "model": {
+      "id": "us.anthropic.claude-opus-5-5",
+      "region": "us-east-1"
+    },
+    "nudge": {
+      "honored": false,
+      "requested": false
+    },
+    "outcome": "stopped_setup_failed",
+    "packages": {
+      "byPrefix": {},
+      "bytes": "<n>",
+      "enabled": false,
+      "requests": 0,
+      "statuses": {}
+    },
+    "request": {
+      "promptBytes": "<n>",
+      "sha256": ""
+    },
+    "rules": [],
+    "rulesPreflight": {
+      "ran": false
+    },
+    "runId": "01M4XTESTRUNDIRECT00000001",
+    "schemaVersion": 1,
+    "snapshots": {
+      "count": 0
+    },
+    "stopReason": null,
+    "timing": {
+      "endedAt": "<time>",
+      "startedAt": "<time>",
+      "wallS": "<n>"
+    },
+    "toolCalls": 0,
+    "turn": 1,
+    "turnOutcome": "failed",
+    "usage": null,
+    "versions": {
+      "agentd": "0.1.0",
+      "protocol": "1.59.0"
+    }
+  },
+  "wire": []
+}

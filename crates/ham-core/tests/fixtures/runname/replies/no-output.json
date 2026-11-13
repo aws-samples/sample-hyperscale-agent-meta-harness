@@ -1,0 +1,5 @@
+{
+  "metrics": { "latencyMs": 120 },
+  "stopReason": "stop_sequence",
+  "usage": { "inputTokens": 455, "outputTokens": 0, "totalTokens": 455 }
+}

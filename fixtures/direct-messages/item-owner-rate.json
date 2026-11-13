@@ -1,0 +1,6 @@
+{
+  "principalArn": "arn:aws:sts::700000000011:assumed-role/Admin/testuser",
+  "minute": 29869322,
+  "count": 3,
+  "ttl": 1792159631
+}

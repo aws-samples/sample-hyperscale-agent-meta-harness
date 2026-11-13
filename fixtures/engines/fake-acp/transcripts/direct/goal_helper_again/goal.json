@@ -1,0 +1,21 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tool_gap_ms": 200,
+    "tools": [
+      {"title": "spawn_agent: Review the change and report what is wrong", "kind": "think", "open": true},
+      {"title": "read_files: src/calc.py", "kind": "read"}
+    ],
+    "hold_ms": 60000,
+    "iterations": 2
+  },
+  "rounds": [
+    {"text": "Starting the reviewers again.", "tool_gap_ms": 200, "tools": [
+      {"title": "spawn_agent: Review the change once more", "kind": "think", "open": true}
+    ], "hold_ms": 60000, "iterations": 2},
+    {"text": "Starting them a third time.", "tool_gap_ms": 200, "tools": [
+      {"title": "spawn_agent: Review the change a third time", "kind": "think", "open": true}
+    ], "hold_ms": 60000, "iterations": 2},
+    {"text": "I stopped here: the helper reviews are missing.", "iterations": 1}
+  ]
+}

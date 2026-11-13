@@ -1,0 +1,18 @@
+# Checkov configuration. skip-path names exact files only: no directory, no regular expression, no skip-check (that would skip a check across the
+# whole tree). The files are generated or recorded JSON files and the worker image Dockerfile, a build recipe. Each entry has
+# `<check id>[, <check id>]: <reason>` in the comment directly above it.
+skip-path:
+  # CKV_DOCKER_2, CKV_DOCKER_3: images/worker-python/Dockerfile is the build recipe of the worker image. In the image agentd runs as root to set up the
+  # in-session container runtime, and the engine runs as an unprivileged user (images/worker-python/AGENTS.md). A USER or HEALTHCHECK instruction
+  # would change how the image runs, so adding one is a product change and not a scanner fix.
+  - images/worker-python/Dockerfile
+
+  # CKV_OPENAPI_21, CKV_OPENAPI_4: array maxItems and global security advice on a generated file. crates/harness-protocol writes it with
+  # `cargo run -p harness-protocol --bin export-schemas` and it is never edited by hand (schemas/AGENTS.md). A maxItems limit or a global
+  # security field would change the frozen /internal API contract and needs a harness-protocol version bump.
+  - schemas/openapi-internal.json
+
+  # CKV_OPENAPI_21, CKV_OPENAPI_4: array maxItems and global security advice on a generated file. crates/harness-protocol writes it with
+  # `cargo run -p harness-protocol --bin export-schemas` and it is never edited by hand (schemas/AGENTS.md). A maxItems limit or a global
+  # security field would change the frozen public /v1 API contract and needs a harness-protocol version bump.
+  - schemas/openapi-v1.json

@@ -1,0 +1,10 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "text": "never said",
+      "delay_ms": 30000,
+      "iterations": 2
+    }
+  ]
+}

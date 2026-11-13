@@ -1,0 +1,23 @@
+# The code defaults of the stage settings: what a setting comes to when a deploy gets no value for it and the stage keeps none. scripts/lib/deploy.py
+# reads this file (SETTING_DEFAULTS), and so does setup.sh, for the plan of an update (a new default that the stage would not take). infra/lib/config.ts holds
+# the same values; scripts/tests/test_setup_deploy_settings.py pins the two together.
+# Plain data: it is never sourced or evaluated. A line that starts with # is a comment; a blank line is ignored.
+# Two fields: NAME|DEFAULT. An empty DEFAULT is no value. The utility model and its purposes take their default from the model catalog and the stage
+# Region, and the keep tag and the stage kind from the role of the account entry, so they have no row here.
+HAMH_COMPUTE_INSTANCES|off
+HAMH_INSTANCES_TYPES|m7g.4xlarge,m6g.4xlarge
+HAMH_INSTANCES_ROOT_FREE_GIB|100
+HAMH_INSTANCES_WORKSPACE_GIB|150
+HAMH_INSTANCES_LIFETIME_S|28800
+HAMH_INSTANCES_IDLE_S|1800
+HAMH_TOOLS_MODE|off
+HAMH_RESEARCH_PROVIDER|auto
+HAMH_RESEARCH_ALARM_TOPIC_ARN|
+HAMH_TAVILY_ALARMS|on
+HAMH_TAVILY_KEY_MAX_AGE_DAYS|30
+HAMH_LOG_RETENTION_DAYS|30
+HAMH_PR_CHECK_MINUTES|60
+HAMH_PR_CHECK_COMPUTE|small
+HAMH_AGENTCORE_STORAGE_ACCOUNTS|
+HAMH_PROVIDER_SILENCE_S|
+HAMH_SLICE_DEADLINE_S|

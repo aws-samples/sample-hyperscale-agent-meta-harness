@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "Authority": {
+      "description": "Who wrote an event: the deterministic harness or an (untrusted) agent.",
+      "enum": [
+        "harness",
+        "agent"
+      ],
+      "type": "string"
+    },
+    "EventType": {
+      "description": "Event types in architecture table order.",
+      "enum": [
+        "run.created",
+        "session.started",
+        "turn.started",
+        "turn.progress",
+        "tool.summary",
+        "turn.ended",
+        "agent.flag_blocked",
+        "permission.requested",
+        "gate.result",
+        "evaluator.verdict",
+        "merge.result",
+        "goal.status",
+        "goal.blocked",
+        "delivery.pr",
+        "delivery.ready",
+        "run.completed",
+        "run.aborted",
+        "route.changed",
+        "run.waiting",
+        "hidden.admission",
+        "session.capabilities"
+      ],
+      "type": "string"
+    },
+    "Payload": {
+      "description": "Event body: inline JSON up to [`MAX_INLINE_PAYLOAD_BYTES`], or a claim check on an S3 object.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "inline",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "claimCheck",
+              "type": "string"
+            },
+            "s3Uri": {
+              "pattern": "^s3://[^/]+/.+$",
+              "type": "string"
+            },
+            "sha256": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "sizeBytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "s3Uri",
+            "sha256",
+            "sizeBytes"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One event in the run log (DynamoDB `EVT#<runId>#<shard>`, sort key `eventId`).",
+  "properties": {
+    "agentId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "authority": {
+      "$ref": "#/$defs/Authority"
+    },
+    "eventId": {
+      "description": "ULID, the event's sort key.",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/Payload"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "seq": {
+      "description": "Per-agent sequence number.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "taskId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ts": {
+      "description": "RFC 3339 UTC timestamp.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "$ref": "#/$defs/EventType"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "runId",
+    "seq",
+    "ts",
+    "type",
+    "authority",
+    "payload"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}

@@ -1,0 +1,216 @@
+From c2e8d02f4dd8c53226d165ed978de9c07d332767 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Fri, 25 Sep 2026 02:48:01 +0000
+X-Harness-Test-Only: commit=c2e8d02f4dd8c53226d165ed978de9c07d332767 parent=82b73e10fcff2e4510203211354859efd5a72bbf tree=a10a672ac043f8beef7ca5e26bc40959fdbe53b0
+Subject: [PATCH] test(cli): --acp honors --data-dir and runs the local backend
+ (red first)
+
+Test-only commit for fork patch 0006.
+
+- resolveAcpSandbox: --data-dir (or CLINE_SANDBOX=1 with
+  CLINE_SANDBOX_DATA_DIR) points CLINE_DATA_DIR, CLINE_PROVIDER_SETTINGS_PATH
+  and the session dir into the data dir and selects the local backend; with
+  neither, the environment is untouched.
+- AcpAgent with localBackend creates its core with forceLocalBackend: true
+  (no hub daemon) and builds sandbox: true; without it the default backend
+  stays.
+
+Rebased onto cli-v3.0.71 (test files taken from the rebased fork patch 0005, old number 0006).
+---
+ .../src/acp/acpAgent.local-backend.test.ts    | 120 ++++++++++++++++++
+ apps/cli/src/acp/sandbox.test.ts              |  57 +++++++++
+ 2 files changed, 177 insertions(+)
+ create mode 100644 apps/cli/src/acp/acpAgent.local-backend.test.ts
+ create mode 100644 apps/cli/src/acp/sandbox.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.local-backend.test.ts b/apps/cli/src/acp/acpAgent.local-backend.test.ts
+new file mode 100644
+index 0000000..8230f15
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.local-backend.test.ts
+@@ -0,0 +1,120 @@
++import type { AgentSideConnection } from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { Config } from "../utils/types";
++
++const mocks = vi.hoisted(() => ({
++	createCliCore: vi.fn(async () => ({
++		start: vi.fn(async () => ({ sessionId: "core-session" })),
++		readMessages: vi.fn(async () => []),
++		dispose: vi.fn(async () => {}),
++	})),
++}));
++
++vi.mock("../session/session", () => ({ createCliCore: mocks.createCliCore }));
++vi.mock("../runtime/session-events", () => ({
++	subscribeToAgentEvents: () => () => {},
++}));
++vi.mock("../runtime/prompt", () => ({
++	resolveSystemPrompt: vi.fn(async () => "PROMPT"),
++}));
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => ({
++				"us.anthropic.claude-sonnet-5": { name: "Claude Sonnet 5" },
++			})),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "us.anthropic.claude-sonnet-5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++
++type AgentInternals = {
++	sessions: Map<string, unknown>;
++	ensureSessionManager(
++		session: unknown,
++		acpSessionId: string,
++	): Promise<unknown>;
++	buildConfig(session: unknown): Promise<Config>;
++};
++
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++async function startSession(agent: AcpAgent): Promise<{ config: Config }> {
++	const inner = agent as unknown as AgentInternals;
++	const created = await agent.newSession({
++		cwd: process.cwd(),
++		mcpServers: [],
++	});
++	const session = inner.sessions.get(created.sessionId);
++	await inner.ensureSessionManager(session, created.sessionId);
++	return { config: await inner.buildConfig(session) };
++}
++
++// Fork patch 0006: with a data dir, ACP runs the local backend (no hub daemon).
++describe("ACP backend selection", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = "us.anthropic.claude-sonnet-5";
++		process.env.CLINE_API_KEY = "unused";
++		mocks.createCliCore.mockClear();
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("forces the local backend and sandbox config when ACP runs sandboxed", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, { localBackend: true }),
++		);
++		expect(mocks.createCliCore).toHaveBeenCalledWith(
++			expect.objectContaining({ forceLocalBackend: true }),
++		);
++		expect(config.sandbox).toBe(true);
++	});
++
++	it("keeps the default backend when ACP is not sandboxed", async () => {
++		const { config } = await startSession(new AcpAgent(conn));
++		const options = (
++			mocks.createCliCore.mock.calls[0] as unknown[] | undefined
++		)?.[0] as { forceLocalBackend?: boolean } | undefined;
++		expect(options?.forceLocalBackend).not.toBe(true);
++		expect(config.sandbox).toBe(false);
++	});
++
++	// The rebase onto cli-v3.0.71 met this patch's `localBackend` option with upstream's
++	// `reasoning` option (--thinking now applies under ACP): both must reach the session config.
++	it("applies --thinking together with the local backend", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, {
++				localBackend: true,
++				reasoning: { thinking: true, reasoningEffort: "high" },
++			}),
++		);
++		expect(config.sandbox).toBe(true);
++		expect(config.thinking).toBe(true);
++		expect(config.reasoningEffort).toBe("high");
++	});
++
++	it("keeps reasoning off under the local backend when --thinking is not given", async () => {
++		const { config } = await startSession(
++			new AcpAgent(conn, { localBackend: true }),
++		);
++		expect(config.sandbox).toBe(true);
++		expect(config.thinking).toBe(false);
++		expect(config.reasoningEffort).toBeUndefined();
++	});
++});
+diff --git a/apps/cli/src/acp/sandbox.test.ts b/apps/cli/src/acp/sandbox.test.ts
+new file mode 100644
+index 0000000..9522b65
+--- /dev/null
++++ b/apps/cli/src/acp/sandbox.test.ts
+@@ -0,0 +1,57 @@
++import { mkdtempSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { resolveAcpSandbox } from "./index";
++
++// Fork patch 0006: --acp honors --data-dir and CLINE_SANDBOX=1 the way --json does.
++describe("resolveAcpSandbox", () => {
++	const saved = { ...process.env };
++	let base: string;
++
++	beforeEach(() => {
++		base = mkdtempSync(join(tmpdir(), "acp-sandbox-"));
++		for (const key of [
++			"CLINE_SANDBOX",
++			"CLINE_SANDBOX_DATA_DIR",
++			"CLINE_DATA_DIR",
++			"CLINE_PROVIDER_SETTINGS_PATH",
++			"CLINE_SESSION_DATA_DIR",
++		]) {
++			delete process.env[key];
++		}
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("puts ACP state under --data-dir and selects the local backend", () => {
++		const dataDir = join(base, "data");
++		const result = resolveAcpSandbox({ dataDir, cwd: base });
++		expect(result).toEqual({ localBackend: true, dataDir });
++		expect(process.env.CLINE_DATA_DIR).toBe(dataDir);
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBe(
++			join(dataDir, "settings", "providers.json"),
++		);
++		expect(process.env.CLINE_SESSION_DATA_DIR).toBe(join(dataDir, "sessions"));
++	});
++
++	it("honors CLINE_SANDBOX=1 with CLINE_SANDBOX_DATA_DIR", () => {
++		const dataDir = join(base, "sandbox");
++		process.env.CLINE_SANDBOX = "1";
++		process.env.CLINE_SANDBOX_DATA_DIR = dataDir;
++		const result = resolveAcpSandbox({ cwd: base });
++		expect(result.localBackend).toBe(true);
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBe(
++			join(dataDir, "settings", "providers.json"),
++		);
++	});
++
++	it("leaves the environment alone without a data dir or sandbox flag", () => {
++		const result = resolveAcpSandbox({ cwd: base });
++		expect(result).toEqual({ localBackend: false, dataDir: undefined });
++		expect(process.env.CLINE_PROVIDER_SETTINGS_PATH).toBeUndefined();
++		expect(process.env.CLINE_DATA_DIR).toBeUndefined();
++	});
++});
+-- 
+2.47.3

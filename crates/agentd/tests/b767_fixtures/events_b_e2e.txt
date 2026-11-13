@@ -1,0 +1,3 @@
+✓  internal/httpapi (53ms)
+
+DONE 1 tests in 0.053s

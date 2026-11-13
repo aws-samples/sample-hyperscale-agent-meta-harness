@@ -1,0 +1,5 @@
+"""Reference solution for the oracle self-test; never staged in a fixture repository."""
+
+
+def is_leap(year: int) -> bool:
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)

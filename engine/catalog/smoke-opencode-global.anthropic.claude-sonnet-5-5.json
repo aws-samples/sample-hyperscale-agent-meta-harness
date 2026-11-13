@@ -1,0 +1,64 @@
+{
+ "engine": "opencode",
+ "engineBinarySha256": "50503d24577fa4117a7c95ee85b2cd679606a87eacf20ca54ed5db5c9e1cf895",
+ "engineVersion": "2.2.6",
+ "fixture": null,
+ "kind": "engine-smoke",
+ "model": {
+  "acpValue": "amazon-bedrock/global.anthropic.claude-sonnet-5-5",
+  "alias": "sonnet",
+  "id": "global.anthropic.claude-sonnet-5-5"
+ },
+ "result": "pass",
+ "route": {
+  "protocol": "converse",
+  "region": "us-east-1"
+ },
+ "schemaVersion": 1,
+ "smokeRecordId": "smoke-opencode:2.2.6:global.anthropic.claude-sonnet-5-5:us-east-1:converse:20261108",
+ "smokedAt": "2026-11-08T14:20:12Z",
+ "turn": {
+  "cachedReadTokens": [
+   16570,
+   25794
+  ],
+  "fileOk": true,
+  "turns": [
+   {
+    "finalMessage": "`cat hello.txt` printed `hello-from-the-recording`.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 16570,
+     "cachedWriteTokens": 8432,
+     "inputTokens": 8,
+     "outputTokens": 220,
+     "totalTokens": 25230
+    }
+   },
+   {
+    "finalMessage": "`cat hello.txt` printed two lines: `hello-from-the-recording` and `second-turn-edit`.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 25794,
+     "cachedWriteTokens": 452,
+     "inputTokens": 8,
+     "outputTokens": 327,
+     "totalTokens": 26581
+    }
+   }
+  ]
+ },
+ "why": []
+}

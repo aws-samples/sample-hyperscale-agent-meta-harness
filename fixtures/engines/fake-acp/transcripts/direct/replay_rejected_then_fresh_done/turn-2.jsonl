@@ -1,0 +1,2 @@
+{"direction": "client", "message": {"id": 4, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"error": {"code": -32603, "data": {"errorName": "ValidationException", "isRetryable": false, "statusCode": 400}, "message": "Internal error: The format of the value at messages.7.content.0.toolUse.input is invalid. Provide a json object for the field and try again."}, "id": 4, "jsonrpc": "2.0"}}

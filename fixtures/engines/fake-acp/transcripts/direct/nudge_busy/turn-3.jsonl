@@ -1,0 +1,5 @@
+{"direction": "client", "message": {"id": 5, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "edit", "sessionUpdate": "tool_call", "status": "pending", "title": "Edit work/step2.txt", "toolCallId": "w2"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": [{"newText": "step 2\n", "path": "work/step2.txt", "type": "diff"}], "sessionUpdate": "tool_call_update", "status": "completed", "toolCallId": "w2"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": {"text": "Step 3 written.", "type": "text"}, "sessionUpdate": "agent_message_chunk"}}}}
+{"direction": "agent", "message": {"id": 5, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

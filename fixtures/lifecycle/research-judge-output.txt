@@ -1,0 +1,19 @@
+DIRECT-RESEARCH TRIGGER PRESENT ok objects=13
+DIRECT-RESEARCH CLASSES key-dependent=E0,E3,E4,E13 key-free=E1,E2,E5,E6,E7,E8,E9,E10,E11,E12,E14,E15
+E2E-R0 PASS precheck provider=tavily deployment=abcdef012345 account=TESTACCOUNT
+E2E-R1 PASS trigger-absent-when-off audit=0 items=0 searches=0
+E2E-R2 PASS delivered outcome=reported_done zip_members=6
+E2E-R3 PASS search n=1 provider=tavily credits=1
+E2E-R4 PASS fetch url=www.npmjs.com/package/is-plain-obj sha=2551fe30bd5b seen-before=true
+E2E-R5 PASS repo commit=666df7c10035 licence=MIT files=4 recomputed=4/4
+E2E-R6 PASS placed placed 5/5
+E2E-R7 PASS read-outside-tree title=Read /var/lib/agentd/01M4XAB0CDEFGHJKMNPQRSTVWX/direct/context/research/repos/si
+E2E-R8 PASS citation cited=3 fetched=2 unfetched-marked=1
+E2E-R9 PASS index rows=2 repo-sha=cb842ed66d56
+E2E-R10 PASS not-in-zip third-party-in-delivery=0 blobs-scanned=4
+E2E-R11 PASS gate blocked=index.js (https://github.com/sindresorhus/is-plain-obj, licence MIT) equals a st small=pass
+E2E-R12 PASS network-closed a7=9/9 a5-unlisted-allowed=0 curl=failed firewall=88cb977024b1
+E2E-R13 PASS key-out-of-reach getsecret research-api=3 worker=0 simulate=denied canary=0
+E2E-R14 PASS refusals refusals=4 codes=usage,refused_url,refused_unseen_url,refused_host
+E2E-R15 PASS counters searches=1 fetched-urls=1 repos=1 outbound=200 context=2088
+DIRECT-RESEARCH PASS 17/17 provider=tavily deployment=abcdef012345 model=us.openai.gpt-6.1-sol client=linux

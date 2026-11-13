@@ -1,0 +1,11 @@
+{
+  "metrics": { "latencyMs": 743 },
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [{ "text": "<title>Exponential backoff retry for S3 uploader" }]
+    }
+  },
+  "stopReason": "stop_sequence",
+  "usage": { "inputTokens": 454, "outputTokens": 22, "totalTokens": 476 }
+}

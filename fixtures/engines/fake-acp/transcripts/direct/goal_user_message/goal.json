@@ -1,0 +1,28 @@
+{
+  "transcripts": "writes_files",
+  "queued": {
+    "text": "Added the README line.",
+    "edit": {
+      "path": "README.md",
+      "text": "percent_change\n"
+    }
+  },
+  "rounds": [
+    {
+      "text": "Round two working.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "hold_ms": 600,
+      "iterations": 3
+    },
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

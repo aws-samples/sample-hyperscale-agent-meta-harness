@@ -1,0 +1,3 @@
+#!/bin/sh
+# docker: the engine's Docker command in a direct session. It is Podman's client talking to the session's Docker-compatible socket.
+exec /opt/harness/containers/bin/podman --remote --url "${CONTAINER_HOST:-unix:///var/run/docker.sock}" "$@"

@@ -1,0 +1,14 @@
+---
+source: crates/ham/tests/transcript.rs
+expression: t
+---
+tool     editor: src/todo/api.py                                           done│
+tool   ▸ run_commands: pytest -q                                           done│
+cline  ▸ thinking                                                              ┃
+tool   ▸ src/todo/api.py                                                       ┃
+cline    [x] write the tests                                                   ┃
+         [~] add the routes                                                    ┃
+         [ ] run the suite                                                     │
+notice   Switched route (switch 1): global.anthropic.claude-sonnet-5-5 to      │
+         us.anthropic.claude-sonnet-5-5, after a temporary failure.            │
+notice   [chunk unreadable]                                 [ Jump to bottom ↓ ]

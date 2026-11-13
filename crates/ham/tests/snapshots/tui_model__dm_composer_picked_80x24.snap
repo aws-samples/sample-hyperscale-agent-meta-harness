@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_model.rs
+expression: "screen_text(app, w, h)"
+---
+ham · New run · model: Claude Opus 5.5 (chosen here)
+┌ Prompt (Enter adds a line) ──────────────────────────────────────────────────┐
+│Add a percent_change(a, b) function with tests                                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Target (←→ changes) ───────────────────────────────┐┌ Engine (↑↓ changes) ───┐
+│(•) --repo   ( ) --new-repo   ( ) --s3-only         ││(•) Cline   ( ) OpenCode│
+└────────────────────────────────────────────────────┘└────────────────────────┘
+┌ Repository (cc:<name>) ──────────────────────────────────────────────────────┐
+│cc:hamh-e2e-python-calc                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ Base ref (optional) ─────┐┌ Options ─────────────────────────────────────────┐
+│                          ││--no-rules · --rules · --continue · --input-wait  │
+└──────────────────────────┘└──────────────────────────────────────────────────┘
+┌ ▶ Model (↑↓ picks for this run, d saves it as your default) ─────────────────┐
+│›(•) opus    Claude Opus 5.5    ctx 1,000,000                                 │
+│ ( ) sonnet  Claude Sonnet 5.5  ctx 1,000,000  default                        │
+│ ( ) sol     GPT-6.1 Sol        ctx 1,000,000                                 │
+│ ( ) astra   GPT-6 Astra        ctx 1,050,000                                 │
+│ ( ) glm     GLM 5.3            ctx 1,048,576                                 │
+│ ( ) fable   Claude Fable 5.2   ctx 1,000,000  needs provider data sharing    │
+└──────────────────────────────────────────────────────────────────────────────┘
+  [ Submit ]  (Ctrl-S)
+↑↓ pick model · d save as default · Tab next field · Ctrl-S submit · Esc cancel

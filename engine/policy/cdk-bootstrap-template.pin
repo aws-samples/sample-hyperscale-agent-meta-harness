@@ -1,0 +1,6 @@
+# The CDK bootstrap template pin. A fresh account has no CDK bootstrap stack. setup.sh makes it with the
+# user's own credentials from the template that the runner prints with the pinned CDK CLI (`cdk bootstrap --show-template`, aws-cdk version below), and deploys it only
+# when the SHA-256 of that template is the one below. To move to another aws-cdk: change tools.lock, print the template with `HAMH_BUILD_TESTS=1` on a build host
+# (the live case of the test), and put the version and the SHA-256 here in the same change.
+awsCdk=2.1143.0
+sha256=ed382e6eaab4bfddfe9b4fdb5a81fed0dfb7cc1dc6118fb11c41a0381377e89f

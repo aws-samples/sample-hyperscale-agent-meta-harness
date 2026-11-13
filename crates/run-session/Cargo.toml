@@ -1,0 +1,53 @@
+[package]
+name = "run-session"
+description = "The run-session Lambda of a direct run: prepare, start-session, plan-delivery, finalize, mark-blocked and run-ended for one Cline session per run (stage direct)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "run-session"
+path = "src/bin/run-session.rs"
+
+[dependencies]
+harness-protocol.workspace = true
+harness-core.workspace = true
+message-ledger.workspace = true
+# The pure helpers the dispatcher already owns: ids, items, the session policy, the endpoint pin and the AgentCore calls.
+dispatcher.workspace = true
+# The token-encryption context, the STS minter and the nonce of the credential refresh.
+worker-api.workspace = true
+# `models::builtin()`: the one list of the five supported models (`engine/catalog/models.json`).
+ham-core.workspace = true
+# The CodeArtifact token call (`packages::mint_token`), its index settings and its signed HTTP client.
+agentd.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-bedrockagentcore.workspace = true
+aws-sdk-bedrockagentcorecontrol.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-kms.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-ssm.workspace = true
+aws-sdk-sts.workspace = true
+base64.workspace = true
+lambda_runtime.workspace = true
+serde.workspace = true
+serde_dynamo.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# The walker's fakes parse every payload into the real request types of the delivery Lambdas.
+delivery.workspace = true
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+aws-smithy-types.workspace = true
+http.workspace = true
+tempfile.workspace = true

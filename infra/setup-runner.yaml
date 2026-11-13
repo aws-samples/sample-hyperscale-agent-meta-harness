@@ -1,0 +1,634 @@
+# infra/setup-runner.yaml: the account-local runner of the setup wizard.
+#
+# `setup.sh` deploys this template as the stack `hamh-setup-runner` with the AWS CLI alone:
+#   aws cloudformation deploy --stack-name hamh-setup-runner --template-file infra/setup-runner.yaml \
+#     --parameter-overrides InstallerPrincipal=<arn> InstallerPrincipalWithPath=<arn> AuthorityExpires=<UTC time> \
+#     --capabilities CAPABILITY_NAMED_IAM --tags project=hyperscale-agent-meta-harness
+# It creates a bucket for the source archive, the generated account file and the results, a CodeBuild project (Linux x86_64) that builds and deploys the stage
+# from that archive inside this account, and the role the project runs as. CloudFormation and the CDK create resources but compile nothing; the project is
+# the place where the Rust programs, the images and the client are built.
+#
+# How a build is started (scripts/setup/runner-build.sh reads these):
+#   aws s3api put-object --bucket hamh-setup-<account>-<region> --key source/<commit>.zip --body <git archive of HEAD> --checksum-algorithm SHA256   (every time; the answer names the version)
+#   aws s3api put-object --bucket hamh-setup-<account>-<region> --key config/accounts-<first 12 hex of its sha256>.json --body <generated account file> --checksum-algorithm SHA256
+#   aws codebuild start-build --project-name hamh-setup-runner --source-location-override hamh-setup-<account>-<region>/source/<commit>.zip --source-version <version id of the upload> \
+#     --environment-variables-override name=SETUP_SOURCE_KEY,value=source/<commit>.zip name=SETUP_CONFIG_KEY,value=config/accounts-<12 hex>.json \
+#     name=SETUP_SOURCE_SHA256,value=<64 hex> name=SETUP_CONFIG_SHA256,value=<64 hex>
+#   (SETUP_STAGE, SETUP_AZS and SETUP_BINARY_NAME are optional; the defaults are direct, 1 and the client name of scripts/setup/names.sh.)
+# The build writes results/<build id>/result.json, results/<build id>/phases.jsonl and client/<build id>/ to the bucket and ends its log with
+# SETUP-PASS or SETUP-FAIL. The buildspec exports the SHA-256 of the result.json as the build variable SETUP_RESULT_SHA256, which CodeBuild keeps with the build.
+#
+# What the runner role may do (infra/setup-runner-policy.json holds the list; scripts/tests/test_setup_runner_policy.py holds it equal to this file and to the
+# AWS calls of the scripts the role's credentials reach):
+#   - write its build log, read the source archive and the account file, write the results and the client files, and read the stage state it needs (parameters,
+#     stacks, runtimes, images, running executions) in this account and Region;
+#   - assume the four roles of the CDK bootstrap stack (deploy, file publishing, image publishing, lookup) and the Go module store filler role of the stage;
+#   - start and read the builds of the stage's own image-build project, and publish the scanner rules package to the stage's CodeArtifact repository.
+#   It has no IAM permission, no organizations or account permission, and no S3 delete; iam:*, organizations:* and account:* are denied in its policy and in its
+#   permissions boundary, so the runner cannot change the boundary or any role with its own credentials (the CDK roles it assumes can, see below).
+#   These actions accept no resource and are allowed on every resource, each with a condition: sts:GetServiceBearerToken (only for CodeArtifact),
+#   ec2:DescribeAvailabilityZones, ec2:DescribeVpcs and bedrock:GetModelInvocationLoggingConfiguration (only in this Region).
+#
+# What this template does not bound: the CDK roles. The deploy role passes the CloudFormation execution role (cdk-hnb659fds-cfn-exec-role) to CloudFormation,
+# and the bootstrap stack gives that role AdministratorAccess unless the stack was made with other execution policies. The runner role can assume the deploy
+# role, so it is as powerful as the bootstrap's execution role during a build, and the permissions boundary of the runner role does not reach what an assumed
+# role does: the boundary caps only the calls the runner role makes itself. The CDK roles are the account's own bootstrap resources, which setup.sh never modifies
+# when they exist; they are not bounded by this template, they trust the whole account and they stay after this stack is removed.
+# The limits that hold are the runner role's own policy; its lifetime (AuthorityExpires: the two statements that let the role assume roles hold only before that
+# time, which setup.sh sets 12 hours ahead at every install, so a runner that is left behind cannot assume the CDK roles any more, whether or not the stack is still
+# there; setup.sh also removes the stack after a successful setup unless --keep-runner is given); who may write the bucket (below); the condition on its trust policy
+# (only this account's CodeBuild, only this project); and a dedicated account for the stage. Anyone who may call codebuild:StartBuild on the project runs commands as the
+# runner role, with a buildspec of their own if they choose (IAM cannot restrict that), so until AuthorityExpires that permission is administrator access to the
+# account. The narrowest increment that follows is a service-level execution policy for the stage's nine stacks given to the bootstrap with
+# --cloudformation-execution-policies; this template does not set one.
+#
+# The build log group is encrypted with a KMS key of the stack (RunnerKey, rotation on, deleted with the stack after a pending window of 7 days).
+# The setup bucket uses the S3-managed key, so the bucket policy decides who writes: it refuses
+# s3:PutObject, s3:DeleteObject and s3:DeleteObjectVersion to every principal except the runner role and the installer (InstallerPrincipal and InstallerPrincipalWithPath,
+# the identity that runs setup.sh: a user, the root user or a federated user by its ARN, a role session by its role with and without a path). The archive that the runner
+# executes with deployment authority and the result that decides what setup.sh installs are therefore written by those two alone. S3 Lifecycle expiry of old objects is
+# done by the service and is not a request of any principal.
+#
+# Removing the stack: the bucket is versioned, so CloudFormation cannot delete it while it holds an object version or a delete marker, and the template has no
+# custom resource to empty it. `setup.sh --teardown` runs scripts/setup/empty-bucket.sh <bucket> first with the caller's own credentials; the script lists
+# the versions with `aws s3api list-object-versions` and removes them in batches with `aws s3api delete-objects`, then the stack is deleted. A build that is still
+# running stops the teardown before it deletes anything (exit 7). The teardown installs nothing in the account and this role is given none of its permissions.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Account-local runner of the setup wizard: a bucket for the source archive, the account file and the results, and a CodeBuild project that builds and deploys
+  the stage and builds the client inside this account.
+
+Parameters:
+  BuildComputeType:
+    Type: String
+    Default: BUILD_GENERAL1_LARGE
+    AllowedValues: [BUILD_GENERAL1_LARGE, BUILD_GENERAL1_XLARGE, BUILD_GENERAL1_2XLARGE]
+    Description: Compute size of the runner build. Larger sizes shorten the Rust compile.
+  BuildTimeoutMinutes:
+    Type: Number
+    Default: 240
+    MinValue: 30
+    MaxValue: 480
+    Description: Longest a runner build may run, in minutes.
+  InstallerPrincipal:
+    Type: String
+    AllowedPattern: '^arn:aws:(iam::[0-9]{12}:(root|user/[A-Za-z0-9+=,.@_/-]+|role/(\*/)?[A-Za-z0-9+=,.@_/-]+)|sts::[0-9]{12}:federated-user/[A-Za-z0-9+=,.@_-]+)$'
+    ConstraintDescription: an ARN of an IAM user, the root user, a federated user or a role of this account, as setup.sh passes it
+    Description: The principal that runs setup.sh, as an ARN. Besides the runner role it is the only one that may write or delete in the setup bucket.
+  InstallerPrincipalWithPath:
+    Type: String
+    AllowedPattern: '^arn:aws:(iam::[0-9]{12}:(root|user/[A-Za-z0-9+=,.@_/-]+|role/(\*/)?[A-Za-z0-9+=,.@_/-]+)|sts::[0-9]{12}:federated-user/[A-Za-z0-9+=,.@_-]+)$'
+    ConstraintDescription: an ARN or an ARN pattern of the same principal, as setup.sh passes it
+    Description: The same principal for a role that has a path (arn:aws:iam::<account>:role/*/<role>); the same value as InstallerPrincipal for a user.
+  AuthorityExpires:
+    Type: String
+    AllowedPattern: '^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$'
+    ConstraintDescription: a UTC time such as 2030-01-01T00:00:00Z
+    Description: Until this UTC time the runner role may assume the CDK roles and the Go module store filler role. After it the role keeps its other permissions and assumes nothing.
+
+Resources:
+  SetupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: Scratch bucket of a stack that setup.sh removes after a successful setup. Its objects expire after 30 to 90 days (lifecycle rules above), only the runner role and the caller write to it, and the stack owns no log-target bucket.
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Scratch bucket of a stack that setup.sh removes after a successful setup. Its objects expire after 30 to 90 days (lifecycle rules above), only the runner role and the caller write to it, and the stack owns no log-target bucket.
+            reason: Scratch bucket of a stack that setup.sh removes after a successful setup. Its objects expire after 30 to 90 days (lifecycle rules above), only the runner role and the caller write to it, and the stack owns no log-target bucket.
+    Properties:
+      BucketName: !Sub 'hamh-setup-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: expire-noncurrent-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: expire-source
+            Status: Enabled
+            Prefix: source/
+            ExpirationInDays: 30
+          - Id: expire-config
+            Status: Enabled
+            Prefix: config/
+            ExpirationInDays: 30
+          - Id: expire-results
+            Status: Enabled
+            Prefix: results/
+            ExpirationInDays: 90
+          - Id: expire-client
+            Status: Enabled
+            Prefix: client/
+            ExpirationInDays: 90
+      Tags:
+        - Key: project
+          Value: hyperscale-agent-meta-harness
+
+  SetupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SetupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: OnlyTheRunnerAndTheInstallerWrite
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+              - 's3:DeleteObjectVersion'
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/*'
+            Condition:
+              ArnNotLike:
+                aws:PrincipalArn:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hamh-setup-runner-role'
+                  - !Ref InstallerPrincipal
+                  - !Ref InstallerPrincipalWithPath
+
+  RunnerKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: Encrypts the build log group of the setup runner.
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministersThroughIam
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: CloudWatchLogsForTheGroup
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:aws:logs:arn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/hamh/setup-runner'
+          - Sid: CloudWatchLogsDescribesTheKey
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action: 'kms:DescribeKey'
+            Resource: '*'
+      Tags:
+        - Key: project
+          Value: hyperscale-agent-meta-harness
+
+  RunnerKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/hamh-setup-runner
+      TargetKeyId: !Ref RunnerKey
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: /hamh/setup-runner
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt RunnerKey.Arn
+      Tags:
+        - Key: project
+          Value: hyperscale-agent-meta-harness
+
+  RunnerBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W13
+            reason: sts:GetServiceBearerToken, ec2:DescribeAvailabilityZones, ec2:DescribeVpcs and bedrock:GetModelInvocationLoggingConfiguration accept no resource-level permission, so the two statements that carry them allow every resource, each held by a condition (the service name CodeArtifact; this Region). Every other statement of the boundary names its resources.
+          - id: W28
+            reason: ManagedPolicyName is explicit by design. The runner role names the boundary, the header of this template and the teardown steps of setup.sh refer to it by name, and no property of the policy that setup.sh changes needs a replacement; a new name would be a new resource.
+    Properties:
+      ManagedPolicyName: hamh-setup-runner-boundary
+      Description: Ceiling of the setup runner role. It names the service actions the runner may ever use and denies IAM, organizations and account.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BoundaryLogs
+            Effect: Allow
+            Action:
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'logs:GetLogEvents'
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/hamh/*'
+          - Sid: BoundaryObjects
+            Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:PutObject'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}/*'
+          - Sid: BoundaryBuckets
+            Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:GetBucketLocation'
+              - 's3:GetBucketVersioning'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}'
+              - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-gomod-${AWS::AccountId}'
+          - Sid: BoundaryDataKey
+            Effect: Allow
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey'
+            Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+          - Sid: BoundaryParameters
+            Effect: Allow
+            Action:
+              - 'ssm:GetParameter'
+              - 'ssm:PutParameter'
+              - 'ssm:AddTagsToResource'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hamh/*'
+              - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/hnb659fds/version'
+          - Sid: BoundaryAssume
+            Effect: Allow
+            Action: 'sts:AssumeRole'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-image-publishing-role-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-lookup-role-${AWS::AccountId}-${AWS::Region}'
+              - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hamh-direct-gomod-filler'
+          - Sid: BoundaryStacks
+            Effect: Allow
+            Action:
+              - 'cloudformation:DescribeStacks'
+              - 'cloudformation:GetTemplate'
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/hamh-direct-*/*'
+          - Sid: BoundaryRuntimes
+            Effect: Allow
+            Action:
+              - 'bedrock-agentcore:GetAgentRuntime'
+              - 'bedrock-agentcore:GetAgentRuntimeEndpoint'
+              - 'bedrock-agentcore:ListAgentRuntimeEndpoints'
+              - 'bedrock-agentcore:CreateAgentRuntimeEndpoint'
+              - 'bedrock-agentcore:DeleteAgentRuntimeEndpoint'
+              - 'bedrock-agentcore:TagResource'
+            Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/hamh_direct_*'
+          - Sid: BoundaryImages
+            Effect: Allow
+            Action:
+              - 'ecr:DescribeImages'
+              - 'ecr:DescribeRepositories'
+            Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/hamh-direct-*'
+          - Sid: BoundaryRuns
+            Effect: Allow
+            Action: 'states:ListExecutions'
+            Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:hamh-direct-run'
+          - Sid: BoundaryRunTable
+            Effect: Allow
+            Action: 'dynamodb:GetItem'
+            Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/hamh-direct-harness'
+          - Sid: BoundaryImageBuilds
+            Effect: Allow
+            Action:
+              - 'codebuild:StartBuild'
+              - 'codebuild:BatchGetBuilds'
+            Resource: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/hamh-direct-image-build'
+          - Sid: BoundaryCodeArtifact
+            Effect: Allow
+            Action:
+              - 'codeartifact:GetAuthorizationToken'
+              - 'codeartifact:GetRepositoryEndpoint'
+              - 'codeartifact:ListPackageVersionAssets'
+              - 'codeartifact:DescribePackage'
+              - 'codeartifact:PutPackageOriginConfiguration'
+              - 'codeartifact:PublishPackageVersion'
+              - 'codeartifact:PutPackageMetadata'
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:domain/hamh-direct'
+              - !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:repository/hamh-direct/packages'
+              - !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:package/hamh-direct/packages/pypi/*'
+          - Sid: BoundaryBearerToken
+            Effect: Allow
+            Action: 'sts:GetServiceBearerToken'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                sts:AWSServiceName: codeartifact.amazonaws.com
+          - Sid: BoundaryRegionalReads
+            Effect: Allow
+            Action:
+              - 'ec2:DescribeAvailabilityZones'
+              - 'ec2:DescribeVpcs'
+              - 'bedrock:GetModelInvocationLoggingConfiguration'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+          - Sid: NeverIamOrganizationsOrAccount
+            Effect: Deny
+            Action:
+              - 'iam:*'
+              - 'organizations:*'
+              - 'account:*'
+            Resource: '*'
+
+  RunnerRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: Four actions accept no resource-level permission and are allowed on every resource, each with a condition, in the statements CodeArtifactBearerToken and RegionalReadsWithoutResources (listed in the header of this template). Every other statement names its resources.
+          - id: W28
+            reason: RoleName is explicit by design. The output RunnerRoleArn and the trust policies of the stage name the role, the bucket policy names it in its aws:PrincipalArn condition, setup.sh finds it by name, and the properties that setup.sh changes at an install (the expiry in a policy statement) are updated in place and never replace the role.
+          - id: W76
+            reason: The inline policy is the list of every AWS call the runner's scripts make, one statement per resource family, and infra/setup-runner-policy.json with its tests holds it to those scripts. Splitting it into several policies would not shrink what the role may do.
+    Properties:
+      RoleName: hamh-setup-runner-role
+      PermissionsBoundary: !Ref RunnerBoundary
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/hamh-setup-runner'
+      Policies:
+        - PolicyName: setup-runner
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: OwnBuildLog
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/hamh/setup-runner:log-stream:*'
+              - Sid: ReadImageBuildLogs
+                Effect: Allow
+                Action: 'logs:GetLogEvents'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/hamh/direct/codebuild/image-build:log-stream:*'
+              - Sid: ReadSourceAndConfig
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/source/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/config/*'
+              - Sid: WriteResultsAndClient
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/results/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/client/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}/bootstrap/*'
+              - Sid: ListResultsAndClient
+                Effect: Allow
+                Action: 's3:ListBucket'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}'
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'results/*'
+                      - 'client/*'
+              - Sid: SetupBucketMetadata
+                Effect: Allow
+                Action:
+                  - 's3:GetBucketLocation'
+                  - 's3:GetBucketVersioning'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::hamh-setup-${AWS::AccountId}-${AWS::Region}'
+              - Sid: StageBucketObjects
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}/builds/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}/engine/cline/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}/deploy/direct/*'
+              - Sid: StageBucketList
+                Effect: Allow
+                Action: 's3:ListBucket'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-harness-${AWS::AccountId}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::hamh-direct-gomod-${AWS::AccountId}'
+              - Sid: StageDataKeyThroughS3
+                Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'kms:GenerateDataKey'
+                Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
+                  ForAnyValue:StringEquals:
+                    kms:ResourceAliases: alias/hamh-direct-data
+              - Sid: ReadBootstrapVersion
+                Effect: Allow
+                Action: 'ssm:GetParameter'
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/hnb659fds/version'
+              - Sid: StageParameters
+                Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:PutParameter'
+                  - 'ssm:AddTagsToResource'
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hamh/direct/*'
+              - Sid: AssumeCdkBootstrapRoles
+                Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-deploy-role-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-file-publishing-role-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-image-publishing-role-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hnb659fds-lookup-role-${AWS::AccountId}-${AWS::Region}'
+                Condition:
+                  DateLessThan:
+                    aws:CurrentTime: !Ref AuthorityExpires
+              - Sid: AssumeGomodFiller
+                Effect: Allow
+                Action: 'sts:AssumeRole'
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hamh-direct-gomod-filler'
+                Condition:
+                  DateLessThan:
+                    aws:CurrentTime: !Ref AuthorityExpires
+              - Sid: ReadStageStacks
+                Effect: Allow
+                Action:
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:GetTemplate'
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/hamh-direct-*/*'
+              - Sid: WorkerRuntimeEndpoints
+                Effect: Allow
+                Action:
+                  - 'bedrock-agentcore:GetAgentRuntime'
+                  - 'bedrock-agentcore:GetAgentRuntimeEndpoint'
+                  - 'bedrock-agentcore:ListAgentRuntimeEndpoints'
+                  - 'bedrock-agentcore:CreateAgentRuntimeEndpoint'
+                  - 'bedrock-agentcore:DeleteAgentRuntimeEndpoint'
+                  - 'bedrock-agentcore:TagResource'
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:runtime/hamh_direct_*'
+              - Sid: StageImageLookups
+                Effect: Allow
+                Action:
+                  - 'ecr:DescribeImages'
+                  - 'ecr:DescribeRepositories'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/hamh-direct-*'
+              - Sid: ListRunningRuns
+                Effect: Allow
+                Action: 'states:ListExecutions'
+                Resource: !Sub 'arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:hamh-direct-run'
+              - Sid: ReadRunPins
+                Effect: Allow
+                Action: 'dynamodb:GetItem'
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/hamh-direct-harness'
+              - Sid: StartImageBuilds
+                Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Resource: !Sub 'arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/hamh-direct-image-build'
+              - Sid: CodeArtifactToken
+                Effect: Allow
+                Action: 'codeartifact:GetAuthorizationToken'
+                Resource: !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:domain/hamh-direct'
+              - Sid: CodeArtifactEndpoint
+                Effect: Allow
+                Action: 'codeartifact:GetRepositoryEndpoint'
+                Resource: !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:repository/hamh-direct/packages'
+              - Sid: CodeArtifactRulesPackage
+                Effect: Allow
+                Action:
+                  - 'codeartifact:ListPackageVersionAssets'
+                  - 'codeartifact:DescribePackage'
+                  - 'codeartifact:PutPackageOriginConfiguration'
+                  - 'codeartifact:PublishPackageVersion'
+                  - 'codeartifact:PutPackageMetadata'
+                Resource: !Sub 'arn:${AWS::Partition}:codeartifact:${AWS::Region}:${AWS::AccountId}:package/hamh-direct/packages/pypi/*/hamh-semgrep-rules'
+              - Sid: CodeArtifactBearerToken
+                Effect: Allow
+                Action: 'sts:GetServiceBearerToken'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    sts:AWSServiceName: codeartifact.amazonaws.com
+              - Sid: RegionalReadsWithoutResources
+                Effect: Allow
+                Action:
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeVpcs'
+                  - 'bedrock:GetModelInvocationLoggingConfiguration'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: NeverIamOrganizationsOrAccount
+                Effect: Deny
+                Action:
+                  - 'iam:*'
+                  - 'organizations:*'
+                  - 'account:*'
+                Resource: '*'
+      Tags:
+        - Key: project
+          Value: hyperscale-agent-meta-harness
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: The project writes no artifact and uses no cache (NO_ARTIFACTS), so nothing is encrypted with a project key. Its build log goes to the log group, which RunnerKey encrypts, and its results go to the setup bucket, which is encrypted by default.
+    Properties:
+      Name: hamh-setup-runner
+      Description: Builds and deploys the stage and builds the client inside this account (scripts/setup/runner-build.sh).
+      ServiceRole: !GetAtt RunnerRole.Arn
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/amazonlinux-x86_64-standard:5.0
+        ComputeType: !Ref BuildComputeType
+        PrivilegedMode: true
+      Source:
+        Type: S3
+        Location: !Sub 'hamh-setup-${AWS::AccountId}-${AWS::Region}/source/placeholder.zip'
+        BuildSpec: images/codebuild/setup-runner.yml
+      Artifacts:
+        Type: NO_ARTIFACTS
+      TimeoutInMinutes: !Ref BuildTimeoutMinutes
+      QueuedTimeoutInMinutes: 60
+      ConcurrentBuildLimit: 1
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref LogGroup
+      Tags:
+        - Key: project
+          Value: hyperscale-agent-meta-harness
+
+Outputs:
+  SetupBucket:
+    Description: Bucket for the source archive, the account file, the results and the client files.
+    Value: !Ref SetupBucket
+  BuildProject:
+    Description: CodeBuild project that runs scripts/setup/runner-build.sh.
+    Value: !Ref BuildProject
+  LogGroup:
+    Description: Log group of the runner builds.
+    Value: !Ref LogGroup
+  RunnerRoleArn:
+    Description: Role the runner builds run as.
+    Value: !GetAtt RunnerRole.Arn

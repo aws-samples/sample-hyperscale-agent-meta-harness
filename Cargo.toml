@@ -1,0 +1,156 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/harness-protocol",
+  "crates/harness-core",
+  "crates/ham-core",
+  "crates/ham",
+  "crates/ham-admin",
+  "crates/ham-e2e",
+  "crates/worker-api",
+  "crates/control-api",
+  "crates/agentd",
+  "crates/dispatcher",
+  "crates/delivery",
+  "crates/pkgproxy",
+  "crates/run-session",
+  "crates/message-ledger",
+  "crates/research-api",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT-0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
+
+[workspace.dependencies]
+harness-protocol = { path = "crates/harness-protocol" }
+harness-core = { path = "crates/harness-core" }
+ham-core = { path = "crates/ham-core" }
+ham = { path = "crates/ham" }
+worker-api = { path = "crates/worker-api" }
+control-api = { path = "crates/control-api" }
+dispatcher = { path = "crates/dispatcher" }
+agentd = { path = "crates/agentd" }
+delivery = { path = "crates/delivery" }
+pkgproxy = { path = "crates/pkgproxy" }
+run-session = { path = "crates/run-session" }
+message-ledger = { path = "crates/message-ledger" }
+research-api = { path = "crates/research-api" }
+# Third-party, pinned exactly; keep sorted.
+aws-config = { version = "=1.12.0", default-features = false, features = ["rt-tokio", "behavior-version-latest", "default-https-client", "credentials-process"] }
+# aws-config for ham: no default HTTPS client, whose native root store links Security.framework and
+# does not link for aarch64-apple-darwin under zig (S11); ham reads profile credentials only.
+aws-config-client = { package = "aws-config", version = "=1.12.0", default-features = false, features = ["rt-tokio", "behavior-version-latest", "credentials-process"] }
+aws-credential-types = "=1.3.1"
+# SDK clients: each crate's default features minus `rustls` (aws-smithy-runtime tls-rustls, the legacy
+# hyper 0.14 + rustls 0.21 client whose rustls-webpki 0.101 and h2 0.3 carry RUSTSEC-2026-0104, -0098,
+# -0099 and -0258). default-https-client is the hyper 1 + rustls 0.23 client aws-config already uses.
+aws-sdk-bedrockagentcorecontrol = { version = "=1.86.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-bedrockagentcore = { version = "=1.77.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudformation = { version = "=1.128.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatch = { version = "=1.131.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-cloudwatchlogs = { version = "=1.153.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-codebuild = { version = "=1.138.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-codecommit = { version = "=1.115.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "=1.127.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "=1.121.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-lambda = { version = "=1.147.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "=1.149.0", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-secretsmanager = { version = "=1.118.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-servicequotas = { version = "=1.114.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sfn = { version = "=1.118.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssm = { version = "=1.125.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "=1.117.0", default-features = false, features = ["sigv4a", "default-https-client", "rt-tokio"] }
+aws-sigv4 = "=1.6.4"
+aws-smithy-cbor = "=0.62.1"
+# SDK clients for the ham-e2e live driver without their default HTTPS client (the native root
+# store does not link for aarch64-apple-darwin, S11); the driver hands them a webpki client. No S3
+# client: its crc-fast dependency builds a cdylib that does not link for that target either.
+aws-sdk-cloudformation-client = { package = "aws-sdk-cloudformation", version = "=1.128.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-sdk-cloudwatchlogs-client = { package = "aws-sdk-cloudwatchlogs", version = "=1.153.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-sdk-codebuild-client = { package = "aws-sdk-codebuild", version = "=1.138.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-sdk-codecommit-client = { package = "aws-sdk-codecommit", version = "=1.115.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-sdk-ssm-client = { package = "aws-sdk-ssm", version = "=1.125.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-sdk-sts-client = { package = "aws-sdk-sts", version = "=1.117.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-smithy-runtime-api = { version = "=1.19.2", default-features = false, features = ["client", "http-1x"] }
+aws-smithy-eventstream = "=0.61.6"
+aws-smithy-http-client = "=1.5.1"
+aws-smithy-types = "=1.9.1"
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "=0.23.1"
+bytes = "=1.12.1"
+crossterm = "=0.29.0"
+expectrl = "=0.9.0"
+# The gzip writer of the transcript chunks, the reader of a stored repository archive in agentd's research module and the gzip
+# reader and writer of the research-job Lambda: already in Cargo.lock through zip's deflate-flate2-zlib-rs; the pure-Rust zlib-rs
+# backend, no C library.
+flate2 = { version = "=1.1.10", default-features = false, features = ["zlib-rs"] }
+getrandom = "=0.4.3"
+hmac = "=0.13.0"
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", features = ["client", "http1"] }
+hyper-rustls = { version = "=0.27.10", default-features = false, features = ["http1", "tls12", "webpki-tokio", "ring"] }
+hyper-util = { version = "=0.1.21", features = ["client-legacy", "http1", "tokio"] }
+insta = { version = "=1.48.0", features = ["json"] }
+lambda_http = "=1.3.1"
+lambda_runtime = "=1.4.0"
+# The Landlock sandbox around the engine on Instances: the maintainer's crate, so agentd keeps `unsafe_code = "forbid"`; it brings
+# enumflags2 and uses libc and thiserror, which the lock already holds.
+landlock = "=0.4.7"
+# The system-call numbers of the SysV IPC filter (agentd `sandbox::ipc`); the lock already holds this version for other dependencies.
+libc = "=0.2.189"
+mio = { version = "=1.2.3", features = ["os-poll", "os-ext"] }
+# agentd's launcher closes the descriptors it inherited before it installs the sandbox (`nix::unistd::close` is a safe function, so the crate keeps
+# `unsafe_code = "forbid"`); 0.29.0 is the version the lock already holds for another dependency.
+nix = { version = "=0.29.0", default-features = false }
+proptest = "=1.11.0"
+ptyprocess = "=0.5.0"
+ratatui = "=0.30.2"
+ratatui-textarea = "=0.9.3"
+regex = "=1.13.1"
+ring = "=0.17.14"
+# The cheat plant's directory-handle writes (agentd `cheat_plant`): safe openat, mkdirat, unlinkat and renameat; `process` is agentd's non-dumpable switch.
+rustix = { version = "=1.1.5", default-features = false, features = ["fs", "process", "std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+schemars = "=1.2.2"
+# The seccomp filter that denies SysV shared memory, message queues and semaphores to the engine: the Firecracker team's crate,
+# with its only dependency (libc) already in the lock; the JSON compiler is left off.
+seccompiler = { version = "=0.5.0", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_dynamo = { version = "=4.3.0", features = ["aws-sdk-dynamodb+1"] }
+serde_json = "=1.0.151"
+serde_yaml_ng = "=0.10.0"
+# `ham clone` hashes the zip's src/ files as git blobs (SHA-1 over "blob <len>\0" and the bytes) to compare with the cloned tree.
+sha1 = "=0.11.0"
+sha2 = "=0.11.0"
+# agentd's research module parses a stored repository archive entry by entry (never `unpack`); no extended attributes.
+tar = { version = "=0.4.46", default-features = false }
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+tokio = { version = "=1.53.3", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+# The pkgproxy test fakes' TLS acceptor (dev only): the ring provider, as every other rustls user in the workspace.
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
+toml = "=1.1.6"
+# The DNS resolver trait of pkgproxy's connector (already in the lock through hyper-util).
+tower-service = "=0.3.3"
+vt100 = "=0.16.2"
+# pkgproxy's `Secret` wipes its memory on drop (already in the lock through rustls).
+zeroize = "=1.9.0"
+# The deflate writer only (pure-Rust zlib-rs backend); no crypto or other codecs.
+zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[profile.release]
+strip = true

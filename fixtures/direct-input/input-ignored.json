@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A2RC4F7ZG1E9M6KS0Y3HDW",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 415,
+  "ts": "2026-10-15T13:43:02Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "input-ignored",
+      "text": "Cline did not take your message: the window is closed.",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "why": "window-closed"
+    }
+  }
+}

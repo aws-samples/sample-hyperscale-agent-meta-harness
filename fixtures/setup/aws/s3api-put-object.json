@@ -1,0 +1,5 @@
+{
+    "ETag": "\"{etag}\"",
+    "ServerSideEncryption": "aws:kms",
+    "VersionId": "{version}"
+}

@@ -1,0 +1,2 @@
+{"direction": "client", "message": {"id": 4, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"id": 4, "jsonrpc": "2.0", "result": {"stopReason": "cancelled"}}}

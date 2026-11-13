@@ -1,0 +1,1197 @@
+From faca9a11b373d5861b1869101bd0afb1f783b76c Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Wed, 30 Sep 2026 22:11:08 +0000
+X-Harness-Test-Only: commit=faca9a11b373d5861b1869101bd0afb1f783b76c parent=90f07f61880c12ee69700653b4cff8b5d6993881 tree=a1df2714723d21e2d139aa078de572ce660c0e9c
+Subject: [PATCH] test(cli): compaction runs under ACP from providers.json
+ settings (red first)
+
+Test-only commit for fork patch 0012. Against the tag plus patches 0001-0011 an ACP
+session builds no compaction, providers.json contextWindow is inert, and a full
+1,000,000-token turn cannot shrink. The tests state the contract: the session config
+takes settings.compaction {enabled, strategy, thresholdRatio}, on when the window is
+known and off when it is a guess; a configured contextWindow reaches the budget of a
+catalog model; thresholdRatio replaces the fixed 0.9 and a reported count exactly at
+the threshold compacts for every estimate; a provider fault in the summary call ends
+the turn with the structured error while any other summary failure falls back to
+truncation; session/prompt reports the turn's compactions and settings in
+_meta.harness; and a compacted transcript keeps every tool call paired with its result.
+
+Rebased onto cli-v3.0.71 (test files taken from the rebased fork patch 0010, old number 0012).
+---
+ apps/cli/src/acp/acpAgent.compaction.test.ts  | 358 ++++++++++++++++++
+ .../extensions/context/compaction.acp.test.ts | 305 +++++++++++++++
+ .../context/compaction.pairing.test.ts        | 228 +++++++++++
+ .../host/runtime-host.compaction.test.ts      |  37 ++
+ .../llms/handler-factory.model-info.test.ts   |  96 +++++
+ .../llms/provider-settings.compaction.test.ts |  47 +++
+ .../providers/compat.error-details.test.ts    |  46 +++
+ 7 files changed, 1117 insertions(+)
+ create mode 100644 apps/cli/src/acp/acpAgent.compaction.test.ts
+ create mode 100644 sdk/packages/core/src/extensions/context/compaction.acp.test.ts
+ create mode 100644 sdk/packages/core/src/extensions/context/compaction.pairing.test.ts
+ create mode 100644 sdk/packages/core/src/runtime/host/runtime-host.compaction.test.ts
+ create mode 100644 sdk/packages/core/src/services/llms/handler-factory.model-info.test.ts
+ create mode 100644 sdk/packages/core/src/services/llms/provider-settings.compaction.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/compat.error-details.test.ts
+
+diff --git a/apps/cli/src/acp/acpAgent.compaction.test.ts b/apps/cli/src/acp/acpAgent.compaction.test.ts
+new file mode 100644
+index 0000000..8f1c5df
+--- /dev/null
++++ b/apps/cli/src/acp/acpAgent.compaction.test.ts
+@@ -0,0 +1,358 @@
++import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import type { AgentSideConnection } from "@agentclientprotocol/sdk";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const mocks = vi.hoisted(() => ({
++	core: undefined as unknown,
++	listener: undefined as ((event: unknown) => void) | undefined,
++	models: {} as Record<string, unknown>,
++	started: [] as Array<{ config: Record<string, unknown> }>,
++	script: undefined as ((emit: (event: unknown) => void) => void) | undefined,
++}));
++
++vi.mock("../session/session", () => ({
++	createCliCore: vi.fn(async () => mocks.core),
++}));
++vi.mock("../runtime/session-events", () => ({
++	subscribeToAgentEvents: (
++		_core: unknown,
++		listener: (event: unknown) => void,
++	) => {
++		mocks.listener = listener;
++		return () => {};
++	},
++}));
++vi.mock("../runtime/prompt", () => ({
++	resolveSystemPrompt: vi.fn(async () => "PROMPT"),
++}));
++vi.mock("@cline/core", async (importOriginal) => {
++	const actual = await importOriginal<typeof import("@cline/core")>();
++	return {
++		...actual,
++		Llms: {
++			...actual.Llms,
++			getModelsForProvider: vi.fn(async () => mocks.models),
++			getProvider: vi.fn(async (id: string) => ({
++				id,
++				name: id,
++				defaultModelId: "us.anthropic.claude-sonnet-5",
++			})),
++		},
++	};
++});
++
++import { AcpAgent } from "./acpAgent";
++import { resolveAcpCompaction } from "./compaction";
++
++// Harness patch 0012: compaction runs under ACP. The session config takes it from providers.json
++// settings.compaction (enabled, strategy, thresholdRatio); it is on when the model's window is
++// known (a configured contextWindow or a catalog window) and off when the window is a guess, so a
++// model with an unknown 1,000,000-token window is never summarised at the 128,000 fallback. The
++// session/prompt result reports the compactions of the turn in _meta.harness.
++
++const SONNET = "us.anthropic.claude-sonnet-5";
++const UNKNOWN = "global.anthropic.claude-sonnet-5-5";
++const conn = {
++	sessionUpdate: vi.fn(async () => {}),
++} as unknown as AgentSideConnection;
++
++function fakeCore() {
++	return {
++		start: vi.fn(async (input: { config: Record<string, unknown> }) => {
++			mocks.started.push(input);
++			return { sessionId: "core-session" };
++		}),
++		readMessages: vi.fn(async () => []),
++		dispose: vi.fn(async () => {}),
++		abort: vi.fn(async () => {}),
++		getAccumulatedUsage: vi.fn(async () => undefined),
++		send: vi.fn(async () => {
++			mocks.script?.((event) => mocks.listener?.(event));
++			return {
++				text: "done",
++				usage: { inputTokens: 1, outputTokens: 1 },
++				messages: [],
++				toolCalls: [],
++				iterations: 1,
++				finishReason: "completed",
++				model: { id: SONNET, provider: "bedrock" },
++				startedAt: new Date(0),
++				endedAt: new Date(0),
++				durationMs: 0,
++			};
++		}),
++	};
++}
++
++let dataDir = "";
++
++function writeSettings(settings: Record<string, unknown>) {
++	mkdirSync(join(dataDir, "settings"), { recursive: true });
++	writeFileSync(
++		join(dataDir, "settings", "providers.json"),
++		JSON.stringify({
++			version: 1,
++			lastUsedProvider: "bedrock",
++			providers: {
++				bedrock: {
++					settings: { provider: "bedrock", model: SONNET, ...settings },
++					updatedAt: "2026-09-30T00:00:00Z",
++					tokenSource: "manual",
++				},
++			},
++		}),
++	);
++}
++
++async function prompt(modelId = SONNET, turns = 1) {
++	mocks.core = fakeCore();
++	const agent = new AcpAgent(conn);
++	const created = await agent.newSession({
++		cwd: process.cwd(),
++		mcpServers: [],
++	});
++	if (modelId !== SONNET) {
++		await agent.setSessionConfigOption({
++			sessionId: created.sessionId,
++			configId: "model",
++			value: modelId,
++		});
++	}
++	const responses = [];
++	for (let i = 0; i < turns; i++) {
++		responses.push(
++			await agent.prompt({
++				sessionId: created.sessionId,
++				prompt: [{ type: "text", text: `turn ${i + 1}` }],
++			}),
++		);
++	}
++	const started = mocks.started.at(-1)?.config as {
++		compaction?: Record<string, unknown>;
++	};
++	return { responses, compaction: started?.compaction };
++}
++
++describe("ACP compaction config", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		const dir = mkdtempSync(join(tmpdir(), "acp-compaction-"));
++		dataDir = join(dir, "data");
++		process.env = { ...saved };
++		process.env.HOME = join(dir, "home");
++		process.env.CLINE_DATA_DIR = dataDir;
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = SONNET;
++		process.env.CLINE_API_KEY = "unused";
++		mocks.started.length = 0;
++		mocks.listener = undefined;
++		mocks.script = undefined;
++		mocks.models = { [SONNET]: { name: "Claude Sonnet 5" } };
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	it("turns compaction on with the agentic strategy when providers.json gives the window", async () => {
++		writeSettings({ contextWindow: 1_000_000 });
++		const { compaction } = await prompt();
++		expect(compaction).toEqual({
++			enabled: true,
++			strategy: "agentic",
++			failOnProviderFault: true,
++		});
++	});
++
++	it("turns compaction on for a model whose window the catalog knows", async () => {
++		mocks.models = {
++			[SONNET]: { name: "Claude Sonnet 5", contextWindow: 1_000_000 },
++		};
++		writeSettings({});
++		const { compaction } = await prompt();
++		expect(compaction?.enabled).toBe(true);
++	});
++
++	it("leaves compaction off for a model with no known window, and on when providers.json asks", async () => {
++		mocks.models = { [SONNET]: { name: "Claude Sonnet 5" } };
++		writeSettings({});
++		expect((await prompt(UNKNOWN)).compaction?.enabled).toBe(false);
++
++		mocks.started.length = 0;
++		writeSettings({ compaction: { enabled: true } });
++		expect((await prompt(UNKNOWN)).compaction?.enabled).toBe(true);
++	});
++
++	it("honours enabled false even when the window is known", async () => {
++		writeSettings({ contextWindow: 1_000_000, compaction: { enabled: false } });
++		expect((await prompt()).compaction?.enabled).toBe(false);
++	});
++
++	it("passes the strategy and the threshold ratio from providers.json", async () => {
++		writeSettings({
++			contextWindow: 200_000,
++			compaction: { strategy: "basic", thresholdRatio: 0.8 },
++		});
++		expect((await prompt()).compaction).toEqual({
++			enabled: true,
++			strategy: "basic",
++			thresholdRatio: 0.8,
++			failOnProviderFault: true,
++		});
++	});
++
++	it("ignores a strategy or ratio it cannot use", async () => {
++		writeSettings({
++			contextWindow: 200_000,
++			compaction: { strategy: "someday", thresholdRatio: 7 },
++		});
++		expect((await prompt()).compaction).toEqual({
++			enabled: true,
++			strategy: "agentic",
++			failOnProviderFault: true,
++		});
++	});
++});
++
++describe("ACP compaction report", () => {
++	const saved = { ...process.env };
++
++	beforeEach(() => {
++		const dir = mkdtempSync(join(tmpdir(), "acp-compaction-report-"));
++		dataDir = join(dir, "data");
++		process.env = { ...saved };
++		process.env.HOME = join(dir, "home");
++		process.env.CLINE_DATA_DIR = dataDir;
++		process.env.CLINE_PROVIDER = "bedrock";
++		process.env.CLINE_MODEL = SONNET;
++		process.env.CLINE_API_KEY = "unused";
++		mocks.started.length = 0;
++		mocks.models = { [SONNET]: { name: "Claude Sonnet 5" } };
++		writeSettings({ contextWindow: 100_000 });
++	});
++
++	afterEach(() => {
++		process.env = { ...saved };
++	});
++
++	const notice = (
++		reason: string,
++		phase: string,
++		extra: Record<string, unknown> = {},
++	) => ({
++		type: "notice",
++		noticeType: "status",
++		message: `${phase} ${reason}`,
++		metadata: { kind: reason, reason, phase, iteration: 2, ...extra },
++	});
++
++	it("lists the compactions a turn performed and the compaction settings it ran with", async () => {
++		mocks.script = (emit) => {
++			emit(notice("auto_compaction", "started", { triggerTokens: 90_000 }));
++			emit(
++				notice("auto_compaction", "completed", {
++					tokensBefore: 91_000,
++					tokensAfter: 30_000,
++					messagesBefore: 7,
++					messagesAfter: 3,
++					maxInputTokens: 100_000,
++				}),
++			);
++			emit(notice("auto_compaction", "skipped"));
++		};
++		const { responses } = await prompt();
++		expect(responses[0]?._meta).toEqual({
++			harness: {
++				compactions: [
++					{
++						mode: "auto",
++						tokensBefore: 91_000,
++						tokensAfter: 30_000,
++						messagesBefore: 7,
++						messagesAfter: 3,
++					},
++				],
++				compaction: {
++					enabled: true,
++					strategy: "agentic",
++					thresholdRatio: 0.9,
++					windowTokens: 100_000,
++				},
++			},
++		});
++	});
++
++	it("names an overflow-recovery compaction and starts each prompt with an empty list", async () => {
++		let first = true;
++		mocks.script = (emit) => {
++			if (first) {
++				first = false;
++				emit(
++					notice("overflow_recovery_compaction", "completed", {
++						tokensBefore: 120_000,
++						tokensAfter: 50_000,
++						messagesBefore: 9,
++						messagesAfter: 2,
++					}),
++				);
++			}
++		};
++		const { responses } = await prompt(SONNET, 2);
++		expect(
++			(responses[0]?._meta as { harness: { compactions: unknown[] } }).harness
++				.compactions,
++		).toEqual([
++			{
++				mode: "overflow_recovery",
++				tokensBefore: 120_000,
++				tokensAfter: 50_000,
++				messagesBefore: 9,
++				messagesAfter: 2,
++			},
++		]);
++		expect(
++			(responses[1]?._meta as { harness: { compactions: unknown[] } }).harness
++				.compactions,
++		).toEqual([]);
++	});
++
++	it("reports compaction off with its reason when the window is unknown", async () => {
++		writeSettings({});
++		const { responses } = await prompt(UNKNOWN);
++		expect(
++			(responses[0]?._meta as { harness: { compaction: unknown } }).harness
++				.compaction,
++		).toEqual({
++			enabled: false,
++			strategy: "agentic",
++			thresholdRatio: 0.9,
++			windowTokens: null,
++		});
++	});
++});
++
++describe("resolveAcpCompaction threshold ratio bounds", () => {
++	const ratioOf = (thresholdRatio: unknown) =>
++		resolveAcpCompaction({
++			settings: { thresholdRatio } as Parameters<
++				typeof resolveAcpCompaction
++			>[0]["settings"],
++			catalogWindow: 200_000,
++		}).config.thresholdRatio;
++
++	it("accepts the two ends of the range, 0.1 and 0.99", () => {
++		expect(ratioOf(0.1)).toBe(0.1);
++		expect(ratioOf(0.99)).toBe(0.99);
++	});
++
++	it("refuses a ratio just outside the range and a value that is not a number", () => {
++		for (const ratio of [0.09, 0.0999, 0.995, 1, 0, -0.5, 7, "0.5", null]) {
++			expect(ratioOf(ratio), String(ratio)).toBeUndefined();
++		}
++		expect(ratioOf(Number.NaN)).toBeUndefined();
++		expect(ratioOf(Number.POSITIVE_INFINITY)).toBeUndefined();
++	});
++});
+diff --git a/sdk/packages/core/src/extensions/context/compaction.acp.test.ts b/sdk/packages/core/src/extensions/context/compaction.acp.test.ts
+new file mode 100644
+index 0000000..4bd8ae6
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/context/compaction.acp.test.ts
+@@ -0,0 +1,305 @@
++import type * as LlmsProviders from "@cline/llms";
++import { estimateRequestInputTokens } from "@cline/shared";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import type { CoreCompactionConfig } from "../../types/config";
++import { createContextCompactionPrepareTurn } from "./compaction";
++
++// Harness patch 0012: compaction under ACP takes its trigger ratio from the session config
++// (providers.json settings.compaction.thresholdRatio) and can end the turn on a provider fault in
++// the summary call instead of falling back to lossy truncation.
++
++type FakeChunk = Record<string, unknown>;
++
++const createHandlerMock = vi.fn();
++
++vi.mock("@cline/llms", () => ({
++	createHandlerAsync: (config: unknown) => createHandlerMock(config),
++}));
++
++async function* streamChunks(chunks: FakeChunk[]): AsyncGenerator<FakeChunk> {
++	for (const chunk of chunks) {
++		yield chunk;
++	}
++}
++
++const transcript: LlmsProviders.Message[] = [
++	{ role: "user", content: "Original task" },
++	{ role: "assistant", content: `Old answer ${"x".repeat(600)}` },
++	{ role: "user", content: "Older follow-up" },
++	{ role: "assistant", content: `Older response ${"y".repeat(600)}` },
++	{ role: "user", content: "Latest request" },
++];
++
++const SYSTEM = "You are helpful.";
++
++function estimate(): number {
++	return estimateRequestInputTokens({
++		systemPrompt: SYSTEM,
++		messages: transcript,
++		tools: [],
++	});
++}
++
++function prepare(
++	compaction: CoreCompactionConfig,
++	utilization: number,
++	logger = { debug: vi.fn(), log: vi.fn() },
++	options: {
++		/** The input tokens the provider reported for the previous request. */
++		previous?: number;
++		/** A fixed input budget, instead of one sized from the estimate. */
++		maxInputTokens?: number;
++		/** The transcript to compact, instead of the shared one. */
++		messages?: LlmsProviders.Message[];
++	} = {},
++) {
++	const messages = options.messages ?? transcript;
++	const prepareTurn = createContextCompactionPrepareTurn({
++		providerId: "anthropic",
++		modelId: "mock-model",
++		providerConfig: {
++			providerId: "anthropic",
++			modelId: "mock-model",
++		} as LlmsProviders.ProviderConfig,
++		compaction,
++		logger,
++	});
++	return {
++		logger,
++		run: () =>
++			prepareTurn?.({
++				agentId: "agent-1",
++				conversationId: "conv-1",
++				parentAgentId: null,
++				iteration: 1,
++				abortSignal: new AbortController().signal,
++				systemPrompt: SYSTEM,
++				tools: [],
++				messages,
++				apiMessages: messages,
++				previousRequestInputTokens: options.previous,
++				model: {
++					id: "mock-model",
++					provider: "anthropic",
++					// The request is `utilization` of the input budget.
++					info: {
++						id: "mock-model",
++						maxInputTokens:
++							options.maxInputTokens ??
++							Math.ceil(
++								estimateRequestInputTokens({
++									systemPrompt: SYSTEM,
++									messages,
++									tools: [],
++								}) / utilization,
++							),
++					},
++				},
++			}),
++	};
++}
++
++beforeEach(() => {
++	createHandlerMock.mockReset();
++});
++
++describe("compaction thresholdRatio", () => {
++	it("compacts a request that sits at 0.6 of the budget when the ratio is 0.5, and not at the default 0.9", async () => {
++		const compact = vi.fn(async () => ({ messages: transcript.slice(-1) }));
++		const low = prepare({ enabled: true, compact, thresholdRatio: 0.5 }, 0.6);
++		const result = await low.run();
++		expect(compact).toHaveBeenCalledTimes(1);
++		expect(result?.messages).toHaveLength(1);
++		const ctx = (compact.mock.calls[0] as unknown[])[0] as {
++			budget: { request: { thresholdRatio: number; triggerTokens: number } };
++		};
++		expect(ctx.budget.request.thresholdRatio).toBe(0.5);
++
++		compact.mockClear();
++		const dflt = prepare({ enabled: true, compact }, 0.6);
++		expect(await dflt.run()).toBeUndefined();
++		expect(compact).not.toHaveBeenCalled();
++	});
++
++	it("does not compact at 0.89 of the budget and compacts at 0.91 with the default ratio", async () => {
++		const compact = vi.fn(async () => ({ messages: transcript.slice(-1) }));
++		expect(
++			await prepare({ enabled: true, compact }, 0.89).run(),
++		).toBeUndefined();
++		expect(compact).not.toHaveBeenCalled();
++		await prepare({ enabled: true, compact }, 0.91).run();
++		expect(compact).toHaveBeenCalledTimes(1);
++	});
++
++	it("keeps the default ratio for a value that is not a usable fraction", async () => {
++		for (const bad of [0, -1, 1, 5, Number.NaN, Number.POSITIVE_INFINITY]) {
++			const compact = vi.fn(async () => ({ messages: transcript.slice(-1) }));
++			// 0.6 of the budget: only a ratio at or below 0.6 would compact.
++			expect(
++				await prepare(
++					{ enabled: true, compact, thresholdRatio: bad },
++					0.6,
++				).run(),
++			).toBeUndefined();
++			expect(compact).not.toHaveBeenCalled();
++		}
++	});
++});
++
++describe("compaction trigger on the count the provider reported", () => {
++	const WINDOW = 100_000;
++	const compact = vi.fn(async () => ({ messages: transcript.slice(-1) }));
++
++	/** A one-message transcript of about `tokens` estimated tokens (the fork estimates 3 characters a token). */
++	function bulk(tokens: number): LlmsProviders.Message[] {
++		return [
++			{ role: "user", content: "Original task" },
++			{ role: "assistant", content: "x".repeat(tokens * 3) },
++			{ role: "user", content: "Latest request" },
++		];
++	}
++
++	beforeEach(() => compact.mockClear());
++
++	it("compacts at exactly 0.9 of the window whatever the estimate is, and at 0.5 for ratio 0.5", async () => {
++		// The correction the fork applies divides the budget by reported/estimate and multiplies by the
++		// ratio; in floating point that lands on either side of the estimate at exactly the threshold.
++		// 200 estimates between a quarter of the reported count and just under it must all compact.
++		let compacted = 0;
++		for (let i = 0; i < 200; i += 1) {
++			const tokens = 23_000 + i * 320;
++			const run = prepare({ enabled: true, compact }, 0.5, undefined, {
++				previous: 90_000,
++				maxInputTokens: WINDOW,
++				messages: bulk(tokens),
++			});
++			await run.run();
++			compacted = compact.mock.calls.length;
++		}
++		expect(compacted).toBe(200);
++		compact.mockClear();
++		for (let i = 0; i < 100; i += 1) {
++			const run = prepare(
++				{ enabled: true, compact, thresholdRatio: 0.5 },
++				0.5,
++				undefined,
++				{
++					previous: 50_000,
++					maxInputTokens: WINDOW,
++					messages: bulk(13_000 + i * 300),
++				},
++			);
++			await run.run();
++		}
++		expect(compact).toHaveBeenCalledTimes(100);
++	});
++
++	it("does not compact when the provider reported 0.89 of the window", async () => {
++		for (let i = 0; i < 100; i += 1) {
++			const run = prepare({ enabled: true, compact }, 0.5, undefined, {
++				previous: 89_000,
++				maxInputTokens: WINDOW,
++				messages: bulk(23_000 + i * 600),
++			});
++			await run.run();
++		}
++		expect(compact).not.toHaveBeenCalled();
++	});
++
++	it("takes a reported count of more than 4 times the estimate as 4 times the estimate", async () => {
++		// The cap keeps a tiny estimate from collapsing the budget and compacting every turn.
++		const run = prepare({ enabled: true, compact }, 0.5, undefined, {
++			previous: 90_000,
++			maxInputTokens: WINDOW,
++			messages: bulk(5_000),
++		});
++		expect(await run.run()).toBeUndefined();
++		expect(compact).not.toHaveBeenCalled();
++	});
++});
++
++describe("compaction failOnProviderFault", () => {
++	const serviceDown = {
++		errorName: "ServiceUnavailableException",
++		statusCode: 503,
++		isRetryable: true,
++		attempts: 6,
++	};
++
++	function failingSummary(details: Record<string, unknown> | undefined) {
++		createHandlerMock.mockReturnValue({
++			createMessage: vi.fn(() =>
++				streamChunks([
++					{
++						type: "done",
++						id: "summary",
++						success: false,
++						error: "The service isn't currently available. Retry your request.",
++						...(details ? { errorDetails: details } : {}),
++					},
++				]),
++			),
++		});
++	}
++
++	const agentic = {
++		enabled: true,
++		strategy: "agentic",
++		preserveRecentTokens: 1,
++	} as const;
++
++	it("ends the turn with the summary call's structured error when the flag is set", async () => {
++		failingSummary(serviceDown);
++		const p = prepare({ ...agentic, failOnProviderFault: true }, 0.95);
++		const error = await Promise.resolve(p.run()).then(
++			() => undefined,
++			(e: unknown) => e as Error & { errorDetails?: unknown },
++		);
++		expect(error?.message).toBe(
++			"The service isn't currently available. Retry your request.",
++		);
++		expect(error?.errorDetails).toEqual(serviceDown);
++		expect(p.logger.log).not.toHaveBeenCalledWith(
++			"Agentic compaction failed; falling back to basic compaction",
++			expect.anything(),
++		);
++	});
++
++	it("also ends the turn on an authentication failure", async () => {
++		failingSummary({
++			errorName: "AccessDeniedException",
++			statusCode: 403,
++			isRetryable: false,
++		});
++		await expect(
++			prepare({ ...agentic, failOnProviderFault: true }, 0.95).run(),
++		).rejects.toMatchObject({ errorDetails: { statusCode: 403 } });
++	});
++
++	it("falls back to basic truncation for a failure that is not a provider fault", async () => {
++		for (const details of [
++			undefined,
++			{ errorName: "ValidationException", statusCode: 400, isRetryable: false },
++		]) {
++			failingSummary(details);
++			const p = prepare({ ...agentic, failOnProviderFault: true }, 0.95);
++			const result = await p.run();
++			expect(result?.messages).toBeDefined();
++			expect(p.logger.log).toHaveBeenCalledWith(
++				"Agentic compaction failed; falling back to basic compaction",
++				expect.objectContaining({ severity: "warn" }),
++			);
++		}
++	});
++
++	it("keeps the upstream fallback to basic truncation when the flag is not set", async () => {
++		failingSummary(serviceDown);
++		const p = prepare(agentic, 0.95);
++		const result = await p.run();
++		expect(result?.messages).toBeDefined();
++		expect(p.logger.log).toHaveBeenCalledWith(
++			"Agentic compaction failed; falling back to basic compaction",
++			expect.objectContaining({ severity: "warn" }),
++		);
++	});
++});
+diff --git a/sdk/packages/core/src/extensions/context/compaction.pairing.test.ts b/sdk/packages/core/src/extensions/context/compaction.pairing.test.ts
+new file mode 100644
+index 0000000..d48d983
+--- /dev/null
++++ b/sdk/packages/core/src/extensions/context/compaction.pairing.test.ts
+@@ -0,0 +1,228 @@
++import type * as LlmsProviders from "@cline/llms";
++import type { MessageWithMetadata } from "@cline/shared";
++import { estimateRequestInputTokens } from "@cline/shared";
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { createContextCompactionPrepareTurn } from "./compaction";
++
++// Harness patch 0012: compaction now runs under ACP, where a request whose tool calls and tool results
++// do not pair is rejected by Bedrock's Converse API. The pairing is checked on the transcript a
++// compaction returns, for a few hundred generated transcripts (parallel calls, several rounds, one typed
++// prompt or several) and for every place the cut can fall, with both strategies.
++
++type Chunk = Record<string, unknown>;
++
++const createHandlerMock = vi.fn();
++
++vi.mock("@cline/llms", () => ({
++	createHandlerAsync: (config: unknown) => createHandlerMock(config),
++}));
++
++async function* summary(): AsyncGenerator<Chunk> {
++	yield {
++		type: "text",
++		id: "s",
++		text: "## Goal\nFinish the task\n\n## Next\nContinue from the last result",
++	};
++	yield { type: "done", id: "s", success: true };
++}
++
++/** A small deterministic generator (mulberry32) so a failure names its seed. */
++function rng(seed: number): () => number {
++	let a = seed >>> 0;
++	return () => {
++		a = (a + 0x6d2b79f5) >>> 0;
++		let t = a;
++		t = Math.imul(t ^ (t >>> 15), t | 1);
++		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
++		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
++	};
++}
++
++function generate(seed: number): MessageWithMetadata[] {
++	const next = rng(seed);
++	const int = (lo: number, hi: number) =>
++		lo + Math.floor(next() * (hi - lo + 1));
++	const filler = (n: number) => "x".repeat(n);
++	const messages: MessageWithMetadata[] = [];
++	let id = 0;
++	const prompts = int(1, 3);
++	for (let p = 0; p < prompts; p += 1) {
++		messages.push({
++			role: "user",
++			content: `Task ${p + 1} ${filler(int(20, 400))}`,
++		});
++		const rounds = int(0, 4);
++		for (let r = 0; r < rounds; r += 1) {
++			const calls = int(1, 3);
++			const ids = Array.from({ length: calls }, () => `tool-${(id += 1)}`);
++			messages.push({
++				role: "assistant",
++				content: [
++					{ type: "text", text: `Round ${r} ${filler(int(10, 300))}` },
++					...ids.map((tid) => ({
++						type: "tool_use" as const,
++						id: tid,
++						name: "read_files",
++						input: { file_paths: [`/tmp/${tid}.ts`] },
++					})),
++				],
++			});
++			messages.push({
++				role: "user",
++				content: ids.map((tid) => ({
++					type: "tool_result" as const,
++					tool_use_id: tid,
++					name: "read_files",
++					content: filler(int(10, 900)),
++				})),
++			});
++		}
++		messages.push({
++			role: "assistant",
++			content: [
++				{ type: "text", text: `Done ${p + 1} ${filler(int(10, 200))}` },
++			],
++		});
++	}
++	messages.push({ role: "user", content: "One more thing please" });
++	return messages;
++}
++
++function blocks(message: MessageWithMetadata | undefined) {
++	return message && typeof message.content !== "string" ? message.content : [];
++}
++
++/** The pairing rule Converse enforces, on a transcript's messages. */
++function pairingErrors(messages: MessageWithMetadata[]): string[] {
++	const errors: string[] = [];
++	messages.forEach((message, i) => {
++		const uses = blocks(message)
++			.filter((b) => b.type === "tool_use")
++			.map((b) => (b as { id: string }).id);
++		const results = blocks(message)
++			.filter((b) => b.type === "tool_result")
++			.map((b) => (b as { tool_use_id: string }).tool_use_id);
++		if (message.role === "assistant" && uses.length > 0) {
++			const next = messages[i + 1];
++			const answered = new Set(
++				next?.role === "user"
++					? blocks(next)
++							.filter((b) => b.type === "tool_result")
++							.map((b) => (b as { tool_use_id: string }).tool_use_id)
++					: [],
++			);
++			for (const use of uses) {
++				if (!answered.has(use)) {
++					errors.push(`message ${i}: tool_use ${use} has no result`);
++				}
++			}
++		}
++		if (results.length > 0) {
++			const prev = messages[i - 1];
++			const prevUses = new Set(
++				prev?.role === "assistant"
++					? blocks(prev)
++							.filter((b) => b.type === "tool_use")
++							.map((b) => (b as { id: string }).id)
++					: [],
++			);
++			for (const result of results) {
++				if (!prevUses.has(result)) {
++					errors.push(`message ${i}: tool_result ${result} is an orphan`);
++				}
++			}
++		}
++	});
++	return errors;
++}
++
++const SYSTEM = "You are helpful.";
++
++async function compact(
++	messages: MessageWithMetadata[],
++	options: { strategy: "basic" | "agentic"; preserve: number; forced: boolean },
++) {
++	const estimate = estimateRequestInputTokens({
++		systemPrompt: SYSTEM,
++		messages,
++		tools: [],
++	});
++	const prepareTurn = createContextCompactionPrepareTurn({
++		providerId: "anthropic",
++		modelId: "mock-model",
++		providerConfig: {
++			providerId: "anthropic",
++			modelId: "mock-model",
++		} as LlmsProviders.ProviderConfig,
++		compaction: {
++			enabled: true,
++			strategy: options.strategy,
++			preserveRecentTokens: options.preserve,
++		},
++		logger: { debug: vi.fn(), log: vi.fn() },
++	});
++	return await prepareTurn?.({
++		agentId: "agent-1",
++		conversationId: "conv-1",
++		parentAgentId: null,
++		iteration: 2,
++		abortSignal: new AbortController().signal,
++		systemPrompt: SYSTEM,
++		tools: [],
++		messages,
++		apiMessages: messages,
++		overflowRecovery: options.forced || undefined,
++		model: {
++			id: "mock-model",
++			provider: "anthropic",
++			// The request sits at 0.95 of the budget, over the 0.9 trigger.
++			info: { id: "mock-model", maxInputTokens: Math.ceil(estimate / 0.95) },
++		},
++	});
++}
++
++beforeEach(() => {
++	createHandlerMock.mockReset();
++	createHandlerMock.mockReturnValue({ createMessage: vi.fn(() => summary()) });
++});
++
++describe("a compacted transcript keeps every tool call paired with its result", () => {
++	it("generates transcripts that pair to begin with", () => {
++		for (let seed = 1; seed <= 50; seed += 1) {
++			expect(pairingErrors(generate(seed)), `seed ${seed}`).toEqual([]);
++		}
++	});
++
++	for (const strategy of ["basic", "agentic"] as const) {
++		it(`stays paired under the ${strategy} strategy for 200 transcripts and every preserved size`, async () => {
++			let compacted = 0;
++			for (let seed = 1; seed <= 200; seed += 1) {
++				const messages = generate(seed);
++				for (const preserve of [1, 80, 400, 1_500]) {
++					const result = await compact(messages, {
++						strategy,
++						preserve,
++						// Basic runs in the forced (overflow recovery) mode, which always compacts;
++						// the agentic strategy runs in auto mode over the trigger.
++						forced: strategy === "basic",
++					});
++					if (!result?.messages) {
++						continue;
++					}
++					compacted += 1;
++					expect(
++						pairingErrors(result.messages),
++						`seed ${seed}, preserve ${preserve}`,
++					).toEqual([]);
++					expect(result.messages.length, `seed ${seed}`).toBeGreaterThan(0);
++					// The latest typed prompt survives.
++					expect(
++						JSON.stringify(result.messages.at(-1)),
++						`seed ${seed}, preserve ${preserve}`,
++					).toContain("One more thing please");
++				}
++			}
++			expect(compacted).toBeGreaterThan(200);
++		});
++	}
++});
+diff --git a/sdk/packages/core/src/runtime/host/runtime-host.compaction.test.ts b/sdk/packages/core/src/runtime/host/runtime-host.compaction.test.ts
+new file mode 100644
+index 0000000..144b611
+--- /dev/null
++++ b/sdk/packages/core/src/runtime/host/runtime-host.compaction.test.ts
+@@ -0,0 +1,37 @@
++import { describe, expect, it } from "vitest";
++import { splitCoreSessionConfig } from "./runtime-host";
++
++// Harness patch 0012: the session config the ACP agent builds reaches the local runtime host through
++// splitCoreSessionConfig, which listed the compaction fields it copies. thresholdRatio and
++// failOnProviderFault were dropped there, so a fake-Bedrock probe of the fork saw the default 0.9
++// trigger and a fallback to truncation after a failed summary call whatever providers.json said.
++
++describe("splitCoreSessionConfig compaction", () => {
++	const base = { providerId: "bedrock", modelId: "m", apiKey: "" } as never;
++
++	it("keeps thresholdRatio and failOnProviderFault with the fields it already copied", () => {
++		const { config } = splitCoreSessionConfig({
++			...(base as object),
++			compaction: {
++				enabled: true,
++				strategy: "basic",
++				preserveRecentTokens: 5_000,
++				thresholdRatio: 0.8,
++				failOnProviderFault: true,
++			},
++		} as never);
++		expect(config.compaction).toEqual({
++			enabled: true,
++			strategy: "basic",
++			preserveRecentTokens: 5_000,
++			summarizer: undefined,
++			thresholdRatio: 0.8,
++			failOnProviderFault: true,
++		});
++	});
++
++	it("leaves a session with no compaction settings without a compaction member", () => {
++		const { config } = splitCoreSessionConfig(base);
++		expect(config.compaction).toBeUndefined();
++	});
++});
+diff --git a/sdk/packages/core/src/services/llms/handler-factory.model-info.test.ts b/sdk/packages/core/src/services/llms/handler-factory.model-info.test.ts
+new file mode 100644
+index 0000000..524d75b
+--- /dev/null
++++ b/sdk/packages/core/src/services/llms/handler-factory.model-info.test.ts
+@@ -0,0 +1,96 @@
++import type { AgentConfig, ModelInfo } from "@cline/shared";
++import { describe, expect, it, vi } from "vitest";
++import { resolveModelInfoFromConfig } from "./handler-factory";
++
++vi.mock("@cline/llms", () => ({
++	createGateway: vi.fn(),
++	createHandlerAsync: vi.fn(),
++	hasRegisteredHandler: vi.fn(() => false),
++	MODEL_COLLECTIONS_BY_PROVIDER_ID: {},
++	normalizeProviderId: (id: string) => id,
++	toGatewayModelCapabilities: vi.fn(),
++}));
++
++// Harness patch 0012: providers.json settings.contextWindow (ProviderConfig.maxInputTokens) is the
++// window the harness proved for the model, so it must reach the compaction budget for a model that
++// is in the bundled catalog too. Before the patch a catalog id ignored it (measured: model info
++// stayed 1,000,000 with contextWindow 100,000).
++
++const SONNET = "us.anthropic.claude-sonnet-5";
++const catalogRow: ModelInfo = {
++	id: SONNET,
++	name: "Claude Sonnet 5",
++	contextWindow: 1_000_000,
++	maxTokens: 64_000,
++};
++
++function config(overrides: Partial<AgentConfig> & { maxInputTokens?: number }) {
++	const { maxInputTokens, ...rest } = overrides;
++	return {
++		providerId: "bedrock",
++		modelId: SONNET,
++		apiKey: "",
++		systemPrompt: "",
++		knownModels: { [SONNET]: catalogRow },
++		providerConfig: {
++			providerId: "bedrock",
++			modelId: SONNET,
++			...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
++		},
++		...rest,
++	} as unknown as AgentConfig;
++}
++
++describe("resolveModelInfoFromConfig", () => {
++	it("applies a configured window to a model that is in the catalog", () => {
++		const info = resolveModelInfoFromConfig(
++			config({ maxInputTokens: 100_000 }),
++		);
++		expect(info).toMatchObject({
++			id: SONNET,
++			contextWindow: 100_000,
++			maxInputTokens: 100_000,
++			// The rest of the catalog row is kept.
++			maxTokens: 64_000,
++			name: "Claude Sonnet 5",
++		});
++	});
++
++	it("returns the catalog row itself when no window is configured", () => {
++		expect(resolveModelInfoFromConfig(config({}))).toBe(catalogRow);
++	});
++
++	it("gives a model outside the catalog the configured window", () => {
++		const info = resolveModelInfoFromConfig(
++			config({
++				modelId: "global.anthropic.claude-sonnet-5-5",
++				knownModels: {},
++				maxInputTokens: 1_000_000,
++			}),
++		);
++		expect(info).toMatchObject({
++			id: "global.anthropic.claude-sonnet-5-5",
++			contextWindow: 1_000_000,
++			maxInputTokens: 1_000_000,
++		});
++	});
++
++	it("knows nothing about a model outside the catalog with no configured window", () => {
++		expect(
++			resolveModelInfoFromConfig(
++				config({
++					modelId: "global.anthropic.claude-sonnet-5-5",
++					knownModels: {},
++				}),
++			),
++		).toBeUndefined();
++	});
++
++	it("ignores a configured window that is not a positive number", () => {
++		for (const bad of [0, -5, Number.NaN]) {
++			expect(resolveModelInfoFromConfig(config({ maxInputTokens: bad }))).toBe(
++				catalogRow,
++			);
++		}
++	});
++});
+diff --git a/sdk/packages/core/src/services/llms/provider-settings.compaction.test.ts b/sdk/packages/core/src/services/llms/provider-settings.compaction.test.ts
+new file mode 100644
+index 0000000..20730d3
+--- /dev/null
++++ b/sdk/packages/core/src/services/llms/provider-settings.compaction.test.ts
+@@ -0,0 +1,47 @@
++import { describe, expect, it } from "vitest";
++import { ProviderSettingsSchema } from "./provider-settings";
++
++// Harness patch 0012: providers.json `settings.compaction` (the harness writes it per turn) is kept by
++// the settings schema. A value it cannot use must not invalidate the rest of the entry (region,
++// endpoint, maxTokens, contextWindow), so the schema only types the keys and the reader validates.
++
++describe("ProviderSettingsSchema compaction", () => {
++	it("keeps enabled, strategy and thresholdRatio", () => {
++		const parsed = ProviderSettingsSchema.parse({
++			provider: "bedrock",
++			contextWindow: 1_000_000,
++			compaction: { enabled: true, strategy: "basic", thresholdRatio: 0.8 },
++		});
++		expect(parsed.compaction).toEqual({
++			enabled: true,
++			strategy: "basic",
++			thresholdRatio: 0.8,
++		});
++		expect(parsed.contextWindow).toBe(1_000_000);
++	});
++
++	it("accepts an entry with no compaction settings", () => {
++		const parsed = ProviderSettingsSchema.parse({ provider: "bedrock" });
++		expect(parsed.compaction).toBeUndefined();
++	});
++
++	it("does not reject the entry over a compaction value the reader will ignore", () => {
++		const parsed = ProviderSettingsSchema.safeParse({
++			provider: "bedrock",
++			region: "us-east-1",
++			compaction: { strategy: "someday", thresholdRatio: 7 },
++		});
++		expect(parsed.success).toBe(true);
++	});
++
++	it("drops a compaction value of the wrong type instead of rejecting the entry", () => {
++		const parsed = ProviderSettingsSchema.safeParse({
++			provider: "bedrock",
++			region: "us-east-1",
++			compaction: { enabled: "yes" },
++		});
++		expect(parsed.success).toBe(true);
++		expect(parsed.success && parsed.data.compaction).toBeUndefined();
++		expect(parsed.success && parsed.data.region).toBe("us-east-1");
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/compat.error-details.test.ts b/sdk/packages/llms/src/providers/compat.error-details.test.ts
+new file mode 100644
+index 0000000..3d1cfef
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/compat.error-details.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import { _testing } from "./compat";
++
++// Harness patch 0012 (with 0011): a failed model stream keeps the structure of its failure on the
++// legacy ApiStream `done` chunk, so a caller that only sees the chunk (the compaction summary call)
++// can tell a provider fault from any other failure.
++
++describe("toApiStreamChunk finish -> done", () => {
++	const details = {
++		errorName: "ThrottlingException",
++		statusCode: 429,
++		isRetryable: true,
++		retryAfterS: 5,
++		attempts: 6,
++	};
++
++	it("carries errorDetails on a failed done chunk", () => {
++		expect(
++			_testing.toApiStreamChunk("gw_1", {
++				type: "finish",
++				reason: "error",
++				error: "Too many requests, please wait before trying again.",
++				errorDetails: details,
++			}),
++		).toEqual({
++			type: "done",
++			id: "gw_1",
++			success: false,
++			error: "Too many requests, please wait before trying again.",
++			incompleteReason: undefined,
++			errorDetails: details,
++		});
++	});
++
++	it("leaves a successful done chunk as it was", () => {
++		expect(
++			_testing.toApiStreamChunk("gw_1", { type: "finish", reason: "stop" }),
++		).toEqual({
++			type: "done",
++			id: "gw_1",
++			success: true,
++			error: undefined,
++			incompleteReason: undefined,
++		});
++	});
++});
+-- 
+2.47.3

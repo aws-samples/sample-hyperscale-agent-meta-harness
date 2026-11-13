@@ -1,0 +1,4 @@
+#!/bin/sh
+# Test fixture only: a placeholder Lambda bootstrap for template tests and synth checks.
+# scripts/deploy.sh deploys the real cargo-lambda arm64 build and refuses this file.
+exit 1

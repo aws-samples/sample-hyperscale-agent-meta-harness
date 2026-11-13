@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d5d3d94ec87e78a4acb13fe76d766b7cca1cd2aaa43c3b9842573632a54b11fa # shrinks to text = "ユーザー認証 throttling S3 ユーザー認証 "
+cc 436f28157de0e6a54d54b228a070ac8e2f36435d59f898796e2a13dca6772299 # shrinks to text = "<title>2024 backoff ระบบล\u{e47}อกอ\u{e34}น "

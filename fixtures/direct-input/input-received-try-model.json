@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A2R9X8B4NCD6Q3H7YT2VKQ",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 414,
+  "ts": "2026-10-15T13:41:48Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "input-received",
+      "text": "Switching to Claude Opus 5.5 and sending your message.",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "action": "try_model",
+      "model": "us.anthropic.claude-opus-5-5",
+      "origin": "user",
+      "textBytes": 0,
+      "waitedS": 41
+    }
+  }
+}

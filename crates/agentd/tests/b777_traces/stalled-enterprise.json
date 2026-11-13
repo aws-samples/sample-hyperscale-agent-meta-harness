@@ -1,0 +1,66 @@
+{
+ "note": "Same for the second gate run that the two hour guard ended.",
+ "calls": [
+  {
+   "id": "c1",
+   "open_s": 0,
+   "answer_s": 7166,
+   "aborted": true
+  },
+  {
+   "id": "c2",
+   "open_s": 96,
+   "answer_s": 2024,
+   "aborted": false
+  },
+  {
+   "id": "c3",
+   "open_s": 230,
+   "answer_s": 1503,
+   "aborted": false
+  },
+  {
+   "id": "c4",
+   "open_s": 289,
+   "answer_s": 799,
+   "aborted": false
+  },
+  {
+   "id": "c5",
+   "open_s": 2158,
+   "answer_s": 7166,
+   "aborted": true
+  },
+  {
+   "id": "c6",
+   "open_s": 2737,
+   "answer_s": 6917,
+   "aborted": false
+  },
+  {
+   "id": "c7",
+   "open_s": 2791,
+   "answer_s": 5450,
+   "aborted": false
+  },
+  {
+   "id": "c8",
+   "open_s": 3938,
+   "answer_s": 4992,
+   "aborted": false
+  },
+  {
+   "id": "c9",
+   "open_s": 5782,
+   "answer_s": 6447,
+   "aborted": false
+  },
+  {
+   "id": "c10",
+   "open_s": 6720,
+   "answer_s": 6816,
+   "aborted": false
+  }
+ ],
+ "cancelAtS": 7166
+}

@@ -1,0 +1,44 @@
+---
+source: crates/ham/tests/tui.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · Claude Sonnet 5.5 · active · updated 0s ago
+progress feed only: not the full conversation
+notice ▾ status
+         active (planning)
+         Model  Claude Sonnet 5.5
+         PR     none yet
+notice ▸ agents 1
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit

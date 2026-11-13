@@ -1,0 +1,3 @@
+# The workspace denies clippy::unwrap_used; tests may unwrap.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

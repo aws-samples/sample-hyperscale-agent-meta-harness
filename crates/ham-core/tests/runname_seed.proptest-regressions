@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 83dd95f8d441c53ee6ccb791873d01c8fc101ecd13dd857cd8610f05cbf71131 # shrinks to input = "**bold** ユーザー認証 1. ユーザー認証 ユーザー認証 AKIAQW\u{200b}ERTYUIOPASDFGH "

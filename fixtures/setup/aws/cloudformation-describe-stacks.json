@@ -1,0 +1,24 @@
+{
+    "Stacks": [
+        {
+            "StackId": "arn:aws:cloudformation:{region}:{account}:stack/{name}/aaaaaaaa-0000-4000-8000-a00000000000",
+            "StackName": "{name}",
+            "CreationTime": "2026-10-29T17:00:00.000000+00:00",
+            "RollbackConfiguration": {},
+            "StackStatus": "{status}",
+            "DisableRollback": false,
+            "NotificationARNs": [],
+            "Outputs": "{outputs}",
+            "Tags": [
+                {
+                    "Key": "project",
+                    "Value": "hyperscale-agent-meta-harness"
+                }
+            ],
+            "EnableTerminationProtection": false,
+            "DriftInformation": {
+                "StackDriftStatus": "NOT_CHECKED"
+            }
+        }
+    ]
+}

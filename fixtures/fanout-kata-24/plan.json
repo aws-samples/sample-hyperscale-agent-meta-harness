@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "tasks": [
+    {"taskId": "strings", "title": "slugify", "objective": "Add kata.strings.slugify with tests.", "requirements": ["R1"], "ownedPaths": ["kata/strings.py", "tests/test_strings.py"], "gateProfile": "python"},
+    {"taskId": "numbers", "title": "clamp", "objective": "Add kata.numbers.clamp with tests.", "requirements": ["R2"], "ownedPaths": ["kata/numbers.py", "tests/test_numbers.py"], "gateProfile": "python"},
+    {"taskId": "lists", "title": "chunk", "objective": "Add kata.lists.chunk with tests.", "requirements": ["R3"], "ownedPaths": ["kata/lists.py", "tests/test_lists.py"], "gateProfile": "python"},
+    {"taskId": "text", "title": "word_count", "objective": "Add kata.text.word_count with tests.", "requirements": ["R4"], "ownedPaths": ["kata/text.py", "tests/test_text.py"], "gateProfile": "python"},
+    {"taskId": "caesar", "title": "shift", "objective": "Add kata.caesar.shift with tests.", "requirements": ["R5"], "ownedPaths": ["kata/caesar.py", "tests/test_caesar.py"], "gateProfile": "python"},
+    {"taskId": "roman", "title": "to_roman", "objective": "Add kata.roman.to_roman with tests.", "requirements": ["R6"], "ownedPaths": ["kata/roman.py", "tests/test_roman.py"], "gateProfile": "python"},
+    {"taskId": "primes", "title": "primes_up_to", "objective": "Add kata.primes.primes_up_to with tests.", "requirements": ["R7"], "ownedPaths": ["kata/primes.py", "tests/test_primes.py"], "gateProfile": "python"},
+    {"taskId": "fizzbuzz", "title": "fizzbuzz", "objective": "Add kata.fizzbuzz.fizzbuzz with tests.", "requirements": ["R8"], "ownedPaths": ["kata/fizzbuzz.py", "tests/test_fizzbuzz.py"], "gateProfile": "python"},
+    {"taskId": "palindrome", "title": "is_palindrome", "objective": "Add kata.palindrome.is_palindrome with tests.", "requirements": ["R9"], "ownedPaths": ["kata/palindrome.py", "tests/test_palindrome.py"], "gateProfile": "python"},
+    {"taskId": "vowels", "title": "count_vowels", "objective": "Add kata.vowels.count_vowels with tests.", "requirements": ["R10"], "ownedPaths": ["kata/vowels.py", "tests/test_vowels.py"], "gateProfile": "python"},
+    {"taskId": "flatten", "title": "flatten", "objective": "Add kata.flatten.flatten with tests.", "requirements": ["R11"], "ownedPaths": ["kata/flatten.py", "tests/test_flatten.py"], "gateProfile": "python"},
+    {"taskId": "dedupe", "title": "dedupe", "objective": "Add kata.dedupe.dedupe with tests.", "requirements": ["R12"], "ownedPaths": ["kata/dedupe.py", "tests/test_dedupe.py"], "gateProfile": "python"},
+    {"taskId": "rle", "title": "encode", "objective": "Add kata.rle.encode with tests.", "requirements": ["R13"], "ownedPaths": ["kata/rle.py", "tests/test_rle.py"], "gateProfile": "python"},
+    {"taskId": "anagram", "title": "is_anagram", "objective": "Add kata.anagram.is_anagram with tests.", "requirements": ["R14"], "ownedPaths": ["kata/anagram.py", "tests/test_anagram.py"], "gateProfile": "python"},
+    {"taskId": "digits", "title": "digit_sum", "objective": "Add kata.digits.digit_sum with tests.", "requirements": ["R15"], "ownedPaths": ["kata/digits.py", "tests/test_digits.py"], "gateProfile": "python"},
+    {"taskId": "fibonacci", "title": "fib", "objective": "Add kata.fibonacci.fib with tests.", "requirements": ["R16"], "ownedPaths": ["kata/fibonacci.py", "tests/test_fibonacci.py"], "gateProfile": "python"},
+    {"taskId": "gcd", "title": "gcd", "objective": "Add kata.gcd.gcd with tests.", "requirements": ["R17"], "ownedPaths": ["kata/gcd.py", "tests/test_gcd.py"], "gateProfile": "python"},
+    {"taskId": "mean", "title": "mean", "objective": "Add kata.mean.mean with tests.", "requirements": ["R18"], "ownedPaths": ["kata/mean.py", "tests/test_mean.py"], "gateProfile": "python"},
+    {"taskId": "median", "title": "median", "objective": "Add kata.median.median with tests.", "requirements": ["R19"], "ownedPaths": ["kata/median.py", "tests/test_median.py"], "gateProfile": "python"},
+    {"taskId": "binary", "title": "to_binary", "objective": "Add kata.binary.to_binary with tests.", "requirements": ["R20"], "ownedPaths": ["kata/binary.py", "tests/test_binary.py"], "gateProfile": "python"},
+    {"taskId": "leap", "title": "is_leap", "objective": "Add kata.leap.is_leap with tests.", "requirements": ["R21"], "ownedPaths": ["kata/leap.py", "tests/test_leap.py"], "gateProfile": "python"},
+    {"taskId": "acronym", "title": "acronym", "objective": "Add kata.acronym.acronym with tests.", "requirements": ["R22"], "ownedPaths": ["kata/acronym.py", "tests/test_acronym.py"], "gateProfile": "python"},
+    {"taskId": "snake", "title": "to_snake", "objective": "Add kata.snake.to_snake with tests.", "requirements": ["R23"], "ownedPaths": ["kata/snake.py", "tests/test_snake.py"], "gateProfile": "python"},
+    {"taskId": "hamming", "title": "distance", "objective": "Add kata.hamming.distance with tests.", "requirements": ["R24"], "ownedPaths": ["kata/hamming.py", "tests/test_hamming.py"], "gateProfile": "python"},
+    {"taskId": "integration", "title": "integration", "objective": "Add kata.integration (NAMES and call) on the 24 helpers, with tests.", "requirements": ["R25"], "ownedPaths": ["kata/integration.py", "tests/test_integration.py"], "dependsOn": ["strings", "numbers", "lists", "text", "caesar", "roman", "primes", "fizzbuzz", "palindrome", "vowels", "flatten", "dedupe", "rle", "anagram", "digits", "fibonacci", "gcd", "mean", "median", "binary", "leap", "acronym", "snake", "hamming"], "gateProfile": "python", "criticality": "high"}
+  ]
+}

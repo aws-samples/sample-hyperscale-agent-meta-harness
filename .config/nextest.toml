@@ -1,0 +1,12 @@
+[profile.default]
+# Run every test and report every failure. A failing test still fails the run (exit code 100).
+fail-fast = false
+
+# Tests that put a seccomp filter on a child process, and the tests that stop every process which has more filters than their own (the reap of a
+# sandboxed run), must not overlap: the reap would stop the other test's child. They run one at a time.
+[test-groups]
+seccomp-children = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(~sandbox_) | binary(=direct_messages_reap_sandboxed) | binary(=b790_loopback)'
+test-group = 'seccomp-children'

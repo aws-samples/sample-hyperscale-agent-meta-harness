@@ -1,0 +1,36 @@
+{
+  "interventions": [
+    {
+      "n": 1,
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "reason": "engine_stop",
+      "openedAt": "2026-10-15T13:41:07Z",
+      "closedAt": "2026-10-15T13:42:40Z",
+      "waitedS": 93,
+      "outcome": "answered",
+      "action": "new_session_with_prompt",
+      "origin": "user",
+      "textBytes": 88,
+      "atAttempt": 3
+    }
+  ],
+  "freshSessions": [
+    {
+      "n": 2,
+      "trigger": "user",
+      "reason": "engine_stop",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "startedAt": "2026-10-15T13:42:41Z",
+      "restartedProcess": false,
+      "digestBytes": 18432,
+      "digestSha256": "9f2c0b7a4d1e8356c2a9b4f07e61d3a58c9e2b1f4a7d605e3c8b9a1f2d4e6c70",
+      "atAttempt": 3
+    }
+  ],
+  "usage": {
+    "inputTokens": 1204331,
+    "outputTokens": 88120,
+    "cacheReadInputTokens": 801220,
+    "cacheWriteInputTokens": 90211
+  }
+}

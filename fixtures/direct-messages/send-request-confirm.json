@@ -1,0 +1,9 @@
+{
+  "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+  "text": "Stop and rerun the tests with the fixed fixture.",
+  "mode": "now",
+  "confirms": {
+    "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT2P",
+    "epoch": "sess-3"
+  }
+}

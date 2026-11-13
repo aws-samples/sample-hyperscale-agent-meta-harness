@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_chat.rs
+expression: "screen(v, facts, input, w, h)"
+---
+ham · Run 01M5287J4KQ8N3X7C9D2E6F1AB · Claude Sonnet 5.5 · blocked · 12m40s
+⟳ reconnecting · the run keeps going in AWS; showing the last state read
+you      Build it.
+notice   [the run ended abnormally: the tail is unknown]
+notice ▾ blocked · c cancel
+         the session ended before any work was saved
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ Message ─────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+c c cancel · a artifacts · Esc runs · q quit

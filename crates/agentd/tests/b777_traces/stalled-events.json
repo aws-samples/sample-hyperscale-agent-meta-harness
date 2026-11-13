@@ -1,0 +1,78 @@
+{
+ "note": "Recorded structure of the helper calls of a gate run that the two hour guard ended: when each spawn_agent call opened and closed, in seconds from the first one; cancelAtS is the guard cancel.",
+ "calls": [
+  {
+   "id": "c1",
+   "open_s": 0,
+   "answer_s": 7075,
+   "aborted": true
+  },
+  {
+   "id": "c2",
+   "open_s": 127,
+   "answer_s": 7075,
+   "aborted": true
+  },
+  {
+   "id": "c3",
+   "open_s": 247,
+   "answer_s": 5888,
+   "aborted": false
+  },
+  {
+   "id": "c4",
+   "open_s": 299,
+   "answer_s": 1348,
+   "aborted": false
+  },
+  {
+   "id": "c5",
+   "open_s": 471,
+   "answer_s": 914,
+   "aborted": false
+  },
+  {
+   "id": "c6",
+   "open_s": 1373,
+   "answer_s": 5221,
+   "aborted": false
+  },
+  {
+   "id": "c7",
+   "open_s": 1439,
+   "answer_s": 3098,
+   "aborted": false
+  },
+  {
+   "id": "c8",
+   "open_s": 3296,
+   "answer_s": 4359,
+   "aborted": false
+  },
+  {
+   "id": "c9",
+   "open_s": 3709,
+   "answer_s": 4135,
+   "aborted": false
+  },
+  {
+   "id": "c10",
+   "open_s": 6024,
+   "answer_s": 7075,
+   "aborted": true
+  },
+  {
+   "id": "c11",
+   "open_s": 6103,
+   "answer_s": 7075,
+   "aborted": true
+  },
+  {
+   "id": "c12",
+   "open_s": 6549,
+   "answer_s": 7075,
+   "aborted": true
+  }
+ ],
+ "cancelAtS": 7075
+}

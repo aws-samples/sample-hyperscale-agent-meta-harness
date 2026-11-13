@@ -1,0 +1,17 @@
+{
+  "files": {
+    ".agents/skills/lifecycle-build-test/SKILL.md": "b91a42ce715d3ef680da005bb35c757250deb143e23a23ff83d61fa94ae3cf14",
+    ".agents/skills/lifecycle-check/SKILL.md": "de8635e0881e01a39cc021c2542fb107c1b9e54280b9550a77a21787a2ddb518",
+    ".agents/skills/lifecycle-check/scripts/lifecycle_check.py": "19594c87ffb6e0a93c7d6f895f5aafe04d72da3889f0a1f7e40994471fa18b21",
+    ".agents/skills/lifecycle-check/scripts/scanner_kit.py": "0aa55373fe33f250e07d3387c71b38dc2eae6798ba267255911d804c1f373406",
+    ".agents/skills/lifecycle-context/SKILL.md": "6fa65be06d892fb4d0ae32b1b43aa69fec77ab973287f00eb2dd2e32faa31e29",
+    ".agents/skills/lifecycle-delivery/SKILL.md": "0285ba2569db939619173f844f82d611af1ff80e6cb04f0684e83a6cc94a7fb9",
+    ".agents/skills/lifecycle-delivery/references/dox-notice.md": "7ff5732faba87a06ce37306b6fffeb1614d480afe716a2598efeeb651923c1fa",
+    ".agents/skills/lifecycle-delivery/references/dox-root.md": "07e648cd043f1ebac311a67acf717a7a13fda764df236a86113db20d60e12e50",
+    ".agents/skills/lifecycle-loop/SKILL.md": "1f2319af55d3e86ee12112303b1367c22485fcd26693193d6f39889ab1526227",
+    ".agents/skills/lifecycle-research/SKILL.md": "273440420e126a48e66c07b6417bf8a38b648f96554a92b03fd6c1edaf408e30",
+    ".agents/skills/lifecycle-tdd/SKILL.md": "884cd99857f0a154ea0eca5ebfd30ded725a6e071c17db59677d0272a2b572e8",
+    "AGENTS.md": "3973da054b8cef8bdfd175f9d6292b382f9e010210babd58d09c2cff605f3d07"
+  },
+  "version": "1.15.0"
+}

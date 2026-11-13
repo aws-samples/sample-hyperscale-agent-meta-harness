@@ -1,0 +1,74 @@
+{
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "messages": [
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "seq": 1,
+      "mode": "next",
+      "state": "delivered",
+      "text": "Please also add a README section on the retry rules.",
+      "epoch": "sess-3",
+      "epochNo": 3,
+      "deliveredTurn": 4,
+      "acceptedAt": "2026-10-16T14:02:11Z",
+      "updatedAt": "2026-10-16T14:09:40Z",
+      "history": [
+        {
+          "state": "pending",
+          "at": "2026-10-16T14:02:11Z"
+        },
+        {
+          "state": "dispatching",
+          "at": "2026-10-16T14:02:13Z"
+        },
+        {
+          "state": "delivered",
+          "at": "2026-10-16T14:09:40Z",
+          "turn": 4
+        }
+      ]
+    },
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT2P",
+      "seq": 2,
+      "mode": "next",
+      "state": "held",
+      "text": "Please also add a README section on the retry rules.",
+      "epoch": "sess-2",
+      "epochNo": 2,
+      "acceptedAt": "2026-10-16T14:02:11Z",
+      "updatedAt": "2026-10-16T14:02:13Z",
+      "history": [
+        {
+          "state": "pending",
+          "at": "2026-10-16T14:02:11Z"
+        },
+        {
+          "state": "held",
+          "at": "2026-10-16T14:02:13Z"
+        }
+      ]
+    },
+    {
+      "messageId": "01M5A2R7K3C9XJ4D8E6FQ0WT3Q",
+      "seq": 3,
+      "mode": "next",
+      "state": "pending",
+      "text": "Use the same style as the other modules.",
+      "epoch": "sess-3",
+      "epochNo": 3,
+      "acceptedAt": "2026-10-16T14:09:40Z",
+      "updatedAt": "2026-10-16T14:09:40Z",
+      "history": [
+        {
+          "state": "pending",
+          "at": "2026-10-16T14:09:40Z"
+        }
+      ]
+    }
+  ],
+  "admission": "open",
+  "epoch": "sess-3",
+  "epochNo": 3,
+  "watermark": 3
+}

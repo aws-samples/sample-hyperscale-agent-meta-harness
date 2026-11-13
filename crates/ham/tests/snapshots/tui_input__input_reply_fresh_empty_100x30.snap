@@ -1,0 +1,34 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · fresh session
+┌ question ────────────────────────────────────────────────────────────────────────────────────────┐
+│Cline needs you: Cline stopped its own prompt                                                     │
+│Last words: I will keep polling the build until it finishes, then append step 4 to PROGRESS.md.   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ ▶ Fresh session on the same files (Enter adds a line) ───────────────────────────────────────────┐
+│▌                                                                                                 │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Text is optional: Ctrl-S sends now, or type a message first.
+
+Enter adds a line · Ctrl-S sends · Esc back; the question stays open

@@ -1,0 +1,40 @@
+# harness-gates language tool pins, read by install.sh.
+# One asset per line: <tool> <version> <arch: x86_64 | aarch64 | any> <sha256> <url>. The SHA-256 is
+# of the downloaded file; install.sh refuses any other. Update a row only with its measured hash.
+# The Rust rows equal the xz_hash entries of
+# https://static.rust-lang.org/dist/channel-rust-1.98.1.toml (its own SHA-256 a7c8774a...347e matched the
+# published channel-rust-1.98.1.toml.sha256); cargo-nextest and cargo-llvm-cov equal the GitHub release
+# asset digests (the x86_64 rows are tools.lock's).
+jdk 21.0.12.12.1 x86_64 8785082c2fb999c024c8821e4a7c5391bda28f1667cceadafd78e2965b7669d2 https://corretto.aws/downloads/resources/21.0.12.12.1/amazon-corretto-21.0.12.12.1-linux-x64.tar.gz
+jdk 21.0.12.12.1 aarch64 d1206a81145e1ac3f45677f83ecd5e780428848f21f314be33691d62dde761c1 https://corretto.aws/downloads/resources/21.0.12.12.1/amazon-corretto-21.0.12.12.1-linux-aarch64.tar.gz
+node 24.21.0 x86_64 fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz
+node 24.21.0 aarch64 6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz
+go 1.27.1 x86_64 63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445 https://go.dev/dl/go1.27.1.linux-amd64.tar.gz
+go 1.27.1 aarch64 3450b45a3f9ee8568792736a5c5e70a1f2e9b36c35a8f74958c03e51d7d92bec https://go.dev/dl/go1.27.1.linux-arm64.tar.gz
+golangci-lint 2.14.0 x86_64 ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-amd64.tar.gz
+golangci-lint 2.14.0 aarch64 ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-arm64.tar.gz
+gosec 2.29.0 x86_64 6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_amd64.tar.gz
+gosec 2.29.0 aarch64 c71244ec8d37488fd479d0d26990968fee03ece48b305d8224ac0c1ebd66e87c https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_arm64.tar.gz
+maven 3.9.16 any 80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.16/apache-maven-3.9.16-bin.tar.gz
+gradle 9.8.0 any bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c https://services.gradle.org/distributions/gradle-9.8.0-bin.zip
+jacoco 0.8.15 any 5b3f6ddb724e761d25c937d68b0189a3a23f3e220e3282575ee0b53359e8110e https://repo1.maven.org/maven2/org/jacoco/jacoco/0.8.15/jacoco-0.8.15.zip
+spotbugs 4.10.4 any 72bc0d4edd686e462c0f71f42a049b27bf4da6708797ff7b2b56dd202714b4e5 https://github.com/spotbugs/spotbugs/releases/download/4.10.4/spotbugs-4.10.4.tgz
+findsecbugs 1.14.0 any 6fa340344fa433ff46c2985dab1010e8bc739f9395c983594a5240095e92abc8 https://repo1.maven.org/maven2/com/h3xstream/findsecbugs/findsecbugs-plugin/1.14.0/findsecbugs-plugin-1.14.0.jar
+google-java-format 1.36.1 any 25b400f003089d23cc5320cdaf1a16cabee19b8aa3434d0ff021b3d9f42154b4 https://github.com/google/google-java-format/releases/download/v1.36.1/google-java-format-1.36.1-all-deps.jar
+ktfmt 0.64 any 5b3d5286fd2defcc7dc8e28c21ddf156cc6b2d8682bdcd929ce4333e7a6201f2 https://repo1.maven.org/maven2/com/facebook/ktfmt/0.64/ktfmt-0.64-with-dependencies.jar
+rustc 1.98.1 x86_64 e974f036b28565f37c0f3bd92ddefa809bee16c04f9dcf07b9ed96e05aaaf7c4 https://static.rust-lang.org/dist/2026-09-03/rustc-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+rustc 1.98.1 aarch64 89fb83041993b48816514815606f53a5264729b8b449671a6b291e6f0ae74f40 https://static.rust-lang.org/dist/2026-09-03/rustc-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+cargo 1.98.1 x86_64 ea1de9f9e23107d97ee2b41a72c552f34064a593da503789218387aee59f3ba4 https://static.rust-lang.org/dist/2026-09-03/cargo-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+cargo 1.98.1 aarch64 c09425a7f300af148c0bdfded0e7d5f1fe7c075b2b9674e8935afa769297b2f6 https://static.rust-lang.org/dist/2026-09-03/cargo-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+rust-std 1.98.1 x86_64 fa3ff450172a16c026944030230c5069947af93c728d9179971d44e5e0cfb561 https://static.rust-lang.org/dist/2026-09-03/rust-std-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+rust-std 1.98.1 aarch64 9bf796a6ec5b004813ebd0b650775a7c6a4f3aae97ad362ae294798dca4f3b23 https://static.rust-lang.org/dist/2026-09-03/rust-std-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+clippy 1.98.1 x86_64 e167f333be24e1d5eea56ea563c7def0aa0bd613f5ce3445976c93b0288799d1 https://static.rust-lang.org/dist/2026-09-03/clippy-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+clippy 1.98.1 aarch64 396e17c0a669399823d0e59073686a4e5f50b2d41f062f1d3afc9210f9d3553d https://static.rust-lang.org/dist/2026-09-03/clippy-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+rustfmt 1.98.1 x86_64 b29a1addcbf2aa8f5785075605700e63cbe131b08c8334b50c09cfca8bbc51dc https://static.rust-lang.org/dist/2026-09-03/rustfmt-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+rustfmt 1.98.1 aarch64 7d4c136278b61096d46ef23019c29acb7ee5a2a1412cbfee5050316110c6fd8c https://static.rust-lang.org/dist/2026-09-03/rustfmt-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+llvm-tools 1.98.1 x86_64 56d58ca2dfa848359ab23c872791509c6f592448d2f6c146ed530ec50ee45371 https://static.rust-lang.org/dist/2026-09-03/llvm-tools-1.98.1-x86_64-unknown-linux-gnu.tar.xz
+llvm-tools 1.98.1 aarch64 caaf950c65f3e428247dbe9c173d142b7072b2134962a61924c01e39f6b6dc1e https://static.rust-lang.org/dist/2026-09-03/llvm-tools-1.98.1-aarch64-unknown-linux-gnu.tar.xz
+cargo-nextest 0.9.146 x86_64 b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz
+cargo-nextest 0.9.146 aarch64 b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9 https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-aarch64-unknown-linux-gnu.tar.gz
+cargo-llvm-cov 0.9.1 x86_64 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz
+cargo-llvm-cov 0.9.1 aarch64 49c0085628392a8d727c4464d91ec417c613c5015f5197cd16d5c05aa3fb5ad1 https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-aarch64-unknown-linux-musl.tar.gz

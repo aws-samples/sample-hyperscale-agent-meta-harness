@@ -1,0 +1,34 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · Claude Sonnet 5.5 · needs you
+progress feed only: not the full conversation
+notice   The run needs you: Cline stopped its own prompt
+notice ▾ status
+         active (green)
+         Model  Claude Sonnet 5.5
+         PR     none yet
+notice ▸ agents 1
+notice ▾ Cline needs you · about 27 min left to answer
+         Cline stopped its own prompt. 41 tool calls, 3 files changed.
+         Cline ended the prompt itself, twice. Its guard stops after 5 identical tool calls; its
+         mistake limit stops after 6 failed turns. The provider is fine. After this stop, the same
+         chat stops again after one identical call. A fresh session starts both counts from zero.
+         Last words: I will keep polling the build until it finishes, then append step 4 to
+         PROGRESS.md.
+         Files: PROGRESS.md src/app.py tests/test_app.py
+         p message · s fresh session · m other model · f f finish
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to answer ─────────────────────────────────────────────────────────┐
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ scroll · p message · s fresh session · m model · f f finish · a artifacts · c c cancel · q quit

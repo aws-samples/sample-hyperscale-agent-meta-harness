@@ -1,0 +1,649 @@
+[
+  {
+    "id": "b01",
+    "group": "billing-export",
+    "prompt": "Change the nightly export Lambda so it writes one CSV per month plus a manifest file, with unit tests.",
+    "expect": {
+      "tech": [
+        "lambda",
+        "csv"
+      ],
+      "topic": [
+        "export",
+        "manifest",
+        "csv"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b02",
+    "group": "billing-export",
+    "prompt": "The billing export Lambda times out after 15 minutes when there are more than a million rows. Make it stream the result to S3 with a multipart upload.",
+    "expect": {
+      "tech": [
+        "lambda",
+        "s3"
+      ],
+      "topic": [
+        "timeout",
+        "stream",
+        "multipart",
+        "export"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b03",
+    "group": "billing-export",
+    "prompt": "Add a retry with exponential backoff to the S3 uploader in billing/uploader.py",
+    "expect": {
+      "tech": [
+        "s3",
+        "python"
+      ],
+      "topic": [
+        "retry",
+        "backoff",
+        "upload"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b04",
+    "group": "billing-export",
+    "prompt": "Write a script that backfills the invoice_total column in the DynamoDB billing table from the old CSV files.",
+    "expect": {
+      "tech": [
+        "dynamodb",
+        "csv"
+      ],
+      "topic": [
+        "backfill",
+        "invoice",
+        "migration"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b05",
+    "group": "billing-export",
+    "prompt": "Fix the rounding bug in the tax calculation in billing/tax.py: 0.005 rounds the wrong way. Add regression tests.",
+    "expect": {
+      "tech": [
+        "python"
+      ],
+      "topic": [
+        "tax",
+        "round"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b06",
+    "group": "billing-export",
+    "prompt": "Add a CloudWatch alarm and a dashboard for the duration of the nightly export.",
+    "expect": {
+      "tech": [
+        "cloudwatch"
+      ],
+      "topic": [
+        "alarm",
+        "dashboard",
+        "monitor",
+        "observab",
+        "export"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b07",
+    "group": "billing-export",
+    "prompt": "The finance team wants the export in Parquet as well as CSV. Add it behind a flag.",
+    "expect": {
+      "tech": [
+        "parquet",
+        "csv"
+      ],
+      "topic": [
+        "export",
+        "format",
+        "flag"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b08",
+    "group": "billing-export",
+    "prompt": "Document how the nightly billing export works in docs/export.md, including the manifest format.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "doc",
+        "export",
+        "manifest"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b09",
+    "group": "billing-export",
+    "prompt": "Build an importer for Contoso's SAP invoice export file and load the rows into the billing table.",
+    "expect": {
+      "tech": [
+        "sap",
+        "dynamodb"
+      ],
+      "topic": [
+        "import",
+        "invoice"
+      ],
+      "no_tag": [
+        "contoso"
+      ],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "b10",
+    "group": "billing-export",
+    "prompt": "Fix the failing nightly job for the Fabrikam account: it stops at row 5000 with a validation error.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "export",
+        "validation",
+        "nightly",
+        "batch"
+      ],
+      "no_tag": [
+        "fabrikam"
+      ],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s01",
+    "group": "shop-cart",
+    "prompt": "java.lang.NullPointerException at com.shop.cart.CartService.total(CartService.java:114) when the cart is empty. Fix it and add a test.",
+    "expect": {
+      "tech": [
+        "java"
+      ],
+      "topic": [
+        "cart",
+        "null",
+        "total"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s02",
+    "group": "shop-cart",
+    "prompt": "Rename CustomerOrderProcessor to OrderService across the Java services module and update the Spring config.",
+    "expect": {
+      "tech": [
+        "java",
+        "spring"
+      ],
+      "topic": [
+        "rename",
+        "refactor",
+        "order"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s03",
+    "group": "shop-cart",
+    "prompt": "Add rate limiting to the order service REST API with a token bucket, 100 requests per minute per API key.",
+    "expect": {
+      "tech": [
+        "rest"
+      ],
+      "topic": [
+        "rate",
+        "limit",
+        "token"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s04",
+    "group": "shop-cart",
+    "prompt": "Add pagination to GET /orders with a next_cursor parameter and update the OpenAPI spec.",
+    "expect": {
+      "tech": [
+        "openapi"
+      ],
+      "topic": [
+        "pagination",
+        "cursor",
+        "order"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s05",
+    "group": "shop-cart",
+    "prompt": "Upgrade Spring Boot from 3.2 to 3.4 and fix the deprecation warnings.",
+    "expect": {
+      "tech": [
+        "spring"
+      ],
+      "topic": [
+        "upgrade",
+        "deprecat",
+        "dependency"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s06",
+    "group": "shop-cart",
+    "prompt": "Add integration tests for the checkout flow using Testcontainers and PostgreSQL.",
+    "expect": {
+      "tech": [
+        "testcontainers",
+        "postgres"
+      ],
+      "topic": [
+        "integration",
+        "checkout",
+        "test"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s07",
+    "group": "shop-cart",
+    "prompt": "The cart total is wrong when a coupon and a gift card are both applied. Reproduce it with a test, then fix it.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "cart",
+        "coupon",
+        "gift",
+        "total",
+        "discount"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "s08",
+    "group": "shop-cart",
+    "prompt": "Add structured JSON logging with a request id to every controller of the shop service.",
+    "expect": {
+      "tech": [
+        "json"
+      ],
+      "topic": [
+        "logging",
+        "request-id",
+        "observab"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p01",
+    "group": "photo-sorter",
+    "prompt": "Build a command line tool in Go that renames the photos in a folder by the date they were taken (EXIF).",
+    "expect": {
+      "tech": [
+        "go",
+        "exif"
+      ],
+      "topic": [
+        "rename",
+        "photo",
+        "cli"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p02",
+    "group": "photo-sorter",
+    "prompt": "Add a --dry-run flag to the photo renamer that prints what would change.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "dry-run",
+        "dry",
+        "cli",
+        "flag",
+        "photo",
+        "rename"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p03",
+    "group": "photo-sorter",
+    "prompt": "Handle duplicate file names in the photo renamer by appending a counter.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "duplicate",
+        "rename",
+        "photo",
+        "collision"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p04",
+    "group": "photo-sorter",
+    "prompt": "Add a GitHub Actions workflow that builds the photo tool for Linux, macOS and Windows.",
+    "expect": {
+      "tech": [
+        "github",
+        "action"
+      ],
+      "topic": [
+        "build",
+        "ci",
+        "cross",
+        "release"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p05",
+    "group": "photo-sorter",
+    "prompt": "Write a README for the photo tool with install steps and usage examples.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "readme",
+        "doc"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p06",
+    "group": "photo-sorter",
+    "prompt": "Support HEIC files in the photo renamer.",
+    "expect": {
+      "tech": [
+        "heic"
+      ],
+      "topic": [
+        "heic",
+        "format",
+        "photo",
+        "image"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "p07",
+    "group": "photo-sorter",
+    "prompt": "Update the dependencies of the photo tool and run the tests.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "dependenc",
+        "upgrade",
+        "update"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "i01",
+    "group": "docs-site",
+    "prompt": "Write a CDK stack in TypeScript with an S3 bucket, a CloudFront distribution and a Route 53 record for the docs site.",
+    "expect": {
+      "tech": [
+        "cdk",
+        "typescript",
+        "cloudfront",
+        "s3"
+      ],
+      "topic": [
+        "docs",
+        "hosting",
+        "static",
+        "infra"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "i02",
+    "group": "docs-site",
+    "prompt": "Add a CodePipeline that deploys the docs CDK stack on every merge to main.",
+    "expect": {
+      "tech": [
+        "codepipeline",
+        "cdk"
+      ],
+      "topic": [
+        "pipeline",
+        "deploy",
+        "ci"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "i03",
+    "group": "billing-export",
+    "prompt": "Tighten the IAM policy of the export Lambda role to the exact S3 prefix and DynamoDB table it uses.",
+    "expect": {
+      "tech": [
+        "iam",
+        "lambda"
+      ],
+      "topic": [
+        "iam",
+        "least-privilege",
+        "permission",
+        "policy",
+        "security"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "i04",
+    "group": "network",
+    "prompt": "Migrate the Terraform state of the network module from local files to S3 with state locking.",
+    "expect": {
+      "tech": [
+        "terraform",
+        "s3"
+      ],
+      "topic": [
+        "state",
+        "migrat",
+        "lock"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "l01",
+    "group": "billing-export",
+    "prompt": "Agrega pruebas unitarias para el modulo de facturacion y corrige el redondeo de impuestos.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "billing",
+        "tax",
+        "round",
+        "test"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "l02",
+    "group": "shop-cart",
+    "prompt": "Fuege dem Bestell-Service eine Ratenbegrenzung hinzu und schreibe Tests dafuer.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "rate",
+        "limit",
+        "order"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "l03",
+    "group": "",
+    "prompt": "ユーザー認証のAPIにレート制限を追加してください",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "rate",
+        "limit",
+        "auth"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "n01",
+    "group": "todo-app",
+    "prompt": "Build a todo app in React with local storage.",
+    "expect": {
+      "tech": [
+        "react"
+      ],
+      "topic": [
+        "todo",
+        "storage"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "n02",
+    "group": "todo-app",
+    "prompt": "Add dark mode to the settings page of the todo app and persist the choice.",
+    "expect": {
+      "tech": [
+        "react"
+      ],
+      "topic": [
+        "dark",
+        "theme",
+        "setting"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "n03",
+    "group": "",
+    "prompt": "Write a Python script that parses nginx access logs and prints the ten slowest URLs.",
+    "expect": {
+      "tech": [
+        "python",
+        "nginx"
+      ],
+      "topic": [
+        "log",
+        "parse",
+        "slow",
+        "latency"
+      ],
+      "no_tag": [],
+      "empty_ok": false
+    }
+  },
+  {
+    "id": "v01",
+    "group": "",
+    "prompt": "make it better",
+    "expect": {
+      "tech": [],
+      "topic": [],
+      "no_tag": [],
+      "empty_ok": true
+    }
+  },
+  {
+    "id": "v02",
+    "group": "",
+    "prompt": "fix the bug",
+    "expect": {
+      "tech": [],
+      "topic": [],
+      "no_tag": [],
+      "empty_ok": true
+    }
+  },
+  {
+    "id": "v03",
+    "group": "",
+    "prompt": "Explain what this repository does and where the entry points are.",
+    "expect": {
+      "tech": [],
+      "topic": [
+        "explain",
+        "overview",
+        "onboard",
+        "document"
+      ],
+      "no_tag": [],
+      "empty_ok": true
+    }
+  }
+]

@@ -1,0 +1,516 @@
+{
+  "comment": "The one table of the optional `operator` field of an accounts.json entry. infra/test/operator.test.ts runs it through parseOperator, callerArnPatterns, principalArnPatterns and operatorMayDeploy (lib/operator.ts), scripts/tests/test_operator_identity.py runs it through the same rules of scripts/lib/aws_target.py and the deploy engine's caller check, and the shell generator of scripts/setup/accounts.sh (acct_generate, which writes the field from the caller identity of `aws sts get-caller-identity`) is held to the `generate` rows: each row is a caller ARN and the operator the generator writes for it, or the reason it refuses. So the three parsers cannot drift apart. `{account}` stands for the entry's account id and `{other}` for another account's. The field names the one identity that runs setup and later operates the stage: an IAM role by its name as it appears in the assumed-role ARN (an IAM Identity Center role is named AWSReservedSSO_<permission set>_<16 hex>), or an IAM user by its user name. No path, no wildcard, no comma (control-api's OPERATOR_PRINCIPALS is comma separated).",
+  "accept": [
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "label": "role/Admin",
+      "caller": [
+        "arn:aws:sts::{account}:assumed-role/Admin/*"
+      ],
+      "principal": [
+        "arn:aws:iam::{account}:role/Admin",
+        "arn:aws:iam::{account}:role/*/Admin"
+      ]
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "AWSReservedSSO_AdministratorAccess_0123456789abcdef"
+      },
+      "label": "role/AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+      "caller": [
+        "arn:aws:sts::{account}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/*"
+      ],
+      "principal": [
+        "arn:aws:iam::{account}:role/AWSReservedSSO_AdministratorAccess_0123456789abcdef",
+        "arn:aws:iam::{account}:role/*/AWSReservedSSO_AdministratorAccess_0123456789abcdef"
+      ]
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "label": "user/alice",
+      "caller": [
+        "arn:aws:iam::{account}:user/alice",
+        "arn:aws:iam::{account}:user/*/alice"
+      ],
+      "principal": [
+        "arn:aws:iam::{account}:user/alice",
+        "arn:aws:iam::{account}:user/*/alice"
+      ]
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Dev+Ops=1.0@team_x-y"
+      },
+      "label": "role/Dev+Ops=1.0@team_x-y",
+      "caller": [
+        "arn:aws:sts::{account}:assumed-role/Dev+Ops=1.0@team_x-y/*"
+      ],
+      "principal": [
+        "arn:aws:iam::{account}:role/Dev+Ops=1.0@team_x-y",
+        "arn:aws:iam::{account}:role/*/Dev+Ops=1.0@team_x-y"
+      ]
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "u2345678901234567890123456789012345678901234567890123456789abcde"
+      },
+      "label": "user/u2345678901234567890123456789012345678901234567890123456789abcde",
+      "caller": [
+        "arn:aws:iam::{account}:user/u2345678901234567890123456789012345678901234567890123456789abcde",
+        "arn:aws:iam::{account}:user/*/u2345678901234567890123456789012345678901234567890123456789abcde"
+      ],
+      "principal": [
+        "arn:aws:iam::{account}:user/u2345678901234567890123456789012345678901234567890123456789abcde",
+        "arn:aws:iam::{account}:user/*/u2345678901234567890123456789012345678901234567890123456789abcde"
+      ]
+    }
+  ],
+  "refuse": [
+    {
+      "why": "a string, not an object",
+      "operator": "role/Admin",
+      "reason": "operator must be"
+    },
+    {
+      "why": "null",
+      "operator": null,
+      "reason": "operator must be"
+    },
+    {
+      "why": "a list",
+      "operator": [
+        {
+          "kind": "role",
+          "name": "Admin"
+        }
+      ],
+      "reason": "operator must be"
+    },
+    {
+      "why": "no kind",
+      "operator": {
+        "name": "Admin"
+      },
+      "reason": "operator.kind must be role or user"
+    },
+    {
+      "why": "the root user",
+      "operator": {
+        "kind": "root",
+        "name": "root"
+      },
+      "reason": "operator.kind must be role or user"
+    },
+    {
+      "why": "a group",
+      "operator": {
+        "kind": "group",
+        "name": "admins"
+      },
+      "reason": "operator.kind must be role or user"
+    },
+    {
+      "why": "kind in capitals",
+      "operator": {
+        "kind": "Role",
+        "name": "Admin"
+      },
+      "reason": "operator.kind must be role or user"
+    },
+    {
+      "why": "no name",
+      "operator": {
+        "kind": "role"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "an empty name",
+      "operator": {
+        "kind": "role",
+        "name": ""
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a name that is not text",
+      "operator": {
+        "kind": "user",
+        "name": 7
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a space in the name",
+      "operator": {
+        "kind": "role",
+        "name": "Admin role"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a path in the name",
+      "operator": {
+        "kind": "role",
+        "name": "aws-reserved/sso.amazonaws.com/Admin"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a comma in the name (it is legal in IAM, and control-api's operator setting is comma separated)",
+      "operator": {
+        "kind": "role",
+        "name": "Admin,Other"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a star",
+      "operator": {
+        "kind": "role",
+        "name": "*"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a star inside a name",
+      "operator": {
+        "kind": "user",
+        "name": "ali*"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a question mark",
+      "operator": {
+        "kind": "user",
+        "name": "ali?e"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a policy variable",
+      "operator": {
+        "kind": "role",
+        "name": "${aws:username}"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "65 characters",
+      "operator": {
+        "kind": "role",
+        "name": "a2345678901234567890123456789012345678901234567890123456789abcdef"
+      },
+      "reason": "operator.name must be"
+    },
+    {
+      "why": "a key the file rules do not know",
+      "operator": {
+        "kind": "role",
+        "name": "Admin",
+        "arn": "arn:aws:iam::{account}:role/Admin"
+      },
+      "reason": "operator has the keys kind and name only"
+    }
+  ],
+  "callers": [
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin/Janet",
+      "ok": true
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin/session-with-more-chars.and@example.com",
+      "ok": true
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin2/Janet",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/Other/Admin",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:iam::{account}:user/Admin",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:iam::{account}:root",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:federated-user/Admin",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{other}:assumed-role/Admin/Janet",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "AWSReservedSSO_AdministratorAccess_0123456789abcdef"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/alice@example.com",
+      "ok": true
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "AWSReservedSSO_AdministratorAccess_0123456789abcdef"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/AWSReservedSSO_ReadOnly_0123456789abcdef/alice@example.com",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:user/alice",
+      "ok": true
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:user/team/alice",
+      "ok": true
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:user/alicia",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:user/team/alicia",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/alice/session",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:root",
+      "ok": false
+    },
+    {
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/hamh-setup-runner-role/AWSCodeBuild-0123",
+      "ok": true,
+      "why": "the account-local runner of setup.sh deploys with its own role"
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/hamh-setup-runner-role/AWSCodeBuild-0123",
+      "ok": true,
+      "why": "the account-local runner of setup.sh deploys with its own role"
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:sts::{account}:assumed-role/hamh-setup-runner-role-copy/AWSCodeBuild-0123",
+      "ok": false,
+      "why": "the runner is named exactly"
+    },
+    {
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      },
+      "arn": "arn:aws:iam::{account}:user/hamh-setup-runner-role",
+      "ok": false,
+      "why": "the runner is a role"
+    }
+  ],
+  "generate": [
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin/alice",
+      "operator": {
+        "kind": "role",
+        "name": "Admin"
+      }
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/AWSReservedSSO_AdministratorAccess_0123456789abcdef/alice@example.com",
+      "operator": {
+        "kind": "role",
+        "name": "AWSReservedSSO_AdministratorAccess_0123456789abcdef"
+      }
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/i-profile-role/i-0123456789abcdef0",
+      "operator": {
+        "kind": "role",
+        "name": "i-profile-role"
+      }
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/alice",
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      }
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/team/alice",
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      }
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/a/b/c/alice",
+      "operator": {
+        "kind": "user",
+        "name": "alice"
+      }
+    },
+    {
+      "arn": "arn:aws:iam::{account}:root",
+      "refuse": "root user"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:federated-user/bob",
+      "refuse": "federated user"
+    },
+    {
+      "arn": "arn:aws:sts::{other}:assumed-role/Admin/alice",
+      "refuse": "another account"
+    },
+    {
+      "arn": "arn:aws:iam::{other}:user/alice",
+      "refuse": "another account"
+    },
+    {
+      "arn": "arn:aws-cn:iam::{account}:user/alice",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin/",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role//alice",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin/a/b",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/team/",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user//alice",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+      "refuse": "1 to 64"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/ali,ce",
+      "refuse": "1 to 64"
+    },
+    {
+      "arn": "arn:aws:iam::{account}:user/ali*",
+      "refuse": "1 to 64"
+    },
+    {
+      "arn": "arn:aws:sts::{account}:assumed-role/Admin;x/alice",
+      "refuse": "1 to 64"
+    },
+    {
+      "arn": "None",
+      "refuse": "cannot name"
+    },
+    {
+      "arn": "",
+      "refuse": "cannot name"
+    }
+  ]
+}

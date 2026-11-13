@@ -1,0 +1,100 @@
+{
+  "$defs": {
+    "EvidenceResult": {
+      "enum": [
+        "pass",
+        "fail"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Header fields order. Optional digests serialize as `null` when absent.",
+  "properties": {
+    "account": {
+      "pattern": "^[0-9]{12}$",
+      "type": "string"
+    },
+    "codeSha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "createdAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "criteriaSha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deploymentDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "type": "string"
+    },
+    "imageDigest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inputs": true,
+    "kind": {
+      "type": "string"
+    },
+    "measurements": true,
+    "notes": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/$defs/EvidenceResult"
+    },
+    "runIds": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sourceTree": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stage": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "kind",
+    "createdAt",
+    "host",
+    "account",
+    "region",
+    "stage",
+    "result",
+    "inputs",
+    "measurements",
+    "runIds",
+    "notes"
+  ],
+  "title": "EvidenceHeader",
+  "type": "object"
+}

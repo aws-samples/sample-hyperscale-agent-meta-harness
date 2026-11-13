@@ -1,0 +1,144 @@
+{
+ "schemaVersion": 1,
+ "kind": "k0",
+ "createdAt": "2026-09-25T01:09:49Z",
+ "host": "build-host-0000000000000001.region-a.example.test",
+ "account": "800000000022",
+ "region": "us-west-2",
+ "stage": "none",
+ "codeSha": "86b16b9a90ba908ed62d8609150f3130ead20664",
+ "sourceTree": null,
+ "deploymentDigest": null,
+ "imageDigest": "node:22-bookworm@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d",
+ "criteriaSha256": "88a18a0f6cbaa1ed6958a6edeab52e73d0d3a1e42c595008380370c20bbabfd3",
+ "result": "pass",
+ "inputs": {
+  "cline": {
+   "lock": "engine/cline/lock.toml",
+   "lockSha256": "c2244ac9f389a48aac8f0e51bb188342fd29b01b4508216da139e41e0fe7495c",
+   "tag": "cli-v3.0.65",
+   "upstreamCommit": "9131e36429314ea614491bf749678adbacb3d3cb",
+   "seriesTree": "d6ab34b31ba669b289efe97c9294bfbb0faa4e52",
+   "seriesHead": "09563d0a86598e57cf01fb49cd9f05de66f44600",
+   "patches": [
+    {
+     "file": "0001-feat-llms-route-Bedrock-Mantle-models-through-SigV4-.patch",
+     "sha256": "826d17c387423708a9ef86e04f8593340768295665ab54b3c471cda6d00a0ad8"
+    },
+    {
+     "file": "0002-build-cli-compile-telemetry-out-unless-the-build-opt.patch",
+     "sha256": "017e9a360fa98e7a008975abd312e72934b2b549ab8d8e3dda3c43f61b61638c"
+    }
+   ],
+   "target": "linux-x64",
+   "buildCommand": "CLINE_FORK_WORK_DIR=<k0>/fork-work scripts/build-cline-fork.sh --target linux-x64 --out <k0>/fork-out",
+   "bun": "1.3.13 (bun-linux-x64.zip sha256 79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a)",
+   "telemetry": "off",
+   "acpArgv": [
+    "cline",
+    "--acp",
+    "--config",
+    "<k0>/home-cline/.cline",
+    "--data-dir",
+    "<k0>/home-cline/.cline/data"
+   ],
+   "acpEnv": {
+    "HOME": "<k0>/home-cline",
+    "CLINE_PROVIDER": "bedrock",
+    "CLINE_API_KEY": "k0-gate-00000000000",
+    "AWS_PROFILE": "ham-acct-b02",
+    "AWS_REGION": "us-west-2"
+   }
+  },
+  "opencode": {
+   "release": "https://github.com/anomalyco/opencode/releases/tag/v1.18.32",
+   "asset": "opencode-linux-x64.tar.gz",
+   "assetSha256": "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b",
+   "assetDigestMatchesGithub": true,
+   "acpArgv": [
+    "opencode",
+    "acp"
+   ],
+   "acpEnv": {
+    "HOME": "<k0>/home-opencode",
+    "XDG_*": "<k0>/home-opencode/...",
+    "OPENCODE_DISABLE_AUTOUPDATE": "true",
+    "OPENCODE_DISABLE_SHARE": "true",
+    "OPENCODE_DISABLE_MODELS_FETCH": "true"
+   }
+  },
+  "probe": "<k0>/acp_probe.py (newline-delimited JSON-RPC 2.0 over stdio; initialize protocolVersion 1, then session/new with cwd and mcpServers [])",
+  "noNetworkContainer": "public.ecr.aws/amazonlinux/amazonlinux@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b (AL2023, glibc 2.34), docker run --network none, host uid:gid"
+ },
+ "measurements": {
+  "cline": {
+   "buildResult": "BUILD PASS",
+   "buildDurationS": 53,
+   "binarySha256": "628193b594ca98c91f74e52c2e0b62bfaa91fded236da56146c51106ce1a1b9d",
+   "binarySizeBytes": 151759168,
+   "versionFlag": "3.0.65",
+   "telemetryLeakGuard": "Telemetry off: no build-shell telemetry endpoint, header or key values in cli-linux-x64",
+   "agentInfo": {
+    "name": "cline",
+    "version": "3.0.65"
+   },
+   "agentInfoPath": "initialize.result.agentInfo.version",
+   "protocolVersion": 1,
+   "authMethodsAdvertised": [
+    "cline",
+    "cline-pass",
+    "openai-codex"
+   ],
+   "host": {
+    "initializeMs": 1360,
+    "sessionNewMs": 16,
+    "sessionId": "1790298527388_YF5Ny_cli",
+    "exitCode": 0
+   },
+   "networkNone": {
+    "initializeMs": 1220,
+    "sessionNewMs": 10,
+    "sessionId": "1790298564666_YGEnZ_cli",
+    "exitCode": 0
+   },
+   "sessionNewConfig": {
+    "provider": "bedrock",
+    "model": "minimax.minimax-m2.5",
+    "modelOptions": 167,
+    "mode": "act",
+    "autoApprove": false
+   },
+   "filesWrittenUnderIsolatedHome": 0
+  },
+  "opencode": {
+   "binarySha256": "513f500a1a5ea1dc7d865547ac87b32a8936334e8d5abd5b3ff585c45a170080",
+   "binarySizeBytes": 185165952,
+   "versionFlag": "1.18.32",
+   "agentInfo": {
+    "name": "OpenCode",
+    "version": "1.18.32"
+   },
+   "protocolVersion": 1,
+   "host": {
+    "initializeMs": 1132,
+    "sessionNewMs": 576,
+    "sessionId": "ses_f29e65128ffeGxFDDMYmsgtw1k",
+    "exitCode": 0
+   },
+   "networkNone": {
+    "initializeMs": 1950,
+    "sessionNewMs": 1018,
+    "sessionId": "ses_f29e3c256ffei90EFhk5lXgus1",
+    "exitCode": 0
+   },
+   "sessionNewConfig": {
+    "model": "opencode/big-pickle",
+    "modelOptions": 166,
+    "mode": "build"
+   }
+  },
+  "hostGlibc": "2.26 (Amazon Linux 2); both binaries run on the host without a container"
+ },
+ "runIds": [],
+ "notes": "Both engines answer ACP initialize and session/new on a Linux build host and again in AL2023 with --network none, so the handshake needs no network. The 0001-0002 build gates session/new on Cline-account auth; CLINE_API_KEY=k0-gate-00000000000 with CLINE_PROVIDER=bedrock passes the gate (acpAgent.ts isSessionReady). No prompt was sent, so no Bedrock call and no use of the placeholder occurred. Patch 0007 (auth iam, no placeholder bearer) removes this gate in M2F. Observation for M2F K-suite: under --network none the Cline binary ran `hostname` twice at startup (/bin/sh: hostname: command not found on stderr); the host run printed no such line."
+}

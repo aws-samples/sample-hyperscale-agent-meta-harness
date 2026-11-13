@@ -1,0 +1,40 @@
+# Cline's goal plugin, the loop the worker runs by default. The plugin source and its licence come from github.com/cline/plugins
+# at one commit; createTool, the one function of the SDK the plugin calls, comes verbatim from the Cline source of cline.toml (the [[inputs]]
+# table follows that pin). `engine-fetch build goal-plugin` bundles them with the pinned esbuild into the five files of the plugin folder and
+# checks every file against engine/plugins/lock.json. Nothing of this plugin is stored in the repository.
+schema = "1"
+name = "goal-plugin"
+kind = "git-path-bundle"
+license = "Apache-2.0"
+recipe = "esbuild-bundle"
+description = "Cline goal plugin (plugins/goal) bundled with createTool of the Cline SDK"
+
+[source]
+url = "https://github.com/cline/plugins.git"
+commit = "96bde661f630ec23c1ce0cd86a2361a9959ef65a"
+
+[[files]]
+path = "plugins/goal/index.ts"
+blob = "ef046a4a73036a191a5ba237aca3108880bec9a8"
+sha256 = "8fa09f470ff4b8e1b86472213d0b84abaf07b09e4c6f2da6d914dbacce09dd30"
+as = "goal-index.ts"
+
+[[files]]
+path = "LICENSE"
+blob = "05ae14a377caf4df24e26edde0c4f7b22ef3ef30"
+sha256 = "f704446a5f1271608805598b557e4288cf8580477ea038c9c3d8b361f693f6b8"
+as = "LICENSE"
+
+[[inputs]]
+from = "cline"
+path = "sdk/packages/shared/src/tools/create.ts"
+blob = "4874b5730fae04fddd0f17800c189c296efa5e9c"
+sha256 = "5ff090d12d8c828446e692e4bed9581f8e69f3bff6be7216df74fffceedd7487"
+as = "cline/shared/src/tools/create.ts"
+
+[[inputs]]
+from = "cline"
+path = "LICENSE"
+blob = "05ae14a377caf4df24e26edde0c4f7b22ef3ef30"
+sha256 = "f704446a5f1271608805598b557e4288cf8580477ea038c9c3d8b361f693f6b8"
+as = "cline/LICENSE"

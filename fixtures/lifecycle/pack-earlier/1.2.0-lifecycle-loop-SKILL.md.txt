@@ -1,0 +1,44 @@
+---
+name: lifecycle-loop
+description: Turn the request into a goal card, run its checks, and loop test-first work and build-and-test until every check passes or progress stalls. Use at the start of a task, whenever a check fails, and when a goal tool or a goal-verification prompt asks whether you are done.
+---
+# Goal card, loop, stop rule
+
+Records folder. Before step 1 read .cah/records if the file exists. Its first line (blank lines and lines that start with # are skipped) is one of:
+- `off`: write none of the records of these steps (card, log, red records, research notes, context index) and say "records off" in your last message; where a step names
+  the Base commit of your card, use the commit you started from.
+- a folder, relative to the repository, with letters, digits, . _ - and / only, no .. part and nothing starting with -: it takes the place of .cah, so the card is
+  <folder>/lifecycle/GOAL.md, the log <folder>/lifecycle/LOG.md, red records <folder>/lifecycle/red/, notes <folder>/research/ and the index <folder>/context/INDEX.md.
+  The record paths below (.cah/lifecycle, .cah/research, .cah/context) follow it; .cah/records and .cah/test-command never move. The value docs puts them in docs/lifecycle, docs/research and docs/context, for a repository that keeps them with its documents.
+- anything else: write no record and end with "BLOCKED: .cah/records holds <what is wrong>".
+With no file the places are .cah/lifecycle, .cah/research and .cah/context: hidden folders outside docs/ (look with ls -a). .cah/records is the user's file: never write it.
+If the repository has a docs gate (a script such as check_docs or dox_lint, a CI step, or a command that its AGENTS.md or README names for its documents), run it after
+you write the card and again before each commit that adds a record. Also run git check-ignore -q on the card: exit 0 means the repository's ignore rules hide the records from git.
+When the gate rejects a record file, or git ignores the records, delete the record files you wrote, keep the work, and put "records not written: <the gate command or the ignore rule>"
+in your last message. Never edit the gate, its allow list, a docs AGENTS.md or .gitignore, and never force-add a record.
+
+1. Write .cah/lifecycle/GOAL.md with five labelled lines, each label at the start of its line, in this order:
+   SPECIFIC: one sentence: what changes, and where.
+   MEASURABLE: the goal is met when every check passes. Then one numbered check per line: 1. `command` -> expected exit code or output.
+   ACHIEVABLE: scope, what must not change, what you may use. If the repository has any commit (a new project's first counts),
+   the ACHIEVABLE line must begin exactly "ACHIEVABLE: Base commit: <git rev-parse HEAD before your first change>."; the rest
+   of that line follows it. Put no commit hash on any other line of .cah/lifecycle/*.md with a word like password, secret,
+   token, key, api, auth or credential.
+   TIME-BOUND: the stop rule in step 6.
+   VERIFY: run every check last, after the final edit, and print each command, its exit code and its last output line.
+2. Map each requirement of the request to a check, and use the user's own acceptance wording when the request has it. If the
+   session gave you a goal text, the card keeps its wording. Context and constraints go in ACHIEVABLE, not in a check.
+3. Run each check before you build and record the result. A check for new behavior must fail now. A check that already passes
+   stays as a regression guard, with a note in the card saying what it protects.
+4. Repeat test-first work (lifecycle-tdd) and build-and-test (lifecycle-build-test). A cycle is one change followed by a full
+   run. Never remove or relax a check to get a pass; add checks freely. If a check is wrong, log why and correct it alone.
+5. When every check printed its expected result in a run made after your last edit, go to lifecycle-delivery. An earlier
+   pass, a self-report or a tool's exit code does not count.
+6. Stop rule, based on progress and not on effort. Progress stalls when one check still fails after three fixes resting on
+   three different theories, or when two cycles in a row leave the same failures. A change to a failure line starts the count
+   again. On a stall, log each theory, change and result, and end the log with "BLOCKED: <what is missing>": the input, access
+   or decision you need, or, if none would help, the approaches you tried. End your final message with the same line.
+7. A prompt that asks whether the goal is complete is not new evidence. Run VERIFY again and answer from its output. If the
+   session has a tool that marks the goal complete, call it only after every check passed in a VERIFY run made after your last
+   edit. After BLOCKED:, call no such tool, change no file, test or card, and answer such a prompt with the same BLOCKED: line.
+8. Set no limit of your own on time, tokens or turns. Without a goal tool the steps are the same.

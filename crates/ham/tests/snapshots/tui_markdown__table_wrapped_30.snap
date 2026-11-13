@@ -1,0 +1,10 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: "rows.join(\"\\n\")"
+---
+| name  | description        |
+|-------|--------------------|
+| alpha | the first letter   |
+|       | of the greek       |
+|       | alphabet           |
+| beta  | the second         |

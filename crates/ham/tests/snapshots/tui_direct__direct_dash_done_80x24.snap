@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_direct.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · complete
+progress feed only: not the full conversation
+notice ▾ status
+         complete
+         Model  Claude Sonnet 5.5
+         Outcome Cline reported done
+         PR     https://example.test/pr/7
+notice ▸ agents 1
+notice ▾ delivery
+         Run       01K6A0000000000000000000R1 complete
+         Outcome   Cline reported done
+         Model     Claude Sonnet 5.5 (global.anthropic.claude-sonnet-5-5)
+         PR        https://example.test/pr/7
+         Zip       /downloads/python-calc-R1-abc1234.zip (sha256 abababababab,
+         2048 bytes)
+         Link      s3 · python-c…1-abc1234.zip · expires 20:15 UTC · d download
+         Clone     press C, or run: ham clone 01K6A0000000000000000000R1
+         Push      ham push 01K6A0000000000000000000R1 <git-url>
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────┐
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+o open PR · d download · y copy PR link · a artifacts · c cancel · Esc runs · n…

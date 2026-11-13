@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "about": "The supported models, each with the one route it runs on. All inference is Bedrock. The GLM 5.3 row is from the smoke record engine/catalog/smoke-us.zai.glm-5.3.json: window 1,048,576 tokens measured, 128,000 output tokens, Converse in us-east-1 and us-west-2. `alias` is the short name that `ham --model`, HAMH_MODEL, the config file's default_model and the TUI accept; the row with `default: true` (Claude Sonnet 5.5) is the model a run uses when the user sets nothing. A model is selectable only with a smokeRecordId (a passing smoke test) and a known contextTokens (the engine compacts only when the window is known); a row without one is listed as pending and refused. control-api refuses every id that is not listed here. A row may carry `alternateRoutes`: the other inference profile of the same model (`us.` <-> `global.`) with its own smoke record; a run never names it, and agentd may switch to it when the model's own route fails (provider failover). Edit by hand only to add a smoked route; the tests crates/ham-core/tests/models.rs, crates/ham-core/tests/model_routes.rs and crates/control-api/tests/direct_models.rs pin the models and their alternates. Each row also carries `reasoning`: `default` is the level the model reasons at when the user keeps `reasoning.effort = default`, `accepted` lists the launch levels (low, medium, high, xhigh) that passed the live check of that model, and `smokeRecordId` names the record of that check; a model is never offered at a level the check does not show as accepted. The two older Claude models and GLM 5.3 default to high because xhigh ended in the engine's idle limit or without an answer in that check, and Claude Fable 5.2 defaults to high because none of its xhigh long-reasoning turns finished (the provider's content filter ended them) while its high one did; a one-line edit of `default` moves a model, and it takes a deploy of the Lambdas, not a worker image. A row may carry `engine`, the engine whose smoke record it stands on (`cline` when absent). The OpenCode rows are the five models that passed on the pinned OpenCode release, each with the record engine/catalog/smoke-opencode-<model id>.json as its smokeRecordId; a model with no passing OpenCode record has no OpenCode row and is refused for that engine. The tests crates/ham-core/tests/b787_opencode_rows.rs and crates/control-api/tests/b787_engine_start.rs pin the rows to the record files. A row with `requiresProviderSharing` true runs only in an account in provider data sharing mode and only for a run that agrees to share its prompts and answers with the model's provider (the client setting run.provider_sharing and the request member providerSharing); the id of such a row is written here once, and until the row has a smokeRecordId it is listed as pending and refused.",
+  "models": [
+    {
+      "id": "us.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "vendor": "anthropic",
+      "alias": "opus",
+      "baseModelId": "anthropic.claude-opus-5-5",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:us.anthropic.claude-opus-5-5:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-22+K16:01M49YRY2D7C6M2B7XAVZ2Q4HA/k16-17",
+      "smokedAt": "2026-10-06T21:35:00Z",
+      "reasoning": {
+        "default": "high",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.anthropic.claude-opus-5-5:converse+launch",
+        "smokedAt": "2026-10-27T16:03:59Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "global.anthropic.claude-opus-5-5",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:global.anthropic.claude-opus-5-5:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-21",
+          "smokedAt": "2026-10-06T21:35:27Z"
+        }
+      ]
+    },
+    {
+      "id": "global.anthropic.claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "vendor": "anthropic",
+      "alias": "sonnet",
+      "default": true,
+      "baseModelId": "anthropic.claude-sonnet-5-5",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:global.anthropic.claude-sonnet-5-5:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-29+K16:01M49YKT8AVXKYY5Z2ZGT7H2YG/k16-14",
+      "smokedAt": "2026-10-06T21:35:38Z",
+      "reasoning": {
+        "default": "high",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-10-27:global.anthropic.claude-sonnet-5-5:converse+launch",
+        "smokedAt": "2026-10-27T16:03:59Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "us.anthropic.claude-sonnet-5-5",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:us.anthropic.claude-sonnet-5-5:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-30",
+          "smokedAt": "2026-10-06T21:35:33Z"
+        }
+      ]
+    },
+    {
+      "id": "us.openai.gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "vendor": "openai",
+      "alias": "sol",
+      "baseModelId": "openai.gpt-6.1-sol",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 131072,
+      "smokeRecordId": "s6:us.openai.gpt-6.1-sol:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-95+K16:01M49ZAB62KF94M7K44YMW2EFA/k16-19",
+      "smokedAt": "2026-10-06T21:38:12Z",
+      "reasoning": {
+        "default": "xhigh",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.openai.gpt-6.1-sol:converse+launch",
+        "smokedAt": "2026-10-27T16:03:59Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "global.openai.gpt-6.1-sol",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:global.openai.gpt-6.1-sol:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-94",
+          "smokedAt": "2026-10-06T21:38:19Z"
+        }
+      ]
+    },
+    {
+      "id": "us.openai.gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "vendor": "openai",
+      "alias": "astra",
+      "baseModelId": "openai.gpt-6-astra",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:us.openai.gpt-6-astra:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-89+K16:01M4A80HTRMXEMEGCDJQE8WQDN/k16-03",
+      "smokedAt": "2026-10-06T21:38:00Z",
+      "reasoning": {
+        "default": "xhigh",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.openai.gpt-6-astra:converse+launch",
+        "smokedAt": "2026-10-27T16:03:59Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "global.openai.gpt-6-astra",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:global.openai.gpt-6-astra:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-88",
+          "smokedAt": "2026-10-06T21:38:07Z"
+        }
+      ]
+    },
+    {
+      "id": "us.zai.glm-5.3",
+      "name": "GLM 5.3",
+      "vendor": "zai",
+      "alias": "glm",
+      "baseModelId": "zai.glm-5.3",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1048576,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:us.zai.glm-5.3:us-east-1:converse+audit:2026-10-13/smoke-us.zai.glm-5.3.json",
+      "smokedAt": "2026-10-13T22:35:00Z",
+      "reasoning": {
+        "default": "high",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.zai.glm-5.3:converse+launch",
+        "smokedAt": "2026-10-27T16:03:59Z"
+      },
+      "note": "Reasons at high effort by default. A long reasoning turn can take many minutes at high and can end without an answer at xhigh; set reasoning.effort to low for quick work. Selectable, not recommended for a first run."
+    },
+    {
+      "id": "global.anthropic.claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "vendor": "anthropic",
+      "alias": "fable",
+      "baseModelId": "anthropic.claude-fable-5-2",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "requiresProviderSharing": true,
+      "smokeRecordId": "s6:global.anthropic.claude-fable-5-2:us-east-1:converse+audit:2026-11-10/smoke-global.anthropic.claude-fable-5-2.json",
+      "smokedAt": "2026-11-10T00:45:33Z",
+      "reasoning": {
+        "default": "high",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-11-10:global.anthropic.claude-fable-5-2:converse+launch",
+        "smokedAt": "2026-11-10T01:05:55Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "us.anthropic.claude-fable-5-2",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:us.anthropic.claude-fable-5-2:us-east-1:converse+audit:2026-11-10/smoke-global.anthropic.claude-fable-5-2.json",
+          "smokedAt": "2026-11-10T00:45:18Z"
+        }
+      ]
+    },
+    {
+      "id": "us.anthropic.claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "vendor": "anthropic",
+      "alias": "opus",
+      "engine": "opencode",
+      "baseModelId": "anthropic.claude-opus-5-5",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "smoke-opencode:2.2.6:us.anthropic.claude-opus-5-5:us-east-1:converse:20261108",
+      "smokedAt": "2026-11-08T14:20:15Z"
+    },
+    {
+      "id": "global.anthropic.claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "vendor": "anthropic",
+      "alias": "sonnet",
+      "engine": "opencode",
+      "default": true,
+      "baseModelId": "anthropic.claude-sonnet-5-5",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "smoke-opencode:2.2.6:global.anthropic.claude-sonnet-5-5:us-east-1:converse:20261108",
+      "smokedAt": "2026-11-08T14:20:12Z"
+    },
+    {
+      "id": "us.openai.gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "vendor": "openai",
+      "alias": "sol",
+      "engine": "opencode",
+      "baseModelId": "openai.gpt-6.1-sol",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 131072,
+      "smokeRecordId": "smoke-opencode:2.2.6:us.openai.gpt-6.1-sol:us-east-1:converse:20261108",
+      "smokedAt": "2026-11-08T14:20:12Z"
+    },
+    {
+      "id": "us.openai.gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "vendor": "openai",
+      "alias": "astra",
+      "engine": "opencode",
+      "baseModelId": "openai.gpt-6-astra",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "smoke-opencode:2.2.6:us.openai.gpt-6-astra:us-east-1:converse:20261108",
+      "smokedAt": "2026-11-08T14:20:12Z"
+    },
+    {
+      "id": "global.anthropic.claude-fable-5-2",
+      "name": "Claude Fable 5.2",
+      "vendor": "anthropic",
+      "alias": "fable",
+      "engine": "opencode",
+      "baseModelId": "anthropic.claude-fable-5-2",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "requiresProviderSharing": true,
+      "smokeRecordId": "smoke-opencode:2.2.6:global.anthropic.claude-fable-5-2:us-east-1:converse:20261110",
+      "smokedAt": "2026-11-10T03:48:03Z"
+    }
+  ]
+}

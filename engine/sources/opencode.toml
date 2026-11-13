@@ -1,0 +1,21 @@
+# OpenCode, the second engine: the worker image installs the linux-arm64 asset (images/codebuild/worker-python.yml downloads it by the same pin) and build hosts
+# use the linux-x64 asset. The pin equals engine/lock.toml [opencode]; `engine-fetch check` fails when they differ.
+schema = "1"
+name = "opencode"
+kind = "release-asset"
+license = "MIT"
+recipe = "none"
+version = "2.2.6"
+description = "OpenCode 2.2.6 release assets: linux-arm64 for the worker image, linux-x64 for the build hosts (declared, not built)"
+
+[assets.linux-arm64]
+url = "https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-linux-arm64.tar.gz"
+sha256 = "f2d27600c367e45057d6a16f6a5c2aa8d77b41a9b10d4bc3d849c2f88870e944"
+member = "opencode"
+member_sha256 = "ce4f5e7502b6e32ccd8b05654410e8e8607b9660737222b0b1279621bcea2b03"
+
+[assets.linux-x64]
+url = "https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-linux-x64.tar.gz"
+sha256 = "08bb21d6326ce740d91cce7ebe88a6536933f6e1e30353b91a06b01f25da306c"
+member = "opencode"
+member_sha256 = "50503d24577fa4117a7c95ee85b2cd679606a87eacf20ca54ed5db5c9e1cf895"

@@ -1,0 +1,18 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tool_gap_ms": 300,
+    "tools": [
+      {"title": "read_files: src/calc.py", "kind": "read"},
+      {"title": "spawn_agent: Review the change and report what is wrong", "kind": "think", "open": true},
+      {"title": "read_files: src/calc.py", "kind": "read"},
+      {"title": "read_files: tests/test_calc.py", "kind": "read"}
+    ],
+    "hold_ms": 60000,
+    "iterations": 4
+  },
+  "rounds": [
+    {"text": "Finished without the helper agents.", "edit": {"path": "notes/review.txt", "text": "checked by hand\n"}, "iterations": 2},
+    {"text": "Goal marked complete.", "complete": "all done", "iterations": 2}
+  ]
+}

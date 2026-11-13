@@ -1,0 +1,17 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tool_gap_ms": 200,
+    "tools": [
+      {"title": "spawn_agent: Review the change and report what is wrong", "kind": "think", "open": true},
+      {"title": "read_files: src/calc.py", "kind": "read"}
+    ],
+    "edit": {"path": "notes/review.txt", "text": "reviewed\n"},
+    "text": "The reviewers returned and the work is done.",
+    "hold_ms": 1500,
+    "iterations": 3
+  },
+  "rounds": [
+    {"text": "Goal marked complete.", "complete": "all done", "iterations": 2}
+  ]
+}

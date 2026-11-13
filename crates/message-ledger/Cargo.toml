@@ -1,0 +1,27 @@
+[package]
+name = "message-ledger"
+description = "The rules that move a message of the user through its states, written once for control-api, worker-api and run-session, over a table that DynamoDB and the tests' in-memory copy both implement"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+harness-protocol.workspace = true
+aws-sdk-dynamodb.workspace = true
+serde.workspace = true
+serde_dynamo.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+aws-config.workspace = true
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+aws-smithy-types.workspace = true
+http.workspace = true
+proptest.workspace = true

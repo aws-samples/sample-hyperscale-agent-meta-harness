@@ -1,0 +1,30 @@
+{
+ "note": "Same for a gate run whose helper agents all returned.",
+ "calls": [
+  {
+   "id": "c1",
+   "open_s": 0,
+   "answer_s": 2256,
+   "aborted": false
+  },
+  {
+   "id": "c2",
+   "open_s": 316,
+   "answer_s": 1887,
+   "aborted": false
+  },
+  {
+   "id": "c3",
+   "open_s": 354,
+   "answer_s": 554,
+   "aborted": false
+  },
+  {
+   "id": "c4",
+   "open_s": 641,
+   "answer_s": 1405,
+   "aborted": false
+  }
+ ],
+ "cancelAtS": null
+}

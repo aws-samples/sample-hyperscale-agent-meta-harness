@@ -1,0 +1,64 @@
+---
+source: crates/ham/tests/tui_export.rs
+expression: md
+---
+# ham chat export
+
+- Run: 01M5287JABCDEF
+- Model: Claude Sonnet 5.5
+- Exported: 2026-10-16 17:40:02 UTC
+
+## you
+
+> Build a todo API
+>
+> with tests first
+
+## cline
+
+> I will start with the tests.
+>
+> ```python
+> def test_add():
+>     assert add(1, 2) == 3
+> ```
+>
+> - then the code
+
+## tool
+
+`run_commands: pytest -q` · `completed`
+
+```text
+12 passed in 0.31s
+```
+
+## tool
+
+`src/todo.py`
+
+```diff
+@@ -1 +1 @@
+-x = 1
++x = 2
+```
+
+## cline
+
+`thinking`
+
+```text
+maybe a dict is enough
+```
+
+## notice
+
+> [cut: a size limit]
+
+## notice
+
+> Run complete
+
+## cline
+
+> All green.

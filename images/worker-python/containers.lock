@@ -1,0 +1,16 @@
+# The in-session container runtime: rootless Podman for the direct family, from the podman-static release (static binaries), and the one
+# image its Testcontainers tests need offline. Columns:
+#   archive <name> <arch> <version> <sha256 of the archive> <url>
+#   member  <dest under /opt/harness/containers> <arch> <path inside the archive> <sha256 of the file>
+#   image   <reference in the local store> <arch> <source reference by digest> <image id (the config digest) of the arm64 image>
+# Left out on purpose: fuse-overlayfs and fusermount3 (no FUSE in the VM kernel), passt and pasta (no TUN; a stub in containers/lib stands in),
+# runc (crun is the one OCI runtime), slirp4netns, quadlet and the systemd units. Pins computed from the 2026-10-14 download.
+archive podman-static arm64 v6.1.4 c106d09d7524209ce01eb3a02a7e621e9c55ec31d0fada48439cf77aa07afdb6 https://github.com/mgoltzsche/podman-static/releases/download/v6.1.4/podman-linux-arm64.tar.gz
+member bin/podman arm64 usr/local/bin/podman 867bf1e0b1c572fa483cd72605d03d2aa2ddb24425d4bca721200589ddb61c4c
+member bin/crun arm64 usr/local/bin/crun e25792b37d9e3be6584a86204adffa3e6f00e507b1217f3fc67359aca8c18cd5
+member lib/conmon arm64 usr/local/lib/podman/conmon ca423e1b17786e2e1d6a367537ea5bf36c24bc0b876b8416c5a686da93ff219f
+member lib/netavark arm64 usr/local/lib/podman/netavark 18c6791356f24c340e3243c43c89c7921636575b85839a67854f875c153a904d
+member lib/aardvark-dns arm64 usr/local/lib/podman/aardvark-dns 16b15c1562f0c15d0f2a410ce63107bd09b96d0ff460b0c02f0d975ef820c34d
+member lib/rootlessport arm64 usr/local/lib/podman/rootlessport 6a64471249f60493ed445a33592d927d111e6c50bd1f546d631dd2de8f4e3c12
+member lib/catatonit arm64 usr/local/lib/podman/catatonit 40e0ff062ed2dca8c4b44067eb5e70cddcea0b1df9bed776a4b1a95c3c1b1a8d
+image docker.io/library/postgres:16 arm64 public.ecr.aws/docker/library/postgres@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d sha256:ed134ce8cc303c24d12c4bc6f5a2a43dc7ee7bbde8f67d9f60be5cc03206eab0

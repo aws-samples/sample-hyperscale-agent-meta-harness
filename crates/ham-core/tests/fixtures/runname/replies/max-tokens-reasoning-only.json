@@ -1,0 +1,20 @@
+{
+  "metrics": { "latencyMs": 2310 },
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "reasoningContent": {
+            "reasoningText": {
+              "text": "The request is short. I should think about what the run builds before I write the title, and the title must be five to seven words long, so I will count the words of each candidate",
+              "signature": "c2lnbmF0dXJlLWZvci10ZXN0cw=="
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "max_tokens",
+  "usage": { "inputTokens": 460, "outputTokens": 64, "totalTokens": 524 }
+}

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A2R9X8B4NCD6Q3H7YT2VKP",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 413,
+  "ts": "2026-10-15T13:42:40Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "input-received",
+      "text": "Your message reached Cline (same session).",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "action": "continue_with_prompt",
+      "origin": "user",
+      "textBytes": 88,
+      "waitedS": 93
+    }
+  }
+}

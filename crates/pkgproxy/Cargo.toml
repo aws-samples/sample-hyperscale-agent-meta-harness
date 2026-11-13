@@ -1,0 +1,40 @@
+[package]
+name = "pkgproxy"
+description = "The loopback package proxy of a direct run: the engine's package tools reach CodeArtifact and the Go module store through 127.0.0.1 while the token stays in agentd's memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seams only (`pkgproxy::testing`): a fake DNS table, extra trusted roots and a fake clock, so the integration tests can
+# run fake HTTPS upstreams. No production code calls them; the production `start` always verifies against the webpki roots.
+testing = []
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server"] }
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true
+# The cargo registry's config.json is read and written (src/cargo.rs); the integration tests read it too.
+serde_json.workspace = true
+tokio.workspace = true
+tower-service.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The integration tests use the test seams of this crate itself.
+pkgproxy = { path = ".", features = ["testing"] }
+# Paused-clock tests; the fakes' TLS acceptor; per-run certificates in a scratch directory.
+sha2.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true

@@ -1,0 +1,24 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "text": "Working.",
+      "tools": [
+        {
+          "title": "run_commands: pytest",
+          "kind": "execute"
+        }
+      ],
+      "iterations": 3
+    },
+    {
+      "status": "aborted",
+      "iterations": 5
+    },
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

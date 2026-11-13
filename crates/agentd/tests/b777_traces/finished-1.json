@@ -1,0 +1,66 @@
+{
+ "note": "Same for a gate run whose helper agents all returned.",
+ "calls": [
+  {
+   "id": "c1",
+   "open_s": 0,
+   "answer_s": 3329,
+   "aborted": false
+  },
+  {
+   "id": "c2",
+   "open_s": 36,
+   "answer_s": 871,
+   "aborted": false
+  },
+  {
+   "id": "c3",
+   "open_s": 406,
+   "answer_s": 668,
+   "aborted": false
+  },
+  {
+   "id": "c4",
+   "open_s": 913,
+   "answer_s": 2467,
+   "aborted": false
+  },
+  {
+   "id": "c5",
+   "open_s": 1021,
+   "answer_s": 2264,
+   "aborted": false
+  },
+  {
+   "id": "c6",
+   "open_s": 1152,
+   "answer_s": 2134,
+   "aborted": false
+  },
+  {
+   "id": "c7",
+   "open_s": 1152,
+   "answer_s": 1693,
+   "aborted": false
+  },
+  {
+   "id": "c8",
+   "open_s": 1237,
+   "answer_s": 2032,
+   "aborted": false
+  },
+  {
+   "id": "c9",
+   "open_s": 1338,
+   "answer_s": 1961,
+   "aborted": false
+  },
+  {
+   "id": "c10",
+   "open_s": 4567,
+   "answer_s": 4716,
+   "aborted": false
+  }
+ ],
+ "cancelAtS": null
+}

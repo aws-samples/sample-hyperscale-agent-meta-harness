@@ -1,0 +1,1705 @@
+From 4197761dae6938730f948ac596026c26b145a6cb Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Thu, 24 Sep 2026 20:56:01 +0000
+Subject: [PATCH 01/11] feat(llms): route Bedrock Mantle models through SigV4
+ createBedrockMantle
+
+Amazon Bedrock serves some models only on the OpenAI-compatible Mantle
+endpoint (bedrock-mantle.<region>.api.aws), for example Grok 4.3, Gemma 4
+and the bare openai.gpt-5.x ids, and serves others on Mantle in Regions
+where bedrock-runtime lacks them. The Bedrock vendor only created a
+Converse client, so these models failed, and the only workaround was a
+generic OpenAI provider with a 12-hour Bedrock API key.
+
+The Bedrock vendor now routes a model to Mantle when its id carries the
+`aws-mantle/` prefix or its catalog entry declares an OpenAI wire
+protocol. The models.dev normalizer maps `@ai-sdk/amazon-bedrock/mantle`
+to `openai-responses`, so the next catalog refresh flags the Mantle-only
+models automatically. Everything else, including inference profiles and
+ARNs, stays on Converse.
+
+- Credentials: Mantle reuses the Converse credential decision. IAM and
+  profile auth sign with SigV4 (service bedrock-mantle) through the same
+  fromNodeProviderChain provider, including credential_process, and
+  suppress the AWS_BEARER_TOKEN_BEDROCK fallback. API-key auth still
+  sends the configured key.
+- Endpoint: https://bedrock-mantle.<region>.api.aws for the resolved
+  Region (options.region, AWS_REGION, AWS_DEFAULT_REGION). Mantle serves
+  each model on one of two routes and rejects the other with HTTP 400
+  "isn't supported on this route": GPT-5 and later, Grok and Gemma 4 use
+  /openai/v1, everything else (gpt-oss, Gemma 3, Qwen, DeepSeek, GLM,
+  Kimi, MiniMax, Mistral) uses /v1, per the AWS model cards and a live
+  probe of all 49 us-west-2 and 50 us-east-2 Mantle models. The vendor
+  picks the documented route first and, on a route rejection, retries
+  once on the other route and remembers it for the provider module. The
+  bedrock-runtime endpoint override is never reused; aws.mantleEndpoint
+  sets a Mantle base URL (for example a VPC endpoint) that is used as-is.
+  A missing Region fails with an actionable error.
+- API: Chat Completions by default (widest Mantle coverage), Responses
+  when the catalog says so or aws.mantleApi is "responses".
+- Parameters: temperature is sent only to Mantle models whose catalog
+  entry declares it. OpenAI reasoning ids behind the `openai.` vendor
+  prefix get forceReasoning, so the SDK sends max_completion_tokens and
+  no sampling parameters.
+- Settings: aws.mantleEndpoint and aws.mantleApi flow from provider
+  settings to gateway options.
+
+Tests: 25 new vendor tests (routing, credentials, Region, route
+selection and fallback, parameters), 5 wire tests through the real
+@ai-sdk/amazon-bedrock/mantle package with a stubbed fetch (URL, SigV4
+Authorization scope, body, route retry), 1 catalog normalizer test, 3
+settings plumbing tests.
+---
+ .../src/services/llms/handler-factory.test.ts |  42 +
+ .../core/src/services/llms/handler-factory.ts |   2 +
+ .../services/llms/provider-settings.test.ts   |  35 +
+ .../src/services/llms/provider-settings.ts    |   4 +
+ .../llms/src/catalog/catalog-live.test.ts     |  21 +
+ sdk/packages/llms/src/catalog/catalog-live.ts |   3 +
+ sdk/packages/llms/src/providers/compat.ts     |   2 +
+ sdk/packages/llms/src/providers/config.ts     |   4 +
+ .../vendors/bedrock-mantle.wire.test.ts       | 265 +++++++
+ .../src/providers/vendors/bedrock.test.ts     | 718 +++++++++++++++++-
+ .../llms/src/providers/vendors/bedrock.ts     | 349 ++++++++-
+ sdk/packages/shared/src/rpc/runtime.ts        |   2 +
+ 12 files changed, 1435 insertions(+), 12 deletions(-)
+ create mode 100644 sdk/packages/llms/src/providers/vendors/bedrock-mantle.wire.test.ts
+
+diff --git a/sdk/packages/core/src/services/llms/handler-factory.test.ts b/sdk/packages/core/src/services/llms/handler-factory.test.ts
+index 7ca3416..b05f019 100644
+--- a/sdk/packages/core/src/services/llms/handler-factory.test.ts
++++ b/sdk/packages/core/src/services/llms/handler-factory.test.ts
+@@ -288,6 +288,48 @@ describe("createAgentModelFromConfig", () => {
+ 		);
+ 	});
+ 
++	it("forwards Bedrock Mantle settings as gateway provider options", async () => {
++		const { createAgentModelFromConfig } = await import("./handler-factory");
++
++		createAgentModelFromConfig(
++			{
++				providerId: "bedrock",
++				modelId: "aws-mantle/qwen.qwen3-coder-next",
++				systemPrompt: "",
++				tools: [],
++				providerConfig: {
++					providerId: "bedrock",
++					modelId: "aws-mantle/qwen.qwen3-coder-next",
++					region: "us-west-2",
++					aws: {
++						authentication: "iam",
++						mantleEndpoint:
++							"https://vpce-2.bedrock-mantle.us-west-2.vpce.amazonaws.com/v1",
++						mantleApi: "chat",
++					},
++				},
++			},
++			undefined,
++		);
++
++		expect(gatewayMock.createGateway).toHaveBeenLastCalledWith(
++			expect.objectContaining({
++				providerConfigs: [
++					expect.objectContaining({
++						providerId: "bedrock",
++						options: expect.objectContaining({
++							region: "us-west-2",
++							authentication: "iam",
++							mantleEndpoint:
++								"https://vpce-2.bedrock-mantle.us-west-2.vpce.amazonaws.com/v1",
++							mantleApi: "chat",
++						}),
++					}),
++				],
++			}),
++		);
++	});
++
+ 	it("forwards the workspace cwd as a Claude Code gateway provider option", async () => {
+ 		const { createAgentModelFromConfig } = await import("./handler-factory");
+ 
+diff --git a/sdk/packages/core/src/services/llms/handler-factory.ts b/sdk/packages/core/src/services/llms/handler-factory.ts
+index 9a79626..b101946 100644
+--- a/sdk/packages/core/src/services/llms/handler-factory.ts
++++ b/sdk/packages/core/src/services/llms/handler-factory.ts
+@@ -63,6 +63,8 @@ function buildGatewayProviderOptions(
+ 			useGlobalInference: config.useGlobalInference,
+ 			endpoint: config.aws?.endpoint,
+ 			customModelBaseId: config.aws?.customModelBaseId,
++			mantleEndpoint: config.aws?.mantleEndpoint,
++			mantleApi: config.aws?.mantleApi,
+ 		});
+ 	}
+ 
+diff --git a/sdk/packages/core/src/services/llms/provider-settings.test.ts b/sdk/packages/core/src/services/llms/provider-settings.test.ts
+index 27472f7..844156b 100644
+--- a/sdk/packages/core/src/services/llms/provider-settings.test.ts
++++ b/sdk/packages/core/src/services/llms/provider-settings.test.ts
+@@ -37,6 +37,41 @@ describe("provider settings", () => {
+ 		);
+ 	});
+ 
++	it("carries Bedrock Mantle endpoint and API settings into the provider config", () => {
++		const result = safeParseSettings({
++			provider: "bedrock",
++			model: "aws-mantle/openai.gpt-5.5",
++			aws: {
++				authentication: "iam",
++				region: "us-east-2",
++				mantleEndpoint:
++					"https://vpce-2.bedrock-mantle.us-east-2.vpce.amazonaws.com/v1",
++				mantleApi: "responses",
++			},
++		});
++
++		expect(result.success).toBe(true);
++		if (!result.success) {
++			throw new Error("expected Bedrock Mantle settings to parse");
++		}
++		expect(toProviderConfig(result.data).aws).toEqual(
++			expect.objectContaining({
++				mantleEndpoint:
++					"https://vpce-2.bedrock-mantle.us-east-2.vpce.amazonaws.com/v1",
++				mantleApi: "responses",
++			}),
++		);
++	});
++
++	it("rejects an unknown Bedrock Mantle API", () => {
++		const result = safeParseSettings({
++			provider: "bedrock",
++			aws: { mantleApi: "completions" },
++		});
++
++		expect(result.success).toBe(false);
++	});
++
+ 	it("resolves the regional endpoint from apiLine when no base URL is set", () => {
+ 		expect(
+ 			toProviderConfig({ provider: "zai", apiLine: "china" }),
+diff --git a/sdk/packages/core/src/services/llms/provider-settings.ts b/sdk/packages/core/src/services/llms/provider-settings.ts
+index d059989..5465fab 100644
+--- a/sdk/packages/core/src/services/llms/provider-settings.ts
++++ b/sdk/packages/core/src/services/llms/provider-settings.ts
+@@ -89,6 +89,8 @@ export const AwsSettingsSchema = z.object({
+ 	useGlobalInference: z.boolean().optional(),
+ 	endpoint: z.string().url().optional(),
+ 	customModelBaseId: z.string().optional(),
++	mantleEndpoint: z.string().url().optional(),
++	mantleApi: z.enum(["chat", "responses"]).optional(),
+ });
+ 
+ export type AwsSettings = z.infer<typeof AwsSettingsSchema>;
+@@ -281,6 +283,8 @@ export function toProviderConfig(
+ 					usePromptCache: settings.aws.usePromptCache,
+ 					endpoint: settings.aws.endpoint,
+ 					customModelBaseId: settings.aws.customModelBaseId,
++					mantleEndpoint: settings.aws.mantleEndpoint,
++					mantleApi: settings.aws.mantleApi,
+ 				}
+ 			: undefined,
+ 		gcp: settings.gcp
+diff --git a/sdk/packages/llms/src/catalog/catalog-live.test.ts b/sdk/packages/llms/src/catalog/catalog-live.test.ts
+index 6c70daa..bce5502 100644
+--- a/sdk/packages/llms/src/catalog/catalog-live.test.ts
++++ b/sdk/packages/llms/src/catalog/catalog-live.test.ts
+@@ -52,6 +52,27 @@ describe("models-dev-catalog", () => {
+ 		expect(result["other-gateway"].qwen.metadata).toBeUndefined();
+ 	});
+ 
++	it("flags Bedrock models that models.dev routes to the Mantle adapter", () => {
++		const result = normalizeModelsDevProviderModels({
++			"amazon-bedrock": {
++				npm: "@ai-sdk/amazon-bedrock",
++				models: {
++					"xai.grok-4.3": {
++						tool_call: true,
++						provider: { npm: "@ai-sdk/amazon-bedrock/mantle" },
++					},
++					"anthropic.claude-sonnet-4-6": { tool_call: true },
++				},
++			},
++		});
++		expect(result.bedrock?.["xai.grok-4.3"]?.metadata?.apiProtocol).toBe(
++			"openai-responses",
++		);
++		expect(
++			result.bedrock?.["anthropic.claude-sonnet-4-6"]?.metadata,
++		).toBeUndefined();
++	});
++
+ 	it("bundles zero prices for every Cline Pass model without a live refresh", () => {
+ 		const models = Object.values(getGeneratedModelsForProvider("cline-pass"));
+ 		expect(models.length).toBeGreaterThan(0);
+diff --git a/sdk/packages/llms/src/catalog/catalog-live.ts b/sdk/packages/llms/src/catalog/catalog-live.ts
+index d3f56b5..c34e972 100644
+--- a/sdk/packages/llms/src/catalog/catalog-live.ts
++++ b/sdk/packages/llms/src/catalog/catalog-live.ts
+@@ -358,6 +358,9 @@ const MODEL_API_PROTOCOLS: Record<
+ 	"@ai-sdk/openai-compatible": "openai-chat",
+ 	"@ai-sdk/anthropic": "anthropic",
+ 	"@ai-sdk/google": "gemini",
++	// Bedrock models served only by the OpenAI-compatible Mantle endpoint.
++	// The Bedrock vendor routes these to Mantle Responses instead of Converse.
++	"@ai-sdk/amazon-bedrock/mantle": "openai-responses",
+ };
+ 
+ function isDeprecatedModel(model: ModelsDevModel): boolean {
+diff --git a/sdk/packages/llms/src/providers/compat.ts b/sdk/packages/llms/src/providers/compat.ts
+index de13ae2..dab5415 100644
+--- a/sdk/packages/llms/src/providers/compat.ts
++++ b/sdk/packages/llms/src/providers/compat.ts
+@@ -513,6 +513,8 @@ function buildGatewayConfig(config: ProviderConfig) {
+ 			profile: config.aws?.profile,
+ 			endpoint: config.aws?.endpoint,
+ 			customModelBaseId: config.aws?.customModelBaseId,
++			mantleEndpoint: config.aws?.mantleEndpoint,
++			mantleApi: config.aws?.mantleApi,
+ 			apiVersion: config.azure?.apiVersion,
+ 			useIdentity: config.azure?.useIdentity,
+ 			mode: config.oca?.mode,
+diff --git a/sdk/packages/llms/src/providers/config.ts b/sdk/packages/llms/src/providers/config.ts
+index 96c8c99..9c8dcdd 100644
+--- a/sdk/packages/llms/src/providers/config.ts
++++ b/sdk/packages/llms/src/providers/config.ts
+@@ -166,6 +166,10 @@ export interface AwsConfig {
+ 	usePromptCache?: boolean;
+ 	endpoint?: string;
+ 	customModelBaseId?: string;
++	/** Bedrock Mantle base URL override, e.g. a VPC endpoint (default `https://bedrock-mantle.<region>.api.aws/v1`) */
++	mantleEndpoint?: string;
++	/** OpenAI-compatible API used for Bedrock Mantle models (default `chat`) */
++	mantleApi?: "chat" | "responses";
+ }
+ 
+ /**
+diff --git a/sdk/packages/llms/src/providers/vendors/bedrock-mantle.wire.test.ts b/sdk/packages/llms/src/providers/vendors/bedrock-mantle.wire.test.ts
+new file mode 100644
+index 0000000..e2ebefb
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/vendors/bedrock-mantle.wire.test.ts
+@@ -0,0 +1,265 @@
++// Wire-contract tests for the Bedrock vendor's Mantle route, exercised through
++// the *real* `@ai-sdk/amazon-bedrock/mantle` package rather than a mocked
++// constructor. Each test drives `doStream` through the vendor module with a
++// stubbed fetch and asserts on the actual HTTP request, so a regression in
++// routing, signing, endpoint selection or parameter filtering is caught here:
++//
++//   1. an `aws-mantle/` model id reaches `bedrock-mantle.<region>.api.aws`
++//      with the prefix removed from the request body;
++//   2. the request is signed with SigV4 for service `bedrock-mantle` using
++//      the role credentials, and an ambient `AWS_BEARER_TOKEN_BEDROCK` is not
++//      sent under IAM auth;
++//   3. OpenAI reasoning models on Mantle get no `temperature` and use
++//      `max_completion_tokens`, while models that declare temperature keep it;
++//   4. `mantleApi: "responses"` selects the Responses endpoint.
++import type {
++	LanguageModelV4,
++	LanguageModelV4CallOptions,
++	LanguageModelV4StreamPart,
++} from "@ai-sdk/provider";
++import type { GatewayResolvedProviderConfig } from "@cline/shared";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { createBedrockProviderModule } from "./bedrock";
++
++interface CapturedRequest {
++	url: string;
++	headers: Headers;
++	body: Record<string, unknown>;
++}
++
++const ROLE_CREDENTIALS = {
++	accessKeyId: "ASIAEXAMPLEROLEKEY",
++	secretAccessKey: "role-secret-access-key",
++	sessionToken: "role-session-token",
++};
++
++const CHAT_STREAM = [
++	{
++		id: "chatcmpl-1",
++		object: "chat.completion.chunk",
++		created: 1,
++		model: "wire-model",
++		choices: [
++			{
++				index: 0,
++				delta: { role: "assistant", content: "ok" },
++				finish_reason: null,
++			},
++		],
++	},
++	{
++		id: "chatcmpl-1",
++		object: "chat.completion.chunk",
++		created: 1,
++		model: "wire-model",
++		choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
++		usage: { prompt_tokens: 11, completion_tokens: 1, total_tokens: 12 },
++	},
++];
++
++function sseBody(events: readonly unknown[]): string {
++	return `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
++}
++
++async function streamThroughVendor(input: {
++	modelId: string;
++	options: Record<string, unknown>;
++	call?: Partial<LanguageModelV4CallOptions>;
++	/** Canned response per request URL; defaults to a two-chunk chat stream. */
++	respond?: (url: string) => Response;
++}): Promise<{
++	requests: CapturedRequest[];
++	parts: LanguageModelV4StreamPart[];
++}> {
++	const requests: CapturedRequest[] = [];
++	const fetchStub = (async (resource, init) => {
++		const url =
++			typeof resource === "string"
++				? resource
++				: resource instanceof URL
++					? resource.href
++					: resource.url;
++		requests.push({
++			url,
++			headers: new Headers(init?.headers),
++			body: JSON.parse(String(init?.body)),
++		});
++		return (
++			input.respond?.(url) ??
++			new Response(sseBody(CHAT_STREAM), {
++				status: 200,
++				headers: { "content-type": "text/event-stream" },
++			})
++		);
++	}) as typeof fetch;
++
++	const module = await createBedrockProviderModule(
++		config({ options: input.options, fetch: fetchStub }),
++	);
++	const model = module.operations.language(input.modelId) as LanguageModelV4;
++	const { stream } = await model.doStream({
++		prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
++		...input.call,
++	});
++	const parts: LanguageModelV4StreamPart[] = [];
++	const reader = stream.getReader();
++	for (;;) {
++		const { done, value } = await reader.read();
++		if (done) break;
++		parts.push(value);
++	}
++	return { requests, parts };
++}
++
++const ORIGINAL_ENV = { ...process.env };
++
++describe("Bedrock Mantle wire contract", () => {
++	beforeEach(() => {
++		process.env = { ...ORIGINAL_ENV };
++		delete process.env.AWS_REGION;
++		delete process.env.AWS_DEFAULT_REGION;
++		delete process.env.AWS_ACCESS_KEY_ID;
++		delete process.env.AWS_SECRET_ACCESS_KEY;
++		delete process.env.AWS_SESSION_TOKEN;
++	});
++
++	afterEach(() => {
++		process.env = { ...ORIGINAL_ENV };
++	});
++
++	it("signs chat requests to bedrock-mantle.<region>.api.aws with SigV4 role credentials, never the ambient bearer token", async () => {
++		process.env.AWS_BEARER_TOKEN_BEDROCK = "ambient-bearer-token";
++
++		const { requests, parts } = await streamThroughVendor({
++			modelId: "aws-mantle/qwen.qwen3-coder-next",
++			options: {
++				authentication: "iam",
++				region: "us-west-2",
++				credentialProvider: async () => ROLE_CREDENTIALS,
++			},
++		});
++
++		expect(requests).toHaveLength(1);
++		const [request] = requests;
++		expect(request?.url).toBe(
++			"https://bedrock-mantle.us-west-2.api.aws/v1/chat/completions",
++		);
++		expect(request?.body.model).toBe("qwen.qwen3-coder-next");
++		const authorization = request?.headers.get("authorization") ?? "";
++		expect(authorization).toMatch(
++			/^AWS4-HMAC-SHA256 Credential=ASIAEXAMPLEROLEKEY\/\d{8}\/us-west-2\/bedrock-mantle\/aws4_request, SignedHeaders=/,
++		);
++		expect(authorization).not.toContain("ambient-bearer-token");
++		expect(request?.headers.get("x-amz-security-token")).toBe(
++			"role-session-token",
++		);
++		expect(
++			parts.some((part) => part.type === "text-delta" && part.delta === "ok"),
++		).toBe(true);
++	});
++
++	it("drops temperature and sends max_completion_tokens for OpenAI reasoning models", async () => {
++		const { requests } = await streamThroughVendor({
++			modelId: "aws-mantle/openai.gpt-5.5",
++			options: {
++				authentication: "iam",
++				region: "us-east-2",
++				credentialProvider: async () => ROLE_CREDENTIALS,
++			},
++			call: { temperature: 0.2, maxOutputTokens: 256 },
++		});
++
++		const body = requests[0]?.body ?? {};
++		expect(requests[0]?.url).toBe(
++			"https://bedrock-mantle.us-east-2.api.aws/openai/v1/chat/completions",
++		);
++		expect(body.model).toBe("openai.gpt-5.5");
++		expect(body).not.toHaveProperty("temperature");
++		expect(body).not.toHaveProperty("max_tokens");
++		expect(body.max_completion_tokens).toBe(256);
++	});
++
++	it("keeps temperature for Mantle models whose catalog entry declares it", async () => {
++		const { requests } = await streamThroughVendor({
++			modelId: "aws-mantle/qwen.qwen3-coder-next",
++			options: {
++				authentication: "iam",
++				region: "us-west-2",
++				credentialProvider: async () => ROLE_CREDENTIALS,
++			},
++			call: { temperature: 0.2, maxOutputTokens: 256 },
++		});
++
++		const body = requests[0]?.body ?? {};
++		expect(body.temperature).toBe(0.2);
++		expect(body.max_tokens).toBe(256);
++	});
++
++	it("re-signs and retries on /openai/v1 when Mantle rejects the /v1 route", async () => {
++		const routeError = JSON.stringify({
++			error: {
++				code: "validation_error",
++				message: "model `acme.future-1` isn't supported on this route",
++				param: null,
++				type: "invalid_request_error",
++			},
++		});
++		const { requests, parts } = await streamThroughVendor({
++			modelId: "aws-mantle/acme.future-1",
++			options: {
++				authentication: "iam",
++				region: "us-west-2",
++				credentialProvider: async () => ROLE_CREDENTIALS,
++			},
++			respond: (url) =>
++				url.includes("/openai/v1/")
++					? new Response(sseBody(CHAT_STREAM), {
++							status: 200,
++							headers: { "content-type": "text/event-stream" },
++						})
++					: new Response(routeError, {
++							status: 400,
++							headers: { "content-type": "application/json" },
++						}),
++		});
++
++		expect(requests.map((request) => request.url)).toEqual([
++			"https://bedrock-mantle.us-west-2.api.aws/v1/chat/completions",
++			"https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions",
++		]);
++		for (const request of requests) {
++			expect(request.headers.get("authorization")).toMatch(
++				/^AWS4-HMAC-SHA256 Credential=ASIAEXAMPLEROLEKEY\/\d{8}\/us-west-2\/bedrock-mantle\/aws4_request/,
++			);
++		}
++		expect(
++			parts.some((part) => part.type === "text-delta" && part.delta === "ok"),
++		).toBe(true);
++	});
++
++	it("selects the Mantle Responses endpoint when mantleApi is responses", async () => {
++		const { requests } = await streamThroughVendor({
++			modelId: "aws-mantle/openai.gpt-5.5",
++			options: {
++				authentication: "iam",
++				region: "us-east-2",
++				mantleApi: "responses",
++				credentialProvider: async () => ROLE_CREDENTIALS,
++			},
++		});
++
++		expect(requests[0]?.url).toBe(
++			"https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses",
++		);
++		expect(requests[0]?.body.model).toBe("openai.gpt-5.5");
++	});
++});
++
++function config(
++	overrides: Partial<GatewayResolvedProviderConfig>,
++): GatewayResolvedProviderConfig {
++	return {
++		providerId: "bedrock",
++		...overrides,
++	};
++}
+diff --git a/sdk/packages/llms/src/providers/vendors/bedrock.test.ts b/sdk/packages/llms/src/providers/vendors/bedrock.test.ts
+index 88ca248..c815ce8 100644
+--- a/sdk/packages/llms/src/providers/vendors/bedrock.test.ts
++++ b/sdk/packages/llms/src/providers/vendors/bedrock.test.ts
+@@ -1,23 +1,143 @@
+-import type { GatewayResolvedProviderConfig } from "@cline/shared";
++import {
++	APICallError,
++	type LanguageModelV4,
++	type LanguageModelV4CallOptions,
++} from "@ai-sdk/provider";
++import type { GatewayResolvedProviderConfig, ModelInfo } from "@cline/shared";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+-import { createBedrockProviderModule, resolveBedrockModelId } from "./bedrock";
++import {
++	createBedrockProviderModule,
++	isOpenAIReasoningMantleModel,
++	resolveBedrockMantleRoute,
++	resolveBedrockModelId,
++} from "./bedrock";
+ 
+ const createAmazonBedrockMock = vi.hoisted(() => vi.fn());
+ const fromNodeProviderChainMock = vi.hoisted(() => vi.fn());
+ const bedrockModelMock = vi.hoisted(() =>
+ 	vi.fn((modelId: string) => ({ modelId })),
+ );
++const createBedrockMantleMock = vi.hoisted(() => vi.fn());
++// Test-only catalog entries layered over the real generated Bedrock catalog.
++const catalogOverrides = vi.hoisted(() => ({
++	bedrock: {} as Record<string, unknown>,
++}));
+ 
+ vi.mock("@ai-sdk/amazon-bedrock", () => ({
+ 	createAmazonBedrock: createAmazonBedrockMock,
+ }));
+ 
++vi.mock("@ai-sdk/amazon-bedrock/mantle", () => ({
++	createBedrockMantle: createBedrockMantleMock,
++}));
++
+ vi.mock("@aws-sdk/credential-providers", () => ({
+ 	fromNodeProviderChain: fromNodeProviderChainMock,
+ }));
+ 
++vi.mock("../../catalog/catalog.generated-access", async (importOriginal) => {
++	const actual =
++		await importOriginal<
++			typeof import("../../catalog/catalog.generated-access")
++		>();
++	return {
++		...actual,
++		getGeneratedModelsForProvider: (providerId: string) => {
++			const models = actual.getGeneratedModelsForProvider(providerId);
++			return providerId === "bedrock"
++				? { ...models, ...catalogOverrides.bedrock }
++				: models;
++		},
++	};
++});
++
+ const ORIGINAL_ENV = { ...process.env };
+ 
++/**
++ * A LanguageModelV4 stand-in that records the call options it receives after
++ * any vendor middleware has run.
++ */
++function recordingMantleModel(api: "chat" | "responses", modelId: string) {
++	const calls: LanguageModelV4CallOptions[] = [];
++	const model: LanguageModelV4 & { calls: LanguageModelV4CallOptions[] } = {
++		specificationVersion: "v4",
++		provider: `bedrock-mantle.${api}`,
++		modelId,
++		supportedUrls: {},
++		calls,
++		doGenerate: async (options) => {
++			calls.push(options);
++			return {
++				content: [{ type: "text", text: "ok" }],
++				finishReason: { unified: "stop", raw: "stop" },
++				usage: {
++					inputTokens: {
++						total: 1,
++						noCache: 1,
++						cacheRead: undefined,
++						cacheWrite: undefined,
++					},
++					outputTokens: { total: 1, text: 1, reasoning: undefined },
++				},
++				warnings: [],
++			} as never;
++		},
++		doStream: async (options) => {
++			calls.push(options);
++			return { stream: new ReadableStream() } as never;
++		},
++	};
++	return model;
++}
++
++function mantleProviderMock() {
++	const models: Array<ReturnType<typeof recordingMantleModel>> = [];
++	const make = (api: "chat" | "responses") =>
++		vi.fn((modelId: string) => {
++			const model = recordingMantleModel(api, modelId);
++			models.push(model);
++			return model;
++		});
++	return { chat: make("chat"), responses: make("responses"), models };
++}
++
++function catalogModel(
++	id: string,
++	capabilities: NonNullable<ModelInfo["capabilities"]>,
++	metadata?: ModelInfo["metadata"],
++): ModelInfo {
++	return {
++		id,
++		name: id,
++		contextWindow: 128_000,
++		maxTokens: 8_192,
++		capabilities,
++		...(metadata ? { metadata } : {}),
++	};
++}
++
++async function callMantleModel(
++	model: unknown,
++	options: Partial<LanguageModelV4CallOptions>,
++): Promise<LanguageModelV4CallOptions> {
++	const wrapped = model as LanguageModelV4;
++	await wrapped.doGenerate({
++		prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
++		...options,
++	});
++	const inner = mantleLastModel();
++	const received = inner?.calls.at(-1);
++	if (!received) {
++		throw new Error("Mantle model was not called");
++	}
++	return received;
++}
++
++let mantle = mantleProviderMock();
++function mantleLastModel() {
++	return mantle.models.at(-1);
++}
++
+ describe("createBedrockProviderModule", () => {
+ 	beforeEach(() => {
+ 		process.env = { ...ORIGINAL_ENV };
+@@ -624,6 +744,600 @@ describe("resolveBedrockModelId", () => {
+ 	});
+ });
+ 
++describe("Bedrock Mantle routing", () => {
++	beforeEach(() => {
++		process.env = { ...ORIGINAL_ENV };
++		delete process.env.AWS_BEARER_TOKEN_BEDROCK;
++		delete process.env.AWS_REGION;
++		delete process.env.AWS_DEFAULT_REGION;
++		createAmazonBedrockMock.mockReset();
++		createAmazonBedrockMock.mockReturnValue(bedrockModelMock);
++		fromNodeProviderChainMock.mockReset();
++		fromNodeProviderChainMock.mockImplementation(() => async () => ({
++			accessKeyId: "chain-access-key",
++			secretAccessKey: "chain-secret-key",
++		}));
++		bedrockModelMock.mockClear();
++		mantle = mantleProviderMock();
++		createBedrockMantleMock.mockReset();
++		createBedrockMantleMock.mockReturnValue(mantle);
++		catalogOverrides.bedrock = {};
++	});
++
++	afterEach(() => {
++		process.env = { ...ORIGINAL_ENV };
++		catalogOverrides.bedrock = {};
++	});
++
++	describe("(a) model routing", () => {
++		it("routes aws-mantle/ ids to a Mantle chat model with the prefix stripped", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(createBedrockMantleMock).toHaveBeenCalledTimes(1);
++			expect(mantle.chat).toHaveBeenCalledWith("qwen.qwen3-coder-next");
++			expect(mantle.responses).not.toHaveBeenCalled();
++			expect(bedrockModelMock).not.toHaveBeenCalled();
++		});
++
++		it("routes catalog-flagged Mantle models without a prefix", async () => {
++			catalogOverrides.bedrock = {
++				"xai.grok-4.3": catalogModel("xai.grok-4.3", ["tools"], {
++					apiProtocol: "openai-responses",
++				}),
++				"google.gemma-4-31b": catalogModel("google.gemma-4-31b", ["tools"], {
++					apiProtocol: "openai-chat",
++				}),
++			};
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			module.operations.language("xai.grok-4.3");
++			module.operations.language("google.gemma-4-31b");
++
++			expect(mantle.responses).toHaveBeenCalledWith("xai.grok-4.3");
++			expect(mantle.chat).toHaveBeenCalledWith("google.gemma-4-31b");
++			expect(bedrockModelMock).not.toHaveBeenCalled();
++		});
++
++		it("keeps Converse ids, inference profiles and ARNs on Converse", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			module.operations.language("us.openai.gpt-5.5");
++			module.operations.language("anthropic.claude-sonnet-4-6");
++			module.operations.language(
++				"arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abc",
++			);
++
++			expect(createBedrockMantleMock).not.toHaveBeenCalled();
++			expect(bedrockModelMock).toHaveBeenCalledWith("us.openai.gpt-5.5");
++			expect(bedrockModelMock).toHaveBeenCalledWith(
++				"us.anthropic.claude-sonnet-4-6",
++			);
++			expect(bedrockModelMock).toHaveBeenCalledTimes(3);
++		});
++
++		it("rejects an aws-mantle/ id with no model after the prefix", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			expect(() => module.operations.language("aws-mantle/")).toThrow(
++				/model id/i,
++			);
++			expect(() => module.operations.language("aws-mantle/   ")).toThrow(
++				/model id/i,
++			);
++		});
++
++		it("selects the Responses API when options.mantleApi is responses", async () => {
++			const module = await createBedrockProviderModule(
++				config({
++					options: {
++						authentication: "iam",
++						region: "us-east-2",
++						mantleApi: "responses",
++					},
++				}),
++			);
++
++			module.operations.language("aws-mantle/openai.gpt-5.5");
++
++			expect(mantle.responses).toHaveBeenCalledWith("openai.gpt-5.5");
++			expect(mantle.chat).not.toHaveBeenCalled();
++		});
++
++		it("creates the Mantle client once per provider module", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++			module.operations.language("aws-mantle/zai.glm-4.6");
++
++			expect(createBedrockMantleMock).toHaveBeenCalledTimes(1);
++		});
++
++		it("detects OpenAI reasoning ids behind the openai. vendor prefix only", () => {
++			for (const id of [
++				"openai.gpt-5.5",
++				"openai.gpt-5.5-2026-04-23",
++				"openai.gpt-5.6-sol",
++				"openai.gpt-6-astra",
++				"openai.gpt-5.1-chat-latest",
++				"openai.o3",
++			]) {
++				expect(isOpenAIReasoningMantleModel(id), id).toBe(true);
++			}
++			for (const id of [
++				"openai.gpt-oss-120b",
++				"openai.gpt-4.1",
++				"openai.gpt-5-chat-latest",
++				"gpt-5.5",
++				"xai.grok-4.3",
++				"qwen.qwen3-coder-next",
++			]) {
++				expect(isOpenAIReasoningMantleModel(id), id).toBe(false);
++			}
++		});
++
++		it("exposes the route decision for callers and tests", () => {
++			expect(resolveBedrockMantleRoute("aws-mantle/zai.glm-4.6")).toEqual({
++				modelId: "zai.glm-4.6",
++				api: "chat",
++			});
++			expect(
++				resolveBedrockMantleRoute("anthropic.claude-sonnet-4-6"),
++			).toBeUndefined();
++		});
++	});
++
++	describe("(b) SigV4 credentials", () => {
++		it("shares the SigV4 credential provider with Mantle and ignores AWS_BEARER_TOKEN_BEDROCK under IAM auth", async () => {
++			process.env.AWS_BEARER_TOKEN_BEDROCK = "env-bearer-token";
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			const converseSettings = createAmazonBedrockMock.mock.calls[0]?.[0];
++			const mantleSettings = createBedrockMantleMock.mock.calls[0]?.[0];
++			expect(fromNodeProviderChainMock).toHaveBeenCalledTimes(1);
++			expect(mantleSettings).toEqual(
++				expect.objectContaining({
++					apiKey: "",
++					credentialProvider: expect.any(Function),
++					accessKeyId: undefined,
++					secretAccessKey: undefined,
++					sessionToken: undefined,
++				}),
++			);
++			expect(mantleSettings.credentialProvider).toBe(
++				converseSettings.credentialProvider,
++			);
++		});
++
++		it("resolves a named profile (including credential_process) through the SDK chain for Mantle", async () => {
++			const module = await createBedrockProviderModule(
++				config({
++					options: {
++						authentication: "profile",
++						profile: "ham-acct-b02",
++						region: "us-west-2",
++					},
++				}),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(fromNodeProviderChainMock).toHaveBeenCalledWith({
++				ignoreCache: true,
++				profile: "ham-acct-b02",
++				clientConfig: { region: "us-west-2" },
++			});
++			const mantleSettings = createBedrockMantleMock.mock.calls[0]?.[0];
++			expect(mantleSettings.apiKey).toBe("");
++			await expect(mantleSettings.credentialProvider()).resolves.toEqual({
++				accessKeyId: "chain-access-key",
++				secretAccessKey: "chain-secret-key",
++			});
++		});
++
++		it("passes direct IAM keys to Mantle when no provider chain is used", async () => {
++			const module = await createBedrockProviderModule(
++				config({
++					options: {
++						authentication: "iam",
++						region: "us-west-2",
++						accessKeyId: "access-key",
++						secretAccessKey: "secret-key",
++						sessionToken: "session-token",
++					},
++				}),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(createBedrockMantleMock).toHaveBeenCalledWith(
++				expect.objectContaining({
++					apiKey: "",
++					accessKeyId: "access-key",
++					secretAccessKey: "secret-key",
++					sessionToken: "session-token",
++					credentialProvider: undefined,
++				}),
++			);
++		});
++
++		it("uses a Bedrock API key for Mantle only when one is configured", async () => {
++			const module = await createBedrockProviderModule(
++				config({
++					apiKey: "bedrock-api-key",
++					options: { region: "us-west-2" },
++				}),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(createBedrockMantleMock).toHaveBeenCalledWith(
++				expect.objectContaining({
++					apiKey: "bedrock-api-key",
++					credentialProvider: undefined,
++				}),
++			);
++			expect(fromNodeProviderChainMock).not.toHaveBeenCalled();
++		});
++	});
++
++	describe("(c) region and endpoint", () => {
++		it("targets bedrock-mantle.<region>.api.aws for the configured region", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-east-2" } }),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(createBedrockMantleMock).toHaveBeenCalledWith(
++				expect.objectContaining({
++					region: "us-east-2",
++					baseURL: "https://bedrock-mantle.us-east-2.api.aws/v1",
++				}),
++			);
++		});
++
++		it("uses the /openai/v1 route for OpenAI GPT-5+, xAI and Gemma 4 models and /v1 for the rest", async () => {
++			const cases: Array<[string, string]> = [
++				["openai.gpt-5.5", "/openai/v1"],
++				["openai.gpt-5.4-2026-03-05", "/openai/v1"],
++				["openai.gpt-6-astra", "/openai/v1"],
++				["xai.grok-4.3", "/openai/v1"],
++				["google.gemma-4-31b", "/openai/v1"],
++				["google.gemma-3-27b-it", "/v1"],
++				["openai.gpt-oss-120b", "/v1"],
++				["qwen.qwen3-coder-next", "/v1"],
++				["zai.glm-4.6", "/v1"],
++				["deepseek.v3.2", "/v1"],
++			];
++
++			for (const [modelId, route] of cases) {
++				createBedrockMantleMock.mockClear();
++				const fresh = await createBedrockProviderModule(
++					config({ options: { authentication: "iam", region: "us-west-2" } }),
++				);
++				fresh.operations.language(`aws-mantle/${modelId}`);
++				expect(
++					createBedrockMantleMock.mock.calls[0]?.[0]?.baseURL,
++					modelId,
++				).toBe(`https://bedrock-mantle.us-west-2.api.aws${route}`);
++			}
++		});
++
++		it("falls back to AWS_REGION, then AWS_DEFAULT_REGION", async () => {
++			process.env.AWS_DEFAULT_REGION = "eu-west-1";
++			const byDefaultRegion = await createBedrockProviderModule(
++				config({ options: { authentication: "iam" } }),
++			);
++			byDefaultRegion.operations.language("aws-mantle/zai.glm-4.6");
++
++			process.env.AWS_REGION = "ap-southeast-2";
++			const byRegion = await createBedrockProviderModule(
++				config({ options: { authentication: "iam" } }),
++			);
++			byRegion.operations.language("aws-mantle/zai.glm-4.6");
++
++			expect(createBedrockMantleMock.mock.calls[0]?.[0]).toEqual(
++				expect.objectContaining({
++					region: "eu-west-1",
++					baseURL: "https://bedrock-mantle.eu-west-1.api.aws/v1",
++				}),
++			);
++			expect(createBedrockMantleMock.mock.calls[1]?.[0]).toEqual(
++				expect.objectContaining({
++					region: "ap-southeast-2",
++					baseURL: "https://bedrock-mantle.ap-southeast-2.api.aws/v1",
++				}),
++			);
++		});
++
++		it("never sends Mantle traffic to the bedrock-runtime endpoint override and honors mantleEndpoint", async () => {
++			const module = await createBedrockProviderModule(
++				config({
++					options: {
++						authentication: "iam",
++						region: "us-west-2",
++						endpoint:
++							"https://vpce-1.bedrock-runtime.us-west-2.vpce.amazonaws.com",
++						mantleEndpoint:
++							"https://vpce-2.bedrock-mantle.us-west-2.vpce.amazonaws.com/v1/",
++					},
++				}),
++			);
++
++			module.operations.language("aws-mantle/qwen.qwen3-coder-next");
++
++			expect(createAmazonBedrockMock).toHaveBeenCalledWith(
++				expect.objectContaining({
++					baseURL:
++						"https://vpce-1.bedrock-runtime.us-west-2.vpce.amazonaws.com",
++				}),
++			);
++			expect(createBedrockMantleMock).toHaveBeenCalledWith(
++				expect.objectContaining({
++					region: "us-west-2",
++					baseURL:
++						"https://vpce-2.bedrock-mantle.us-west-2.vpce.amazonaws.com/v1",
++				}),
++			);
++		});
++
++		it("fails with an actionable error when no region is resolvable", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam" } }),
++			);
++
++			expect(() =>
++				module.operations.language("aws-mantle/qwen.qwen3-coder-next"),
++			).toThrow(/region/i);
++			expect(createBedrockMantleMock).not.toHaveBeenCalled();
++		});
++	});
++
++	describe("(c) route fallback", () => {
++		type RouteBehavior = "ok" | "route-error" | "validation-error";
++		const PROMPT: LanguageModelV4CallOptions["prompt"] = [
++			{ role: "user", content: [{ type: "text", text: "hi" }] },
++		];
++
++		function mantleError(url: string, message: string): APICallError {
++			return new APICallError({
++				message,
++				url,
++				requestBodyValues: {},
++				statusCode: 400,
++				responseBody: JSON.stringify({
++					error: { code: "validation_error", message },
++				}),
++				isRetryable: false,
++			});
++		}
++
++		/** Mantle providers whose models succeed or fail by route path. */
++		function useRouteBehavior(behavior: Record<string, RouteBehavior>) {
++			const attempts: string[] = [];
++			createBedrockMantleMock.mockImplementation(
++				(settings: { baseURL: string }) => {
++					const route = new URL(settings.baseURL).pathname;
++					const make = (api: "chat" | "responses") =>
++						vi.fn((modelId: string) => {
++							const run = async () => {
++								attempts.push(route);
++								const url = `${settings.baseURL}/${api === "chat" ? "chat/completions" : "responses"}`;
++								switch (behavior[route] ?? "ok") {
++									case "route-error":
++										throw mantleError(
++											url,
++											`model \`${modelId}\` isn't supported on this route`,
++										);
++									case "validation-error":
++										throw mantleError(url, "max_tokens must be at least 1");
++									default:
++										return undefined;
++								}
++							};
++							const model = recordingMantleModel(api, modelId);
++							const generate = model.doGenerate;
++							const stream = model.doStream;
++							model.doGenerate = async (options) => {
++								await run();
++								return generate(options);
++							};
++							model.doStream = async (options) => {
++								await run();
++								return stream(options);
++							};
++							return model;
++						});
++					return { chat: make("chat"), responses: make("responses") };
++				},
++			);
++			return attempts;
++		}
++
++		it("retries once on the other route when Mantle rejects the route, then remembers it", async () => {
++			const attempts = useRouteBehavior({
++				"/v1": "route-error",
++				"/openai/v1": "ok",
++			});
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			const first = module.operations.language(
++				"aws-mantle/acme.future-1",
++			) as LanguageModelV4;
++			await first.doStream({ prompt: PROMPT });
++			expect(attempts).toEqual(["/v1", "/openai/v1"]);
++
++			const second = module.operations.language(
++				"aws-mantle/acme.future-1",
++			) as LanguageModelV4;
++			await second.doGenerate({ prompt: PROMPT });
++			expect(attempts).toEqual(["/v1", "/openai/v1", "/openai/v1"]);
++		});
++
++		it("does not retry Mantle errors other than a route mismatch", async () => {
++			const attempts = useRouteBehavior({ "/v1": "validation-error" });
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			const model = module.operations.language(
++				"aws-mantle/qwen.qwen3-coder-next",
++			) as LanguageModelV4;
++
++			await expect(model.doGenerate({ prompt: PROMPT })).rejects.toThrow(
++				/max_tokens/,
++			);
++			expect(attempts).toEqual(["/v1"]);
++		});
++
++		it("surfaces the alternate route's error when neither route serves the model", async () => {
++			const attempts = useRouteBehavior({
++				"/v1": "route-error",
++				"/openai/v1": "route-error",
++			});
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			const model = module.operations.language(
++				"aws-mantle/acme.unknown-1",
++			) as LanguageModelV4;
++
++			await expect(model.doGenerate({ prompt: PROMPT })).rejects.toThrow(
++				/isn't supported on this route/,
++			);
++			expect(attempts).toEqual(["/v1", "/openai/v1"]);
++		});
++
++		it("uses an explicit mantleEndpoint as-is, with no route selection or fallback", async () => {
++			const attempts = useRouteBehavior({ "/custom/v1": "route-error" });
++			const module = await createBedrockProviderModule(
++				config({
++					options: {
++						authentication: "iam",
++						region: "us-west-2",
++						mantleEndpoint: "https://mantle.example.internal/custom/v1",
++					},
++				}),
++			);
++
++			const model = module.operations.language(
++				"aws-mantle/openai.gpt-5.5",
++			) as LanguageModelV4;
++
++			await expect(model.doGenerate({ prompt: PROMPT })).rejects.toThrow(
++				/isn't supported on this route/,
++			);
++			expect(attempts).toEqual(["/custom/v1"]);
++			expect(createBedrockMantleMock).toHaveBeenCalledTimes(1);
++			expect(createBedrockMantleMock.mock.calls[0]?.[0]?.baseURL).toBe(
++				"https://mantle.example.internal/custom/v1",
++			);
++		});
++	});
++
++	describe("(d) temperature for models that reject it", () => {
++		it("drops temperature and forces the OpenAI reasoning parameter set for OpenAI reasoning models", async () => {
++			catalogOverrides.bedrock = {
++				"openai.gpt-5.5": catalogModel("openai.gpt-5.5", [
++					"tools",
++					"reasoning",
++				]),
++			};
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-east-2" } }),
++			);
++
++			const received = await callMantleModel(
++				module.operations.language("aws-mantle/openai.gpt-5.5"),
++				{ temperature: 0.3, maxOutputTokens: 512 },
++			);
++
++			expect(received.temperature).toBeUndefined();
++			expect(received.maxOutputTokens).toBe(512);
++			expect(received.providerOptions?.openai).toEqual(
++				expect.objectContaining({ forceReasoning: true }),
++			);
++		});
++
++		it("keeps temperature for Mantle models that declare it and leaves other families' reasoning alone", async () => {
++			catalogOverrides.bedrock = {
++				"xai.grok-4.3": catalogModel("xai.grok-4.3", [
++					"tools",
++					"reasoning",
++					"temperature",
++				]),
++			};
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			const received = await callMantleModel(
++				module.operations.language("aws-mantle/xai.grok-4.3"),
++				{ temperature: 0.3 },
++			);
++
++			expect(received.temperature).toBe(0.3);
++			expect(received.providerOptions?.openai?.forceReasoning).toBeUndefined();
++		});
++
++		it("drops temperature for Mantle models absent from the catalog", async () => {
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-west-2" } }),
++			);
++
++			const received = await callMantleModel(
++				module.operations.language("aws-mantle/zai.glm-4.6"),
++				{ temperature: 0.7 },
++			);
++
++			expect(received.temperature).toBeUndefined();
++		});
++
++		it("preserves caller provider options while adding forceReasoning", async () => {
++			catalogOverrides.bedrock = {
++				"openai.gpt-5.5": catalogModel("openai.gpt-5.5", ["reasoning"]),
++			};
++			const module = await createBedrockProviderModule(
++				config({ options: { authentication: "iam", region: "us-east-2" } }),
++			);
++
++			const received = await callMantleModel(
++				module.operations.language("aws-mantle/openai.gpt-5.5"),
++				{
++					providerOptions: {
++						openai: { reasoningEffort: "low" },
++						bedrock: { reasoningConfig: { type: "enabled" } },
++					},
++				},
++			);
++
++			expect(received.providerOptions).toEqual({
++				openai: { reasoningEffort: "low", forceReasoning: true },
++				bedrock: { reasoningConfig: { type: "enabled" } },
++			});
++		});
++	});
++});
++
+ function config(
+ 	overrides: Partial<GatewayResolvedProviderConfig>,
+ ): GatewayResolvedProviderConfig {
+diff --git a/sdk/packages/llms/src/providers/vendors/bedrock.ts b/sdk/packages/llms/src/providers/vendors/bedrock.ts
+index 78a70ca..197780c 100644
+--- a/sdk/packages/llms/src/providers/vendors/bedrock.ts
++++ b/sdk/packages/llms/src/providers/vendors/bedrock.ts
+@@ -1,6 +1,17 @@
+ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
++import {
++	type BedrockMantleProvider,
++	createBedrockMantle,
++} from "@ai-sdk/amazon-bedrock/mantle";
++import {
++	APICallError,
++	type LanguageModelV4,
++	type LanguageModelV4Middleware,
++} from "@ai-sdk/provider";
+ import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
+-import type { GatewayResolvedProviderConfig } from "@cline/shared";
++import type { GatewayResolvedProviderConfig, ModelInfo } from "@cline/shared";
++import { modelHasCapability } from "@cline/shared";
++import { wrapLanguageModel } from "ai";
+ import { getGeneratedModelsForProvider } from "../../catalog/catalog.generated-access";
+ import type { ProviderFactoryResult } from "./types";
+ 
+@@ -182,6 +193,253 @@ function hasBedrockCatalogModel(modelId: string): boolean {
+ 	return modelId in getGeneratedModelsForProvider("bedrock");
+ }
+ 
++function getBedrockCatalogModel(modelId: string): ModelInfo | undefined {
++	const models = getGeneratedModelsForProvider("bedrock");
++	return Object.hasOwn(models, modelId) ? models[modelId] : undefined;
++}
++
++// Bedrock Mantle routing.
++//
++// Some Bedrock models are served only by the OpenAI-compatible Mantle endpoint
++// (`https://bedrock-mantle.<region>.api.aws/v1`) and have no Converse API, for
++// example Grok 4.3, Gemma 4 and the bare `openai.gpt-5.x` ids; others are on
++// Mantle in Regions where bedrock-runtime lacks them.
++// https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html
++//
++// A model routes to Mantle when either:
++// - its id carries the explicit `aws-mantle/` prefix (the prefix is removed
++//   before the id goes on the wire), or
++// - its catalog entry declares an OpenAI wire protocol
++//   (`metadata.apiProtocol`), which the models.dev normalizer sets for models
++//   that models.dev assigns to `@ai-sdk/amazon-bedrock/mantle`.
++// Everything else, including geo/global inference profiles and ARNs, stays on
++// Converse. Mantle requests are signed with the same SigV4 credentials as
++// Converse (service `bedrock-mantle`), so no Bedrock API key is needed.
++
++export const BEDROCK_MANTLE_MODEL_PREFIX = "aws-mantle/";
++
++export type BedrockMantleApi = "chat" | "responses";
++
++export interface BedrockMantleRoute {
++	/** Model id sent to Mantle, without the `aws-mantle/` prefix. */
++	modelId: string;
++	/** OpenAI-compatible API used on Mantle. */
++	api: BedrockMantleApi;
++}
++
++interface BedrockMantleRouteOptions {
++	/** Provider-level API override (`options.mantleApi`). */
++	api?: BedrockMantleApi;
++	/** Catalog lookup; overridable in tests. */
++	getCatalogModel?: (modelId: string) => ModelInfo | undefined;
++}
++
++/**
++ * Decides whether a Bedrock model id is served through Mantle, and with which
++ * API. Returns `undefined` for Converse models.
++ *
++ * Chat Completions is the default for prefixed ids because it has the widest
++ * model coverage on Mantle (for example Qwen3 Coder Next has no Responses
++ * API); a catalog `openai-responses` protocol or `options.mantleApi` selects
++ * Responses.
++ */
++export function resolveBedrockMantleRoute(
++	modelId: string,
++	options: BedrockMantleRouteOptions = {},
++): BedrockMantleRoute | undefined {
++	const getCatalogModel = options.getCatalogModel ?? getBedrockCatalogModel;
++	const trimmed = modelId.trim();
++	if (trimmed.startsWith(BEDROCK_MANTLE_MODEL_PREFIX)) {
++		const mantleModelId = trimmed
++			.slice(BEDROCK_MANTLE_MODEL_PREFIX.length)
++			.trim();
++		if (!mantleModelId) {
++			throw new Error(
++				`Bedrock Mantle model id is empty: "${modelId}". Use ${BEDROCK_MANTLE_MODEL_PREFIX}<model-id>, for example ${BEDROCK_MANTLE_MODEL_PREFIX}openai.gpt-5.5.`,
++			);
++		}
++		return {
++			modelId: mantleModelId,
++			api:
++				options.api ??
++				catalogMantleApi(getCatalogModel(mantleModelId)) ??
++				"chat",
++		};
++	}
++
++	const catalogApi = catalogMantleApi(getCatalogModel(trimmed));
++	if (!catalogApi) {
++		return undefined;
++	}
++	return { modelId: trimmed, api: options.api ?? catalogApi };
++}
++
++function catalogMantleApi(
++	model: ModelInfo | undefined,
++): BedrockMantleApi | undefined {
++	switch (model?.metadata?.apiProtocol) {
++		case "openai-responses":
++			return "responses";
++		case "openai-chat":
++			return "chat";
++		default:
++			return undefined;
++	}
++}
++
++// Documented fallback-heuristic exception (see packages/llms/AGENTS.md):
++// `@ai-sdk/openai` detects reasoning models by id (`gpt-5*`, `o<N>`), so
++// Bedrock's vendor-prefixed ids (`openai.gpt-5.5`) are misread as
++// non-reasoning models and receive `temperature` and `max_tokens`, which
++// OpenAI reasoning models reject. This mirrors the SDK's own detection
++// (`getOpenAILanguageModelCapabilities`) on the id with the `openai.` prefix
++// removed; it only sets `forceReasoning`.
++const OPENAI_VENDOR_PREFIX = "openai.";
++
++export function isOpenAIReasoningMantleModel(modelId: string): boolean {
++	if (!modelId.startsWith(OPENAI_VENDOR_PREFIX)) {
++		return false;
++	}
++	const bareId = modelId.slice(OPENAI_VENDOR_PREFIX.length);
++	if (/^o\d+(?:-|$)/.test(bareId)) {
++		return true;
++	}
++	const gpt = /^gpt-(\d+)(?:\.(\d+))?(?:-(.+))?$/.exec(bareId);
++	if (!gpt) {
++		return false;
++	}
++	const isChatVariant =
++		gpt[2] === undefined && (gpt[3]?.startsWith("chat") ?? false);
++	return Number(gpt[1]) >= 5 && !isChatVariant;
++}
++
++/**
++ * Removes sampling parameters that the Mantle model does not accept.
++ *
++ * `temperature` is sent only when the catalog entry declares the
++ * `temperature` capability; models missing from the catalog get the server
++ * default. OpenAI reasoning models also get `forceReasoning`, which makes the
++ * SDK use the reasoning parameter set (`max_completion_tokens`, developer
++ * system role, no sampling parameters).
++ */
++function createBedrockMantleParamsMiddleware(
++	modelId: string,
++	model: ModelInfo | undefined,
++): LanguageModelV4Middleware {
++	const acceptsTemperature =
++		model !== undefined && modelHasCapability(model, "temperature");
++	const forceReasoning = isOpenAIReasoningMantleModel(modelId);
++	return {
++		specificationVersion: "v4",
++		transformParams: async ({ params }) => {
++			let next = params;
++			if (!acceptsTemperature && next.temperature !== undefined) {
++				next = { ...next, temperature: undefined };
++			}
++			if (forceReasoning) {
++				const openai = next.providerOptions?.openai ?? {};
++				if (openai.forceReasoning === undefined) {
++					next = {
++						...next,
++						providerOptions: {
++							...next.providerOptions,
++							openai: { ...openai, forceReasoning: true },
++						},
++					};
++				}
++			}
++			return next;
++		},
++	};
++}
++
++// Mantle serves each model on one of two OpenAI-compatible routes, and the
++// other route rejects it with HTTP 400 "model `<id>` isn't supported on this
++// route". AWS model cards list the route per model: GPT-5 and later, Grok and
++// Gemma 4 use `/openai/v1`; gpt-oss, Gemma 3, Qwen, DeepSeek, GLM, Kimi,
++// MiniMax, Mistral and the rest use `/v1`.
++// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-3.html
++// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-coder-next.html
++// Documented fallback-heuristic exception (see packages/llms/AGENTS.md): the
++// id patterns below pick the first route to try, and a route rejection
++// retries once on the other route, so an unlisted model costs one extra
++// validation request per provider module instead of failing.
++export type BedrockMantleRoutePath = "/v1" | "/openai/v1";
++
++const MANTLE_OPENAI_ROUTE_PATTERNS: readonly RegExp[] = [
++	/^xai\./,
++	/^google\.gemma-4/,
++];
++
++export function resolveBedrockMantleRoutePath(
++	modelId: string,
++): BedrockMantleRoutePath {
++	return isOpenAIReasoningMantleModel(modelId) ||
++		MANTLE_OPENAI_ROUTE_PATTERNS.some((pattern) => pattern.test(modelId))
++		? "/openai/v1"
++		: "/v1";
++}
++
++function otherMantleRoutePath(
++	path: BedrockMantleRoutePath,
++): BedrockMantleRoutePath {
++	return path === "/v1" ? "/openai/v1" : "/v1";
++}
++
++const MANTLE_ROUTE_REJECTION_PATTERN =
++	/isn't supported on this route|does not support the '\/(?:openai\/)?v1\/(?:responses|chat\/completions)' API/;
++
++function isMantleRouteRejection(error: unknown): boolean {
++	if (!APICallError.isInstance(error) || error.statusCode !== 400) {
++		return false;
++	}
++	return MANTLE_ROUTE_REJECTION_PATTERN.test(
++		`${error.message} ${error.responseBody ?? ""}`,
++	);
++}
++
++/**
++ * Calls `primary`; if Mantle rejects the route, switches once to `alternate`
++ * for this and later calls and reports the switch through `onSwitch`.
++ */
++function withMantleRouteFallback(
++	primary: LanguageModelV4,
++	alternate: () => LanguageModelV4,
++	onSwitch: () => void,
++): LanguageModelV4 {
++	let active = primary;
++	let switched = false;
++	const run = async <T>(
++		call: (model: LanguageModelV4) => PromiseLike<T>,
++	): Promise<T> => {
++		try {
++			return await call(active);
++		} catch (error) {
++			if (switched || !isMantleRouteRejection(error)) {
++				throw error;
++			}
++			switched = true;
++			active = alternate();
++			onSwitch();
++			return call(active);
++		}
++	};
++	return {
++		specificationVersion: "v4",
++		provider: primary.provider,
++		modelId: primary.modelId,
++		get supportedUrls() {
++			return active.supportedUrls;
++		},
++		doGenerate: (options) => run((model) => model.doGenerate(options)),
++		doStream: (options) => run((model) => model.doStream(options)),
++	};
++}
++
++function readMantleApi(value: unknown): BedrockMantleApi | undefined {
++	return value === "chat" || value === "responses" ? value : undefined;
++}
++
+ export async function createBedrockProviderModule(
+ 	config: GatewayResolvedProviderConfig,
+ ): Promise<ProviderFactoryResult> {
+@@ -212,8 +470,10 @@ export async function createBedrockProviderModule(
+ 		hasDirectCredentials ||
+ 		credentialProvider !== undefined;
+ 
+-	const provider = createAmazonBedrock({
+-		region: readOptionalString(config.options?.region),
++	// One credential decision serves both endpoints: SigV4 (provider chain or
++	// direct keys) with the bearer-token fallback suppressed, or an explicit
++	// Bedrock API key.
++	const sharedAuth = {
+ 		apiKey: usesApiKeyAuth
+ 			? (apiKey ?? "")
+ 			: (apiKey ?? (usesSigV4 ? "" : undefined)),
+@@ -226,25 +486,94 @@ export async function createBedrockProviderModule(
+ 		sessionToken: credentialProvider
+ 			? undefined
+ 			: readOptionalString(config.options?.sessionToken),
++		credentialProvider,
++	};
++
++	const provider = createAmazonBedrock({
++		region: readOptionalString(config.options?.region),
++		...sharedAuth,
+ 		baseURL: config.baseUrl ?? readOptionalString(config.options?.endpoint),
+ 		headers: config.headers,
+ 		fetch: config.fetch,
+-		credentialProvider,
+ 	});
+ 
++	const resolvedRegion =
++		readOptionalString(config.options?.region) ??
++		readOptionalString(process.env.AWS_REGION) ??
++		readOptionalString(process.env.AWS_DEFAULT_REGION);
+ 	const modelIdOptions: BedrockModelIdOptions = {
+-		region:
+-			readOptionalString(config.options?.region) ??
+-			readOptionalString(process.env.AWS_REGION) ??
+-			readOptionalString(process.env.AWS_DEFAULT_REGION),
++		region: resolvedRegion,
+ 		useCrossRegionInference: config.options?.useCrossRegionInference === true,
+ 		useGlobalInference: config.options?.useGlobalInference === true,
+ 	};
+ 
++	const mantleApi = readMantleApi(config.options?.mantleApi);
++	const mantleEndpoint = readOptionalString(config.options?.mantleEndpoint);
++	// One Mantle client per base URL; routes learned from a rejection.
++	const mantleProviders = new Map<string, BedrockMantleProvider>();
++	const learnedMantleRoutes = new Map<string, BedrockMantleRoutePath>();
++	const getMantleProvider = (baseURL: string): BedrockMantleProvider => {
++		const existing = mantleProviders.get(baseURL);
++		if (existing) {
++			return existing;
++		}
++		const created = createBedrockMantle({
++			region: resolvedRegion,
++			...sharedAuth,
++			baseURL,
++			headers: config.headers,
++			fetch: config.fetch,
++		});
++		mantleProviders.set(baseURL, created);
++		return created;
++	};
++	const createMantleModel = (route: BedrockMantleRoute): LanguageModelV4 => {
++		if (!resolvedRegion) {
++			throw new Error(
++				`Bedrock Mantle model "${route.modelId}" needs an AWS Region to sign requests: set the provider "region" option, AWS_REGION, or AWS_DEFAULT_REGION.`,
++			);
++		}
++		const modelFor = (baseURL: string): LanguageModelV4 => {
++			const mantle = getMantleProvider(baseURL);
++			return route.api === "responses"
++				? mantle.responses(route.modelId)
++				: mantle.chat(route.modelId);
++		};
++		// The bedrock-runtime endpoint override (baseUrl/endpoint) is never
++		// reused here: Mantle is a separate host with its own VPC endpoints.
++		// An explicit Mantle endpoint is used as-is, without route selection.
++		if (mantleEndpoint) {
++			return modelFor(mantleEndpoint.replace(/\/+$/, ""));
++		}
++		const host = `https://bedrock-mantle.${resolvedRegion}.api.aws`;
++		const primaryPath =
++			learnedMantleRoutes.get(route.modelId) ??
++			resolveBedrockMantleRoutePath(route.modelId);
++		const alternatePath = otherMantleRoutePath(primaryPath);
++		return withMantleRouteFallback(
++			modelFor(`${host}${primaryPath}`),
++			() => modelFor(`${host}${alternatePath}`),
++			() => learnedMantleRoutes.set(route.modelId, alternatePath),
++		);
++	};
++
+ 	return {
+ 		operations: {
+-			language: (modelId) =>
+-				provider(resolveBedrockModelId(modelId, modelIdOptions)),
++			language: (modelId) => {
++				const mantleRoute = resolveBedrockMantleRoute(modelId, {
++					api: mantleApi,
++				});
++				if (!mantleRoute) {
++					return provider(resolveBedrockModelId(modelId, modelIdOptions));
++				}
++				return wrapLanguageModel({
++					model: createMantleModel(mantleRoute),
++					middleware: createBedrockMantleParamsMiddleware(
++						mantleRoute.modelId,
++						getBedrockCatalogModel(mantleRoute.modelId),
++					),
++				});
++			},
+ 			imageGeneration: (modelId) => provider.image(modelId),
+ 		},
+ 	};
+diff --git a/sdk/packages/shared/src/rpc/runtime.ts b/sdk/packages/shared/src/rpc/runtime.ts
+index 9c05d42..2b3c778 100644
+--- a/sdk/packages/shared/src/rpc/runtime.ts
++++ b/sdk/packages/shared/src/rpc/runtime.ts
+@@ -364,6 +364,8 @@ export interface SaveProviderSettingsActionRequest {
+ 		useGlobalInference?: boolean;
+ 		endpoint?: string;
+ 		customModelBaseId?: string;
++		mantleEndpoint?: string;
++		mantleApi?: "chat" | "responses";
+ 	};
+ 	// GCP/Vertex configuration
+ 	gcp?: {
+-- 
+2.47.3
+

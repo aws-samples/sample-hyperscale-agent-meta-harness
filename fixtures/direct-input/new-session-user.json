@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "eventId": "01M5A2RB6Y0P3KQ8N5D7HVZ1AM",
+  "runId": "01M4ZHFBV5SDX7J92E6YRH4QTW",
+  "agentId": "direct",
+  "seq": 417,
+  "ts": "2026-10-15T13:42:41Z",
+  "type": "turn.progress",
+  "authority": "agent",
+  "payload": {
+    "kind": "inline",
+    "value": {
+      "turn": 1,
+      "kind": "new-session",
+      "text": "Restarted from the work tree: fresh Cline session 2.",
+      "requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N",
+      "session": 2,
+      "trigger": "user",
+      "reason": "engine_stop",
+      "restartedProcess": false,
+      "digestBytes": 18432,
+      "promptBytes": 21344
+    }
+  }
+}

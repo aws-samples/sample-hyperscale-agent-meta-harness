@@ -1,0 +1,35 @@
+# The stage settings and what an update does with each one. scripts/lib/deploy.py reads this file, and so does setup.sh.
+# Plain data: it is never sourced or evaluated. A line that starts with # is a comment; a blank line is ignored.
+# One row per setting, five fields: NAME|KEPT|CHANGE|PATTERN|NOTE
+#   NAME     the variable the deploy reads.
+#   KEPT     yes: an update keeps the stage's value while the variable is unset. no: unset returns to the default, and the deploy says so.
+#   CHANGE   how the deploy classes a change: free; replace (any change replaces resources); decrease (a lower value deletes data);
+#            remove (an empty or off value removes something); refuse-off (off is refused while the part exists).
+#   PATTERN  an anchored POSIX extended regular expression that the value must match after the space, tab, line feed, carriage
+#            return, form feed and vertical tab around it are trimmed. An empty value is no value (unset). The value `default`
+#            always passes and returns to the code default. The pattern uses no backslash classes, no look-around and no
+#            repetition count above 255, so Python's re.fullmatch and bash 3.2 `[[ $value =~ $pattern ]]` (pattern unquoted)
+#            give the same answer. It may hold `|`: NAME, KEPT and CHANGE are the first three fields, NOTE is the last field,
+#            and PATTERN is everything between them.
+#   NOTE     one sentence for the person who runs the update; it holds no `|`.
+HAMH_COMPUTE_INSTANCES|yes|refuse-off|^([Oo][Nn]|[Oo][Ff][Ff])$|The Instances part of the stage (EC2 machines that run the worker), on or off; a deploy never removes it.
+HAMH_INSTANCES_TYPES|yes|replace|^[a-z][a-z0-9]{0,11}g[a-z]{0,2}\.(medium|large|xlarge|2xlarge|3xlarge|4xlarge|6xlarge|8xlarge|9xlarge|12xlarge|16xlarge|18xlarge|24xlarge|32xlarge|48xlarge)( *, *[a-z][a-z0-9]{0,11}g[a-z]{0,2}\.(medium|large|xlarge|2xlarge|3xlarge|4xlarge|6xlarge|8xlarge|9xlarge|12xlarge|16xlarge|18xlarge|24xlarge|32xlarge|48xlarge))*$|The instance types of the Instances machines, a comma list of Graviton types such as m7g.4xlarge; a change replaces the machines.
+HAMH_INSTANCES_ROOT_FREE_GIB|yes|replace|^([1-9][0-9]{0,3}|1[0-5][0-9]{3}|16[0-2][0-9]{2}|163[0-7][0-9]|1638[0-4])$|The free space in GiB on the root disk of each Instances machine, 1 to 16384; a change replaces the machines.
+HAMH_INSTANCES_WORKSPACE_GIB|yes|replace|^([1-9][0-9]{0,3}|1[0-5][0-9]{3}|16[0-2][0-9]{2}|163[0-7][0-9]|1638[0-4])$|The size in GiB of the workspace volume of each Instances machine, 1 to 16384; a change replaces the machines.
+HAMH_INSTANCES_LIFETIME_S|yes|replace|^(28[89][0-9]{2}|29[0-9]{3}|[3-9][0-9]{4}|[1-9][0-9]{5}|1[01][0-9]{5}|120[0-8][0-9]{3}|1209[0-5][0-9]{2}|1209600)$|The longest life of an Instances machine in seconds, 28800 to 1209600; a change replaces the machines.
+HAMH_INSTANCES_IDLE_S|yes|replace|^([6-9][0-9]|[1-9][0-9]{2,5}|1[01][0-9]{5}|120[0-8][0-9]{3}|1209[0-5][0-9]{2}|1209600)$|How long an unused Instances machine lives in seconds, 60 to 1209600 and no longer than the lifetime; a change replaces the machines.
+HAMH_TOOLS_MODE|yes|free|^([Oo][Nn]|[Oo][Ff][Ff])$|The tool layer of the worker, on or off.
+HAMH_UTILITY_MODEL|yes|free|^([Oo][Ff][Ff]|us\.anthropic\.claude-haiku-5-5|[Hh][Aa][Ii][Kk][Uu])$|The small model that names and tags runs: off, haiku or its model id.
+HAMH_UTILITY_PURPOSES|yes|free|^[Rr][Uu][Nn]-([Nn][Aa][Mm][Ee]|[Tt][Aa][Gg][Ss])( *, *[Rr][Uu][Nn]-([Nn][Aa][Mm][Ee]|[Tt][Aa][Gg][Ss]))*$|What the small model does, a comma list of run-name and run-tags.
+HAMH_RESEARCH_PROVIDER|yes|free|^(tavily|tavily-keyless|fixture|agentcore|auto)$|Where web research goes: auto, agentcore, tavily, tavily-keyless, or fixture on a test stage.
+HAMH_RESEARCH_ALARM_TOPIC_ARN|yes|remove|^arn:aws[a-z-]{0,20}:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,255}[A-Za-z0-9_-]?(\.fifo)?$|The SNS topic that receives the alarms on the stored Tavily key; default removes the notifications.
+HAMH_TAVILY_ALARMS|yes|remove|^([Oo][Nn]|[Oo][Ff][Ff])$|The four alarms on the stored Tavily key, on or off; off removes them.
+HAMH_TAVILY_KEY_MAX_AGE_DAYS|yes|free|^([1-9]|0[1-9]|00[1-9]|[1-9][0-9]|0[1-9][0-9]|[12][0-9]{2}|3[0-5][0-9]|36[0-5])$|The age in days, 1 to 365, at which the alarm on an old Tavily key fires.
+HAMH_LOG_RETENTION_DAYS|yes|decrease|^(1|3|5|7|14|30|60|90|120|150|180|365|400|545|731|1096|1827|2192|2557|2922|3288|3653)$|How many days the log groups of the stage keep their events, a period CloudWatch Logs takes such as 30 or 365; a lower value deletes the older events.
+HAMH_PR_CHECK_MINUTES|yes|free|^([5-9]|[1-9][0-9]|[1-3][0-9]{2}|4[0-7][0-9]|480)$|The build time of the pull request check in minutes, 5 to 480.
+HAMH_PR_CHECK_COMPUTE|yes|free|^([Ss][Mm][Aa][Ll][Ll]|[Mm][Ee][Dd][Ii][Uu][Mm]|[Ll][Aa][Rr][Gg][Ee]|[Xx][Ll][Aa][Rr][Gg][Ee]|2[Xx][Ll][Aa][Rr][Gg][Ee])$|The machine of the pull request check: small, medium, large, xlarge or 2xlarge.
+HAMH_AGENTCORE_STORAGE_ACCOUNTS|yes|remove|^[ ,]*(us-east-1|us-west-2)=[0-9]{12}(\+[0-9]{12})*( *,[ ,]*(us-east-1|us-west-2)=[0-9]{12}(\+[0-9]{12})*)*[ ,]*$|The accounts that own the AgentCore session storage buckets, region=account or region=account+account, comma separated; default returns to the service rule.
+HAMH_PROVIDER_SILENCE_S|yes|free|^([6-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$|How long Cline may stay silent before the harness cancels the prompt, 60 to 3600 seconds.
+HAMH_SLICE_DEADLINE_S|no|free|^0*([6-9][0-9]|[1-9][0-9]{2,3}|1[0-9]{4}|2[0-7][0-9]{3}|28[0-7][0-9]{2}|28800)$|A test override that shortens every slice of a run, 60 to 28800 seconds; an update removes it unless it is set again.
+HAMH_KEEP_TAG|yes|remove|^([Oo][Nn]|[Oo][Ff][Ff])$|The tag auto-delete=no on every resource of the stage, on or off; off takes the tag off the resources.
+HAMH_STAGE_KIND|yes|free|^([Oo][Ff][Ff][Ii][Cc][Ii][Aa][Ll]|[Tt][Ee][Ss][Tt])$|The kind of the stage, official or test; only a test stage takes the fixture research provider.

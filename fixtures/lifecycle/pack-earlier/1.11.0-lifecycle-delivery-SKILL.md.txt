@@ -1,0 +1,59 @@
+---
+name: lifecycle-delivery
+description: Leave the repository ready for hand-over. Use when all checks pass or the loop has stopped, before your last message. Covers the root AGENTS.md with its DOX docs tree, the README, the final commit message and the closing message.
+---
+# Deliver
+
+1. Root AGENTS.md. If the request or the user's rules say to write no AGENTS.md docs, or name another docs layout, follow them and
+   say so ("DOX not applied: as you asked"), and skip steps 2 and 3. Otherwise read the root file as it was at the Base commit of
+   your goal card (git show <base>:AGENTS.md; a new project has none, and an error means none), not as it is now: an AGENTS.md you
+   wrote earlier in this run does not count. Check in this order:
+   - it holds the line "# DOX framework": keep it and keep its tree current (step 3);
+   - first line "# Development lifecycle": keep every line and add the starter below it (step 2);
+   - none: write it from the DOX starter (step 2);
+   - any other text is the user's own: change none of it. If the request asks for the DOX docs, add the starter below the user's
+     text (step 2); if not, write no child docs and put "DOX not applied: your own AGENTS.md" in your last message.
+   If you already did step 2 in this run, copy nothing again: update the project part and the index. Then skip step 2.
+2. Starter, only when step 1 sends you here (it names step 2); otherwise skip to step 3. The DOX starter is the file references/dox-root.md of this skill. Find it with
+   find / \( -path /proc -o -path /sys -o -name node_modules -o -name .git \) -prune -o -path '*lifecycle-delivery/references/dox-root.md' -print -quit 2>/dev/null
+   and never type the block yourself: if that prints nothing, add the project part alone below any lines the file keeps
+   (with >>, never >), say "DOX not applied: starter not found" and go on with step 4. Read its first line with head -n 1. If that line
+   is "DOX off", write the project part alone (below any lines the file keeps: the contract or the user's text, with >>, never >), with
+   no starter, no child docs and no notice, and say "DOX off" in your last message; then go on with step 4. Otherwise write it with cat <path> > AGENTS.md
+   (cat <path> >> AGENTS.md below the lifecycle contract or the user's text, never >); a cp would keep its read-only mode. Then edit
+   AGENTS.md, not the starter: replace the paragraph under the starter's "# Project" heading (the last one in the file; none: add to the
+   end) with the project part: what the project is, a "Build:" line and a "Test:" line with their commands in backticks, the folder
+   layout, the conventions; under 80 lines. Change nothing above that heading. The starter and its notice are the only licensed texts
+   you copy whole: when the starter holds the line "# DOX framework", also write references/dox-notice.md (beside the starter) to
+   THIRD-PARTY-NOTICES.md with cat (>> if that file exists; skip it if the file already names DOX).
+3. Tree, when the root holds the line "# DOX framework" as it is now. Each top-level folder that holds, at any depth, files you wrote or changed, and each folder
+   inside them with a package manifest (package.json, pyproject.toml, setup.py, go.mod, pom.xml, Cargo.toml, build.gradle, build.gradle.kts), gets its own AGENTS.md. Skip
+   generated output (build, dist, target, node_modules, test-results, coverage), hidden folders and manifest folders below a fixtures folder. docs/
+   gets one doc that names the folders below it; they get none unless they hold a manifest. Write each doc with its title and these six headings:
+   # <folder name>
+   ## Purpose
+   ## Ownership
+   ## Local Contracts
+   ## Work Guidance
+   ## Verification
+   ## Child DOX Index
+   None.
+   Under Purpose say what the folder is for (one or two lines), under Ownership what it owns and what its parent owns, under Local
+   Contracts the commands, inputs, outputs and files other code relies on, under Verification its test command; leave Work Guidance
+   empty. List each doc as one line under the single "## Child DOX Index" of its nearest parent doc (the root for a top-level
+   folder): its path relative to that doc in backticks, then what it covers. Replace the whole "None yet." line of the root and the
+   word "None." of a parent doc with those lines; write no second index heading. Where a doc already exists, keep its text and
+   update only what you changed, and its index lines.
+4. README.md: what the project does and how to run it, with commands you ran in this session.
+5. Final commit: subject in the imperative, at most 72 characters. The body says what changed, why, and the test evidence
+   (counts and exit codes), and ends with the same DOX line or sentence as your last message. Then a blank line and, as the very last line of the message, `Flow: full`.
+6. Commit small all along, and commit everything before your last message, the log included: whatever you leave is committed
+   for you as harness: turn N, without a message of yours. Do not commit generated files, logs outside the records folder (.cah/records, lifecycle-loop), or
+   secrets, and do not rewrite published history. Run the repository's docs gate (lifecycle-loop) once more before the last commit; a record it rejects is deleted, never fitted by editing the gate, and your last message says "records not written: <the gate command or the ignore rule>".
+7. Last message: the NOT DONE lines of the contract, then the goal card with PASS or FAIL for each check, its command and its counts; then what else is not done and why.
+   Write "Not run: <reason>" for anything unrun. Add one DOX line outside the goal card and before any BLOCKED: line:
+   "DOX: root and <n> child docs written, <m> updated" when step 3 ran (0 and 0 allowed), otherwise the sentence of step 1 or 2 if there is one.
+   If you stopped early, end with the BLOCKED: line naming what in this checkout cannot go on; do not call the work done.
+8. Do not push or handle credentials unless the request says to. Leave delivery to the mechanism your session is configured
+   with, and do not assume that an archive or a pull request will be made.
+9. Run lifecycle-check (step 8 of the contract) before the last message.

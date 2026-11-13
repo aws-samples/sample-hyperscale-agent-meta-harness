@@ -1,0 +1,6 @@
+{"direction": "client", "message": {"id": 3, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "tool_call", "kind": "other", "status": "pending", "title": "skills: lifecycle-canary", "toolCallId": "fake-call-1", "rawInput": {"skill": "lifecycle-canary"}}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "tool_call_update", "status": "completed", "toolCallId": "fake-call-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Wrote skill-canary.txt."}}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "usage_update", "usage": {"inputTokens": 120, "outputTokens": 45}}}}}
+{"direction": "agent", "message": {"id": 3, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

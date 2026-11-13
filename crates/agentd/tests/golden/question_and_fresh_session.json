@@ -1,0 +1,1263 @@
+{
+  "agentd_log": [
+    "direct turn started: run=01M4XTESTRUNDIRECT00000001 agent=direct engine=cline model=us.anthropic.claude-opus-5-5",
+    "direct turn rules manifest: 1 entries, digest <sha256>",
+    "direct turn quarantined: .cline/hooks",
+    "direct turn package proxy not started: no token or no index",
+    "direct turn containers not started: no engine user",
+    "direct turn rules placed: 1 file(s)",
+    "direct turn config directory protected: given_to_root=false owner_uid=<n>",
+    "direct turn engine starting",
+    "direct turn answer window on: wait <n>s, 3 question(s) at most",
+    "direct turn engine stop 1 of 1: loop-guard: the engine stopped the run itself (5 identical tool calls in a row); the model stays us.anthropic.claude-opus-5-5; one more try follows in <n>s",
+    "direct turn needs input: request <ulid> n=1 reason=engine_stop window=<n>s",
+    "direct messages: the control plane cannot serve message control for this run (no-route: /internal/message-session is not served: /internal/message-session returned 405 (final)); the module stayed out of it",
+    "direct report uploaded: status=NotRun steps=0",
+    "direct turn ended: run=01M4XTESTRUNDIRECT00000001 outcome=reported_done label=\"Cline reported done\"",
+    "direct transcript: last chunk 3 entries 0"
+  ],
+  "complete": [
+    {
+      "agentId": "direct",
+      "bundleUri": "s3://hamh-direct-harness-111111111111/runs/01M4XTESTRUNDIRECT00000001/agents/direct/turns/1/bundle",
+      "finishReason": "end_turn",
+      "lastCommitSha": "<sha>",
+      "maxSilentGapS": "<n>",
+      "outcome": "completed",
+      "outputPins": {
+        "bundle": {
+          "sha256": "<sha256>",
+          "versionId": "fake-1-bundle"
+        },
+        "summary": {
+          "sha256": "<sha256>",
+          "versionId": "fake-1-summary.json"
+        },
+        "testReport": {
+          "sha256": "<sha256>",
+          "versionId": "fake-1-test-report.json"
+        }
+      },
+      "rulesDigest": "<sha256>",
+      "rulesManifest": {
+        "entries": [
+          {
+            "delivery": "native",
+            "layer": "tenant",
+            "sha256": "<sha256>",
+            "source": "00-my-rules.md"
+          }
+        ]
+      },
+      "runId": "01M4XTESTRUNDIRECT00000001",
+      "summary": "Picked up from the notes; the function and its tests are written.",
+      "transcript": {
+        "entries": [],
+        "lastTranscriptSeq": 3
+      },
+      "turn": 1,
+      "usage": {
+        "cacheReadInputTokens": 0,
+        "cacheWriteInputTokens": 0,
+        "inputTokens": 2150,
+        "outputTokens": 270
+      }
+    }
+  ],
+  "events": [
+    {
+      "payload": {
+        "engine": "cline",
+        "model": "us.anthropic.claude-opus-5-5",
+        "role": "direct",
+        "rulesDigest": "<sha256>",
+        "turn": 1
+      },
+      "type": "turn.started"
+    },
+    {
+      "payload": {
+        "acpVersion": 1,
+        "agent": {
+          "name": "fake-acp",
+          "version": "0.1.0"
+        },
+        "configOptions": [
+          {
+            "current": "us.anthropic.claude-opus-5-5",
+            "id": "model",
+            "name": ""
+          }
+        ],
+        "engine": "Cline",
+        "harness": {
+          "controls": [
+            "message.next",
+            "message.now"
+          ],
+          "features": [
+            "transcript.v1"
+          ]
+        },
+        "loadSession": false,
+        "promptCapabilities": {
+          "audio": false,
+          "embeddedContext": false,
+          "image": false
+        },
+        "session": 1,
+        "sessionId": "fake-session-0001",
+        "v": 1
+      },
+      "type": "session.capabilities"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-1-0"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-1-0"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-1-1"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-1-1"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-1-2"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-1-2"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-1-3"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-1-3"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-1-4"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-1-4"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "message",
+        "text": "Still polling the build.",
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "attempt": 1,
+        "backoffS": "<n>",
+        "detail": "the engine stopped the run itself (5 identical tool calls in a row); the model stays us.anthropic.claude-opus-5-5; one more try follows in 0 s",
+        "hint": "loop-guard",
+        "kind": "engine-stop",
+        "of": 1,
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-2-0"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-2-0"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-2-1"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-2-1"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-2-2"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-2-2"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-2-3"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-2-3"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "execute",
+        "status": "pending",
+        "title": "timeout 29s sh -c 'sleep 25; date -u'",
+        "toolCallId": "stuck-2-4"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "stuck-2-4"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "blocking": true,
+        "canContinue": true,
+        "evidence": {
+          "attempts": 2,
+          "failedTurns": 0,
+          "filesChanged": 0,
+          "identicalCalls": 5,
+          "lastError": "the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); agentd did not change the model because of it",
+          "runS": "<n>",
+          "sessions": 1,
+          "toolCalls": 10
+        },
+        "expiresAt": "<time>",
+        "files": [],
+        "filesTotal": 0,
+        "kind": "needs-input",
+        "lastMessage": "Still polling the build.",
+        "models": [],
+        "n": 1,
+        "options": [
+          "continue_with_prompt",
+          "new_session_with_prompt",
+          "finish"
+        ],
+        "reason": "engine_stop",
+        "recommended": null,
+        "requestId": "<ulid>",
+        "stopOutcome": "stopped_engine_cancelled",
+        "text": "Needs your input: Cline stopped its own prompt (ham say, ham new-session or ham finish)",
+        "title": "Cline stopped its own prompt",
+        "turn": 1,
+        "waitS": "<n>"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "action": "new_session_with_prompt",
+        "kind": "input-received",
+        "origin": "user",
+        "requestId": "<ulid>",
+        "text": "Starting a fresh session on the same files.",
+        "textBytes": "<n>",
+        "turn": 1,
+        "waitedS": "<n>"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "acpVersion": 1,
+        "agent": {
+          "name": "fake-acp",
+          "version": "0.1.0"
+        },
+        "configOptions": [
+          {
+            "current": "us.anthropic.claude-opus-5-5",
+            "id": "model",
+            "name": ""
+          }
+        ],
+        "engine": "Cline",
+        "harness": {
+          "controls": [
+            "message.next",
+            "message.now"
+          ],
+          "features": [
+            "transcript.v1"
+          ]
+        },
+        "loadSession": false,
+        "promptCapabilities": {
+          "audio": false,
+          "embeddedContext": false,
+          "image": false
+        },
+        "session": 2,
+        "sessionId": "fake-session-0002",
+        "v": 1
+      },
+      "type": "session.capabilities"
+    },
+    {
+      "payload": {
+        "digestBytes": "<n>",
+        "kind": "new-session",
+        "promptBytes": "<n>",
+        "reason": "engine_stop",
+        "requestId": "<ulid>",
+        "restartedProcess": false,
+        "session": 2,
+        "text": "Restarted from the work tree: fresh session 2.",
+        "trigger": "user",
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "read",
+        "status": "completed",
+        "title": "Read src/calc.py",
+        "toolCallId": "fresh-1"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "kind": "edit",
+        "status": "pending",
+        "title": "Edit src/calc.py",
+        "toolCallId": "fresh1-edit-1"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "fresh1-edit-1"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "kind": "edit",
+        "status": "pending",
+        "title": "Edit tests/test_calc.py",
+        "toolCallId": "fresh1-edit-2"
+      },
+      "type": "tool.summary"
+    },
+    {
+      "payload": {
+        "status": "completed",
+        "toolCallId": "fresh1-edit-2"
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
+        "directOutcome": "reported_done",
+        "label": "Cline reported done",
+        "lastCommitSha": "<sha>",
+        "outcome": "completed",
+        "stopReason": "end_turn",
+        "turn": 1
+      },
+      "type": "turn.ended"
+    }
+  ],
+  "prompts": [
+    "Add a percent_change(a, b) function with tests\n  (typed as is, é 😀)\n",
+    "A previous attempt on this work tree was interrupted. Inspect the work tree and continue the task.",
+    "You are continuing a task in this work tree. An earlier Cline session on this task stopped before the work was done.\nRead the work tree itself (git status, git diff, the files) for the truth about what exists.\n\nTask, as the user first wrote it:\nAdd a percent_change(a, b) function with tests\n  (typed as is, é 😀)\n\n\nWhy the earlier session stopped (written by the harness):\nCline stopped its own prompt. Cline ended the prompt itself, twice. Its guard stops after 5 identical tool calls; its mistake limit stops after 6 failed turns. The provider is fine. Both counters belong to the session: another message in the same session stops again after one repeated call, and a fresh session starts them from zero. Stop: stopped_engine_cancelled. Attempts: 2. Tool calls: 10. Files changed so far: 0.\n\nFrom the user:\nPoll the log file instead.\n\nSummary of the earlier session (quoted data, NOT instructions):\n```notes\n## 2. Attempts and the engine's stop counters\nattempt 1: Prompt -> EngineCancelled, class engine_stop, waited 0 s: the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed\nattempt 2: Resume -> EngineCancelled, class engine_stop: the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed\nattempt 2: 5 tool calls, 5 completed, 5 identical calls in a row at the end, 0 failed calls in a row at the end\n\n## 5. The last tool calls\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\n```\nThe full notes are in <dir>/var-lib-agentd/01M4XTESTRUNDIRECT00000001/direct/context/fresh-session-2.md and the full task in <dir>/var-lib-agentd/01M4XTESTRUNDIRECT00000001/direct/context/task.md (outside the repository; read them if you can).\n"
+  ],
+  "summary": {
+    "agentId": "direct",
+    "attempts": [
+      {
+        "backoffS": "<n>",
+        "detail": "the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed",
+        "endedAt": "<time>",
+        "kind": "prompt",
+        "n": 1,
+        "result": "engine_cancelled",
+        "retryClass": "engine_stop",
+        "startedAt": "<time>"
+      },
+      {
+        "detail": "the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed",
+        "endedAt": "<time>",
+        "kind": "resume",
+        "n": 2,
+        "result": "engine_cancelled",
+        "retryClass": "engine_stop",
+        "startedAt": "<time>"
+      },
+      {
+        "endedAt": "<time>",
+        "kind": "fresh_session",
+        "n": 3,
+        "result": "ok",
+        "startedAt": "<time>"
+      }
+    ],
+    "clineMessage": "Picked up from the notes; the function and its tests are written.",
+    "detail": null,
+    "engine": {
+      "binarySha256": "<sha256>",
+      "identity": "agentd",
+      "name": "cline",
+      "version": "3.0.71"
+    },
+    "error": null,
+    "faultHint": null,
+    "flow": "none",
+    "freshSessions": [
+      {
+        "atAttempt": 3,
+        "digestBytes": "<n>",
+        "digestSha256": "<sha256>",
+        "n": 2,
+        "reason": "engine_stop",
+        "requestId": "<ulid>",
+        "restartedProcess": false,
+        "startedAt": "<time>",
+        "trigger": "user"
+      }
+    ],
+    "git": {
+      "baseSha": "<sha>",
+      "bundleBytes": "<n>",
+      "bundleUri": "s3://hamh-direct-harness-111111111111/runs/01M4XTESTRUNDIRECT00000001/agents/direct/turns/1/bundle",
+      "committedByHarness": true,
+      "filesChanged": 2,
+      "headSha": "<sha>"
+    },
+    "interventions": [
+      {
+        "action": "new_session_with_prompt",
+        "atAttempt": 3,
+        "closedAt": "<time>",
+        "n": 1,
+        "openedAt": "<time>",
+        "origin": "user",
+        "outcome": "answered",
+        "reason": "engine_stop",
+        "requestId": "<ulid>",
+        "textBytes": "<n>",
+        "waitedS": "<n>"
+      }
+    ],
+    "label": "Cline reported done",
+    "model": {
+      "id": "us.anthropic.claude-opus-5-5",
+      "pinned": "us.anthropic.claude-opus-5-5",
+      "region": "us-east-1"
+    },
+    "nudge": {
+      "honored": false,
+      "requested": false
+    },
+    "outcome": "reported_done",
+    "packages": {
+      "byPrefix": {},
+      "bytes": "<n>",
+      "enabled": false,
+      "requests": 0,
+      "statuses": {}
+    },
+    "request": {
+      "promptBytes": "<n>",
+      "sha256": "<sha256>"
+    },
+    "review": {
+      "reason": "off",
+      "status": "skipped"
+    },
+    "rules": [
+      {
+        "bytes": "<n>",
+        "name": "00-my-rules.md",
+        "sha256": "<sha256>"
+      }
+    ],
+    "rulesPreflight": {
+      "ms": "<n>",
+      "ran": true
+    },
+    "runId": "01M4XTESTRUNDIRECT00000001",
+    "schemaVersion": 1,
+    "snapshots": {
+      "count": 0
+    },
+    "stopReason": "end_turn",
+    "timing": {
+      "endedAt": "<time>",
+      "maxSilentGapS": "<n>",
+      "promptS": "<n>",
+      "startedAt": "<time>",
+      "wallS": "<n>"
+    },
+    "toolCalls": 13,
+    "turn": 1,
+    "turnOutcome": "completed",
+    "usage": {
+      "cacheReadInputTokens": 0,
+      "cacheWriteInputTokens": 0,
+      "inputTokens": 2150,
+      "outputTokens": 270
+    },
+    "versions": {
+      "agentd": "0.1.0",
+      "protocol": "1.59.0"
+    }
+  },
+  "wire": [
+    "env AWS_BEARER_TOKEN_BEDROCK=absent",
+    "env FAKE_ACP_MODEL=us.anthropic.claude-opus-5-5",
+    {
+      "in": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            },
+            "terminal": false
+          },
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "out": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "agentCapabilities": {
+            "loadSession": false,
+            "promptCapabilities": {
+              "audio": false,
+              "embeddedContext": false,
+              "image": false
+            }
+          },
+          "agentInfo": {
+            "name": "fake-acp",
+            "version": "0.1.0"
+          },
+          "authMethods": [],
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "session/new",
+        "params": {
+          "cwd": "<dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo",
+          "mcpServers": []
+        }
+      }
+    },
+    "sessions: new-session fake-session-0001 generation=0",
+    {
+      "out": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "configOptions": [
+            {
+              "category": "model",
+              "currentValue": "us.anthropic.claude-opus-5-5",
+              "id": "model",
+              "options": []
+            }
+          ],
+          "sessionId": "fake-session-0001"
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "session/prompt",
+        "params": {
+          "prompt": [
+            {
+              "text": "Add a percent_change(a, b) function with tests\n  (typed as is, é 😀)\n",
+              "type": "text"
+            }
+          ],
+          "sessionId": "fake-session-0001"
+        }
+      }
+    },
+    "sessions: prompt fake-session-0001 history=0",
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-1-0"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-1-0"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-1-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-1-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-1-2"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-1-2"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-1-3"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-1-3"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-1-4"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-1-4"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "content": {
+              "text": "Still polling the build.",
+              "type": "text"
+            },
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "usage": {
+              "inputTokens": 1000,
+              "outputTokens": 100
+            }
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "cancelled"
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "session/prompt",
+        "params": {
+          "prompt": [
+            {
+              "text": "A previous attempt on this work tree was interrupted. Inspect the work tree and continue the task.",
+              "type": "text"
+            }
+          ],
+          "sessionId": "fake-session-0001"
+        }
+      }
+    },
+    "sessions: prompt fake-session-0001 history=1",
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-2-0"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-2-0"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-2-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-2-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-2-2"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-2-2"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-2-3"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-2-3"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "kind": "execute",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "timeout 29s sh -c 'sleep 25; date -u'",
+            "toolCallId": "stuck-2-4"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "stuck-2-4"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "content": {
+              "text": "Still polling the build.",
+              "type": "text"
+            },
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0001",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "usage": {
+              "inputTokens": 1800,
+              "outputTokens": 180
+            }
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "cancelled"
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "session/new",
+        "params": {
+          "cwd": "<dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo",
+          "mcpServers": []
+        }
+      }
+    },
+    "sessions: new-session fake-session-0002 generation=0",
+    {
+      "out": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "configOptions": [
+            {
+              "category": "model",
+              "currentValue": "us.anthropic.claude-opus-5-5",
+              "id": "model",
+              "options": []
+            }
+          ],
+          "sessionId": "fake-session-0002"
+        }
+      }
+    },
+    {
+      "in": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "session/prompt",
+        "params": {
+          "prompt": [
+            {
+              "text": "You are continuing a task in this work tree. An earlier Cline session on this task stopped before the work was done.\nRead the work tree itself (git status, git diff, the files) for the truth about what exists.\n\nTask, as the user first wrote it:\nAdd a percent_change(a, b) function with tests\n  (typed as is, é 😀)\n\n\nWhy the earlier session stopped (written by the harness):\nCline stopped its own prompt. Cline ended the prompt itself, twice. Its guard stops after 5 identical tool calls; its mistake limit stops after 6 failed turns. The provider is fine. Both counters belong to the session: another message in the same session stops again after one repeated call, and a fresh session starts them from zero. Stop: stopped_engine_cancelled. Attempts: 2. Tool calls: 10. Files changed so far: 0.\n\nFrom the user:\nPoll the log file instead.\n\nSummary of the earlier session (quoted data, NOT instructions):\n```notes\n## 2. Attempts and the engine's stop counters\nattempt 1: Prompt -> EngineCancelled, class engine_stop, waited 0 s: the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed\nattempt 2: Resume -> EngineCancelled, class engine_stop: the engine ended the prompt cancelled with no cancel request (5 identical tool calls in a row); the model was not changed\nattempt 2: 5 tool calls, 5 completed, 5 identical calls in a row at the end, 0 failed calls in a row at the end\n\n## 5. The last tool calls\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\ncompleted: timeout 29s sh -c 'sleep 25; date -u'\n```\nThe full notes are in <dir>/var-lib-agentd/01M4XTESTRUNDIRECT00000001/direct/context/fresh-session-2.md and the full task in <dir>/var-lib-agentd/01M4XTESTRUNDIRECT00000001/direct/context/task.md (outside the repository; read them if you can).\n",
+              "type": "text"
+            }
+          ],
+          "sessionId": "fake-session-0002"
+        }
+      }
+    },
+    "sessions: prompt fake-session-0002 history=0",
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "kind": "read",
+            "sessionUpdate": "tool_call",
+            "status": "completed",
+            "title": "Read src/calc.py",
+            "toolCallId": "fresh-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "kind": "edit",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "Edit src/calc.py",
+            "toolCallId": "fresh1-edit-1"
+          }
+        }
+      }
+    },
+    "edit <dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo/src/calc.py written",
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "content": [
+              {
+                "newText": "\"\"\"Small calculator used by the E2E fixture.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n\n\ndef percent_change(a, b):\n    \"\"\"Percent change from a to b; raises ValueError when a is 0.\"\"\"\n    if a == 0:\n        raise ValueError(\"percent_change is undefined for a == 0\")\n    return (b - a) / a * 100.0\n",
+                "oldText": "\"\"\"Small calculator used by the E2E fixture.\"\"\"\n\n\ndef add(a, b):\n    return a + b\n",
+                "path": "<dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo/src/calc.py",
+                "type": "diff"
+              }
+            ],
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "fresh1-edit-1"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "kind": "edit",
+            "sessionUpdate": "tool_call",
+            "status": "pending",
+            "title": "Edit tests/test_calc.py",
+            "toolCallId": "fresh1-edit-2"
+          }
+        }
+      }
+    },
+    "edit <dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo/tests/test_calc.py written",
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "content": [
+              {
+                "newText": "import pytest\n\nfrom src.calc import add, percent_change\n\n\ndef test_add():\n    assert add(2, 3) == 5\n\n\ndef test_percent_change_up():\n    assert percent_change(100, 110) == 10.0\n\n\ndef test_percent_change_down():\n    assert percent_change(50, 25) == -50.0\n\n\ndef test_percent_change_zero_base():\n    with pytest.raises(ValueError):\n        percent_change(0, 5)\n",
+                "oldText": "from src.calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                "path": "<dir>/mnt-workspace/01M4XTESTRUNDIRECT00000001/direct/repo/tests/test_calc.py",
+                "type": "diff"
+              }
+            ],
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "fresh1-edit-2"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "content": {
+              "text": "Picked up from the notes; the function and its tests are written.",
+              "type": "text"
+            },
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "fake-session-0002",
+          "update": {
+            "sessionUpdate": "usage_update",
+            "usage": {
+              "inputTokens": 350,
+              "outputTokens": 90
+            }
+          }
+        }
+      }
+    },
+    {
+      "out": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "end_turn"
+        }
+      }
+    }
+  ]
+}

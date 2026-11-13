@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""scanner_kit.py: run the pinned python and bash scanner rules on the files your work changed, before your last commit.
+
+A repository's own scanner check can reject a delivery for a finding that this session cannot see, because the session has no scanner. This kit
+installs semgrep and a package of rules (cah-semgrep-rules, published to the package registry of this stage) into a virtual environment under
+$TMPDIR, runs them on the python and shell files that changed since the commit your work started from, and prints one line per finding.
+
+Usage: python3 scanner_kit.py [--base REF] [--timeout SECONDS] [PATH ...]
+
+  --base REF       the commit your work started from (default: the "Base commit:" line of the goal card, as lifecycle_check.py reads it; without
+                   one, every python and shell file of the repository is scanned, the 300 newest at most)
+  --timeout N      seconds allowed for each step, the install and the scan (default 600)
+  PATH             scan exactly these files, or the python and shell files below these folders, and ignore --base
+
+The first call installs semgrep and the rules (one to a few minutes: start it in the background with its output in a file, as for any long
+run) and later calls reuse the environment. The environment variable CAH_SCANNER_KIT=off switches the kit off: it prints KIT-OFF and exits.
+
+Output (one line each): KIT-FINDING <path>:<line> <rule id> <severity> <message>, then KIT-PASS files=N or KIT-FINDINGS n files=N, then KIT-LIMITS,
+and with findings a line that says what to do. KIT-NOTE lines tell what the kit assumed. Any failure to install or to run prints one
+KIT-NOT-RUN <reason> line and exits 0, so the kit never stops a run; copy that line into your last message as NOT RUN with its reason.
+Exit codes: 0 pass, not run or off; 1 findings; 2 a usage error.
+
+What it covers: the pinned python and bash rules of one semgrep version. It is not the repository's other scanners and not its tests, so a pass
+here is no pass of the repository's own check.
+Standard library only; Python 3.8 or later. It writes only under the temp folder, never inside the repository.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess  # nosec B404: starts git, pip and semgrep with argument lists, never through a shell
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+SEMGREP_VERSION = "1.78.0"
+RULES_PACKAGE = "cah-semgrep-rules"
+RULES_VERSION = "1.0.0"
+SWITCH = "CAH_SCANNER_KIT"
+OVERRIDE = "CAH_SCANNER_KIT_SEMGREP"   # tests: replaces the semgrep command and the install
+OVERRIDE_RULES = "CAH_SCANNER_KIT_RULES"   # tests: the rules folder given to the replaced command
+DEFAULT_TIMEOUT = 600
+FILE_BYTES_MAX = 1_000_000
+ALL_FILES_MAX = 300
+FINDINGS_MAX = 40
+MESSAGE_MAX = 140
+REASON_MAX = 140
+SCAN_EXT = {".py", ".sh", ".bash"}
+SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages"}
+SHEBANG = re.compile(rb"^#!\s*(?:/usr/bin/env\s+(?:-S\s+)?)?(?:\S*/)?(?:python[0-9.]*|bash|sh|dash|zsh|ksh)(?:\s|$)")
+GOAL_BASE = re.compile(r"(?mi)\bbase commit:\s*`?([0-9a-f]{7,40})\b")
+HINT = "fix the code, or excuse a false positive in the repository's own form (search it with rg 'nosemgrep')"
+
+
+class UsageError(Exception):
+    """A request the kit cannot read (exit 2)."""
+
+
+class NotRun(Exception):
+    """The kit could not install or run semgrep; the reason is one line (KIT-NOT-RUN, exit 0)."""
+
+
+# ------------------------------------------------------------------------------------------------------------- processes
+def last_line(text: str, limit: int = REASON_MAX) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return " ".join(lines[-1].split())[:limit] if lines else ""
+
+
+def run(cmd: Sequence[str], timeout: float, what: str, limit: int, env: Optional[Dict[str, str]] = None, cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+    """(exit code, stdout, stderr); NotRun when the command cannot start or runs longer than `timeout` seconds (`limit` is the number the message names)."""
+    try:
+        done = subprocess.run(list(cmd), capture_output=True, timeout=max(1.0, timeout), env=env, cwd=str(cwd) if cwd else None)  # nosec B603: argument list, no shell  # nosemgrep: dangerous-subprocess-use-audit -- argument list built by this script from python, pip, git or the semgrep command, no shell
+    except subprocess.TimeoutExpired:
+        raise NotRun("%s did not finish in %d seconds" % (what, limit)) from None
+    except OSError as exc:
+        raise NotRun("%s could not start: %s" % (what, last_line(str(exc), 100))) from None
+    return done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
+
+
+def git(root: Path, *args: str) -> Tuple[int, bytes]:
+    try:
+        done = subprocess.run(["git", "-C", str(root), "-c", "core.quotepath=false", *args], capture_output=True)  # nosec B603: argument list, no shell, program is git; B607: bare name git looked up on PATH
+    except OSError:
+        return 127, b""
+    return done.returncode, done.stdout
+
+
+def repo_root(cwd: Path) -> Optional[Path]:
+    code, out = git(cwd, "rev-parse", "--show-toplevel")
+    text = out.decode("utf-8", "replace").strip()
+    return Path(text).resolve() if code == 0 and text else None
+
+
+# ------------------------------------------------------------------------------------------------------- file selection
+def is_scannable(name: str, head: bytes) -> bool:
+    """A python or shell file by its extension, or one without an extension whose first line names python or a shell."""
+    suffix = os.path.splitext(os.path.basename(name))[1].lower()
+    if suffix:
+        return suffix in SCAN_EXT
+    return SHEBANG.match(head) is not None
+
+
+def _readable(root: Path, rel: str) -> Optional[bytes]:
+    """The first bytes of a regular file of the repository that is not a link and not too large, else None."""
+    p = root / rel
+    try:
+        if p.is_symlink() or not p.is_file() or p.stat().st_size > FILE_BYTES_MAX:
+            return None
+        with open(str(p), "rb") as fh:
+            return fh.read(128)
+    except OSError:
+        return None
+
+
+def _scannable(root: Path, names: Sequence[str]) -> List[str]:
+    out = set()
+    for rel in names:
+        head = _readable(root, rel)
+        if head is not None and is_scannable(rel, head):
+            out.add(rel)
+    return sorted(out)
+
+
+def _split(out: bytes) -> List[str]:
+    return [n.decode("utf-8", "replace") for n in out.split(b"\0") if n]
+
+
+def changed_files(root: Path, base: str) -> List[str]:
+    """The python and shell files that differ from `base` in the work tree (committed, staged or not) and the new ones that git does not ignore."""
+    code, tracked = git(root, "diff", "--name-only", "--no-renames", "--diff-filter=ACMRT", "-z", base, "--")
+    _code, new = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    return _scannable(root, (_split(tracked) if code == 0 else []) + _split(new))
+
+
+def scannable_files(root: Path) -> List[str]:
+    """Every python and shell file of the repository that git tracks or does not ignore."""
+    _code, tracked = git(root, "ls-files", "-z")
+    _code2, new = git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    return _scannable(root, _split(tracked) + _split(new))
+
+
+def newest(root: Path, files: Sequence[str], limit: int = ALL_FILES_MAX) -> List[str]:
+    if len(files) <= limit:
+        return list(files)
+    def age(rel: str) -> float:
+        try:
+            return -(root / rel).stat().st_mtime
+        except OSError:
+            return 0.0
+    return sorted(sorted(files, key=lambda rel: (age(rel), rel))[:limit])
+
+
+def all_files(root: Path) -> List[str]:
+    return newest(root, scannable_files(root))
+
+
+def expand_paths(paths: Sequence[str], root: Path) -> List[str]:
+    """The files named by the PATH arguments: a file as given, a folder as the python and shell files below it (hidden folders and caches skipped)."""
+    found = set()
+    for p in paths:
+        full = p if os.path.isabs(p) else os.path.join(str(root), p)
+        if os.path.isdir(full):
+            for base, dirs, names in os.walk(full):
+                dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
+                for n in sorted(names):
+                    path = os.path.join(base, n)
+                    try:
+                        with open(path, "rb") as fh:
+                            head = fh.read(128)
+                    except OSError:
+                        continue
+                    if not os.path.islink(path) and is_scannable(n, head):
+                        found.add(path)
+        elif os.path.isfile(full):
+            found.add(full)
+        else:
+            raise UsageError("no such file or folder: %s" % p)
+    out = []
+    root_abs = os.path.abspath(str(root))
+    for path in found:
+        path = os.path.abspath(path)
+        out.append(os.path.relpath(path, root_abs) if os.path.commonpath([root_abs, path]) == root_abs else path)
+    return sorted(set(out))
+
+
+# --------------------------------------------------------------------------------------------------------- the base commit
+def locator_folder(value: str) -> str:
+    """The folder a value of `.cah/records` names, or an empty string when it is unusable (the grammar of lifecycle_check.py)."""
+    folder = value.rstrip("/")
+    if not folder or len(folder) > 100 or folder.startswith("/") or not re.fullmatch(r"[A-Za-z0-9._/-]+", folder):
+        return ""
+    for part in folder.split("/"):
+        if not part or part in (".", "..") or part.startswith("-") or part.lower() == ".git":
+            return ""
+    return folder
+
+
+def records_folder(root: Path) -> str:
+    """The folder that holds the records: `.cah`, or the folder `.cah/records` names. `off` and an unusable value read the default place."""
+    cah, locator = root / ".cah", root / ".cah" / "records"
+    if cah.is_symlink() or not cah.is_dir() or locator.is_symlink() or not locator.is_file():
+        return ".cah"
+    try:
+        data = locator.read_bytes()
+        text = data.decode("utf-8") if len(data) <= 4096 else ""
+    except (OSError, UnicodeDecodeError):
+        return ".cah"
+    for line in text.split("\n"):
+        value = line.strip(" \t\r")
+        if not value or value.startswith("#"):
+            continue
+        if value.isascii() and value.lower() == "off":
+            return ".cah"
+        return locator_folder(value) or ".cah"
+    return ".cah"
+
+
+def goal_base(root: Path) -> Tuple[str, str]:
+    """(base commit, note): the `Base commit:` of the goal card when it is a commit here; a note when it names something that is not."""
+    goal = records_folder(root) + "/lifecycle/GOAL.md"
+    try:
+        text = (root / goal).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    m = GOAL_BASE.search(text)
+    if not m:
+        return "", ""
+    base = m.group(1)
+    code, _out = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+    if code != 0:
+        return "", "the Base commit %s in %s is not a commit of this repository" % (base, goal)
+    return base, ""
+
+
+# ------------------------------------------------------------------------------------------------------- the environment
+def _inside(root: Path, path: str) -> bool:
+    a, b = os.path.realpath(str(root)), os.path.realpath(path)
+    return os.path.commonpath([a, b]) == a
+
+
+def kit_folder(env: Dict[str, str], root: Optional[Path]) -> Path:
+    """The folder for the environment: under $TMPDIR (else the system temp folder), never inside the repository."""
+    candidates = [c for c in (env.get("TMPDIR"), tempfile.gettempdir()) if c]
+    for c in candidates:
+        if root is None or not _inside(root, c):
+            folder = Path(c) / "cah-scanner-kit"
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise NotRun("cannot create %s: %s" % (folder, last_line(str(exc), 80))) from None
+            return folder
+    raise NotRun("the temp folder is inside the repository; set TMPDIR to a folder outside it")
+
+
+class Tools:
+    """The semgrep command and the rules folder a scan uses."""
+
+    def __init__(self, command: List[str], rules_dir: str, env: Dict[str, str]) -> None:
+        self.command, self.rules_dir, self.env = command, rules_dir, env
+
+
+def _pip_args(requirements: Sequence[str]) -> List[str]:
+    return ["install", "--quiet", "--disable-pip-version-check", "--no-input", *requirements]
+
+
+def _ready(venv: Path) -> Optional[str]:
+    """The rules folder recorded when the environment was completed, if the environment still matches the pins."""
+    try:
+        mark = json.loads((venv / "kit-ready.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if mark.get("semgrep") != SEMGREP_VERSION or mark.get("rules") != RULES_VERSION:
+        return None
+    rules = mark.get("rules_dir")
+    if isinstance(rules, str) and os.path.isdir(rules) and (venv / "bin" / "semgrep").is_file():
+        return rules
+    return None
+
+
+def _lock(folder: Path, key: str, deadline: float):
+    """An exclusive lock on the install of this environment; None where file locks do not exist. Waits for another run to finish."""
+    try:
+        import fcntl
+    except ImportError:   # no file locks on this platform: two kit runs at once may install twice
+        return None
+    fh = open(str(folder / ("lock-" + key)), "a+", encoding="utf-8")
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                raise NotRun("another run of the kit is still installing semgrep") from None
+            time.sleep(1)  # nosemgrep: arbitrary-sleep -- bounded wait between polls, retries or settle checks in tooling, nothing depends on the delay
+
+
+def ensure_tools(folder: Path, timeout: int, env: Dict[str, str]) -> Tools:
+    """The pinned semgrep and rules in an environment under `folder`: reused when complete, else installed with pip."""
+    key = hashlib.sha256(("%s|%s|%s|%d.%d" % (SEMGREP_VERSION, RULES_PACKAGE, RULES_VERSION, sys.version_info[0], sys.version_info[1])).encode("utf-8")).hexdigest()[:12]
+    venv = folder / ("venv-" + key)
+    sg_env = dict(env)
+    sg_env.setdefault("SEMGREP_SEND_METRICS", "off")
+    sg_env.setdefault("SEMGREP_ENABLE_VERSION_CHECK", "0")
+    sg_env.setdefault("SEMGREP_SETTINGS_FILE", str(folder / "semgrep-settings.yml"))
+    sg_env.setdefault("SEMGREP_LOG_FILE", str(folder / "semgrep.log"))
+    sg_env.setdefault("SEMGREP_VERSION_CACHE_PATH", str(folder / "semgrep-version-cache"))
+    rules = _ready(venv)
+    if rules:
+        return Tools([str(venv / "bin" / "semgrep")], rules, sg_env)
+    deadline = time.monotonic() + timeout
+    lock = _lock(folder, key, deadline)
+    try:
+        rules = _ready(venv)   # another run may have finished while this one waited
+        if rules:
+            return Tools([str(venv / "bin" / "semgrep")], rules, sg_env)
+        pip_env = dict(env)
+        pip_env.setdefault("PIP_CACHE_DIR", str(folder / "pip-cache"))
+        python = str(venv / "bin" / "python")
+        left = lambda: deadline - time.monotonic()  # noqa: E731
+        code, _so, se = run([sys.executable, "-m", "venv", str(venv)], left(), "creating the virtual environment", timeout, pip_env)
+        # The small rules package first: a stage that has not published it fails at once, before pip fetches semgrep.
+        requirements = [RULES_PACKAGE + "==" + RULES_VERSION, "semgrep==" + SEMGREP_VERSION]
+        if code != 0:   # a Python without ensurepip: make the environment bare and let this interpreter's pip fill it
+            code, _so, se = run([sys.executable, "-m", "venv", "--without-pip", str(venv)], left(), "creating the virtual environment", timeout, pip_env)
+            if code != 0:
+                raise NotRun("creating the virtual environment failed (exit %d): %s" % (code, last_line(se)))
+            pip = [sys.executable, "-m", "pip", "--python", python, *_pip_args(requirements)]
+        else:
+            pip = [python, "-m", "pip", *_pip_args(requirements)]
+        if left() <= 0:
+            raise NotRun("pip install did not finish in %d seconds" % timeout)
+        code, so, se = run(pip, left(), "pip install", timeout, pip_env)
+        if code != 0:
+            raise NotRun("pip install failed (exit %d): %s" % (code, last_line(se) or last_line(so)))
+        code, so, se = run([python, "-c", "import cah_semgrep_rules as m; print(m.RULES_DIR)"], 60, "the rules package", 60, pip_env)
+        rules = so.strip().splitlines()[-1] if code == 0 and so.strip() else ""
+        if not rules or not os.path.isdir(rules):
+            raise NotRun("the rules package is installed but holds no rules folder")
+        if not (venv / "bin" / "semgrep").is_file():
+            raise NotRun("semgrep was not installed into the environment")
+        mark = venv / "kit-ready.json"
+        partial = venv / ("kit-ready.json.%d" % os.getpid())
+        partial.write_text(json.dumps({"semgrep": SEMGREP_VERSION, "rules": RULES_VERSION, "rules_dir": rules}), encoding="utf-8")
+        os.replace(str(partial), str(mark))
+        return Tools([str(venv / "bin" / "semgrep")], rules, sg_env)
+    finally:
+        if lock is not None:
+            lock.close()
+
+
+# ------------------------------------------------------------------------------------------------------------- the scan
+def semgrep_command(tools: Tools, files: Sequence[str]) -> List[str]:
+    targets = ["./" + f if f.startswith("-") else f for f in files]
+    return [*tools.command, "--metrics=off", "--disable-version-check", "--quiet", "--json", "--config", tools.rules_dir, *targets]
+
+
+def parse_output(text: str) -> Tuple[List[dict], List[dict]]:
+    """(results, errors) from the JSON that semgrep printed; ValueError when it is not a semgrep report."""
+    doc = json.loads(text)
+    if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+        raise ValueError("no results list")
+    errors = doc.get("errors")
+    return doc["results"], errors if isinstance(errors, list) else []
+
+
+def finding_line(result: dict) -> str:
+    extra = result.get("extra") or {}
+    path = str(result.get("path", ""))
+    path = path[2:] if path.startswith("./") else path
+    rule = str(result.get("check_id", "")).rsplit(".", 1)[-1]
+    message = " ".join(str(extra.get("message", "")).split())[:MESSAGE_MAX]
+    return "KIT-FINDING %s:%s %s %s %s" % (path, (result.get("start") or {}).get("line", 0), rule, extra.get("severity") or "INFO", message)
+
+
+def render(results: Sequence[dict], errors: Sequence[dict], nfiles: int) -> List[str]:
+    lines = []
+    ordered = sorted(results, key=lambda r: (str(r.get("path", "")), (r.get("start") or {}).get("line", 0), str(r.get("check_id", ""))))
+    lines.extend(finding_line(r) for r in ordered[:FINDINGS_MAX])
+    rest = len(ordered) - FINDINGS_MAX
+    if rest > 0:
+        lines.append("KIT-MORE %d more finding%s not shown" % (rest, "s are" if rest > 1 else " is"))
+    hard = [e for e in errors if isinstance(e, dict) and str(e.get("level", "")).lower() == "error"]
+    if hard:
+        first = hard[0]
+        where = str(first.get("path") or "")
+        text = " ".join(str(first.get("message", "")).split())[:100]
+        lines.append("KIT-NOTE semgrep reported %d error%s: %s%s" % (len(hard), "" if len(hard) == 1 else "s", where + ": " if where else "", text))
+    lines.append("KIT-FINDINGS %d files=%d" % (len(ordered), nfiles) if ordered else "KIT-PASS files=%d" % nfiles)
+    lines.append("KIT-LIMITS reproduces the pinned python and bash rules of semgrep %s (%s %s), not the repository's other scanners" % (SEMGREP_VERSION, RULES_PACKAGE, RULES_VERSION))
+    if ordered:
+        lines.append(HINT)
+    return lines
+
+
+def scan(tools: Tools, files: Sequence[str], root: Path, timeout: int) -> Tuple[List[dict], List[dict]]:
+    code, so, se = run(semgrep_command(tools, files), timeout, "semgrep", timeout, tools.env, root)
+    if code not in (0, 1):
+        raise NotRun("semgrep stopped with exit %d: %s" % (code, last_line(se) or last_line(so)))
+    try:
+        return parse_output(so)
+    except ValueError:
+        raise NotRun("semgrep printed no JSON result (exit %d)" % code) from None
+
+
+def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="scanner_kit.py", description="Run the pinned python and bash scanner rules on the files your work changed.", allow_abbrev=False)
+    parser.add_argument("--base", default="", help="the commit your work started from (default: the Base commit line of the goal card)")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="seconds allowed for the install and for the scan (default %d)" % DEFAULT_TIMEOUT)
+    parser.add_argument("paths", nargs="*", metavar="PATH", help="files or folders to scan instead of the changed files")
+    args = parser.parse_args(argv)
+    if args.timeout <= 0:
+        parser.error("--timeout must be a whole number of seconds above zero")
+    return args
+
+
+def main(argv: Optional[Sequence[str]] = None, environ: Optional[Dict[str, str]] = None) -> int:
+    env = dict(os.environ if environ is None else environ)
+    if env.get(SWITCH, "").strip().lower() == "off":
+        print("KIT-OFF")
+        return 0
+    args = parse_args(argv)
+    try:
+        return _main(args, env)
+    except UsageError as exc:
+        sys.stderr.write("scanner_kit.py: error: %s\n" % exc)
+        return 2
+    except NotRun as exc:
+        print("KIT-NOT-RUN %s" % exc)
+        return 0
+
+
+def _main(args: argparse.Namespace, env: Dict[str, str]) -> int:
+    cwd = Path.cwd().resolve()
+    root = repo_root(cwd)
+    notes: List[str] = []
+    if args.paths:
+        where = root or cwd
+        files = expand_paths([os.path.abspath(os.path.join(str(cwd), p)) for p in args.paths], where)
+    else:
+        if root is None:
+            raise NotRun("not inside a git repository; give the files as PATH arguments")
+        where = root
+        base, problem = args.base, ""
+        if base:
+            code, _out = git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}")
+            if code != 0:
+                raise UsageError("--base %s is not a commit of %s" % (base, root))
+        else:
+            base, problem = goal_base(root)
+        if base:
+            files = changed_files(root, base)
+            if not files:
+                notes.append("KIT-NOTE no python or shell file changed since %s" % base[:12])
+        else:
+            everything = scannable_files(root)
+            files = newest(root, everything)
+            notes.append("KIT-NOTE %s: all python and shell files are scanned" % (problem or "no Base commit line in the goal card and no --base"))
+            if len(files) < len(everything):
+                notes.append("KIT-NOTE only the %d newest of %d python and shell files are scanned" % (len(files), len(everything)))
+    for line in notes:
+        print(line)
+    if not files:
+        for line in render([], [], 0):
+            print(line)
+        return 0
+    override = env.get(OVERRIDE, "").strip()
+    if override:
+        tools = Tools(shlex.split(override), env.get(OVERRIDE_RULES, "rules"), dict(env))
+    else:
+        tools = ensure_tools(kit_folder(env, root), args.timeout, env)
+    results, errors = scan(tools, files, where, args.timeout)
+    for line in render(results, errors, len(files)):
+        print(line)
+    return 1 if results else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

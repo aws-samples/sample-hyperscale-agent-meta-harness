@@ -1,0 +1,273 @@
+#!/usr/bin/python3.12 -IBS
+"""ham-nobody-exec: start a program as the user "nobody" in a private IPC namespace.
+
+The engine of an Instances session runs as the container's root, and programs that refuse root fail there (PostgreSQL, setup scripts that check the user id). The container does
+not let a process become another user: `unshare`, `setns` and every write of `uid_map` are refused. It does allow `clone3` with a new user namespace and a new IPC namespace, and the
+write of `gid_map`. A user namespace whose `uid_map` stays empty gives its processes the overflow user (65534, "nobody") as the id they read, and no capability once they exec. The
+kernel still knows them as the same user as before, so what they write stays readable by agentd and the session's file access does not change. The IPC namespace is new, so a
+program may use System V shared memory, message queues and semaphores (PostgreSQL's interlock segment) without reaching an object of agentd or of another session.
+
+  ham-nobody-exec [--check] -- PROGRAM [ARG...]
+
+PROGRAM must be an absolute path. The helper makes the child with `clone3`, and the child gives itself `setgroups deny` and the group map `1000 <gid of the parent> 1`, checks the
+result and executes PROGRAM with the environment the helper was started with. The helper stays as the parent: it forwards SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2 to the
+child and exits with the child's status (128 plus the signal number for a signal). The child asks the kernel to kill it when the helper ends (`PR_SET_PDEATHSIG`), so a helper that is
+killed takes the program with it. `--check` does everything except the exec and prints `ham-nobody-exec: ok euid=<n> egid=<n>`.
+
+Nothing is started unless the whole setup holds: a refused `clone3`, a refused map write, a child that does not read as the overflow user, a mapped user id, or a child that is still in the
+user or IPC namespace of its parent ends with exit status 125 and `ham-nobody-exec: refused: <reason>` on standard error. There is no fallback to the parent's identity.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import os
+import signal
+import struct
+import sys
+
+CLONE_NEWIPC = 0x08000000
+CLONE_NEWUSER = 0x10000000
+NAMESPACES = CLONE_NEWUSER | CLONE_NEWIPC
+SYS_CLONE3 = 435
+PR_SET_PDEATHSIG = 1
+PR_CAPBSET_DROP = 24
+REFUSED = 125
+INSIDE_GID = 1000
+FORWARDED = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2)
+IGNORED_BY_PYTHON = (signal.SIGPIPE, signal.SIGXFSZ)
+
+
+class Refused(Exception):
+    """The setup does not hold: nothing is started."""
+
+
+class Request:
+    def __init__(self, check: bool, program: str, args: list[str]) -> None:
+        self.check = check
+        self.program = program
+        self.args = args
+
+
+class Outer:
+    """What the parent knows before the clone."""
+
+    def __init__(self, pid: int, egid: int, ipc: str, user: str) -> None:
+        self.pid = pid
+        self.egid = egid
+        self.ipc = ipc
+        self.user = user
+
+
+def parse_args(argv: list[str]) -> Request:
+    usage = "usage: ham-nobody-exec [--check] -- PROGRAM [ARG...]"
+    rest = list(argv)
+    check = False
+    if rest and rest[0] == "--check":
+        check = True
+        rest = rest[1:]
+    if not rest or rest[0] != "--":
+        raise Refused(usage)
+    rest = rest[1:]
+    if not rest:
+        raise Refused("no program follows --; " + usage)
+    if not os.path.isabs(rest[0]):
+        raise Refused("the program %s is not an absolute path" % rest[0])
+    return Request(check=check, program=rest[0], args=rest[1:])
+
+
+def clone_args(flags: int) -> bytes:
+    """`struct clone_args` of version 0 (64 bytes): flags, pidfd, child_tid, parent_tid, exit_signal, stack, stack_size, tls."""
+    return struct.pack("=QQQQQQQQ", flags, 0, 0, 0, signal.SIGCHLD, 0, 0, 0)
+
+
+def gid_map_text(outer_egid: int) -> str:
+    return "%d %d 1\n" % (INSIDE_GID, outer_egid)
+
+
+class Kernel:
+    """The calls the helper makes; a test gives it a fake."""
+
+    def __init__(self) -> None:
+        self.libc = ctypes.CDLL(None, use_errno=True)
+
+    def getpid(self) -> int:
+        return os.getpid()
+
+    def getppid(self) -> int:
+        return os.getppid()
+
+    def geteuid(self) -> int:
+        return os.geteuid()
+
+    def getegid(self) -> int:
+        return os.getegid()
+
+    def readlink(self, path: str) -> str:
+        return os.readlink(path)
+
+    def read_text(self, path: str) -> str:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def write_text(self, path: str, text: str) -> None:
+        # One write call: the kernel takes a map or a setgroups word from a single write.
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            os.write(fd, text.encode())
+        finally:
+            os.close(fd)
+
+    def initial_environ(self) -> dict[str, str]:
+        """The environment the process was started with. Python may add a variable of its own (PEP 538 sets LC_CTYPE in the C locale), so the
+        program gets the original block from `/proc/self/environ` and not `os.environ`."""
+        try:
+            with open("/proc/self/environ", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            return dict(os.environ)
+        env: dict[str, str] = {}
+        for item in raw.split(b"\0"):
+            if b"=" in item:
+                name, _, value = item.partition(b"=")
+                env[os.fsdecode(name)] = os.fsdecode(value)
+        return env
+
+    def clone3(self, flags: int) -> int:
+        raw = clone_args(flags)
+        buf = ctypes.create_string_buffer(raw, len(raw))
+        ctypes.set_errno(0)
+        pid = self.libc.syscall(SYS_CLONE3, buf, ctypes.c_size_t(len(raw)))
+        if pid < 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+        return pid
+
+    def set_pdeathsig(self, sig: int) -> None:
+        if self.libc.prctl(PR_SET_PDEATHSIG, sig, 0, 0, 0) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err))
+
+    def drop_bounding_set(self) -> None:
+        """Takes every capability out of the bounding set (the container's own set is empty), so a program with file capabilities gains none even where
+        `no_new_privs` is not set. The child holds all of them in its new namespace until this runs."""
+        for cap in range(64):
+            if self.libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0:
+                err = ctypes.get_errno()
+                if err == errno.EINVAL:
+                    return
+                raise OSError(err, os.strerror(err))
+
+    def reset_signal(self, sig: int) -> None:
+        signal.signal(sig, signal.SIG_DFL)
+
+    def restore_handler(self, sig: int) -> None:
+        signal.signal(sig, signal.SIG_DFL)
+
+    def on_signal(self, sig: int, handler) -> None:
+        signal.signal(sig, handler)
+
+    def execve(self, program: str, argv: list[str], env: dict[str, str]) -> None:
+        os.execve(program, argv, env)
+
+    def exit(self, code: int) -> None:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+
+    def kill(self, pid: int, sig: int) -> None:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def waitpid(self, pid: int) -> int:
+        return os.waitpid(pid, 0)[1]
+
+
+def refuse(why: object) -> int:
+    sys.stderr.write("ham-nobody-exec: refused: %s\n" % why)
+    return REFUSED
+
+
+def child(k, req: Request, outer: Outer, environ: dict[str, str]) -> int:
+    """The steps of the child, in the new namespaces. A start never returns (the exec replaces the process); the return value is the exit code of a refusal or of `--check`."""
+    try:
+        k.set_pdeathsig(signal.SIGKILL)
+        # The handlers of the parent were copied with it; a signal that arrives before the exec must act on this process.
+        for sig in FORWARDED:
+            k.restore_handler(sig)
+        if k.getppid() != outer.pid:
+            raise Refused("the parent ended before the child could start")
+        k.write_text("/proc/self/setgroups", "deny")
+        k.write_text("/proc/self/gid_map", gid_map_text(outer.egid))
+        euid = k.geteuid()
+        overflow = int(k.read_text("/proc/sys/kernel/overflowuid").strip() or "65534")
+        if euid != overflow:
+            raise Refused("the child reads as user %d and not as the overflow user %d" % (euid, overflow))
+        if k.read_text("/proc/self/uid_map").strip():
+            raise Refused("a user id is mapped (uid_map is not empty)")
+        for name, parents in (("ipc", outer.ipc), ("user", outer.user)):
+            if k.readlink("/proc/self/ns/" + name) == parents:
+                raise Refused("the child is still in the %s namespace of its parent" % name)
+        if req.check:
+            sys.stdout.write("ham-nobody-exec: ok euid=%d egid=%d\n" % (euid, k.getegid()))
+            return 0
+        k.drop_bounding_set()
+        for sig in IGNORED_BY_PYTHON:
+            k.reset_signal(sig)
+        k.execve(req.program, [req.program] + req.args, environ)
+        return REFUSED
+    except Refused as e:
+        return refuse(e)
+    except OSError as e:
+        return refuse("%s: %s" % (e.filename or "the child", errno.errorcode.get(e.errno or 0, e.errno)) + (" (%s)" % e.strerror if e.strerror else ""))
+
+
+def exit_code(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return REFUSED
+
+
+def main(argv: list[str], k=None) -> int:
+    k = k or Kernel()
+    try:
+        req = parse_args(argv)
+    except Refused as e:
+        return refuse(e)
+    state = {"child": 0, "pending": [], "pid": k.getpid()}
+
+    def forward(sig: int, _frame) -> None:
+        if k.getpid() != state["pid"]:
+            # The handler was copied into the child: act as a process without it.
+            k.restore_handler(sig)
+            k.kill(k.getpid(), sig)
+        elif state["child"]:
+            k.kill(state["child"], sig)
+        else:
+            state["pending"].append(sig)
+
+    for sig in FORWARDED:
+        k.on_signal(sig, forward)
+    outer = Outer(pid=state["pid"], egid=k.getegid(), ipc=k.readlink("/proc/self/ns/ipc"), user=k.readlink("/proc/self/ns/user"))
+    environ = k.initial_environ()
+    try:
+        pid = k.clone3(NAMESPACES)
+    except OSError as e:
+        return refuse("clone3 with a new user namespace and a new IPC namespace: %s (%s)" % (errno.errorcode.get(e.errno or 0, e.errno), e.strerror))
+    if pid == 0:
+        code = child(k, req, outer, environ)
+        k.exit(code)
+        return code
+    state["child"] = pid
+    for sig in state["pending"]:
+        k.kill(pid, sig)
+    return exit_code(k.waitpid(pid))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

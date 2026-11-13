@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_artifacts_columns.rs
+expression: "screen_text(&app, w, h)"
+---
+ham · Artifacts 01K6A0000000000000000000R1
+┌ artifacts (3) ───────────────────────────────────────────────────────────────┐
+│  KIND       ARTIFACT                      SIZE       SHA-256       FILE      │
+│▶ zip        zip-20ddf01c23f1e244dfcd      9.8 KiB    aaaaaaaaaaaa  python-cal│
+│  evidence   evidence-3006d045ad5979a10847 19.5 KiB   bbbbbbbbbbbb  evidence.z│
+│  partial    partial-0b1c2d3e4f5a6b7c8d9e  29.3 KiB   cccccccccccc  python-cal│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+↑↓ select · Enter download · r reload · Esc dashboard · q quit

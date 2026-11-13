@@ -1,0 +1,101 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tools": [
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: sleep 595",
+        "kind": "execute"
+      },
+      {
+        "title": "run_commands: tail -n 5 /var/lib/ci/scripts-step.log",
+        "kind": "execute"
+      }
+    ],
+    "tool_gap_ms": 600,
+    "edit": {
+      "path": "notes/result.txt",
+      "text": "the full test run passed\n"
+    },
+    "text": "The full test run finished and every test passed.",
+    "iterations": 21
+  },
+  "rounds": [
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ]
+}

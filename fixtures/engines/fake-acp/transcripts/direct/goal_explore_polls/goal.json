@@ -1,0 +1,665 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tools": [
+      {
+        "title": "run_commands: sleep 10 && test -e READY-01.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-01.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-01.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-02.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-02.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-02.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-03.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-03.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-03.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-04.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-04.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-04.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-05.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-05.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-05.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-06.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-06.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-06.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-07.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-07.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-07.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-08.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-08.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-08.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-09.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-09.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-09.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-10.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-10.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-10.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-11.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-11.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-11.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-12.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-12.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-12.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-13.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-13.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-13.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-14.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-14.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-14.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-15.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-15.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-15.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-16.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-16.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-16.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-17.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-17.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-17.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-18.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-18.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-18.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-19.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-19.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-19.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-20.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-20.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-20.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-21.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-21.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-21.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-22.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-22.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-22.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-23.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-23.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-23.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-24.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-24.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-24.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-25.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-25.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-25.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-26.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-26.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-26.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-27.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-27.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-27.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-28.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-28.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-28.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-29.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-29.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-29.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-30.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-30.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-30.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-31.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-31.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-31.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-32.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-32.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-32.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-33.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-33.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-33.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-34.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-34.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-34.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-35.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-35.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-35.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-36.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-36.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-36.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-37.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-37.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-37.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-38.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-38.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-38.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-39.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-39.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-39.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 10 && test -e READY-40.txt && echo ready || echo missing",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 10 && test -e READY-40.txt && echo ready || echo missing"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 10 && test -e READY-40.txt",
+            "result": "missing\n",
+            "success": true
+          }
+        ]
+      }
+    ],
+    "tool_gap_ms": 300,
+    "text": "The file never came.",
+    "iterations": 41,
+    "edit": {
+      "path": "notes/result.txt",
+      "text": "the work after the reading\n"
+    }
+  },
+  "rounds": [
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ],
+  "queued": {
+    "text": "I stopped while I was still reading. Nothing was written.",
+    "status": "completed"
+  }
+}

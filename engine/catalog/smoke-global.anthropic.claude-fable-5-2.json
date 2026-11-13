@@ -1,0 +1,79 @@
+{
+ "model": "Claude Fable 5.2",
+ "vendor": "Anthropic",
+ "bedrockBaseModelId": "anthropic.claude-fable-5-2",
+ "profileId": "global.anthropic.claude-fable-5-2",
+ "alsoVerified": [
+  "us.anthropic.claude-fable-5-2"
+ ],
+ "protocol": "converse",
+ "regions": {
+  "us-east-1": "pass"
+ },
+ "requiresProviderSharing": true,
+ "date": "2026-11-10",
+ "window": "00:45-00:46 UTC",
+ "probe": "the S6 smoke probe (Smoke.check_converse, check_limit, classify_converse, routes_of, finish) run on the two inference profiles in us-east-1 only; every check is the probe's own",
+ "limits": {
+  "contextTokensDoc": "1M",
+  "contextTokensMeasured": null,
+  "maxOutputTokens": 128000,
+  "maxOutputTokensSource": "Converse ValidationException ceiling probe (maxTokens 10,000,000), both routes"
+ },
+ "results": {
+  "converseTool": "pass",
+  "converseStream": "pass",
+  "toolRoundTrip": "pass",
+  "parallelTools": "pass",
+  "integerArgAbove2e31": "pass",
+  "cachePointSystemAndMessages": "pass",
+  "routes": {
+   "global.anthropic.claude-fable-5-2": {
+    "result": "pass",
+    "protocol": "converse",
+    "toolStreaming": true,
+    "ttftMs": {
+     "converse-tool": 2316,
+     "converse-stream-tool": 2070,
+     "parallel-tools": 3248,
+     "integer-arg": 2933,
+     "cache-point": 2128
+    },
+    "outputTokens": {
+     "converse-tool": 53,
+     "converse-stream-tool": 53,
+     "parallel-tools": 145,
+     "integer-arg": 97
+    },
+    "attempts": 1
+   },
+   "us.anthropic.claude-fable-5-2": {
+    "result": "pass",
+    "protocol": "converse",
+    "toolStreaming": true,
+    "ttftMs": {
+     "converse-tool": 2227,
+     "converse-stream-tool": 2060,
+     "parallel-tools": 2912,
+     "integer-arg": 2719,
+     "cache-point": 1937
+    },
+    "outputTokens": {
+     "converse-tool": 53,
+     "converse-stream-tool": 53,
+     "parallel-tools": 145,
+     "integer-arg": 97
+    },
+    "attempts": 1
+   }
+  },
+  "retriedChecks": [],
+  "retentionRefused": [],
+  "throttles": 0
+ },
+ "notes": [
+  "The account's Bedrock data retention mode was provider_data_share for the length of the calls and inherit again afterwards.",
+  "contextTokens 1,000,000 is the maker's model page figure; no 1M-token prompt was sent (the window was not measured).",
+  "The catalog row's reasoning table is engine/catalog/reasoning-levels.json (cells for model fable)."
+ ]
+}

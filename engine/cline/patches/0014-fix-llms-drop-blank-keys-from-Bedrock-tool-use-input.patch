@@ -1,0 +1,719 @@
+From 062cb2cc692117e1cea53094aa2b8efb21a64246 Mon Sep 17 00:00:00 2001
+From: testuser <mainta@example.test>
+Date: Thu, 15 Oct 2026 13:50:01 +0000
+Subject: [PATCH 14/14] fix(llms): drop blank keys from Bedrock tool-use inputs
+ on replay
+
+- Add `sdk/packages/llms/src/providers/bedrock-tool-use-input.ts` to remove blank keys.
+  Match empty keys and Java whitespace-only keys.
+  Remove them at any depth, including inside arrays.
+  Keep the original value unchanged.
+- Apply cleanup only to Bedrock Converse replay inputs.
+  Keep conversation history unchanged.
+  Leave Bedrock Mantle and other providers unchanged.
+- In two A15 runs on stage direct, GPT-6 Astra returned `run_commands` with the input `{"commands": [...], " ": ""}` on its fourth call.
+  Live Converse refuses blank keys on all five supported models, so a model switch cannot help.
+- Fix replay rejection at `messages.7.content.0.toolUse.input`.
+  Bedrock accepted the model response but rejected its blank key during replay.
+- Keep accepted keys unchanged.
+  Preserve AI SDK Bedrock provider 5.0.98's `{rawInvalidInput}` behavior.
+- Pass 47 new tests across two files.
+  These include 12 unit tests and 35 wire tests.
+  Before the change, 15 wire tests failed.
+  The unit file could not load.
+- Pass build:sdk, llms, core, shared, agents, cli, and types gates.
+  Passing counts: llms 1258, core 3063, shared 485, agents 157, cli 1338.
+  Biome check is clean on touched files.
+- Live replay failed 2 of 2 without the change.
+  Live replay passed 6 of 6 with the change.
+- The arm64 binary is not rebuilt or promoted.
+  The patch moves the worker image key.
+  It joins a later image batch.
+---
+ sdk/packages/llms/src/providers/ai-sdk.ts     |  39 +-
+ .../providers/bedrock-tool-use-input.test.ts  | 120 ++++++
+ .../src/providers/bedrock-tool-use-input.ts   |  93 +++++
+ .../bedrock-tool-use-input.wire.test.ts       | 359 ++++++++++++++++++
+ 4 files changed, 610 insertions(+), 1 deletion(-)
+ create mode 100644 sdk/packages/llms/src/providers/bedrock-tool-use-input.test.ts
+ create mode 100644 sdk/packages/llms/src/providers/bedrock-tool-use-input.ts
+ create mode 100644 sdk/packages/llms/src/providers/vendors/bedrock-tool-use-input.wire.test.ts
+
+diff --git a/sdk/packages/llms/src/providers/ai-sdk.ts b/sdk/packages/llms/src/providers/ai-sdk.ts
+index 41cf53f..fe23c31 100644
+--- a/sdk/packages/llms/src/providers/ai-sdk.ts
++++ b/sdk/packages/llms/src/providers/ai-sdk.ts
+@@ -45,6 +45,7 @@ import {
+ } from "ai";
+ import { nanoid } from "nanoid";
+ import type { AiSdkTelemetryDecision } from "../services/langfuse-telemetry";
++import { stripBedrockBlankKeys } from "./bedrock-tool-use-input";
+ import {
+ 	classifyProviderError,
+ 	describeProviderError,
+@@ -80,6 +81,7 @@ import {
+ 	composeAiSdkProviderOptions,
+ } from "./routing/provider-options";
+ import { createToolCallIdAllocator } from "./tool-call-ids";
++import { resolveBedrockMantleRoute } from "./vendors/bedrock";
+ import type {
+ 	AiSdkStreamPart,
+ 	AiSdkStreamResult,
+@@ -389,6 +391,33 @@ function toAiSdkModelToolSet(
+ 	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+ }
+ 
++/**
++ * A request that goes to Bedrock Converse. A model that Bedrock serves through Mantle speaks the
++ * OpenAI-compatible protocol, which has no blank-key rule, so its tool inputs stay as the model sent them.
++ */
++function isBedrockConverseRequest(
++	request: GatewayStreamRequest,
++	context: GatewayProviderContext,
++): boolean {
++	if (request.providerId !== "bedrock") {
++		return false;
++	}
++	const mantleApi = context.config.options?.mantleApi;
++	try {
++		return (
++			resolveBedrockMantleRoute(request.modelId, {
++				api:
++					mantleApi === "chat" || mantleApi === "responses"
++						? mantleApi
++						: undefined,
++			}) === undefined
++		);
++	} catch {
++		// An unusable Mantle id fails later, in the provider, with its own message.
++		return false;
++	}
++}
++
+ function buildAiSdkRequestMessages(
+ 	request: GatewayStreamRequest,
+ 	context: GatewayProviderContext,
+@@ -397,6 +426,10 @@ function buildAiSdkRequestMessages(
+ ) {
+ 	const aiMessages = toAiSdkMessages(request.messages, systemPrompt, {
+ 		includeReasoning: shouldIncludeReasoningHistory(request, context),
++		// Bedrock Converse refuses a replayed tool input with a blank key.
++		...(isBedrockConverseRequest(request, context)
++			? { normalizeToolCallInput: stripBedrockBlankKeys }
++			: {}),
+ 		supportedInputModalities:
+ 			context.model.modalities?.input ??
+ 			(context.model.capabilities
+@@ -740,6 +773,8 @@ function toAiSdkMessages(
+ 	options?: {
+ 		includeReasoning?: boolean;
+ 		supportedInputModalities?: readonly string[];
++		/** Shapes the input of each replayed tool call; the history is not changed. */
++		normalizeToolCallInput?: (input: unknown) => unknown;
+ 	},
+ ) {
+ 	const includeReasoning = options?.includeReasoning ?? true;
+@@ -814,7 +849,9 @@ function toAiSdkMessages(
+ 					type: "tool-call",
+ 					toolCallId: part.toolCallId,
+ 					toolName: part.toolName,
+-					input: part.input,
++					input: options?.normalizeToolCallInput
++						? options.normalizeToolCallInput(part.input)
++						: part.input,
+ 					...(typeof thoughtSignature === "string"
+ 						? {
+ 								providerOptions: {
+diff --git a/sdk/packages/llms/src/providers/bedrock-tool-use-input.test.ts b/sdk/packages/llms/src/providers/bedrock-tool-use-input.test.ts
+new file mode 100644
+index 0000000..d43fbf0
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/bedrock-tool-use-input.test.ts
+@@ -0,0 +1,120 @@
++import { describe, expect, it } from "vitest";
++import {
++	isBedrockBlankKey,
++	stripBedrockBlankKeys,
++} from "./bedrock-tool-use-input";
++
++describe("isBedrockBlankKey", () => {
++	it("is true for the empty key and for keys made only of Java whitespace", () => {
++		for (const key of [
++			"",
++			" ",
++			"\t\n\r\u000b\f",
++			"\u001c\u001d\u001e\u001f",
++			"\u1680",
++			"\u2000\u2001\u2002\u2003\u2004\u2005\u2006",
++			"\u2008\u2009\u200a",
++			"\u2028\u2029",
++			"\u205f",
++			"\u3000",
++			" \u3000 ",
++		]) {
++			expect(isBedrockBlankKey(key), JSON.stringify(key)).toBe(true);
++		}
++	});
++
++	it("is false for a key with any other character, including no-break and zero-width spaces", () => {
++		for (const key of [
++			"a",
++			" a",
++			"a ",
++			"a b",
++			"\u00a0",
++			"\u2007",
++			"\u202f",
++			"\u200b",
++			"\ufeff",
++			"\u0085",
++			"\u0000",
++			"\u180e",
++			" \u00a0",
++		]) {
++			expect(isBedrockBlankKey(key), JSON.stringify(key)).toBe(false);
++		}
++	});
++});
++
++describe("stripBedrockBlankKeys", () => {
++	it("returns a clean object itself", () => {
++		const input = { commands: ["ls"], nested: { a: [1, { b: 2 }] } };
++		expect(stripBedrockBlankKeys(input)).toBe(input);
++	});
++
++	it("returns a copy without blank keys and leaves the original alone", () => {
++		const input = { commands: ["ls"], " ": "", deep: { "": 1, ok: 2 } };
++		const out = stripBedrockBlankKeys(input);
++		expect(out).toEqual({ commands: ["ls"], deep: { ok: 2 } });
++		expect(out).not.toBe(input);
++		expect(input).toEqual({
++			commands: ["ls"],
++			" ": "",
++			deep: { "": 1, ok: 2 },
++		});
++	});
++
++	it("reaches objects inside arrays at any depth", () => {
++		expect(
++			stripBedrockBlankKeys({ list: [{ "\t": 1, keep: 2 }, [{ "": 3 }], "x"] }),
++		).toEqual({ list: [{ keep: 2 }, [{}], "x"] });
++		expect(stripBedrockBlankKeys([{ " ": 1 }])).toEqual([{}]);
++	});
++
++	it("returns a clean array itself", () => {
++		const input = [{ a: 1 }, ["b"]];
++		expect(stripBedrockBlankKeys(input)).toBe(input);
++	});
++
++	it("keeps an own __proto__ key as data", () => {
++		const input = JSON.parse('{"__proto__": {"x": 1}, " ": ""}');
++		const out = stripBedrockBlankKeys(input) as Record<string, unknown>;
++		expect(Object.keys(out)).toEqual(["__proto__"]);
++		expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
++	});
++
++	it("copies a null-prototype object without its blank keys", () => {
++		const input = Object.assign(Object.create(null), { keep: 1, " ": 2 });
++		const out = stripBedrockBlankKeys(input) as Record<string, unknown>;
++		expect(out).toEqual({ keep: 1 });
++		expect(Object.keys(out)).toEqual(["keep"]);
++	});
++
++	it("keeps the holes of a sparse array and returns it itself when nothing changes", () => {
++		const input: unknown[] = [];
++		input[0] = 1;
++		input[2] = 3;
++		expect(stripBedrockBlankKeys(input)).toBe(input);
++		const dirty: unknown[] = [];
++		dirty[0] = { " ": 1 };
++		dirty[2] = 3;
++		const out = stripBedrockBlankKeys(dirty) as unknown[];
++		expect(out).toHaveLength(3);
++		expect(1 in out).toBe(false);
++		expect(out[0]).toEqual({});
++	});
++
++	it("does not copy a value that holds NaN", () => {
++		const input = { n: Number.NaN, nested: [Number.NaN] };
++		expect(stripBedrockBlankKeys(input)).toBe(input);
++	});
++
++	it("keeps a key that mixes whitespace with a no-break space", () => {
++		const input = { " \u00a0": 1 };
++		expect(stripBedrockBlankKeys(input)).toBe(input);
++	});
++
++	it("returns anything that is not an object or array as it is", () => {
++		for (const input of ["text", 1, true, null, undefined]) {
++			expect(stripBedrockBlankKeys(input)).toBe(input);
++		}
++	});
++});
+diff --git a/sdk/packages/llms/src/providers/bedrock-tool-use-input.ts b/sdk/packages/llms/src/providers/bedrock-tool-use-input.ts
+new file mode 100644
+index 0000000..bbf7629
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/bedrock-tool-use-input.ts
+@@ -0,0 +1,93 @@
++/**
++ * Tool-use inputs for Bedrock Converse.
++ *
++ * Converse takes the input of a replayed `toolUse` block as a JSON object, and
++ * refuses any object that has a blank key, at any depth, with ValidationException
++ * "The format of the value at messages.N.content.M.toolUse.input is invalid.
++ * Provide a json object for the field and try again." It accepts the same object
++ * when a model returns it, so a model that adds a stray key (GPT-6 Astra returned
++ * {"commands": [...], " ": ""} on its fourth call in two live runs, 2026-10-15)
++ * ends the session on the next request, and a retry or a resume replays the same
++ * history.
++ *
++ * Measured against live Converse (2026-10-15) on GPT-6 Astra, GPT-6.1 Sol, Claude
++ * Opus 5.5, Claude Sonnet 5.5 and GLM 5.3: a key is blank when it is empty or made
++ * only of the code points below, which are the ones of Java's
++ * `Character.isWhitespace` on every code point tested: space, tab, line breaks,
++ * U+000B, U+000C, U+001C..U+001F, U+1680, U+2000..U+2006, U+2008..U+200A, U+2028,
++ * U+2029, U+205F and U+3000. Keys such as " a", "a b",
++ * U+00A0, U+2007, U+202F, U+200B, U+FEFF and U+0085 are accepted.
++ *
++ * `@ai-sdk/amazon-bedrock` wraps an input that is not an object as
++ * {rawInvalidInput: input}, which Bedrock accepts, and passes an object through
++ * unchanged. The adapter therefore removes blank keys from the input it hands to
++ * the SDK. The conversation history keeps what the model said; only the copy sent
++ * to Bedrock changes, and the tool already ran with the model's own input.
++ *
++ * The input is a JSON tree (it came from `JSON.parse`): no cycles, no getters, no
++ * `toJSON`. The walk is recursive and does not guard against anything else.
++ */
++/** Java `Character.isWhitespace` for one code point. */
++function isWhitespaceCodePoint(codePoint: number): boolean {
++	return (
++		(codePoint >= 0x09 && codePoint <= 0x0d) ||
++		(codePoint >= 0x1c && codePoint <= 0x20) ||
++		codePoint === 0x1680 ||
++		(codePoint >= 0x2000 && codePoint <= 0x2006) ||
++		(codePoint >= 0x2008 && codePoint <= 0x200a) ||
++		codePoint === 0x2028 ||
++		codePoint === 0x2029 ||
++		codePoint === 0x205f ||
++		codePoint === 0x3000
++	);
++}
++
++/** True for the empty key and for a key made only of whitespace Bedrock counts as blank. */
++export function isBedrockBlankKey(key: string): boolean {
++	for (const char of key) {
++		if (!isWhitespaceCodePoint(char.codePointAt(0) ?? 0)) {
++			return false;
++		}
++	}
++	return true;
++}
++
++function isPlainObject(value: unknown): value is Record<string, unknown> {
++	if (value === null || typeof value !== "object" || Array.isArray(value)) {
++		return false;
++	}
++	const prototype = Object.getPrototypeOf(value);
++	return prototype === Object.prototype || prototype === null;
++}
++
++/**
++ * `value` without the object keys that Bedrock refuses, at any depth. Returns the
++ * same value when it has none, and never changes its argument.
++ */
++export function stripBedrockBlankKeys(value: unknown): unknown {
++	if (Array.isArray(value)) {
++		let changed = false;
++		const items = value.map((item) => {
++			const stripped = stripBedrockBlankKeys(item);
++			changed ||= !Object.is(stripped, item);
++			return stripped;
++		});
++		return changed ? items : value;
++	}
++	if (!isPlainObject(value)) {
++		return value;
++	}
++	let changed = false;
++	const entries: Array<[string, unknown]> = [];
++	for (const [key, item] of Object.entries(value)) {
++		if (isBedrockBlankKey(key)) {
++			changed = true;
++			continue;
++		}
++		const stripped = stripBedrockBlankKeys(item);
++		changed ||= !Object.is(stripped, item);
++		entries.push([key, stripped]);
++	}
++	// fromEntries defines own properties, so a "__proto__" key stays data.
++	return changed ? Object.fromEntries(entries) : value;
++}
+diff --git a/sdk/packages/llms/src/providers/vendors/bedrock-tool-use-input.wire.test.ts b/sdk/packages/llms/src/providers/vendors/bedrock-tool-use-input.wire.test.ts
+new file mode 100644
+index 0000000..65b9f4e
+--- /dev/null
++++ b/sdk/packages/llms/src/providers/vendors/bedrock-tool-use-input.wire.test.ts
+@@ -0,0 +1,359 @@
++// Wire contract for the tool-use inputs that the Bedrock Converse adapter replays.
++//
++// Live record (us-east-1, 2026-10-15, GPT-6 Astra, two runs of a model-choice
++// check): on its fourth call the model returned `run_commands` with the input {"commands": [...], " ": ""}.
++// Bedrock accepted that response. The next request replayed the call verbatim
++// and Bedrock refused it with ValidationException "The format of the value at
++// messages.7.content.0.toolUse.input is invalid. Provide a json object for the
++// field and try again."; the run ended with stopped_provider_error.
++//
++// Measured against live Converse on all five supported models (Astra, GPT-6.1
++// Sol, Opus 5.5, Sonnet 5.5, GLM 5.3), with the same refusal on each:
++//   - an object key that is empty or made only of the Java whitespace code points (space, tab,
++//     line breaks, U+001C..U+001F, U+1680, U+2000..U+2006, U+2008..U+200A,
++//     U+2028, U+2029, U+205F, U+3000) is refused, at any depth;
++//   - keys such as " a", "a ", "a b", U+00A0, U+2007, U+202F, U+200B, U+FEFF and
++//     U+0085 are accepted;
++//   - an input that is not an object (array, string, number, boolean) is refused;
++//     `{}` is accepted.
++// `@ai-sdk/amazon-bedrock` 5.0.98 (`toBedrockToolInput`, dist/index.js) already
++// wraps a non-object input as {rawInvalidInput: <input>}, an object Bedrock
++// accepts; it passes an object through as it is, blank keys included. So the
++// adapter must hand it an input without blank keys at any depth, while the
++// conversation history keeps what the model said.
++import type { AgentMessage } from "@cline/shared";
++import { describe, expect, it } from "vitest";
++import { createGateway } from "../gateway";
++
++const ASTRA = "us.openai.gpt-6-astra";
++
++const RUN_COMMANDS = {
++	name: "run_commands",
++	description: "Run shell commands",
++	inputSchema: {
++		type: "object",
++		additionalProperties: false,
++		properties: { commands: { type: "array", items: { type: "string" } } },
++		required: ["commands"],
++	},
++};
++
++/** A user task, then one assistant tool call and its result per input. */
++function history(inputs: readonly unknown[]): AgentMessage[] {
++	const messages: AgentMessage[] = [
++		{
++			id: "u0",
++			role: "user",
++			content: [{ type: "text", text: "create hello.py" }],
++			createdAt: 0,
++		},
++	];
++	inputs.forEach((input, index) => {
++		const toolCallId = `call_${index}`;
++		messages.push(
++			{
++				id: `a${index}`,
++				role: "assistant",
++				content: [
++					{
++						type: "tool-call",
++						toolCallId,
++						toolName: "run_commands",
++						input,
++					},
++				],
++				createdAt: 2 * index + 1,
++			},
++			{
++				id: `t${index}`,
++				role: "tool",
++				content: [
++					{
++						type: "tool-result",
++						toolCallId,
++						toolName: "run_commands",
++						output: "ok",
++					},
++				],
++				createdAt: 2 * index + 2,
++			},
++		);
++	});
++	return messages;
++}
++
++interface ConverseBlock {
++	toolUse?: { toolUseId: string; name: string; input: unknown };
++}
++interface ConverseMessage {
++	role: string;
++	content: ConverseBlock[];
++}
++
++/** Stream one turn and return the Converse messages that reached the stubbed fetch. */
++async function converseMessages(
++	messages: AgentMessage[],
++): Promise<ConverseMessage[]> {
++	let body: { messages?: ConverseMessage[] } = {};
++	const fetchStub = (async (_input, init) => {
++		body = JSON.parse((init?.body as string) ?? "{}");
++		return new Response(JSON.stringify({ message: "stub" }), {
++			status: 400,
++			headers: { "content-type": "application/json" },
++		});
++	}) as typeof fetch;
++	const gateway = createGateway({
++		providerConfigs: [
++			{
++				providerId: "bedrock",
++				apiKey: "test-bearer-key",
++				fetch: fetchStub,
++				options: { region: "us-east-1", authentication: "apikey" },
++			},
++		],
++	});
++	try {
++		for await (const _event of await gateway.stream({
++			providerId: "bedrock",
++			modelId: ASTRA,
++			maxTokens: 64,
++			messages,
++			tools: [RUN_COMMANDS],
++		})) {
++			// drain
++		}
++	} catch {
++		// The stub answers 400; only the request is under test.
++	}
++	return body.messages ?? [];
++}
++
++/** Every toolUse input in the request, in order. */
++function toolUseInputs(messages: ConverseMessage[]): unknown[] {
++	return messages.flatMap((message) =>
++		message.content.flatMap((block) =>
++			block.toolUse ? [block.toolUse.input] : [],
++		),
++	);
++}
++
++const COMMAND =
++	"timeout 10 python3 hello.py; printf 'Run exit code: %s\\n' \"$?\"; git diff --check";
++
++describe("Bedrock Converse replays tool-use inputs as objects without blank keys", () => {
++	it("drops the blank key GPT-6 Astra sent on its fourth call (A15 live record)", async () => {
++		// Four calls, as in the live run: the Converse message index of the fourth
++		// call is 7, the index named in Bedrock's error.
++		const messages = await converseMessages(
++			history([
++				{ commands: ["pwd"] },
++				{ commands: ["python3 -c 'print(1)'"] },
++				{ commands: ["ls"] },
++				{ commands: [COMMAND], " ": "" },
++			]),
++		);
++		expect(messages).toHaveLength(9);
++		expect(messages[7]?.role).toBe("assistant");
++		expect(messages[7]?.content[0]?.toolUse?.input).toEqual({
++			commands: [COMMAND],
++		});
++		expect(toolUseInputs(messages)).toEqual([
++			{ commands: ["pwd"] },
++			{ commands: ["python3 -c 'print(1)'"] },
++			{ commands: ["ls"] },
++			{ commands: [COMMAND] },
++		]);
++	});
++
++	it.each([
++		["empty", ""],
++		["space", " "],
++		["two spaces", "  "],
++		["tab", "\t"],
++		["newline", "\n"],
++		["carriage return", "\r"],
++		["vertical tab", "\u000b"],
++		["unit separator", "\u001f"],
++		["ogham space", "\u1680"],
++		["em space", "\u2003"],
++		["line separator", "\u2028"],
++		["ideographic space", "\u3000"],
++	])("drops a %s key, which Bedrock refuses", async (_name, key) => {
++		const messages = await converseMessages(
++			history([{ commands: ["ls"], [key]: "x" }]),
++		);
++		expect(toolUseInputs(messages)).toEqual([{ commands: ["ls"] }]);
++	});
++
++	it.each([
++		["leading space", " a"],
++		["trailing space", "a "],
++		["inner space", "a b"],
++		["no-break space", "\u00a0"],
++		["figure space", "\u2007"],
++		["narrow no-break space", "\u202f"],
++		["zero-width space", "\u200b"],
++		["byte order mark", "\ufeff"],
++		["next line", "\u0085"],
++		["space and no-break space", " \u00a0"],
++	])("keeps a %s key, which Bedrock accepts", async (_name, key) => {
++		const messages = await converseMessages(
++			history([{ commands: ["ls"], [key]: "x" }]),
++		);
++		expect(toolUseInputs(messages)).toEqual([{ commands: ["ls"], [key]: "x" }]);
++	});
++
++	it("drops blank keys at any depth", async () => {
++		const messages = await converseMessages(
++			history([
++				{
++					commands: ["ls"],
++					options: { " ": 1, keep: 2 },
++					list: [{ "\t": 3, keep: 4 }, "text", [{ "": 5 }]],
++				},
++			]),
++		);
++		expect(toolUseInputs(messages)).toEqual([
++			{
++				commands: ["ls"],
++				options: { keep: 2 },
++				list: [{ keep: 4 }, "text", [{}]],
++			},
++		]);
++	});
++
++	it.each([
++		["an array", ["ls", "-la"]],
++		["a string", "ls -la"],
++		["a number", 5],
++		["a boolean", true],
++		["null", null],
++		["a string that holds JSON", '{"commands":["ls"]," ":""}'],
++	])("keeps the adapter's {rawInvalidInput} wrapper where the call's input is %s", async (_name, input) => {
++		const messages = await converseMessages(history([input]));
++		expect(toolUseInputs(messages)).toEqual([{ rawInvalidInput: input }]);
++	});
++
++	it("drops blank keys inside an input that is not an object", async () => {
++		const messages = await converseMessages(
++			history([[{ " ": 1, keep: 2 }, "text"]]),
++		);
++		expect(toolUseInputs(messages)).toEqual([
++			{ rawInvalidInput: [{ keep: 2 }, "text"] },
++		]);
++	});
++
++	it("leaves a clean call exactly as the model sent it", async () => {
++		const input = {
++			commands: ["a", "b"],
++			nested: { x: [1, 2, { y: null }], z: "" },
++		};
++		const messages = await converseMessages(history([input, {}]));
++		expect(toolUseInputs(messages)).toEqual([input, {}]);
++	});
++
++	it("keeps the conversation history as the model said it", async () => {
++		const original = { commands: [COMMAND], " ": "" };
++		const messages = history([original]);
++		await converseMessages(messages);
++		const call = messages[1]?.content[0] as { input: unknown };
++		expect(call.input).toBe(original);
++		expect(original).toEqual({ commands: [COMMAND], " ": "" });
++	});
++});
++
++describe("other providers keep the input as the model sent it", () => {
++	it("does not touch a blank key on a Bedrock Mantle route", async () => {
++		let body: {
++			messages?: Array<{
++				tool_calls?: Array<{ function: { arguments: string } }>;
++			}>;
++		} = {};
++		const fetchStub = (async (_input, init) => {
++			body = JSON.parse((init?.body as string) ?? "{}");
++			return new Response(JSON.stringify({ error: { message: "stub" } }), {
++				status: 400,
++				headers: { "content-type": "application/json" },
++			});
++		}) as typeof fetch;
++		const gateway = createGateway({
++			providerConfigs: [
++				{
++					providerId: "bedrock",
++					fetch: fetchStub,
++					options: {
++						authentication: "iam",
++						region: "us-east-2",
++						credentialProvider: async () => ({
++							accessKeyId: "ASIA-test-mantle",
++							secretAccessKey: "test-secret-access-key",
++							sessionToken: "test-session-token",
++						}),
++					},
++				},
++			],
++		});
++		try {
++			for await (const _event of await gateway.stream({
++				providerId: "bedrock",
++				modelId: "aws-mantle/openai.gpt-oss-120b",
++				maxTokens: 64,
++				messages: history([{ commands: ["ls"], " ": "" }]),
++				tools: [RUN_COMMANDS],
++			})) {
++				// drain
++			}
++		} catch {
++			// The stub answers 400; only the request is under test.
++		}
++		const calls = (body.messages ?? []).flatMap(
++			(message) => message.tool_calls ?? [],
++		);
++		expect(calls).toHaveLength(1);
++		expect(JSON.parse(calls[0]?.function.arguments ?? "{}")).toEqual({
++			commands: ["ls"],
++			" ": "",
++		});
++	});
++
++	it("does not touch a blank key on an OpenAI-compatible route", async () => {
++		let body: {
++			messages?: Array<{
++				tool_calls?: Array<{ function: { arguments: string } }>;
++			}>;
++		} = {};
++		const fetchStub = (async (_input, init) => {
++			body = JSON.parse((init?.body as string) ?? "{}");
++			return new Response(JSON.stringify({ error: { message: "stub" } }), {
++				status: 400,
++				headers: { "content-type": "application/json" },
++			});
++		}) as typeof fetch;
++		const gateway = createGateway({
++			providerConfigs: [
++				{ providerId: "nvidia", apiKey: "test-key", fetch: fetchStub },
++			],
++		});
++		try {
++			for await (const _event of await gateway.stream({
++				providerId: "nvidia",
++				modelId: "moonshotai/kimi-k3",
++				maxTokens: 64,
++				messages: history([{ commands: ["ls"], " ": "" }]),
++				tools: [RUN_COMMANDS],
++			})) {
++				// drain
++			}
++		} catch {
++			// The stub answers 400; only the request is under test.
++		}
++		const calls = (body.messages ?? []).flatMap(
++			(message) => message.tool_calls ?? [],
++		);
++		expect(calls).toHaveLength(1);
++		expect(JSON.parse(calls[0]?.function.arguments ?? "{}")).toEqual({
++			commands: ["ls"],
++			" ": "",
++		});
++	});
++});
+-- 
+2.47.3
+

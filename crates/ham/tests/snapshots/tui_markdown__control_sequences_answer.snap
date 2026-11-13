@@ -1,0 +1,13 @@
+---
+source: crates/ham/tests/tui_markdown.rs
+expression: dump(&r)
+---
+  ⟦b,u:red title⟧
+  
+  ⟦u:click⟧⟦d: (here)⟧ <U+202E>reversed<U+200B>
+  
+  ⟦yellow:code⟧
+  
+  | ⟦b:a⟧ |
+  ⟦d:|---|⟧
+  | b |

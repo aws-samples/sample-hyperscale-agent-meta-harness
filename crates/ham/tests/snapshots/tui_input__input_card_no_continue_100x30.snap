@@ -1,0 +1,34 @@
+---
+source: crates/ham/tests/tui_input.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · Claude Sonnet 5.5 · needs you
+progress feed only: not the full conversation
+notice   The run needs you: The Cline process stopped
+notice ▾ status
+         active (green)
+         Model  Claude Sonnet 5.5
+         PR     none yet
+notice ▸ agents 1
+notice ▾ Cline needs you · about 27 min left to answer
+         The Cline process stopped. 41 tool calls, 3 files changed.
+         The automatic fresh session did not help. Continuing is impossible; a fresh session starts
+         a new process on the same files.
+         Last words: I will keep polling the build until it finishes, then append step 4 to
+         PROGRESS.md.
+         Files: PROGRESS.md src/app.py tests/test_app.py
+         s fresh session · f f finish
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to answer ─────────────────────────────────────────────────────────┐
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Another model needs a live Cline session: s starts a fresh one, f f finishes.
+↑↓ scroll · s fresh session · f f finish · a artifacts · c c cancel · q quit

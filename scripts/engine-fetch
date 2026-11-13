@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# engine-fetch: fetch, verify and build the pinned third-party sources of engine/sources/.
+# usage: scripts/engine-fetch list | fetch <name> --dest DIR | build <name> --dest DIR | verify <name> --dir DIR | update <name> --to-head|--to-tag T|--to-commit C | check
+# Engines, harnesses and plugins are fetched from a pinned source and never committed; this is the one verified entry point (contract in
+# engine/sources/AGENTS.md, exit codes in scripts/lib/engine_fetch.py). It needs a Python 3.8 or later, git, and for a download the network.
+# `update` is the only command that moves a pin; a deploy or an image build never calls it.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/python.sh
+. "$here/lib/python.sh"
+exec "$py" -I "$here/lib/engine_fetch.py" "$@"

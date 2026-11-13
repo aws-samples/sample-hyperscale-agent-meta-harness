@@ -1,0 +1,21 @@
+---
+name: lifecycle-delivery
+description: Leave the repository ready for hand-over. Use when all checks pass or the loop has stopped, before your last message. Covers the root AGENTS.md, the README, the final commit message and the closing message.
+---
+# Deliver
+
+1. Root AGENTS.md: if it already holds the lifecycle contract, keep that text unchanged and add a Project section below it;
+   otherwise write the file. The project part is under 80 lines: what the project is, how to build, how to test, the folder
+   layout, the conventions. Put the commands in backticks.
+2. README.md: what the project does and how to run it, with commands you ran in this session.
+3. Final commit: subject in the imperative, at most 72 characters. The body says what changed, why, and the test evidence
+   (counts and exit codes).
+4. Commit small all along, and commit everything before your last message, the log included: whatever you leave is committed
+   for you as harness: turn N, without a message of yours. Do not commit generated files, logs outside docs/lifecycle, or
+   secrets, and do not rewrite published history.
+5. Last message: the goal card with PASS or FAIL for each check, its command and its counts; then what is not done and why.
+   Write "Not run: <reason>" for anything unrun. If you stopped early, end with the BLOCKED: line and say what is missing; do
+   not call the work done.
+6. Do not push or handle credentials unless the request says to. Leave delivery to the mechanism your session is configured
+   with, and do not assume that an archive or a pull request will be made.
+7. Run lifecycle-check (step 8 of the contract) before the last message.

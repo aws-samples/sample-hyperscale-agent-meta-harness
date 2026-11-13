@@ -1,0 +1,68 @@
+[package]
+name = "research-api"
+description = "The research route of a direct run: the research-api Lambda (search, page fetch, repository job start and status, limits) and the research-job Lambda (GitHub archive download), both in the stage account, behind the private /internal/research/* routes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test seams only (`research_api::http::testing`): a fixed host-to-address table and plain-HTTP loopback upstreams, so the client tests can
+# run fake upstreams on 127.0.0.1. No production code enables it: the Lambdas always verify TLS against the webpki roots and refuse
+# addresses that are not globally routable.
+testing = []
+
+# Two Lambda functions from one crate: only research-api can read the Tavily key; research-job downloads repositories and holds no key.
+[[bin]]
+name = "research-api"
+path = "src/bin/research-api.rs"
+
+[[bin]]
+name = "research-job"
+path = "src/bin/research-job.rs"
+
+[dependencies]
+harness-protocol.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-lambda.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-secretsmanager.workspace = true
+aws-sigv4.workspace = true
+base64.workspace = true
+bytes.workspace = true
+flate2.workspace = true
+getrandom.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+lambda_http.workspace = true
+lambda_runtime.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_dynamo.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-service.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The integration tests use the test seams of this crate itself.
+research-api = { path = ".", features = ["testing"] }
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+aws-smithy-types.workspace = true
+# Fake upstreams (Tavily, GitHub archives) on 127.0.0.1 for the client tests; no test reaches the network.
+axum.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tokio-rustls.workspace = true

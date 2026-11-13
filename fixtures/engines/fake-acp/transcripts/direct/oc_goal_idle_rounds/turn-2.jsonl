@@ -1,0 +1,6 @@
+{"direction": "client", "message": {"id": 4, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "execute", "name": "shell", "sessionUpdate": "tool_call", "status": "pending", "title": "shell", "toolCallId": "fake-call-4-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "execute", "sessionUpdate": "tool_call_update", "status": "in_progress", "title": "ls -l 2", "toolCallId": "fake-call-4-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": [{"content": {"text": "ok", "type": "text"}, "type": "content"}], "sessionUpdate": "tool_call_update", "status": "completed", "toolCallId": "fake-call-4-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": {"text": "Looked at 2.", "type": "text"}, "sessionUpdate": "agent_message_chunk"}}}}
+{"direction": "agent", "message": {"id": 4, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

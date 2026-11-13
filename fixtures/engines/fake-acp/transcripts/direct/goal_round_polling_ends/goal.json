@@ -1,0 +1,256 @@
+{
+  "transcripts": "writes_files",
+  "rounds": [
+    {
+      "tools": [
+        {
+          "title": "read_files: logs/build-1.log",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: sleep 2",
+          "kind": "execute"
+        },
+        {
+          "title": "search_files: TODO-3",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: tail -n 4 out.log",
+          "kind": "other"
+        },
+        {
+          "title": "list_files: dist/part-5",
+          "kind": "read"
+        },
+        {
+          "title": "read_files: status/6.json",
+          "kind": "execute"
+        },
+        {
+          "title": "read_files: logs/build-7.log",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: sleep 8",
+          "kind": "other"
+        },
+        {
+          "title": "search_files: TODO-9",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: tail -n 10 out.log",
+          "kind": "execute"
+        },
+        {
+          "title": "list_files: dist/part-11",
+          "kind": "search"
+        },
+        {
+          "title": "read_files: status/12.json",
+          "kind": "other"
+        },
+        {
+          "title": "read_files: logs/build-13.log",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: sleep 14",
+          "kind": "execute"
+        },
+        {
+          "title": "search_files: TODO-15",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: tail -n 16 out.log",
+          "kind": "other"
+        },
+        {
+          "title": "list_files: dist/part-17",
+          "kind": "read"
+        },
+        {
+          "title": "read_files: status/18.json",
+          "kind": "execute"
+        },
+        {
+          "title": "read_files: logs/build-19.log",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: sleep 20",
+          "kind": "other"
+        },
+        {
+          "title": "search_files: TODO-21",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: tail -n 22 out.log",
+          "kind": "execute"
+        },
+        {
+          "title": "list_files: dist/part-23",
+          "kind": "search"
+        },
+        {
+          "title": "read_files: status/24.json",
+          "kind": "other"
+        },
+        {
+          "title": "read_files: logs/build-25.log",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: sleep 26",
+          "kind": "execute"
+        },
+        {
+          "title": "search_files: TODO-27",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: tail -n 28 out.log",
+          "kind": "other"
+        },
+        {
+          "title": "list_files: dist/part-29",
+          "kind": "read"
+        },
+        {
+          "title": "read_files: status/30.json",
+          "kind": "execute"
+        },
+        {
+          "title": "read_files: logs/build-31.log",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: sleep 32",
+          "kind": "other"
+        },
+        {
+          "title": "search_files: TODO-33",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: tail -n 34 out.log",
+          "kind": "execute"
+        },
+        {
+          "title": "list_files: dist/part-35",
+          "kind": "search"
+        },
+        {
+          "title": "read_files: status/36.json",
+          "kind": "other"
+        },
+        {
+          "title": "read_files: logs/build-37.log",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: sleep 38",
+          "kind": "execute"
+        },
+        {
+          "title": "search_files: TODO-39",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: tail -n 40 out.log",
+          "kind": "other"
+        },
+        {
+          "title": "list_files: dist/part-41",
+          "kind": "read"
+        },
+        {
+          "title": "read_files: status/42.json",
+          "kind": "execute"
+        },
+        {
+          "title": "read_files: logs/build-43.log",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: sleep 44",
+          "kind": "other"
+        },
+        {
+          "title": "search_files: TODO-45",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: tail -n 46 out.log",
+          "kind": "execute"
+        },
+        {
+          "title": "list_files: dist/part-47",
+          "kind": "search"
+        },
+        {
+          "title": "read_files: status/48.json",
+          "kind": "other"
+        },
+        {
+          "title": "read_files: logs/build-49.log",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: sleep 50",
+          "kind": "execute"
+        },
+        {
+          "title": "search_files: TODO-51",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: tail -n 52 out.log",
+          "kind": "other"
+        },
+        {
+          "title": "list_files: dist/part-53",
+          "kind": "read"
+        },
+        {
+          "title": "read_files: status/54.json",
+          "kind": "execute"
+        },
+        {
+          "title": "read_files: logs/build-55.log",
+          "kind": "search"
+        },
+        {
+          "title": "run_commands: sleep 56",
+          "kind": "other"
+        },
+        {
+          "title": "search_files: TODO-57",
+          "kind": "read"
+        },
+        {
+          "title": "run_commands: tail -n 58 out.log",
+          "kind": "execute"
+        },
+        {
+          "title": "list_files: dist/part-59",
+          "kind": "search"
+        },
+        {
+          "title": "read_files: status/60.json",
+          "kind": "other"
+        }
+      ],
+      "tool_gap_ms": 30,
+      "hold_ms": 300,
+      "iterations": 61
+    }
+  ],
+  "queued": {
+    "text": "The polling round has finished. I changed nothing else.",
+    "status": "completed"
+  }
+}

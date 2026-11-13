@@ -1,0 +1,52 @@
+[package]
+name = "delivery"
+description = "Delivery Lambdas: repo-gateway (the only git writer), bundle-validator and packager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "repo-gateway"
+path = "src/bin/repo-gateway.rs"
+
+[[bin]]
+name = "bundle-validator"
+path = "src/bin/bundle-validator.rs"
+
+[[bin]]
+name = "packager"
+path = "src/bin/packager.rs"
+
+[dependencies]
+harness-protocol.workspace = true
+# The container signals: the grammar, the built-in list and the matcher.
+ham-core.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-codecommit.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-s3.workspace = true
+base64.workspace = true
+flate2.workspace = true
+hmac.workspace = true
+lambda_runtime.workspace = true
+serde.workspace = true
+serde_dynamo.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+aws-smithy-http-client = { workspace = true, features = ["test-util"] }
+aws-smithy-types.workspace = true
+http.workspace = true

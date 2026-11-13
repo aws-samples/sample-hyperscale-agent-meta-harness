@@ -1,0 +1,64 @@
+{
+ "engine": "opencode",
+ "engineBinarySha256": "50503d24577fa4117a7c95ee85b2cd679606a87eacf20ca54ed5db5c9e1cf895",
+ "engineVersion": "2.2.6",
+ "fixture": null,
+ "kind": "engine-smoke",
+ "model": {
+  "acpValue": "amazon-bedrock/global.anthropic.claude-fable-5-2",
+  "alias": "fable",
+  "id": "global.anthropic.claude-fable-5-2"
+ },
+ "result": "pass",
+ "route": {
+  "protocol": "converse",
+  "region": "us-east-1"
+ },
+ "schemaVersion": 1,
+ "smokeRecordId": "smoke-opencode:2.2.6:global.anthropic.claude-fable-5-2:us-east-1:converse:20261110",
+ "smokedAt": "2026-11-10T03:48:03Z",
+ "turn": {
+  "cachedReadTokens": [
+   16430,
+   16830
+  ],
+  "fileOk": true,
+  "turns": [
+   {
+    "finalMessage": "The command `cat hello.txt` printed `hello-from-the-recording`.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 16430,
+     "cachedWriteTokens": 8354,
+     "inputTokens": 8,
+     "outputTokens": 204,
+     "totalTokens": 24996
+    }
+   },
+   {
+    "finalMessage": "The command `cat hello.txt` printed two lines: `hello-from-the-recording` followed by `second-turn-edit`.",
+    "stopReason": "end_turn",
+    "toolCallsCompleted": 2,
+    "toolCallsFailed": 0,
+    "toolKinds": [
+     "edit",
+     "execute"
+    ],
+    "usage": {
+     "cachedReadTokens": 16830,
+     "cachedWriteTokens": 427,
+     "inputTokens": 6,
+     "outputTokens": 259,
+     "totalTokens": 17522
+    }
+   }
+  ]
+ },
+ "why": []
+}

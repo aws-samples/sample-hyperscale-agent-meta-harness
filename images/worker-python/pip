@@ -1,0 +1,3 @@
+#!/bin/sh
+# The pip command of the engine's PATH: the pip of the image's Python 3.12 (python3.12-pip), which has no pip executable on the PATH of its own.
+exec /usr/bin/python3.12 -m pip "$@"

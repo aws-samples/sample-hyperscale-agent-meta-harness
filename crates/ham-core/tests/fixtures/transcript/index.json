@@ -1,0 +1,165 @@
+{
+ "bomb": {
+  "000000000000.ndjson.gz": {
+   "code": "too-large",
+   "ok": false
+  }
+ },
+ "corrupt": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 0,
+   "ok": true,
+   "records": 1
+  },
+  "000000000001.ndjson.gz": {
+   "code": "bad-gzip",
+   "ok": false
+  },
+  "000000000002.ndjson.gz": {
+   "code": "bad-gzip",
+   "ok": false
+  },
+  "000000000003.ndjson.gz": {
+   "code": "bad-gzip",
+   "ok": false
+  },
+  "000000000004.ndjson.gz": {
+   "code": "bad-json",
+   "ok": false
+  },
+  "000000000005.ndjson.gz": {
+   "code": "seq-mismatch",
+   "ok": false
+  },
+  "000000000006.ndjson.gz": {
+   "first": 6,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 6,
+   "ok": true,
+   "records": 1
+  },
+  "000000000007.ndjson.gz": {
+   "code": "version",
+   "ok": false
+  }
+ },
+ "forged": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 3,
+   "ok": true,
+   "records": 4
+  }
+ },
+ "gapped": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 1,
+   "ok": true,
+   "records": 2
+  },
+  "000000000001.ndjson.gz": {
+   "first": 2,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 3,
+   "ok": true,
+   "records": 2
+  },
+  "000000000003.ndjson.gz": {
+   "first": 6,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 6,
+   "ok": true,
+   "records": 1
+  }
+ },
+ "good": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 4,
+   "ok": true,
+   "records": 5
+  },
+  "000000000001.ndjson.gz": {
+   "first": 5,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 9,
+   "ok": true,
+   "records": 5
+  },
+  "000000000002.ndjson.gz": {
+   "first": 10,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 12,
+   "ok": true,
+   "records": 3
+  }
+ },
+ "handover": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 1,
+   "ok": true,
+   "records": 2
+  },
+  "000000000001.ndjson.gz": {
+   "first": 2,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 2,
+   "ok": true,
+   "records": 1
+  },
+  "000000000002.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DB0B0B0B0B0B0B0B0B0B0",
+   "last": 1,
+   "ok": true,
+   "records": 2
+  },
+  "000000000003.ndjson.gz": {
+   "first": 2,
+   "incarnation": "01K83DB0B0B0B0B0B0B0B0B0B0",
+   "last": 2,
+   "ok": true,
+   "records": 1
+  }
+ },
+ "interleaved": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 0,
+   "ok": true,
+   "records": 1
+  },
+  "000000000001.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DB0B0B0B0B0B0B0B0B0B0",
+   "last": 0,
+   "ok": true,
+   "records": 1
+  },
+  "000000000002.ndjson.gz": {
+   "first": 1,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 1,
+   "ok": true,
+   "records": 1
+  }
+ },
+ "oversized-record": {
+  "000000000000.ndjson.gz": {
+   "first": 0,
+   "incarnation": "01K83DA0A0A0A0A0A0A0A0A0A0",
+   "last": 1,
+   "ok": true,
+   "records": 2
+  }
+ }
+}

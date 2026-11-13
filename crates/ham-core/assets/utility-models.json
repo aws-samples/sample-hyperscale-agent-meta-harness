@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "about": "The model of the harness's own helper calls outside the engine (run names now; summaries and labels later). It is not a coding model: it is never in engine/catalog/models.json and never a run choice. A row is selectable only with a passing smoke record, which has two halves: the S6 matrix (probes/smoke.py) and U1 (probes/utility_smoke.py, which checks a run name); the U1 record sits beside this file. The top-level record is the run-name record. Each other purpose has its own record in `purposes` (run-tags: U2, probes/utility_smoke.py --purpose run-tags, because the tag call has its own prompt), and a purpose is served only by a row that holds a record for it. `alias` is the short name that HAMH_UTILITY_MODEL accepts at deploy (or off), and the row that `default` names is what an unset setting means. Thinking is disabled because with the default thinking a 60-token cap came back empty in 19 of 24 odd-input calls. Edit by hand only to add a smoked row or route; the tests crates/ham-core/tests/utility_builtin.rs and scripts/tests/test_utility_catalog.py pin this file and its record.",
+  "default": "haiku",
+  "models": [
+    {
+      "id": "us.anthropic.claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "vendor": "anthropic",
+      "alias": "haiku",
+      "baseModelId": "anthropic.claude-haiku-5-5",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "additionalModelRequestFields": {
+        "thinking": {
+          "type": "disabled"
+        }
+      },
+      "smokeRecordId": "s6:us.anthropic.claude-haiku-5-5:us-east-1:converse+u1:2026-10-20/smoke-utility-us.anthropic.claude-haiku-5-5.json",
+      "smokedAt": "2026-10-20T18:03:30Z",
+      "purposes": {
+        "run-tags": {
+          "smokeRecordId": "s6:us.anthropic.claude-haiku-5-5:us-east-1:converse+u2:2026-10-21/smoke-utility-tags-us.anthropic.claude-haiku-5-5.json",
+          "smokedAt": "2026-10-21T18:03:57Z"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+---
+source: crates/ham-core/tests/render.rs
+expression: status_line(&s.view())
+---
+run R1 active (planning) agents 0

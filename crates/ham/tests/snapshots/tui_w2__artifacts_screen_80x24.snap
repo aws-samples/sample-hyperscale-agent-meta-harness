@@ -1,0 +1,28 @@
+---
+source: crates/ham/tests/tui_w2.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Artifacts 01K6A0000000000000000000R1
+┌ artifacts (3) ───────────────────────────────────────────────────────────────┐
+│  KIND       ARTIFACT                     SIZE       SHA-256       FILE       │
+│▶ zip        01K6A00000000000000000ZP01   47.1 KiB   000000000000  python-calc│
+│  evidence   01K6A00000000000000000EV01   8.9 KiB    000000000000  evidence.zi│
+│  partial    01K6A00000000000000000PT01   19.5 MiB   000000000000  python-calc│
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+↑↓ select · Enter download · r reload · Esc dashboard · q quit

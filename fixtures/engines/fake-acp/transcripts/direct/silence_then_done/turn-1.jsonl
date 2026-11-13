@@ -1,0 +1,6 @@
+{"direction": "client", "message": {"id": 3, "jsonrpc": "2.0", "method": "session/prompt", "params": {"prompt": [{"text": "<prompt>", "type": "text"}], "sessionId": "fake-session-0001"}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"kind": "read", "sessionUpdate": "tool_call", "status": "pending", "title": "Read src/calc.py", "toolCallId": "sil-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "tool_call_update", "status": "completed", "toolCallId": "sil-1"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"content": {"text": "Working on it.", "type": "text"}, "sessionUpdate": "agent_message_chunk"}}}}
+{"direction": "agent", "message": {"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "fake-session-0001", "update": {"sessionUpdate": "usage_update", "usage": {"inputTokens": 200, "outputTokens": 20}}}}}
+{"direction": "agent", "message": {"id": 3, "jsonrpc": "2.0", "result": {"stopReason": "end_turn"}}}

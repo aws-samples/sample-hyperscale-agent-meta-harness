@@ -1,0 +1,44 @@
+---
+source: crates/ham/tests/tui_tags.rs
+expression: "screen_text(&app, 120, 40)"
+---
+ham · Tags
+┌ tags · all 212 runs loaded at 14:05 ─────────────────────────────────────────────────────────────────────────────────┐
+│   TAG                     RUNS  LAST                                                                                 │
+│ + project:billing-export    12    2d                                                                                 │
+│   tech:python               11    2d                                                                                 │
+│   tech:dynamodb              7    2d                                                                                 │
+│▶  topic:csv-export           5    2d                                                                                 │
+│   tech:aws-lambda            4    3d                                                                                 │
+│   tech:csv                   3    2d                                                                                 │
+│   topic:nightly-export       3    3d                                                                                 │
+│   tech:s3                    2    2w                                                                                 │
+│   topic:backfill             1    2d                                                                                 │
+│   topic:tax-rounding         1    9d                                                                                 │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+12 of 212 runs match +project:billing-export · 10 tags
+Space pick · Enter show runs · / find · d remove · r reload · Esc back

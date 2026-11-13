@@ -1,0 +1,6 @@
+{
+  "metrics": { "latencyMs": 388 },
+  "output": { "message": { "role": "assistant", "content": [] } },
+  "stopReason": "content_filtered",
+  "usage": { "inputTokens": 452, "outputTokens": 0, "totalTokens": 452 }
+}

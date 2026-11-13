@@ -1,0 +1,1538 @@
+[
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c01",
+    "name": "Exponential backoff retry for S3 uploader",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c02",
+    "name": "REST endpoint for fetching orders from DynamoDB",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c03",
+    "name": "Go CLI converting CSV to JSON lines",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus-sign emails",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c05",
+    "name": "Fix date parser week for January first",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Chunk nightly invoice CSV export Lambda by month",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c08",
+    "name": "Nightly export Lambda monthly CSVs with manifest",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c09",
+    "name": "Add cursor pagination to vendor client wrapper",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias facturación y corrección redondeo impuestos",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c14",
+    "name": "Rate limiting für Bestell-Service mit Tests",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c16",
+    "name": "Fix string qty in total functions",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c19",
+    "name": "Implement feature from linked issue 123",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c20",
+    "name": "Environment variable overrides for config loader",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across modules",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c23",
+    "name": "Dark mode toggle for settings page",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c24",
+    "name": "Users table migration with email_verified backfill",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c27",
+    "name": "Script renaming photos by date taken",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c01",
+    "name": "Add exponential backoff retry to S3 uploader",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c02",
+    "name": "REST endpoint GET /orders/{id} fetching DynamoDB orders",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go CLI tool converting CSV to JSON lines",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus-sign emails",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c05",
+    "name": "Fix date parser week for January first",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice export Lambda into monthly CSVs",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c08",
+    "name": "Nightly export Lambda monthly CSV with manifest",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c09",
+    "name": "Add cursor pagination to vendor client wrapper",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias facturación y corrección redondeo impuestos",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c14",
+    "name": "Rate limiting für Bestell-Service mit Tests",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c16",
+    "name": "Fix string qty in total functions",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c20",
+    "name": "Environment variable overrides for config loader",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across Java module",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c23",
+    "name": "Dark mode toggle for settings page",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c24",
+    "name": "Users table migration and email verification backfill",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c27",
+    "name": "Script to rename photos by date taken",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c01",
+    "name": "Add exponential backoff retry to S3 uploader",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c02",
+    "name": "REST endpoint for orders with DynamoDB",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus-sign emails",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c05",
+    "name": "Fix parse_week first day of year",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c08",
+    "name": "Nightly export Lambda writes monthly CSVs and manifest",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c09",
+    "name": "Billing export vendor client cursor pagination support",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c13",
+    "name": "Agrega pruebas unitarias y corrige redondeo de impuestos",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c14",
+    "name": "Ratenbegrenzung für Bestell-Service mit Tests",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c16",
+    "name": "Fix string qty in total functions",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c19",
+    "name": "Implement feature from linked issue tracker",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c20",
+    "name": "Environment variable overrides for config loader",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across Java module",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c23",
+    "name": "Add dark mode to settings page",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c24",
+    "name": "Users table email migration and index",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c26",
+    "name": "Hello world Express server with health route",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c27",
+    "name": "Script renaming photos by date taken",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c01",
+    "name": "Add exponential backoff retry to S3 uploader",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c02",
+    "name": "REST endpoint GET orders by id from DynamoDB",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus email",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c05",
+    "name": "Fix parse_week first day of year",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export to avoid Lambda timeout",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c08",
+    "name": "Split nightly billing export Lambda into monthly CSVs",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c09",
+    "name": "Billing export pagination for vendor client wrapper",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c13",
+    "name": "Agrega pruebas unitarias y corrige redondeo de impuestos",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c14",
+    "name": "Ratenbegrenzung für Bestell-Service mit Tests",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c16",
+    "name": "Fix string quantities in total and total_with_tax",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123 per style guide",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c20",
+    "name": "Environment variable overrides for config loader",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across Java module",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c23",
+    "name": "Add dark mode to settings page",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c24",
+    "name": "Users table migration with email_verified backfill",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 2,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c27",
+    "name": "Script renaming photos by date taken",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c01",
+    "name": "Exponential backoff retry for S3 uploader",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c02",
+    "name": "REST endpoint GET /orders/{id} from DynamoDB",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus email",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c05",
+    "name": "Fix parse_week off-by-one on January first",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export in Lambda",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c08",
+    "name": "Monthly CSV split and manifest for nightly export",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c09",
+    "name": "Cursor pagination in vendor client wrapper",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias y redondeo de impuestos en facturación",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c14",
+    "name": "Rate limiting für Bestell-Service mit Tests",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c16",
+    "name": "Fix total functions when qty is string",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c20",
+    "name": "Env var overrides for config loader in loader.rs",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService in Java module",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c23",
+    "name": "Dark mode toggle on settings page",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c24",
+    "name": "Users table migration with email_verified backfill",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 1,
+    "corpusId": "c27",
+    "name": "Script to rename photos by date taken",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c01",
+    "name": "Exponential backoff retry for S3 uploader",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c02",
+    "name": "REST endpoint GET /orders/{id} from DynamoDB",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus sign emails",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c05",
+    "name": "Fix parse_week off-by-one on January first",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export in Lambda",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c08",
+    "name": "Monthly CSV split and manifest for nightly export",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c09",
+    "name": "Cursor pagination in vendor client wrapper",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias y corrección de redondeo de impuestos",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c14",
+    "name": "Rate limiting for Bestell-Service with tests",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIへのレート制限追加",
+    "words": 18
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c16",
+    "name": "Fix total functions when qty is string",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total for empty cart",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123 per style guide",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c20",
+    "name": "Env var overrides for config loader in loader.rs",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService in Java module",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c23",
+    "name": "Dark mode toggle for settings page",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c24",
+    "name": "Users table email_verified migration and index",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V4-adaptive-low",
+    "rep": 2,
+    "corpusId": "c27",
+    "name": "Script to rename photos by date taken",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c01",
+    "name": "Retry with exponential backoff in S3 uploader",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c02",
+    "name": "REST endpoint GET /orders/{id} from DynamoDB",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c04",
+    "name": "Fix login 500 error on plus-sign emails",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c05",
+    "name": "Fix parse_week off-by-one on January 1",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c06",
+    "name": "Stream large CSV export in Lambda",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c08",
+    "name": "Monthly CSV export split with manifest file",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c09",
+    "name": "Cursor pagination for vendor client wrapper",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias y redondeo de impuestos en facturación",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c14",
+    "name": "Ratenbegrenzung für Bestell-Service mit Tests",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c16",
+    "name": "Fix string qty in total and tests",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c20",
+    "name": "Env var overrides for config.yaml in loader.rs",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across Java module",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c23",
+    "name": "Dark mode toggle for settings page",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c24",
+    "name": "Users table migration with email_verified backfill",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c25",
+    "name": "Todo app in React with local storage",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 1,
+    "corpusId": "c27",
+    "name": "Script to rename photos by date taken",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c01",
+    "name": "Retry with exponential backoff in S3 uploader",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c02",
+    "name": "REST endpoint GET /orders/{id} from DynamoDB",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c03",
+    "name": "Go command line tool converting CSV to JSON lines",
+    "words": 9
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c04",
+    "name": "Fix login 500 error for plus email",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c05",
+    "name": "Fix parse_week year boundary bug on Jan 1",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c06",
+    "name": "Stream large CSV export in Lambda",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c07",
+    "name": "Split nightly invoice CSV export into monthly files",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c08",
+    "name": "Monthly CSV export split with manifest for Lambda",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c09",
+    "name": "Add cursor pagination to vendor client wrapper",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c13",
+    "name": "Pruebas unitarias y redondeo de impuestos en facturación",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c14",
+    "name": "Ratenbegrenzung für Bestell-Service mit Tests",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c15",
+    "name": "ユーザー認証APIにレート制限を追加",
+    "words": 18
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c16",
+    "name": "Fix string qty in total and total_with_tax",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c17",
+    "name": "Add staging environment config with two replicas",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c18",
+    "name": "Fix NullPointerException in CartService total",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c19",
+    "name": "Implement feature from issue 123",
+    "words": 5
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c20",
+    "name": "Env var overrides for config loader in loader.rs",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c21",
+    "name": "Rename CustomerOrderProcessor to OrderService across Java module",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c22",
+    "name": "Fix login bug, update README, bump dependencies",
+    "words": 7
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c23",
+    "name": "Dark mode toggle on settings page",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c24",
+    "name": "Users table migration with email_verified backfill",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c25",
+    "name": "React todo app with local storage",
+    "words": 6
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c26",
+    "name": "Node.js Express hello world server with health route",
+    "words": 8
+  },
+  {
+    "probe": 3,
+    "shape": "V2-think-off",
+    "rep": 2,
+    "corpusId": "c27",
+    "name": "Script to rename photos by date taken",
+    "words": 7
+  }
+]

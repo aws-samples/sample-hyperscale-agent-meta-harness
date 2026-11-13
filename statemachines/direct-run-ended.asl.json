@@ -1,0 +1,61 @@
+{
+  "Comment": "hamh-direct-run-ended: the run-ended rule starts one execution per run machine execution that ended ABORTED, FAILED or TIMED_OUT, with the EventBridge event as its input. It calls run-session until the function answers, so a run whose execution failed while the function could not start is cleared and its session stopped as soon as the function works. An asynchronous Lambda target is retried twice within minutes and then dropped; this machine waits 300 s after each failed call and retries 1000 times (3.5 days of waiting, at most about 7 days with the calls), and then fails in ReaperGaveUp so the failure is visible.",
+  "StartAt": "Reap",
+  "TimeoutSeconds": 864000,
+  "States": {
+    "Reap": {
+      "Type": "Task",
+      "Comment": "run-session recognizes the status-change event and clears the run (run.aborted) and stops its session. Repeating it is harmless: a run that is already complete or cleared is not touched. RunSessionInvalid (an event of another machine, a status that is not an end) is never retried; every other failure is, because the purpose of this machine is to outlast a damaged deployment.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload.$": "$"
+      },
+      "ResultPath": null,
+      "TimeoutSeconds": 330,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "RunSessionInvalid"
+          ],
+          "MaxAttempts": 0
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 300,
+          "MaxAttempts": 1000,
+          "BackoffRate": 1
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "RunSessionInvalid"
+          ],
+          "ResultPath": "$.dropped",
+          "Next": "Dropped"
+        },
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.failure",
+          "Next": "ReaperGaveUp"
+        }
+      ],
+      "End": true
+    },
+    "Dropped": {
+      "Type": "Succeed",
+      "Comment": "An event that is not the end of this stage's run machine, or names no run, can never be reaped; retrying it would only repeat the refusal."
+    },
+    "ReaperGaveUp": {
+      "Type": "Fail",
+      "Comment": "run-session failed on every one of the 1001 calls. The run is still active: this execution FAILED is the signal, and invoking run-ended with the same event once the function works clears it.",
+      "Error": "RunNotReaped",
+      "CausePath": "$.failure.Cause"
+    }
+  }
+}

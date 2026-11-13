@@ -1,0 +1,212 @@
+{
+ "model": "Claude Haiku 5.5",
+ "vendor": "Anthropic",
+ "bedrockBaseModelId": "anthropic.claude-haiku-5-5",
+ "profileId": "us.anthropic.claude-haiku-5-5",
+ "protocol": "converse",
+ "purpose": "utility model: run tags (U2)",
+ "purposeKey": "run-tags",
+ "region": "us-east-1",
+ "profileRegions": [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2"
+ ],
+ "date": "2026-10-21",
+ "startedAt": "2026-10-21T18:03:57Z",
+ "endedAt": "2026-10-21T18:06:20Z",
+ "smokeRecordId": "s6:us.anthropic.claude-haiku-5-5:us-east-1:converse+u2:2026-10-21/smoke-utility-tags-us.anthropic.claude-haiku-5-5.json",
+ "promptVersion": "rt-1",
+ "systemTextSha256": "c2315b6afe59302927eb123d13a9281fa6174bcaecb6f346c6b14dae5ca670d7",
+ "requestShape": {
+  "temperatureAccepted": false,
+  "thinkingDisabledAccepted": true,
+  "bareIdAccepted": false,
+  "maxTokens": 400,
+  "stopSequences": [
+   "</tags>"
+  ],
+  "additionalModelRequestFields": {
+   "thinking": {
+    "type": "disabled"
+   }
+  }
+ },
+ "contract": {
+  "temperature": {
+   "accepted": false,
+   "status": 400,
+   "errorClass": "ValidationException",
+   "message": "The model returned the following errors: `temperature` is deprecated for this model."
+  },
+  "bareId": {
+   "accepted": false,
+   "status": 400,
+   "errorClass": "ValidationException",
+   "message": "Invocation of model ID anthropic.claude-haiku-5-5 with on-demand throughput isn’t supported. Retry your request with the ID or ARN of an inference profile that contains this model."
+  }
+ },
+ "s6": {
+  "status": "pass",
+  "route": "us.anthropic.claude-haiku-5-5",
+  "region": "us-east-1",
+  "protocol": "converse",
+  "routesPassing": [
+   "global.anthropic.claude-haiku-5-5",
+   "us.anthropic.claude-haiku-5-5"
+  ],
+  "checkedAt": "2026-10-21T18:03:54Z",
+  "source": "probes/smoke.py --only anthropic.claude-haiku-5-5 --all-candidates"
+ },
+ "u2": {
+  "prompts": 38,
+  "conditions": [
+   "cold",
+   "vocab"
+  ],
+  "repetitions": 2,
+  "calls": 152,
+  "vocabularyLines": 40,
+  "content": {
+   "prompts": 35,
+   "calls": 140,
+   "byCondition": {
+    "cold": {
+     "calls": 70,
+     "keptAtLeastOne": 70,
+     "keptPct": 100.0
+    },
+    "vocab": {
+     "calls": 70,
+     "keptAtLeastOne": 70,
+     "keptPct": 100.0
+    }
+   }
+  },
+  "vague": {
+   "prompts": 3,
+   "calls": 12,
+   "inventedTopics": 0,
+   "ends": {
+    "short_prompt": 8,
+    "tags": 4
+   }
+  },
+  "validationErrors": 0,
+  "unhandledShapes": 0,
+  "ends": {
+   "short_prompt": 8,
+   "tags": 144
+  },
+  "stopReasons": {
+   "stop_sequence": 152
+  },
+  "errors": {},
+  "retriedCalls": 0,
+  "violations": {
+   "notStored": 0,
+   "forbidden": 0,
+   "banned": 0
+  }
+ },
+ "gate": {
+  "1": {
+   "pass": true,
+   "detail": "validationErrors=0 temperatureRefused=True bareIdRefused=True thinkingDisabledSent=True thinkingDisabledAccepted=True"
+  },
+  "2": {
+   "pass": true,
+   "detail": "unhandledShapes=0 unnamedErrors=0 missingReplies=0"
+  },
+  "3": {
+   "pass": true,
+   "detail": "cold 70/70 (100.0%); vocab 70/70 (100.0%) needs 95% each; withoutVerdict=0 notAsked=0"
+  },
+  "4": {
+   "pass": true,
+   "detail": "notStored=0 forbidden=0 banned=0 corpusHasBannedNames=True"
+  },
+  "5": {
+   "pass": true,
+   "detail": "verdicts=12/12 inventedTopics=0"
+  }
+ },
+ "reported": {
+  "tagsPerRun": {
+   "cold": 3.47,
+   "vocab": 2.97
+  },
+  "distinctTags": {
+   "cold": 119,
+   "vocab": 99
+  },
+  "techRecall": {
+   "cold": {
+    "hit": 77,
+    "expected": 84,
+    "rate": 0.9167
+   },
+   "vocab": {
+    "hit": 76,
+    "expected": 84,
+    "rate": 0.9048
+   }
+  },
+  "topicHit": {
+   "cold": {
+    "hit": 69,
+    "of": 70,
+    "rate": 0.9857
+   },
+   "vocab": {
+    "hit": 68,
+    "of": 70,
+    "rate": 0.9714
+   }
+  },
+  "rejects": {
+   "generic": 7,
+   "model_project": 1,
+   "over_quota": 17
+  },
+  "projectWritten": {
+   "calls": 1,
+   "of": 152,
+   "share": 0.0066
+  }
+ },
+ "latency": {
+  "clientMs": {
+   "p50": 864,
+   "p95": 1433,
+   "p99": 1733,
+   "worst": 3192
+  },
+  "serviceMs": {
+   "p50": 854,
+   "p95": 1406,
+   "p99": 1722,
+   "worst": 3156
+  }
+ },
+ "tokens": {
+  "inputMean": 974.2,
+  "outputMean": 39.9,
+  "outputMax": 134
+ },
+ "requestIds": {
+  "text": "d09814cd-236c-468d-b233-5db01b05f522",
+  "temperatureRefusal": "9d1e7a6e-8bf6-4fd8-9222-de511de327d4",
+  "bareIdRefusal": "f71716d9-5f1f-4743-897e-4a4479812031"
+ },
+ "inputs": {
+  "corpusSha256": "8e734abb369744d832fd215491e676eb5d26b58f99e1d0b89d3e72042eb675fa",
+  "coldVocabSha256": "e159180eb39f390fcd73ad572403947ab1bf85af85feecb09e316615bbd350ca",
+  "vocabSha256": "1cb4acd864a092f4eee89436237e9ad076011f55587ecc06754589cd7ad04c49",
+  "coldPlanSha256": "832d1434e1004d83c9268bf12a8b0c257063e4a725d5a061d2c0a4d95057b605",
+  "vocabPlanSha256": "bfce8074b4c4c86165bdb600e5725e56df90d80afebec56485cbf73d70b2a117",
+  "repliesSha256": "5e46354932abba2a7878306d343e8adaa1e66a34d38e319a99ab7c5e7f135932",
+  "verdictsSha256": "f52dcabd047c13d1d712b59c9aaf9c1f6e569e101a90f961f124bd13814071a8"
+ },
+ "result": "pass"
+}

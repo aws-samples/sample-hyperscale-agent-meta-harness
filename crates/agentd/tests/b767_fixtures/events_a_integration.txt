@@ -1,0 +1,4 @@
+✓  internal/store (44ms)
+✓  internal/broker (99ms)
+
+DONE 8 tests in 0.099s

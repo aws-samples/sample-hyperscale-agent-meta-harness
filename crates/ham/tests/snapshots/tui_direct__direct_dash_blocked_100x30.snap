@@ -1,0 +1,34 @@
+---
+source: crates/ham/tests/tui_direct.rs
+expression: "screen_text(app, w, h)"
+---
+ham · Run 01K6A0000000000000000000R1 · Claude Sonnet 5.5 · blocked
+progress feed only: not the full conversation
+notice ▾ status
+         blocked (delivering)
+         Model  Claude Sonnet 5.5
+         Outcome Cline stopped: the session was lost
+         PR     none yet
+notice ▸ agents 1
+notice ▾ blocked · r retry
+         reason: the session ended before any work was saved
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────┐
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ PgUp PgDn scroll · a artifacts · r retry · Esc runs · n new run · q quit

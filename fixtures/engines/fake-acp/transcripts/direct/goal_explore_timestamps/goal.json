@@ -1,0 +1,665 @@
+{
+  "transcripts": "writes_files",
+  "first": {
+    "tools": [
+      {
+        "title": "run_commands: sleep 30; date; ls READY-01.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-01.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-01.txt",
+            "result": "Tue Oct 27 14:01:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-02.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-02.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-02.txt",
+            "result": "Tue Oct 27 14:02:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-03.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-03.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-03.txt",
+            "result": "Tue Oct 27 14:03:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-04.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-04.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-04.txt",
+            "result": "Tue Oct 27 14:04:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-05.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-05.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-05.txt",
+            "result": "Tue Oct 27 14:05:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-06.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-06.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-06.txt",
+            "result": "Tue Oct 27 14:06:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-07.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-07.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-07.txt",
+            "result": "Tue Oct 27 14:07:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-08.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-08.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-08.txt",
+            "result": "Tue Oct 27 14:08:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-09.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-09.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-09.txt",
+            "result": "Tue Oct 27 14:09:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-10.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-10.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-10.txt",
+            "result": "Tue Oct 27 14:10:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-11.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-11.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-11.txt",
+            "result": "Tue Oct 27 14:11:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-12.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-12.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-12.txt",
+            "result": "Tue Oct 27 14:12:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-13.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-13.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-13.txt",
+            "result": "Tue Oct 27 14:13:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-14.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-14.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-14.txt",
+            "result": "Tue Oct 27 14:14:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-15.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-15.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-15.txt",
+            "result": "Tue Oct 27 14:15:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-16.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-16.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-16.txt",
+            "result": "Tue Oct 27 14:16:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-17.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-17.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-17.txt",
+            "result": "Tue Oct 27 14:17:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-18.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-18.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-18.txt",
+            "result": "Tue Oct 27 14:18:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-19.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-19.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-19.txt",
+            "result": "Tue Oct 27 14:19:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-20.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-20.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-20.txt",
+            "result": "Tue Oct 27 14:20:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-21.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-21.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-21.txt",
+            "result": "Tue Oct 27 14:21:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-22.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-22.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-22.txt",
+            "result": "Tue Oct 27 14:22:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-23.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-23.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-23.txt",
+            "result": "Tue Oct 27 14:23:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-24.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-24.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-24.txt",
+            "result": "Tue Oct 27 14:24:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-25.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-25.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-25.txt",
+            "result": "Tue Oct 27 14:25:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-26.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-26.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-26.txt",
+            "result": "Tue Oct 27 14:26:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-27.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-27.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-27.txt",
+            "result": "Tue Oct 27 14:27:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-28.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-28.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-28.txt",
+            "result": "Tue Oct 27 14:28:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-29.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-29.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-29.txt",
+            "result": "Tue Oct 27 14:29:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-30.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-30.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-30.txt",
+            "result": "Tue Oct 27 14:30:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-31.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-31.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-31.txt",
+            "result": "Tue Oct 27 14:31:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-32.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-32.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-32.txt",
+            "result": "Tue Oct 27 14:32:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-33.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-33.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-33.txt",
+            "result": "Tue Oct 27 14:33:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-34.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-34.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-34.txt",
+            "result": "Tue Oct 27 14:34:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-35.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-35.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-35.txt",
+            "result": "Tue Oct 27 14:35:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-36.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-36.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-36.txt",
+            "result": "Tue Oct 27 14:36:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-37.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-37.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-37.txt",
+            "result": "Tue Oct 27 14:37:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-38.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-38.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-38.txt",
+            "result": "Tue Oct 27 14:38:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-39.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-39.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-39.txt",
+            "result": "Tue Oct 27 14:39:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      },
+      {
+        "title": "run_commands: sleep 30; date; ls READY-40.txt",
+        "kind": "execute",
+        "input": {
+          "commands": [
+            "sleep 30; date; ls READY-40.txt"
+          ]
+        },
+        "output": [
+          {
+            "query": "sleep 30; date; ls READY-40.txt",
+            "result": "Tue Oct 27 14:40:00 UTC 2026\nREADY.txt is not there yet\nretry later\n",
+            "success": true
+          }
+        ]
+      }
+    ],
+    "tool_gap_ms": 300,
+    "text": "The file never came.",
+    "iterations": 41,
+    "edit": {
+      "path": "notes/result.txt",
+      "text": "the work after the reading\n"
+    }
+  },
+  "rounds": [
+    {
+      "text": "Goal marked complete.",
+      "complete": "all done",
+      "iterations": 2
+    }
+  ],
+  "queued": {
+    "text": "I stopped while I was still reading. Nothing was written.",
+    "status": "completed"
+  }
+}

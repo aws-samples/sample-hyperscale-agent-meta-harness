@@ -1,0 +1,4 @@
+✓  internal/postgres (63ms)
+✓  internal/rabbitmq (294ms)
+
+DONE 11 tests in 0.295s

@@ -1,0 +1,3 @@
+# Dependency build scripts stay off; esbuild runs from its @esbuild/<platform> package.
+allowBuilds:
+  esbuild: false

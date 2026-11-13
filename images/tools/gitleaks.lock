@@ -1,0 +1,7 @@
+# The source build of gitleaks. gitleaks 8.30.1 is the newest release and its release binaries carry the
+# standard library of Go 1.24.11 (a critical finding of the image scan, CVE-2025-68121, and 24 more); built from the same source with the Go below they do not.
+# One row each: gitleaks <version> module <module path>, and go <version> <arch: x86_64 | aarch64> <sha256 of the archive> <url>. The Go toolchain of
+# this file builds gitleaks only; the Go of the worker image's sessions is pinned in lang/lang.lock. Update a row only with its measured hash.
+gitleaks 8.30.1 module github.com/zricethezav/gitleaks/v8
+go 1.27.3 x86_64 65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
+go 1.27.3 aarch64 a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 https://go.dev/dl/go1.27.3.linux-arm64.tar.gz
