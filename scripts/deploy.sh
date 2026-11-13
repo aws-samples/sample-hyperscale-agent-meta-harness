@@ -10,6 +10,17 @@
 # --print-settings: the DEPLOY-SETTING line of every stage setting (exit 0) or a refusal line (exit 3); it writes nothing.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+set +e
 # shellcheck source=lib/python.sh
 . "$here/lib/python.sh"
+source_rc=$?
+set -e
+if [ "$source_rc" -ne 0 ]
+then
+  exit 2
+fi
+if ! py="$(ham_pick_python 11)"
+then
+  exit 2
+fi
 exec "$py" "$here/lib/deploy.py" "$@"

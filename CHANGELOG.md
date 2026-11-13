@@ -6,6 +6,17 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.17] - 2026-11-13
+
+### Added
+
+- `scripts/deploy-preflight.sh --stage direct` checks whether a deploy can start and changes nothing. It checks the account, the Availability Zone mapping and the VPC range, and ends with `READY` only when all three pass.
+- The deploy confirms its control endpoint before it reports success. It does not print the address.
+
+### Fixed
+
+- `scripts/deploy.sh` ends with a clear message on a machine without Python 3.11 or later.
+
 ## [5.16] - 2026-11-12
 
 ### Fixed

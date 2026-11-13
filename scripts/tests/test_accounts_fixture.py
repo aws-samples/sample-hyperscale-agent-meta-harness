@@ -13,6 +13,9 @@ from pathlib import Path
 import accounts_fixture as fx
 
 REPO = Path(__file__).resolve().parents[2]
+HISTORY_ACCOUNT = "1" * 12
+ACTIVE_ACCOUNT = "2" * 12
+TEST_ACCOUNT = "3" * 12
 
 
 class SharedFixture(unittest.TestCase):
@@ -24,7 +27,7 @@ class SharedFixture(unittest.TestCase):
         doc = json.loads(fx.FIXTURE.read_text(encoding="utf-8"))
         self.assertEqual([e["role"] for e in doc["accounts"]], ["history", "active", "test"])
         self.assertEqual([e["profile"] for e in doc["accounts"]], ["history-profile", "my-profile", "test-profile"])
-        self.assertEqual([e["account"] for e in doc["accounts"]], ["111111111111", "222222222222", "333333333333"])
+        self.assertEqual([e["account"] for e in doc["accounts"]], [HISTORY_ACCOUNT, ACTIVE_ACCOUNT, TEST_ACCOUNT])
         self.assertEqual(doc["selector"], "HAMH_AWS_PROFILE")
 
     def test_the_writer_gives_an_absolute_path_with_the_bytes_of_the_file(self) -> None:
@@ -47,9 +50,25 @@ class SharedFixture(unittest.TestCase):
                 r = subprocess.run([sys.executable, "-B", str(REPO / "scripts" / "lib" / "aws_target.py"), "get", "account"], capture_output=True, text=True, env=e, timeout=60)  # nosec B603: argument list, no shell
                 self.assertEqual(r.returncode, 0, r.stderr)
                 return r.stdout.strip()
-            self.assertEqual(get(), "222222222222")
-            self.assertEqual(get("history-profile"), "111111111111")
-            self.assertEqual(get("test-profile"), "333333333333")
+            self.assertEqual(get(), ACTIVE_ACCOUNT)
+            self.assertEqual(get("history-profile"), HISTORY_ACCOUNT)
+            self.assertEqual(get("test-profile"), TEST_ACCOUNT)
+
+    def test_the_scripts_reader_rejects_repeated_az_names(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repeated = fx.entry(fx.ACTIVE)
+            repeated["azs"]["direct"] = ["us-east-1b", "us-east-1b"]
+            repeated["azIds"]["direct"] = ["use1-az1", "use1-az2"]
+            path = fx.write_accounts(d, entries=(repeated,))
+            result = subprocess.run(
+                [sys.executable, "-B", str(REPO / "scripts" / "lib" / "aws_target.py"), "get", "account"],
+                capture_output=True,
+                text=True,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HAMH_ACCOUNTS_FILE": str(path), "LC_ALL": "C"},
+                timeout=60,
+            )  # nosec B603: argument list, no shell
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("azs.direct contains a repeated AZ name", result.stderr)
 
 
 if __name__ == "__main__":

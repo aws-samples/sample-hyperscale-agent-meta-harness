@@ -82,7 +82,9 @@ Flow (every step prints `deploy: ...`; failures end with `DEPLOY-FAIL <step> <de
    so each producer publishes the outputs its consumers read. A pass never omits a running worker image: until the new
    one exists, a pass carries the image the runtime serves.
 6. The runtime's `live` endpoint version (runtimes stack outputs `<Name>RuntimeId`) must be READY,
-   VPC mode, platform V1, requireMMDSV2 true and run the deployed image.
+   VPC mode, platform V1, requireMMDSV2 true and run the deployed image. Next, before anything records the deployment, the
+   control stack's `V1ApiUrl` output must be the stage's execute-api URL in its Region, ending in `/direct` (`endpoint_ready`;
+   30 s a lookup, three lookups when the stack gives no answer; `DEPLOY-FAIL endpoint missing|invalid|unavailable`; the URL is never printed).
 6a. Version endpoints. AgentCore's qualifier is an endpoint name,
    never a bare version, so a run pins `v<N>`, the endpoint on the worker version N its first dispatch
    found behind `live`. The worker runtime gets `v<N>` for the version `live` serves, tagged, and READY
@@ -106,7 +108,8 @@ Flow (every step prints `deploy: ...`; failures end with `DEPLOY-FAIL <step> <de
    always before the pass line: `GOMOD-STORE OK ...`, `GOMOD-STORE EMPTY ...` (with the fill command and the check command of scripts/gomod-store.sh) or
    `GOMOD-STORE UNKNOWN ...` (the bucket cannot be read). It is a report, never a failure, and it writes nothing; the deploy record carries it as
    `measurements.gomodStore` {bucket, state: filled|empty|unknown}. The release gate stops on an empty store before the events sample.
-8. The settings record with `status=deployed`, then `DEPLOY-PASS stage=<s> digest=<12> sourceTree=<12>`.
+7b. The control stack must expose exactly one valid `V1ApiUrl`. Its lookup is bounded to 30 seconds and runs after the Go module store report. The value is never retained or printed.
+8. The deploy and settings records succeed, then the safe readiness line names only the stack and Region, followed by `DEPLOY-PASS stage=<s> digest=<12> sourceTree=<12>`.
 
 HAMH_WORKER_REVISION (SSM /hamh/<stage>/worker-revision, default 0) reaches every cdk call and the
 runtime's environment; --bump-worker-version adds 1, a CloudFormation environment change that
@@ -238,7 +241,6 @@ import argparse
 import contextlib
 import datetime as dt
 import hashlib
-import ipaddress
 import json
 import os
 import re
@@ -252,6 +254,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -259,6 +262,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agentd_build  # noqa: E402
 import aws_target  # noqa: E402
 import build_selection  # noqa: E402
+import deploy_preflight  # noqa: E402
 import digests  # noqa: E402
 import gomod_store  # noqa: E402
 
@@ -402,6 +406,11 @@ S3_EXISTS = ("PreconditionFailed", "(412)")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 # Where deploy.sh records the invocation-logging state it found before it enabled logging (teardown restores it).
 PRIOR_LOGGING_PARAM = "/hamh/{stage}/invocation-logging-prior"
+ENDPOINT_LOOKUP_TIMEOUT_S = 30
+# A lookup of the control stack that gets no answer (the time limit, a failed call) is tried ENDPOINT_LOOKUP_ATTEMPTS times, ENDPOINT_LOOKUP_WAIT_S
+# seconds after the first try and twice that after the second. An answer that names no endpoint, or a malformed one, is final.
+ENDPOINT_LOOKUP_ATTEMPTS = 3
+ENDPOINT_LOOKUP_WAIT_S = 5
 
 
 # The registry of the stage settings (beside this file, so the deploy reads the rows of its own release), the stage record and the deploy lock.
@@ -550,6 +559,13 @@ def refusal_line(e: Fail) -> str:
             text += "."
         text = f"{text} {action}".strip()
     return f"DEPLOY-REFUSED reason={e.step} wait={REFUSALS[e.step]} stage=unchanged :: {text}"
+
+
+def unreadable(step: str, operation: str) -> Fail:
+    """The refusal of the AZ or the VPC check when its EC2 answer has a shape the check cannot read (deploy_preflight's MALFORMED_RESPONSE):
+    the detail is `unavailable`, and the refusal line says what was read and what to do."""
+    return Fail(step, "unavailable", refusal=f"the answer of `aws ec2 {operation}` has a shape this deploy cannot check",
+                action=f"Check that the AWS CLI of this machine answers `aws ec2 {operation}` as the EC2 API documents it, then deploy again.")
 
 
 class ToolsModeError(ValueError):
@@ -703,14 +719,15 @@ class Deployer:
 
     # ---- process helpers --------------------------------------------------------------------
 
-    def run(self, cmd: list[str], cwd: Path | None = None, env: dict | None = None, stream: bool = False):
+    def run(self, cmd: list[str], cwd: Path | None = None, env: dict | None = None, stream: bool = False,
+            timeout: float | None = None):
         log = os.environ.get("DEPLOY_AWS_CALL_LOG")
         if log and cmd and cmd[0] == self.aws_bin:
             with open(log, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"argv": cmd[1:], "profile": (env or self.env).get("AWS_PROFILE")}) + "\n")
         if stream:
-            return subprocess.run(cmd, cwd=cwd or self.root, env=env or self.env, text=True)  # nosec B603: argument list built here, no shell, program is git, the interpreter or a configured binary  # nosemgrep: dangerous-subprocess-use-audit -- argument list built here from its own options and paths, no shell
-        return subprocess.run(cmd, cwd=cwd or self.root, env=env or self.env, capture_output=True, text=True)  # nosec B603: argument list built here, no shell, program is git, the interpreter or a configured binary  # nosemgrep: dangerous-subprocess-use-audit -- argument list built here from its own options and paths, no shell
+            return subprocess.run(cmd, cwd=cwd or self.root, env=env or self.env, text=True, encoding="utf-8", errors="strict", timeout=timeout)  # nosec B603: argument list built here, no shell, program is git, the interpreter or a configured binary  # nosemgrep: dangerous-subprocess-use-audit -- argument list built here from its own options and paths, no shell
+        return subprocess.run(cmd, cwd=cwd or self.root, env=env or self.env, capture_output=True, text=True, encoding="utf-8", errors="strict", timeout=timeout)  # nosec B603: argument list built here, no shell, program is git, the interpreter or a configured binary  # nosemgrep: dangerous-subprocess-use-audit -- argument list built here from its own options and paths, no shell
 
     def run_codebuild(self, cmd: list[str]) -> tuple[int, str | None]:
         """Runs scripts/codebuild-run.sh with its output on this console. Returns its exit code and the id of the CodeBuild build its
@@ -727,13 +744,25 @@ class Deployer:
                     build_id = m.group(1)
         return proc.returncode, build_id
 
-    def aws(self, *args: str, ok_missing: tuple[str, ...] = (), env: dict | None = None) -> dict | None:
-        proc = self.run([self.aws_bin, *args, "--region", self.region, "--output", "json"], env=env)
+    def aws(self, *args: str, ok_missing: tuple[str, ...] = (), env: dict | None = None,
+            timeout: float | None = None) -> dict | None:
+        try:
+            proc = self.run(
+                [self.aws_bin, *args, "--region", self.region, "--output", "json"],
+                env=env,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise Fail("aws", "timeout") from None
         if proc.returncode != 0:
             if any(m in proc.stderr for m in ok_missing):
                 return None
             raise Fail("aws", f"{' '.join(args[:2])}: {proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else proc.returncode}")
-        return json.loads(proc.stdout) if proc.stdout.strip() else {}
+        return json.loads(
+            proc.stdout,
+            parse_constant=deploy_preflight._reject_json_constant,
+            parse_float=deploy_preflight._finite_json_float,
+        ) if proc.stdout.strip() else {}
 
     def git(self, *args: str) -> str:
         return subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True).stdout.strip()  # nosec B603: argument list built here, no shell, program is git, the interpreter or a configured binary; B607: bare name of a standard tool such as git, bash, tar or aws looked up on the PATH of the host running this tool
@@ -753,9 +782,10 @@ class Deployer:
     def check_account(self, operator: bool = True) -> None:
         """The caller must be the target account and, for a deploy (`operator`), the entry's operator or the setup runner role."""
         doc = self.aws("sts", "get-caller-identity") or {}
-        got = doc.get("Account", "")
-        self.caller_arn = doc.get("Arn", "")
-        if got != self.account:
+        result = deploy_preflight.evaluate_account(doc, self.account)
+        got = doc.get("Account", "") if isinstance(doc, dict) else ""
+        self.caller_arn = doc.get("Arn", "") if isinstance(doc, dict) else ""
+        if result.state != "PASS":
             raise Fail("account", got or "none", action="Sign in to that account, then deploy again.",
                        refusal=f"the caller is in account {got or 'none'}, not in account {self.account} of the selected entry ({self.profile})")
         op = self.target.operator
@@ -804,44 +834,66 @@ class Deployer:
         self.build_env[aws_target.OWNER_ENV] = self.owner
 
     def check_azs(self) -> dict[str, str]:
-        """AZ names map to IDs per account, so each stage AZ must be, in this account,
-        the AZ ID accounts.json names (the AgentCore VPC IDs of its Region)."""
-        names, ids = self.target.azs[self.stage], self.target.az_ids[self.stage]
-        doc = self.aws("ec2", "describe-availability-zones", "--zone-names", *names) or {}
-        got = {z.get("ZoneName"): z.get("ZoneId") for z in doc.get("AvailabilityZones", [])}
-        bad = [(n, i) for n, i in zip(names, ids) if got.get(n) != i]
-        if bad:
-            raise Fail("azs", " ".join(f"{n}={got.get(n) or 'missing'}" for n, _ in bad)
-                       + f" (accounts.json: {' '.join(i for _, i in bad)})",
-                       action="Correct the zones of the stage (azs and azIds) in the account entry so the name maps to its zone ID in this account, then deploy again.")
-        say("azs " + " ".join(f"{n}={i}" for n, i in zip(names, ids)))
-        return dict(zip(names, ids))
+        """Each configured AZ name must map to the configured ID in this account."""
+        expected = tuple(zip(self.target.azs[self.stage], self.target.az_ids[self.stage]))
+        document = self.aws("ec2", "describe-availability-zones", "--zone-names", *(name for name, _ in expected)) or {}
+        result = deploy_preflight.evaluate_az_mapping(document, expected)
+        if result.state != "PASS":
+            rows = document.get("AvailabilityZones", []) if isinstance(document, dict) else []
+            found = {
+                row.get("ZoneName"): row.get("ZoneId")
+                for row in rows
+                if isinstance(row, dict) and isinstance(row.get("ZoneName"), str)
+            } if isinstance(rows, list) else {}
+            bad = [(name, zone_id) for name, zone_id in expected if found.get(name) != zone_id]
+            if not bad:
+                # Every zone has its ID and the answer is still not one row per zone: nothing to name, so no guess either.
+                raise unreadable("azs", "describe-availability-zones")
+            raise Fail(
+                "azs",
+                " ".join(f"{name}={found.get(name) or 'missing'}" for name, _ in bad)
+                + f" (accounts.json: {' '.join(zone_id for _, zone_id in bad)})",
+                action="Correct the zones of the stage (azs and azIds) in the account entry so the name maps to its zone ID in this account, then deploy again.",
+            )
+        mapping = dict(result.facts["mapping"])
+        say("azs " + " ".join(f"{name}={zone_id}" for name, zone_id in expected))
+        return mapping
 
     def check_vpc_cidr(self) -> dict:
-        """The stage's VPC CIDR (infra/lib/config.ts) must not overlap any VPC of the account except the stage's own (tagged
-        project and stage). The stages' CIDRs are distinct by construction; this catches an account that holds another project's VPC
-        in the range, before a stack fails halfway with a peering or routing surprise."""
-        want = ipaddress.ip_network(VPC_CIDRS[self.stage])
-        clashes, previous = [], []
-        for vpc in (self.aws("ec2", "describe-vpcs") or {}).get("Vpcs", []):
-            tags = {t.get("Key"): t.get("Value") for t in vpc.get("Tags", [])}
-            if tags.get("project") == PROJECT and tags.get("stage") == self.stage:
-                continue
-            blocks = [vpc.get("CidrBlock"), *(a.get("CidrBlock") for a in vpc.get("CidrBlockAssociationSet", []))]
-            for cidr in dict.fromkeys(b for b in blocks if b):
-                if ipaddress.ip_network(cidr, strict=False).overlaps(want):
-                    clashes.append(f"{vpc.get('VpcId')}={cidr}")
-                    # COMPAT-CAH-STAGE: the VPC of this stage under the previous names (previous project tag, this stage) is the old stage's, not a stranger's
-                    if tags.get("project") == LEGACY_PROJECT and tags.get("stage") == self.stage and vpc.get("VpcId") not in previous:
-                        previous.append(vpc.get("VpcId"))
-        if previous:
-            raise Fail("vpc-cidr", f"{want} overlaps {' '.join(clashes)}: this account still has the stage under the previous names ({' '.join(previous)} carries the "
-                                   "tag of the previous project). This version does not deploy over it. `./setup.sh --teardown` removes it before you deploy again.")
-        if clashes:
-            raise Fail("vpc-cidr", f"{want} overlaps {' '.join(clashes)}",
-                       action=f"The stage needs {want} for its own VPC. Free that range in this account, or deploy to an account where it is free, then deploy again.")
-        say(f"vpc cidr {want} overlaps no other VPC of the account")
-        return {"cidr": str(want), "overlaps": []}
+        """Validate every VPC row, then refuse overlaps except the current stage's owned VPC."""
+        document = self.aws("ec2", "describe-vpcs") or {}
+        owned = {"project": PROJECT, "stage": self.stage}
+        result = deploy_preflight.evaluate_vpc_overlap(document, VPC_CIDRS[self.stage], owned)
+        if result.state == "UNKNOWN":
+            raise unreadable("vpc-cidr", "describe-vpcs")
+        if result.state == "FAIL":
+            details = deploy_preflight.vpc_overlap_details(document, VPC_CIDRS[self.stage])
+            if details is None:
+                raise unreadable("vpc-cidr", "describe-vpcs")
+            wanted, overlaps = details
+            # The stage's own VPC is never a clash (the exemption evaluate_vpc_overlap applies), so the refusal names the other VPCs only.
+            clashes = [(vpc_id, cidr, tags) for vpc_id, cidr, tags in overlaps
+                       if not all(dict(tags).get(key) == value for key, value in owned.items())]
+            previous = [
+                vpc_id
+                for vpc_id, _cidr, tags in clashes
+                if dict(tags).get("project") == LEGACY_PROJECT and dict(tags).get("stage") == self.stage
+            ]
+            overlap = " ".join(f"{vpc_id}={cidr}" for vpc_id, cidr, _tags in clashes)
+            if previous:
+                raise Fail(
+                    "vpc-cidr",
+                    f"{wanted} overlaps {overlap}: this account still has the stage under the previous names "
+                    f"({' '.join(dict.fromkeys(previous))} carries the tag of the previous project). "
+                    "This version does not deploy over it. `./setup.sh --teardown` removes it before you deploy again.",
+                )
+            raise Fail(
+                "vpc-cidr",
+                f"{wanted} overlaps {overlap}",
+                action=f"The stage needs {wanted} for its own VPC. Free that range in this account, or deploy to an account where it is free, then deploy again.",
+            )
+        say(f"vpc cidr {result.facts['cidr']} overlaps no other VPC of the account")
+        return {"cidr": result.facts["cidr"], "overlaps": []}
 
     def required_bootstrap(self) -> int:
         manifest = json.loads((self.root / "infra" / "cdk.out" / "manifest.json").read_text())
@@ -1225,11 +1277,76 @@ class Deployer:
                 for d in asset.get("destinations", {}).values():
                     self.assets["images"].add((d["repositoryName"], d["imageTag"]))
 
-    def outputs(self, stack: str) -> dict[str, str]:
-        doc = self.aws("cloudformation", "describe-stacks", "--stack-name", stack, ok_missing=("does not exist",))
+    def outputs(self, stack: str, *, timeout: float | None = None) -> dict[str, str]:
+        doc = self.aws(
+            "cloudformation", "describe-stacks", "--stack-name", stack,
+            ok_missing=("does not exist",), timeout=timeout,
+        )
         if not doc:
             return {}
-        return {o["OutputKey"]: o["OutputValue"] for o in doc["Stacks"][0].get("Outputs", [])}
+        stacks = doc.get("Stacks") if isinstance(doc, dict) else None
+        if not isinstance(stacks, list) or len(stacks) != 1 or not isinstance(stacks[0], dict):
+            raise ValueError("invalid stack response")
+        rows = stacks[0].get("Outputs", [])
+        if not isinstance(rows, list):
+            raise ValueError("invalid stack outputs")
+        outputs: dict[str, str] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("invalid stack output")
+            key, value = row.get("OutputKey"), row.get("OutputValue")
+            if not isinstance(key, str) or not isinstance(value, str) or key in outputs:
+                raise ValueError("invalid stack output")
+            outputs[key] = value
+        return outputs
+
+    def endpoint_ready(self) -> bool:
+        """Require a bounded, valid control endpoint without retaining or printing its value. A lookup that gets no answer is tried again:
+        it follows the stack changes, so one slow or throttled describe-stacks must not fail a deploy whose stacks are in place."""
+        for attempt in range(ENDPOINT_LOOKUP_ATTEMPTS):
+            try:
+                return self._endpoint_ready_once()
+            except Fail as e:
+                if e.detail != "unavailable" or attempt + 1 >= ENDPOINT_LOOKUP_ATTEMPTS:
+                    raise
+            time.sleep(ENDPOINT_LOOKUP_WAIT_S * 2 ** attempt)
+        raise Fail("endpoint", "unavailable")
+
+    def _endpoint_ready_once(self) -> bool:
+        try:
+            outputs = self.outputs(f"{self.prefix}-control", timeout=ENDPOINT_LOOKUP_TIMEOUT_S)
+        except (Fail, OSError, UnicodeDecodeError):
+            raise Fail("endpoint", "unavailable") from None
+        except Exception:
+            raise Fail("endpoint", "invalid") from None
+        if "V1ApiUrl" not in outputs:
+            raise Fail("endpoint", "missing")
+        value = outputs["V1ApiUrl"]
+        if any(ord(char) <= 32 or ord(char) == 127 or char.isspace() for char in value):
+            raise Fail("endpoint", "invalid")
+        try:
+            parsed = urllib.parse.urlsplit(value)
+            host = parsed.hostname
+            port = parsed.port
+            user = parsed.username
+            password = parsed.password
+        except (ValueError, UnicodeError):
+            raise Fail("endpoint", "invalid") from None
+        host_pattern = rf"[a-z0-9]+\.execute-api\.{re.escape(self.region)}\.amazonaws\.com"
+        if (
+            parsed.scheme != "https"
+            or not host
+            or not re.fullmatch(host_pattern, host)
+            or parsed.netloc != host
+            or user is not None
+            or password is not None
+            or port is not None
+            or parsed.path != "/direct"
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise Fail("endpoint", "invalid")
+        return True
 
     def live_versions(self) -> list[dict]:
         """Every runtime's live endpoint version, as GetAgentRuntime returns it, with the output name
@@ -2513,6 +2630,9 @@ class Deployer:
             for name in order:
                 self.deploy_stack(name, image)
             checks = self.check_runtimes(self.expected_images(image))
+            # The control endpoint is checked with the runtimes, before the SSM digests and the deploy record name the new deployment: a deploy
+            # that cannot confirm it has not finished, and the stage's parameters still name the last deploy that did.
+            self.endpoint_ready()
             endpoints = self.version_endpoints(checks)
             logging = self.invocation_logging()
             lock = hashlib.sha256((self.root / "engine" / "lock.toml").read_bytes()).hexdigest()
@@ -2543,6 +2663,7 @@ class Deployer:
                 "runIds": [], "notes": "",
             })
             self.write_settings_record("deployed")
+            say(f"endpoint V1ApiUrl ready stage={self.stage} region={self.region}. Read it from stack {self.prefix}-control.")
             return f"DEPLOY-PASS stage={self.stage} digest={digest[:12]} sourceTree={tree[:12]}"
 
 

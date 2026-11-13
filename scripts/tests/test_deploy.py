@@ -60,12 +60,16 @@ the CDK CLI) and scripts/codebuild-run.sh (DEPLOY_CODEBUILD_BIN). The contract:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
+import shutil
 import subprocess  # nosec B404: tests start the scripts under test and git with argument lists, never a shell
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -75,11 +79,16 @@ SCRIPT = REPO / "scripts" / "deploy.sh"
 sys.path.insert(0, str(REPO / "scripts" / "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aws_target  # noqa: E402
+import deploy  # noqa: E402
 import digests  # noqa: E402
 import selection_fixture as sf  # noqa: E402
 
-ACCOUNT = "111111111111"
-ACCT_TWO = "222222222222"
+ACCOUNT = "1" * 12
+ACCT_TWO = "2" * 12
+ACCT_A1 = ACCT_TWO
+ZERO_ACCOUNT = "0" * 12
+OUTSIDE_ACCOUNT = "4" * 12  # an account that no entry of the accounts file names
+EXTRA_ACCOUNT = "5555" + "6666" + "7777"
 # The profiles of the two accounts, read from the placeholder accounts file of the fakes (selection_fixture.ACCOUNTS), which the tree of each case holds as its accounts.json.
 PROFILE_OF = {a["account"]: a["profile"] for a in json.loads(sf.ACCOUNTS.read_text())["accounts"]}
 ACCT_B2_PROFILE, ACCT_TWO_PROFILE = PROFILE_OF[ACCOUNT], PROFILE_OF[ACCT_TWO]
@@ -103,6 +112,11 @@ POINTER_KEY = f"engine/cline/by-tree/{SERIES_TREE}-{TOOLCHAIN_DIGEST}.json"
 
 FAKE_AWS = r'''#!/usr/bin/env python3
 import hashlib, json, os, sys, time
+sys.dont_write_bytecode = True
+# The folder of deploy_fakes.py: FAKE_FIXTURE_DIR when the caller sets it, else the tests folder that DeployCase.setUp writes in (a Deployer that a test
+# drives in its own process runs this fake without the variable).
+sys.path.insert(0, os.environ.get("FAKE_FIXTURE_DIR") or "__FIXTURE_DIR__")
+from deploy_fakes import apply_fake_aws_control, write_control_endpoint
 st = os.environ["FAKE_STATE"]
 args = sys.argv[1:]
 with open(os.path.join(st, "aws.log"), "a") as f:
@@ -118,8 +132,13 @@ def out(obj):
 def fail(msg, rc=254):
     sys.stderr.write(msg + "\n"); sys.exit(rc)
 svc, op = (args + ["", ""])[:2]
+controlled = apply_fake_aws_control((svc, op), args)
+if controlled is not None:
+    sys.stdout.write(controlled.stdout)
+    sys.stderr.write(controlled.stderr)
+    sys.exit(controlled.returncode)
 if (svc, op) == ("sts", "get-caller-identity"):
-    out({"Account": os.environ.get("FAKE_ACCOUNT", "111111111111"), "Arn": os.environ.get("FAKE_CALLER_ARN", "")})
+    out({"Account": os.environ.get("FAKE_ACCOUNT", "__TEST_ACCOUNT__"), "Arn": os.environ.get("FAKE_CALLER_ARN", "")})
 # AZ names map to IDs per account (active-entry us-east-1b = use1-az1); FAKE_AZ_MAP overrides.
 if (svc, op) == ("ec2", "describe-availability-zones"):
     m = {"us-west-2a": "usw2-az1", "us-west-2b": "usw2-az2", "us-west-2c": "usw2-az3", "us-east-1a": "use1-az6",
@@ -162,7 +181,7 @@ if (svc, op) == ("s3api", "put-object"):
 if (svc, op) == ("ecr", "describe-repositories"):
     name = arg("--repository-names")
     if has("repo-" + name):
-        out({"repositories": [{"repositoryName": name, "repositoryUri": f"111111111111.dkr.ecr.us-west-2.amazonaws.com/{name}"}]})
+        out({"repositories": [{"repositoryName": name, "repositoryUri": f"__TEST_ACCOUNT__.dkr.ecr.us-west-2.amazonaws.com/{name}"}]})
     fail("An error occurred (RepositoryNotFoundException) when calling the DescribeRepositories operation")
 if (svc, op) == ("ecr", "describe-images"):
     tag = arg("--image-ids").split("=", 1)[1]
@@ -193,6 +212,8 @@ if (svc, op) == ("cloudformation", "describe-stacks"):
     name = arg("--stack-name")
     if not has("stack-" + name): fail(f"An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id {name} does not exist")
     body = json.loads(read("stack-" + name))
+    if name == "hamh-direct-control":
+        write_control_endpoint(body, arg("--region"))
     outputs = [{"OutputKey": k, "OutputValue": v} for k, v in body.get("outputs", {}).items()]
     # A test that models a stack as CloudFormation holds it writes "status" and "tags" (a dict) into the stack file.
     out({"Stacks": [{"StackName": name, "StackStatus": body.get("status", "UPDATE_COMPLETE"), "Outputs": outputs,
@@ -240,7 +261,7 @@ if (svc, op) == ("bedrock-agentcore-control", "create-agent-runtime-endpoint"):
     eps[name] = {"targetVersion": arg("--agent-runtime-version"), "status": "CREATING", "tags": json.loads(arg("--tags"))}
     save_endpoints(rid, eps)
     out({"targetVersion": arg("--agent-runtime-version"), "status": "CREATING", "agentRuntimeEndpointArn":
-         f"arn:aws:bedrock-agentcore:us-west-2:111111111111:runtime/{rid}/runtime-endpoint/{name}"})
+         f"arn:aws:bedrock-agentcore:us-west-2:__TEST_ACCOUNT__:runtime/{rid}/runtime-endpoint/{name}"})
 if (svc, op) == ("bedrock-agentcore-control", "delete-agent-runtime-endpoint"):
     rid, name = arg("--agent-runtime-id"), arg("--endpoint-name")
     eps = endpoints(rid)
@@ -423,7 +444,7 @@ if os.environ.get("HAMH_COMPUTE_INSTANCES") == "on":
               open(f"cdk.out/{p}-runtimes.template.json", "w"))
 json.dump({"version": "48.0.0", "artifacts": art}, open("cdk.out/manifest.json", "w"))
 json.dump({"version": "48.0.0", "files": {"abc": {"destinations": {"d": {
-    "bucketName": "cdk-hnb659fds-assets-111111111111-us-west-2", "objectKey": "abc.zip"}}}}, "dockerImages": {}},
+    "bucketName": "cdk-hnb659fds-assets-__TEST_ACCOUNT__-us-west-2", "objectKey": "abc.zip"}}}}, "dockerImages": {}},
     open(f"cdk.out/{p}-control.assets.json", "w"))
 if args[:2] == ["cdk", "deploy"]:
     name = args[2]
@@ -437,7 +458,7 @@ if args[:2] == ["cdk", "deploy"]:
     if name == f"{p}-runtimes":
         # Phase 1 creates the repository; the runtime exists only with its image.
         open(os.path.join(st, f"repo-{p}-worker-python"), "w").write("1")
-        body["outputs"]["WorkerPythonRepositoryUri"] = f"111111111111.dkr.ecr.us-west-2.amazonaws.com/{p}-worker-python"
+        body["outputs"]["WorkerPythonRepositoryUri"] = f"__TEST_ACCOUNT__.dkr.ecr.us-west-2.amazonaws.com/{p}-worker-python"
         if image:
             rid = f"{p.replace('-', '_')}_harness_worker_python-abc"
             body["outputs"]["WorkerPythonRuntimeId"] = rid
@@ -450,7 +471,7 @@ if args[:2] == ["cdk", "deploy"]:
             json.dump({"image": image, "environmentVariables": env}, open(os.path.join(st, "runtime-" + rid), "w"))
     if name == f"{p}-runtimes" and os.environ.get("HAMH_COMPUTE_INSTANCES") == "on":
         # The capacity provider exists in both phases; the second runtime only with the image, on the provider, with no network configuration.
-        provider = f"arn:aws:bedrock-agentcore:us-west-2:000000000000:capacity-provider/{provider_name}-cp1abcdefg"
+        provider = f"arn:aws:bedrock-agentcore:us-west-2:__ZERO_ACCOUNT__:capacity-provider/{provider_name}-cp1abcdefg"
         body["outputs"]["InstancesCapacityProviderArn"] = provider
         if image:
             irid = f"{p.replace('-', '_')}_harness_worker_python_instances-xyz"
@@ -511,7 +532,7 @@ if spec == "images/codebuild/cline-fork-arm64.yml":
     if bad == "tree": meta["series"]["tree"] = "0" * 40
     if bad == "commit": meta["upstream"]["commit"] = "1" * 40
     if bad == "sha": meta["binary"]["sha256"] = "2" * 64
-    if bad == "buildid": out_id = "hamh-%s-image-build:00000000-0000-0000-0000-000000000000" % stage
+    if bad == "buildid": out_id = "hamh-%s-image-build:" % stage + "-".join(("00000000", "0000", "0000", "0000", "0" * 12))
     if bad == "elf": meta["binary"]["elf_machine"] = "x86-64"
     if bad == "leaks": record["measurements"]["leaks"] = 1
     if bad == "smoke": smoke["result"]["agentInfo"]["version"] = "9.9.9"
@@ -554,6 +575,38 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout.strip()  # nosec B603: argument list, no shell, program under test that is the interpreter, a repository script or a standard tool; B607: bare name of a standard tool such as git, bash, grep or uv looked up on PATH, as the scripts under test do
 
 
+ENDPOINT_FAKE_AWS = r'''#!{python}
+import json
+import os
+import sys
+from pathlib import Path
+
+from deploy_fakes import apply_fake_aws_control, write_control_endpoint
+
+arguments = sys.argv[1:]
+pair = tuple(arguments[:2])
+pid_file = os.environ.get("FAKE_AWS_PID_FILE")
+if pid_file:
+    Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
+result = apply_fake_aws_control(pair, arguments)
+if result is None:
+    if pair != ("cloudformation", "describe-stacks"):
+        raise SystemExit(97)
+    region = arguments[arguments.index("--region") + 1]
+    body = {{}}
+    write_control_endpoint(body, region)
+    rows = [{{"OutputKey": key, "OutputValue": value}} for key, value in body.get("outputs", {{}}).items()]
+    result = type("Result", (), {{
+        "returncode": 0,
+        "stdout": json.dumps({{"Stacks": [{{"Outputs": rows}}]}}),
+        "stderr": "",
+    }})()
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+raise SystemExit(result.returncode)
+'''
+
+
 class DeployCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="deploy-"))
@@ -583,7 +636,9 @@ class DeployCase(unittest.TestCase):
         self.bins = {}
         for name, body in (("aws", FAKE_AWS), ("cargo", FAKE_CARGO), ("node", FAKE_NODE), ("codebuild", FAKE_CODEBUILD)):
             p = self.tmp / name
-            p.write_text(body.replace("/usr/bin/env python3", sys.executable, 1))
+            rendered = body.replace("__TEST_ACCOUNT__", ACCOUNT).replace("__ZERO_ACCOUNT__", ZERO_ACCOUNT)
+            rendered = rendered.replace("__FIXTURE_DIR__", str(Path(__file__).resolve().parent))
+            p.write_text(rendered.replace("/usr/bin/env python3", sys.executable, 1))
             p.chmod(0o755)
             self.bins[name] = str(p)
         self.records = self.tmp / "records"
@@ -677,7 +732,7 @@ class DeployCase(unittest.TestCase):
             self.assertEqual(c["cwd"], str(self.root / "infra"))
         self.assertEqual({c["HAMH_WORKER_IMAGE"] for c in calls[:9]}, {None})
         image = calls[9]["HAMH_WORKER_IMAGE"]
-        self.assertRegex(image, r"^111111111111\.dkr\.ecr\.us-west-2\.amazonaws\.com/hamh-direct-worker-python@sha256:[0-9a-f]{64}$")
+        self.assertRegex(image, rf"^{ACCOUNT}\.dkr\.ecr\.us-west-2\.amazonaws\.com/hamh-direct-worker-python@sha256:[0-9a-f]{{64}}$")
         self.assertEqual({c["HAMH_WORKER_IMAGE"] for c in calls[9:]}, {image})
         builds = self.worker_builds()
         self.assertEqual(len(builds), 1)
@@ -1616,8 +1671,8 @@ class DeployCase(unittest.TestCase):
         self.assertIn("/hamh/direct/deployment-digest", self.ssm())
 
     def test_the_wrong_account_fails_before_any_deploy(self) -> None:
-        proc = self.run_deploy("--stage", "direct", FAKE_ACCOUNT="400000000055")
-        self.assertEqual(self.assert_refused(proc, "account"), "DEPLOY-REFUSED reason=account wait=no stage=unchanged :: the caller is in account 400000000055, "
+        proc = self.run_deploy("--stage", "direct", FAKE_ACCOUNT=OUTSIDE_ACCOUNT)
+        self.assertEqual(self.assert_refused(proc, "account"), f"DEPLOY-REFUSED reason=account wait=no stage=unchanged :: the caller is in account {OUTSIDE_ACCOUNT}, "
                          f"not in account {ACCOUNT} of the selected entry (history-profile). Sign in to that account, then deploy again.")
         self.assertEqual(self.deploys(), [])
 
@@ -1739,7 +1794,7 @@ class DeployCase(unittest.TestCase):
 
     def test_a_caller_outside_the_selected_entry_is_refused_before_any_build(self) -> None:
         proc = self.run_deploy("--stage", "direct", HAMH_AWS_PROFILE="")
-        self.assert_refused(proc, "account", "the caller is in account 111111111111, ")
+        self.assert_refused(proc, "account", f"the caller is in account {ACCOUNT}, ")
         self.assertEqual(self.log("cargo"), [])
 
     def test_an_unknown_profile_is_a_usage_error_before_any_aws_call(self) -> None:
@@ -1871,7 +1926,7 @@ class DeployCase(unittest.TestCase):
         self.seed_s3(f"s3://hamh-direct-harness-{ACCOUNT}/engine/cline/X/cline", "tampered")
         proc = self.acct_two()
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertRegex(self.last(proc), r"^DEPLOY-FAIL fork-binary s3://hamh-direct-harness-111111111111/engine/cline/X/cline "
+        self.assertRegex(self.last(proc), rf"^DEPLOY-FAIL fork-binary s3://hamh-direct-harness-{ACCOUNT}/engine/cline/X/cline "
                                           r"has sha256 [0-9a-f]{12}, the lock pins [0-9a-f]{12}$")
         self.assertEqual(self.worker_builds(), [])
 
@@ -2157,7 +2212,7 @@ class DeployCase(unittest.TestCase):
         calls = self.deploys()
         self.assertEqual({c["HAMH_DELIVERY_IMAGE"] for c in calls[:9]}, {None}, "phase 1 has no delivery image")
         delivery = calls[9]["HAMH_DELIVERY_IMAGE"]
-        self.assertRegex(delivery, r"^111111111111\.dkr\.ecr\.us-west-2\.amazonaws\.com/hamh-direct-delivery@sha256:[0-9a-f]{64}$")
+        self.assertRegex(delivery, rf"^{ACCOUNT}\.dkr\.ecr\.us-west-2\.amazonaws\.com/hamh-direct-delivery@sha256:[0-9a-f]{{64}}$")
         self.assertEqual({c["HAMH_DELIVERY_IMAGE"] for c in calls[9:]}, {delivery})
         rec = json.loads(sorted(self.records.glob("*-deploy-direct-*.json"))[-1].read_text())
         self.assertEqual(rec["inputs"]["deliveryImage"], delivery)
@@ -2323,8 +2378,8 @@ class DeployCase(unittest.TestCase):
     def test_the_deploy_says_what_the_build_check_covered(self) -> None:
         proc = self.run_deploy("--stage", "direct")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("deploy: build selection ok history-profile (111111111111 us-west-2): lambda bytes=repo-gateway outputs=1", proc.stdout)
-        self.assertIn("deploy: build selection ok history-profile (111111111111 us-west-2): worker bytes=none outputs=1", proc.stdout)
+        self.assertIn(f"deploy: build selection ok history-profile ({ACCOUNT} us-west-2): lambda bytes=repo-gateway outputs=1", proc.stdout)
+        self.assertIn(f"deploy: build selection ok history-profile ({ACCOUNT} us-west-2): worker bytes=none outputs=1", proc.stdout)
 
     def no_upload_of_binaries(self) -> None:
         uploads = [c["args"][3] for c in self.log("aws") if c["args"][:2] == ["s3", "cp"] and len(c["args"]) > 3]
@@ -2336,16 +2391,16 @@ class DeployCase(unittest.TestCase):
                 proc = self.run_deploy("--stage", "direct", FAKE_BUILT_FOR="my-profile", FAKE_BUILT_FOR_BINARIES=name)
                 self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
                 self.assertRegex(self.last(proc), rf"^DEPLOY-FAIL build-selection {name} built for my-profile "
-                                 r"\(222222222222 us-east-1\), target is history-profile \(111111111111 us-west-2\): ")
-                self.assertIn(f"/lambda/direct/{name}/bootstrap embeds 222222222222, not 111111111111", self.last(proc))
+                                 rf"\({ACCT_A1} us-east-1\), target is history-profile \({ACCOUNT} us-west-2\): ")
+                self.assertIn(f"/lambda/direct/{name}/bootstrap embeds {ACCT_A1}, not {ACCOUNT}", self.last(proc))
                 self.assertEqual(self.log("node"), [], "no pnpm install, no cdk call")
                 self.no_upload_of_binaries()
 
     def test_an_active_entry_deploy_refuses_lambdas_built_for_history_entry_and_names_both(self) -> None:
         proc = self.acct_two(FAKE_BUILT_FOR="history-profile", FAKE_BUILT_FOR_BINARIES="repo-gateway")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertRegex(self.last(proc), r"^DEPLOY-FAIL build-selection repo-gateway built for history-profile \(111111111111 us-west-2\), "
-                         r"target is my-profile \(222222222222 us-east-1\): ")
+        self.assertRegex(self.last(proc), rf"^DEPLOY-FAIL build-selection repo-gateway built for history-profile \({ACCOUNT} us-west-2\), "
+                         rf"target is my-profile \({ACCT_A1} us-east-1\): ")
         self.assertEqual(self.deploys(), [])
 
     def test_build_output_naming_another_selection_fails_the_lambda_build_step(self) -> None:
@@ -2353,8 +2408,8 @@ class DeployCase(unittest.TestCase):
         # directory is what tells which selection it was built for.
         proc = self.run_deploy("--stage", "direct", FAKE_OUT_FOR="my-profile", FAKE_OUT_KINDS="lambda")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertRegex(self.last(proc), r"^DEPLOY-FAIL build-selection harness-protocol built for my-profile "
-                         r"\(222222222222 us-east-1\), target is history-profile \(111111111111 us-west-2\): ")
+        self.assertRegex(self.last(proc), rf"^DEPLOY-FAIL build-selection harness-protocol built for my-profile "
+                         rf"\({ACCT_A1} us-east-1\), target is history-profile \({ACCOUNT} us-west-2\): ")
         self.assertIn("aws_target.rs", self.last(proc))
         self.assertEqual(self.log("node"), [])
 
@@ -2377,8 +2432,214 @@ class DeployCase(unittest.TestCase):
         proc = self.acct_two(FAKE_FOREIGN_IN="control-api")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         boot = (self.keyed("my-profile") / "lambda" / "direct" / "control-api" / "bootstrap").read_bytes()
-        self.assertIn(b"111111111111", boot)
+        self.assertIn(ACCOUNT.encode(), boot)
+    def _run_endpoint_deploy(self, endpoint_env: dict[str, str] | None = None, endpoint_timeout: float | None = None):
+        with tempfile.TemporaryDirectory(prefix="deploy-endpoint-") as raw:
+            fake = Path(raw) / "aws"
+            fake.write_text(ENDPOINT_FAKE_AWS.format(python=sys.executable), encoding="utf-8")
+            fake.chmod(0o755)
 
+            deployer = deploy.Deployer("direct")
+            deployer.aws_bin = str(fake)
+            deployer._current_runtimes = {}
+            deployer.env.update(endpoint_env or {})
+            tests_path = str(REPO / "scripts" / "tests")
+            deployer.env["PYTHONPATH"] = tests_path + (os.pathsep + deployer.env["PYTHONPATH"] if deployer.env.get("PYTHONPATH") else "")
+            image = f"example.invalid/worker@sha256:{'a' * 64}"
+            order: list[str] = []
+            launched: list[list[str]] = []
+            real_aws = deployer.aws
+            real_run = deployer.run
+
+            def aws(*args: str, **kwargs: object):
+                if args[:2] == ("ssm", "get-parameter"):
+                    return None
+                if args[:2] == ("cloudformation", "describe-stacks"):
+                    order.append("endpoint")
+                    return real_aws(*args, **kwargs)
+                raise AssertionError(args)
+
+            metadata = subprocess.CompletedProcess([], 0, json.dumps({"packages": [], "resolve": {"nodes": []}}), "")
+
+            def run(cmd: list[str], *args: object, **kwargs: object):
+                if cmd and cmd[0] == str(fake):
+                    launched.append(list(cmd))
+                    return real_run(cmd, *args, **kwargs)
+                return metadata
+
+            output = io.StringIO()
+            record = mock.Mock(side_effect=lambda _document: order.append("record"))
+            error: deploy.Fail | None = None
+            result: str | None = None
+            with contextlib.ExitStack() as stack:
+                replacements = {
+                    "git": "b" * 40,
+                    "check_account": None,
+                    "check_azs": {},
+                    "check_vpc_cidr": {"cidr": "10.50.0.0/16", "overlaps": []},
+                    "settle_owner": None,
+                    "deploy_lock": contextlib.nullcontext(),
+                    "report_config_record": None,
+                    "settle_settings": {},
+                    "require_consent": None,
+                    "compute_instances_state": {"change": False},
+                    "say_compute_instances": None,
+                    "refuse_instances_off": None,
+                    "tools_mode_state": {"change": False},
+                    "say_tools_mode": None,
+                    "isolation_state": {"change": False},
+                    "say_isolation": None,
+                    "build_lambda": None,
+                    "install_infra": None,
+                    "image_tag": "in-test",
+                    "stack_order": [],
+                    "provider_replacement": None,
+                    "check_bootstrap": {"outcome": "existing", "version": 21, "required": 21},
+                    "repo_exists": True,
+                    "find_image": image,
+                    "resolve_delivery_image": f"example.invalid/delivery@sha256:{'c' * 64}",
+                    "version_endpoints": [],
+                    "invocation_logging": {},
+                    "template_hashes": {},
+                    "asl_versions": {},
+                    "record_assets": None,
+                    "guard": None,
+                }
+                for name, value in replacements.items():
+                    stack.enter_context(mock.patch.object(deployer, name, return_value=value))
+                # The first write of the SSM digests is recorded as "digests", so a case sees whether the endpoint was checked before it.
+                stack.enter_context(mock.patch.object(
+                    deployer, "put_param", side_effect=lambda _name, _value: None if "digests" in order else order.append("digests")))
+                stack.enter_context(mock.patch.object(deploy, "ENDPOINT_LOOKUP_WAIT_S", 0, create=True))
+                stack.enter_context(mock.patch.object(deployer, "run", side_effect=run))
+                stack.enter_context(mock.patch.object(deployer, "aws", side_effect=aws))
+                stack.enter_context(mock.patch.object(
+                    deployer,
+                    "check_runtimes",
+                    side_effect=lambda _expected: order.append("runtimes") or [{"image": image}],
+                ))
+                stack.enter_context(mock.patch.object(
+                    deployer,
+                    "report_gomod_store",
+                    side_effect=lambda: order.append("gomod") or {"state": "filled"},
+                ))
+                stack.enter_context(mock.patch.object(deployer, "write_record", record))
+                stack.enter_context(mock.patch.object(
+                    deployer,
+                    "write_settings_record",
+                    side_effect=lambda _status: order.append("settings-record"),
+                ))
+                stack.enter_context(mock.patch.object(deploy.digests, "source_tree", return_value="d" * 64))
+                stack.enter_context(mock.patch.object(deploy.digests, "local_crate_closure", return_value=[]))
+                stack.enter_context(mock.patch.object(deploy.digests, "_hash_paths", return_value="e" * 64))
+                stack.enter_context(mock.patch.object(deploy.digests, "deployment_digest", return_value="f" * 64))
+                stack.enter_context(mock.patch.object(deploy.digests, "image_digest", return_value="1" * 64))
+                if endpoint_timeout is not None:
+                    stack.enter_context(mock.patch.object(deploy, "ENDPOINT_LOOKUP_TIMEOUT_S", endpoint_timeout))
+                with contextlib.redirect_stdout(output):
+                    try:
+                        result = deployer.deploy()
+                        print(result)
+                    except deploy.Fail as exc:
+                        error = exc
+
+            return deployer, output.getvalue(), order, record, error, result, launched
+
+    def test_deploy_prints_the_endpoint(self) -> None:
+        deployer, output, order, record, error, result, launched = self._run_endpoint_deploy()
+
+        self.assertIsNone(error)
+        self.assertIsNotNone(result)
+        self.assertEqual(order, ["runtimes", "endpoint", "digests", "gomod", "record", "settings-record"])
+        record.assert_called_once()
+        self.assertEqual(len(launched), 1)
+        self.assertTrue(all(call[0].endswith("/aws") for call in launched), launched)
+        lines = output.splitlines()
+        ready = f"deploy: endpoint V1ApiUrl ready stage=direct region={deployer.region}. Read it from stack hamh-direct-control."
+        self.assertEqual(lines[-2], ready)
+        self.assertTrue(lines[-1].startswith("DEPLOY-PASS stage=direct "))
+        self.assertNotIn("https://", output)
+
+    def test_endpoint_failures_use_the_fake_process_and_write_no_pass_record(self) -> None:
+        cases = (
+            ({"FAKE_NO_V1_API_URL": "1"}, "missing"),
+            ({"FAKE_MALFORMED_V1_API_URL": "1"}, "invalid"),
+            ({"FAKE_AWS_RESPONSE_MODE": "denied"}, "unavailable"),
+            ({"FAKE_AWS_RESPONSE_MODE": "nonzero"}, "unavailable"),
+            ({"FAKE_AWS_RESPONSE_MODE": "empty"}, "missing"),
+            ({"FAKE_AWS_RESPONSE_MODE": "malformed-json"}, "invalid"),
+            ({"FAKE_AWS_RESPONSE_MODE": "malformed-shape"}, "invalid"),
+            ({"FAKE_AWS_RESPONSE_MODE": "multiple-stacks"}, "invalid"),
+            ({"FAKE_AWS_RESPONSE_MODE": "duplicate-output-keys"}, "invalid"),
+        )
+        for settings, detail in cases:
+            with self.subTest(settings=settings):
+                controls = {
+                    "FAKE_AWS_RESPONSE_PAIR": "cloudformation describe-stacks",
+                    "FAKE_AWS_RESPONSE_STACK": "hamh-direct-control",
+                    "FAKE_AWS_STDOUT": "do-not-print-response-detail",
+                    "FAKE_AWS_STDERR": "do-not-print-transport-detail",
+                    **settings,
+                }
+                _deployer, output, order, record, error, result, launched = self._run_endpoint_deploy(controls)
+                # A stack that cannot be read is read three times; an answer is final. Nothing records the deployment.
+                tries = 3 if detail == "unavailable" else 1
+                self.assertIsNone(result)
+                self.assertEqual(str(error), f"endpoint {detail}")
+                self.assertEqual(order, ["runtimes"] + ["endpoint"] * tries)
+                record.assert_not_called()
+                self.assertEqual(len(launched), tries)
+                self.assertNotIn("endpoint V1ApiUrl ready", output)
+                self.assertNotIn("DEPLOY-PASS", output)
+                self.assertNotIn("do-not-print", output + str(error))
+                self.assertNotIn("https://", output + str(error))
+
+    def test_delayed_endpoint_process_is_terminated_without_a_pass_record(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="deploy-endpoint-pid-") as raw:
+            pid_file = Path(raw) / "pid"
+            controls = {
+                "FAKE_AWS_DELAY_PAIR": "cloudformation describe-stacks",
+                "FAKE_AWS_DELAY_S": "5",
+                "FAKE_AWS_PID_FILE": str(pid_file),
+            }
+            started = time.monotonic()
+            _deployer, output, order, record, error, result, launched = self._run_endpoint_deploy(controls, endpoint_timeout=0.5)
+            elapsed = time.monotonic() - started
+            pid = int(pid_file.read_text(encoding="utf-8"))
+
+        # Each of the three tries is ended at the time limit.
+        self.assertLess(elapsed, 3 * 0.5 + 1.5)
+        self.assertIsNone(result)
+        self.assertEqual(str(error), "endpoint unavailable")
+        self.assertEqual(order, ["runtimes", "endpoint", "endpoint", "endpoint"])
+        record.assert_not_called()
+        self.assertEqual(len(launched), 3)
+        self.assertNotIn("endpoint V1ApiUrl ready", output)
+        self.assertNotIn("DEPLOY-PASS", output)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+
+    def test_b835_the_endpoint_is_checked_before_the_deployment_is_recorded(self) -> None:
+        # The endpoint is checked with the runtimes. A deploy that cannot confirm it writes no SSM digest, so the stage's parameters still name
+        # the last deploy that finished, as after any other failed check of the new stacks.
+        _deployer, _output, order, _record, error, _result, _launched = self._run_endpoint_deploy()
+        self.assertIsNone(error)
+        self.assertEqual(order.index("endpoint"), order.index("runtimes") + 1)
+        self.assertLess(order.index("endpoint"), order.index("digests"))
+        _deployer, _output, order, record, error, _result, _launched = self._run_endpoint_deploy({"FAKE_NO_V1_API_URL": "1"})
+        self.assertEqual(str(error), "endpoint missing")
+        self.assertEqual(order, ["runtimes", "endpoint"])
+        record.assert_not_called()
+
+    def test_b835_a_deploy_that_cannot_confirm_its_endpoint_writes_no_digest(self) -> None:
+        proc = self.run_deploy("--stage", "direct", FAKE_NO_V1_API_URL="1")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.last(proc), "DEPLOY-FAIL endpoint missing")
+        ssm = self.ssm()
+        for name in ("deployment-digest", "deployed-source-tree", "image-digest", "worker-revision", "deployment-config-digest"):
+            self.assertNotIn(f"/hamh/direct/{name}", ssm)
+        self.assertNotIn("https://", proc.stdout + proc.stderr)
 
     # ----: the Go module store is said at the end of the deploy -------------------------------------------------------------------------
 
@@ -2443,7 +2704,7 @@ class DeployCase(unittest.TestCase):
         self.assertEqual(gomod_writes, [])
 
     def test_a_failed_deploy_does_not_look_at_the_store(self) -> None:
-        proc = self.run_deploy("--stage", "direct", FAKE_ACCOUNT="000000000000")
+        proc = self.run_deploy("--stage", "direct", FAKE_ACCOUNT=ZERO_ACCOUNT)
         self.assert_refused(proc, "account")
         self.assertNotIn("GOMOD-STORE", proc.stdout)
 
@@ -2453,7 +2714,7 @@ class DeployCase(unittest.TestCase):
     def generated_config(self, tag: str = "a") -> Path:
         """A generated account file: the committed entries plus one more, so its bytes differ and the entry the run selects stays."""
         doc = json.loads(sf.ACCOUNTS.read_text())
-        doc["accounts"].append({**doc["accounts"][0], "profile": f"extra-{tag}", "account": "555566667777", "role": "test"})
+        doc["accounts"].append({**doc["accounts"][0], "profile": f"extra-{tag}", "account": EXTRA_ACCOUNT, "role": "test"})
         p = self.tmp / f"generated-{tag}.json"
         p.write_text(json.dumps(doc, indent=1) + "\n")
         return p
@@ -2679,6 +2940,47 @@ class DeployCase(unittest.TestCase):
         self.seed_stack("network", "keepme")
         proc = self.run_deploy("--stage", "direct", "--check-guard", HAMH_OWNER="someone-else")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+
+class DeployWrapperCase(unittest.TestCase):
+    def test_python_wrapper_requires_3_11_for_deploy(self) -> None:
+        for mode, expected_rc, reached in (("old", 2, False), ("new", 0, True), ("missing", 2, False)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="deploy-wrapper-") as raw:
+                root = Path(raw)
+                scripts = root / "scripts"
+                lib = scripts / "lib"
+                bindir = root / "bin"
+                lib.mkdir(parents=True)
+                bindir.mkdir()
+                shutil.copy2(SCRIPT, scripts / "deploy.sh")
+                shutil.copy2(REPO / "scripts" / "lib" / "python.sh", lib / "python.sh")
+                (lib / "deploy.py").write_text('print("WRAPPER-SENTINEL")\n', encoding="utf-8")
+                dirname = shutil.which("dirname")
+                self.assertIsNotNone(dirname)
+                (bindir / "dirname").symlink_to(dirname)
+                environment = {
+                    "PATH": str(bindir),
+                    "HOME": str(root / "home"),
+                    "UV_PYTHON_INSTALL_DIR": str(root / "uv"),
+                    "UV_PYTHON_PREFERENCE": "only-managed",
+                    "HAMH_PYTHON": "",
+                }
+                if mode == "old":
+                    interpreter = root / "old-python"
+                    interpreter.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+                    interpreter.chmod(0o755)
+                    environment["HAMH_PYTHON"] = str(interpreter)
+                elif mode == "new":
+                    environment["HAMH_PYTHON"] = sys.executable
+                result = subprocess.run(
+                    ["/bin/bash", str(scripts / "deploy.sh"), "--stage", "direct"],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                    timeout=60,
+                )  # nosec B603: isolated wrapper and local fixed-answer interpreter stand-in under test
+                self.assertEqual(result.returncode, expected_rc, result.stdout + result.stderr)
+                self.assertEqual("WRAPPER-SENTINEL" in result.stdout, reached)
 
 
 if __name__ == "__main__":

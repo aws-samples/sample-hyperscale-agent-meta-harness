@@ -328,6 +328,8 @@ def _entry(e: dict, i: int) -> Target:
     for s in azs:
         if not azs[s] or len(azs[s]) != len(ids[s]):
             raise TargetError(f"{where}: azs.{s} and azIds.{s} must pair up one to one")
+        if len(azs[s]) != len(set(azs[s])):
+            raise TargetError(f"{where}: azs.{s} contains a repeated AZ name")
         for az in azs[s]:
             if not (az.startswith(e["region"]) and re.fullmatch(r"[a-z]", az[len(e["region"]):])):
                 raise TargetError(f"{where}: {az} is not in {e['region']}")

@@ -46,6 +46,11 @@ class StageData(unittest.TestCase):
     def test_the_vpc_cidr_is_the_one_infra_config_ts_creates(self) -> None:
         self.assertEqual(deploy.VPC_CIDRS, {"direct": ts_stage_value("direct", "vpcCidr")})
 
+    def test_b835_the_preflight_checks_the_range_and_the_tags_the_deploy_checks(self) -> None:
+        # deploy_preflight.py cannot import deploy.py (deploy.py imports it), so its copies of the stage range and the project tag are pinned here.
+        self.assertEqual(deploy.deploy_preflight.VPC_CIDR, deploy.VPC_CIDRS["direct"])
+        self.assertEqual(deploy.deploy_preflight.PROJECT, deploy.PROJECT)
+
     def test_the_az_count_follows_accounts_json(self) -> None:
         for t in aws_target.load(REPO / "accounts.json"):
             for stage, n in deploy.AZS.items():
@@ -109,18 +114,51 @@ class VpcCidr(unittest.TestCase):
     def test_the_stages_own_vpc_is_not_an_overlap(self) -> None:
         self.check([self.vpc("10.50.0.0/16", "vpc-own", {"project": deploy.PROJECT, "stage": "direct"})])
 
-    def test_another_vpc_in_the_range_is_refused_with_its_id(self) -> None:
+    def test_another_vpc_in_the_range_is_refused_without_vpc_details(self) -> None:
         for cidr in ("10.50.0.0/16", "10.50.4.0/24", "10.0.0.0/8", "10.48.0.0/14"):
+            document = {"Vpcs": [self.vpc(cidr, "vpc-other")]}
+            result = deploy.deploy_preflight.evaluate_vpc_overlap(
+                document,
+                deploy.VPC_CIDRS["direct"],
+                {"project": deploy.PROJECT, "stage": "direct"},
+            )
+            self.assertEqual((result.state, result.reason_code), ("FAIL", "VPC_OVERLAP"))
+            self.assertNotIn("vpc-other", str(dict(result.facts)))
             with self.assertRaises(deploy.Fail, msg=cidr) as cm:
-                self.check([self.vpc(cidr, "vpc-other")])
-            self.assertTrue(str(cm.exception).startswith("vpc-cidr "), str(cm.exception))
-            self.assertIn("vpc-other", str(cm.exception))
-            self.assertIn("10.50.0.0/16", str(cm.exception))
+                self.check(document["Vpcs"])
+            self.assertEqual(str(cm.exception), f"vpc-cidr 10.50.0.0/16 overlaps vpc-other={cidr}")
 
     def test_a_secondary_cidr_block_counts(self) -> None:
         with self.assertRaises(deploy.Fail) as cm:
             self.check([self.vpc("172.31.0.0/16", "vpc-two", extra=["10.50.128.0/17"])])
-        self.assertIn("vpc-two=10.50.128.0/17", str(cm.exception))
+        self.assertEqual(str(cm.exception), "vpc-cidr 10.50.0.0/16 overlaps vpc-two=10.50.128.0/17")
+
+    def test_malformed_owned_vpcs_fail_before_the_owned_stage_exemption(self) -> None:
+        tags = {"project": deploy.PROJECT, "stage": "direct"}
+        for vpc in (
+            {"VpcId": "vpc-owned", "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]},
+            self.vpc("not-a-cidr", "vpc-owned", tags),
+            self.vpc("10.50.0.0/16", "vpc-owned", tags, extra=[7]),
+        ):
+            with self.subTest(vpc=vpc), self.assertRaisesRegex(deploy.Fail, "^vpc-cidr unavailable$"):
+                self.check([vpc])
+
+    def test_the_previous_stage_is_refused_without_vpc_details(self) -> None:
+        tags = {"project": deploy.LEGACY_PROJECT, "stage": "direct"}
+        document = {"Vpcs": [self.vpc("10.50.0.0/16", "vpc-old", tags)]}
+        result = deploy.deploy_preflight.evaluate_vpc_overlap(
+            document,
+            deploy.VPC_CIDRS["direct"],
+            {"project": deploy.PROJECT, "stage": "direct"},
+        )
+        self.assertEqual((result.state, result.reason_code), ("FAIL", "VPC_OVERLAP"))
+        self.assertNotIn("vpc-old", str(dict(result.facts)))
+        with self.assertRaises(deploy.Fail) as raised:
+            self.check(document["Vpcs"])
+        text = str(raised.exception)
+        self.assertIn("stage under the previous names", text)
+        self.assertIn("vpc-old", text)
+        self.assertIn("10.50.0.0/16", text)
 
     def test_a_vpc_of_the_project_but_another_stage_is_not_excused_when_it_overlaps(self) -> None:
         with self.assertRaises(deploy.Fail):
@@ -129,6 +167,58 @@ class VpcCidr(unittest.TestCase):
     def test_a_tag_without_the_project_does_not_excuse(self) -> None:
         with self.assertRaises(deploy.Fail):
             self.check([self.vpc("10.50.0.0/16", "vpc-x", {"stage": "direct"})])
+
+    def test_b835_a_refusal_names_the_other_vpcs_and_never_the_stages_own(self) -> None:
+        # The stage's own tagged VPC is never an overlap, so the refusal that another VPC causes names that VPC alone, as the
+        # deploy did before the readiness preflight. Naming the stage's own VPC would ask the reader to free a range that the stage itself holds.
+        own = self.vpc("10.50.0.0/16", "vpc-own", {"project": deploy.PROJECT, "stage": "direct"})
+        with self.assertRaises(deploy.Fail) as cm:
+            self.check([own, self.vpc("10.50.4.0/24", "vpc-other")])
+        self.assertEqual(str(cm.exception), "vpc-cidr 10.50.0.0/16 overlaps vpc-other=10.50.4.0/24")
+        old = self.vpc("10.50.0.0/16", "vpc-old", {"project": deploy.LEGACY_PROJECT, "stage": "direct"})
+        with self.assertRaises(deploy.Fail) as cm:
+            self.check([own, old])
+        self.assertIn("overlaps vpc-old=10.50.0.0/16: this account still has the stage under the previous names", str(cm.exception))
+        self.assertNotIn("vpc-own", str(cm.exception))
+
+    def test_b835_a_vpc_answer_the_check_cannot_read_is_refused_with_a_sentence_and_an_action(self) -> None:
+        # The detail `unavailable` alone made the line `DEPLOY-REFUSED reason=vpc-cidr ... :: unavailable`, which says neither what was found
+        # nor what to do. The detail stays `unavailable`; the refusal line says what was read and what to do.
+        for vpcs in ([{"VpcId": "vpc-x"}], [self.vpc("not-a-cidr", "vpc-x")]):
+            with self.subTest(vpcs=vpcs):
+                with self.assertRaises(deploy.Fail) as cm:
+                    self.check(vpcs)
+                self.assertEqual(str(cm.exception), "vpc-cidr unavailable")
+                self.assertEqual(deploy.refusal_line(cm.exception),
+                                 "DEPLOY-REFUSED reason=vpc-cidr wait=no stage=unchanged :: the answer of `aws ec2 describe-vpcs` has a shape this deploy "
+                                 "cannot check. Check that the AWS CLI of this machine answers `aws ec2 describe-vpcs` as the EC2 API documents it, "
+                                 "then deploy again.")
+
+
+class AzCheck(unittest.TestCase):
+    def test_b835_an_az_answer_the_check_cannot_read_is_refused_with_a_sentence_and_an_action(self) -> None:
+        # An answer that names every zone with its ID and is still not one row per zone (a zone twice) is no mismatch the
+        # refusal can name; it left the detail ` (accounts.json:)`. It is refused as an answer this deploy cannot check, with what to do.
+        d = deploy.Deployer("direct")
+        rows = [{"ZoneName": n, "ZoneId": i} for n, i in zip(d.target.azs["direct"], d.target.az_ids["direct"])]
+        with mock.patch.object(deploy.Deployer, "aws", return_value={"AvailabilityZones": rows + rows}):
+            with self.assertRaises(deploy.Fail) as cm:
+                d.check_azs()
+        self.assertEqual(str(cm.exception), "azs unavailable")
+        self.assertEqual(deploy.refusal_line(cm.exception),
+                         "DEPLOY-REFUSED reason=azs wait=no stage=unchanged :: the answer of `aws ec2 describe-availability-zones` has a shape this "
+                         "deploy cannot check. Check that the AWS CLI of this machine answers `aws ec2 describe-availability-zones` as the EC2 API "
+                         "documents it, then deploy again.")
+
+    def test_b835_a_zone_that_maps_to_another_id_still_names_the_zone_and_both_ids(self) -> None:
+        # The mismatch refusal of a well-formed answer is the deploy's own and stays as it was (regression of the fit above).
+        d = deploy.Deployer("direct")
+        names, ids = d.target.azs["direct"], d.target.az_ids["direct"]
+        rows = [{"ZoneName": n, "ZoneId": "xxx-az9"} for n in names]
+        with mock.patch.object(deploy.Deployer, "aws", return_value={"AvailabilityZones": rows}):
+            with self.assertRaises(deploy.Fail) as cm:
+                d.check_azs()
+        self.assertEqual(str(cm.exception), "azs " + " ".join(f"{n}=xxx-az9" for n in names) + f" (accounts.json: {' '.join(ids)})")
 
 
 class DeployRunsTheCidrCheck(unittest.TestCase):
@@ -176,6 +266,126 @@ class DeployRunsTheCidrCheck(unittest.TestCase):
         order, err = self.run_deploy(deploy.Fail("vpc-cidr 10.50.0.0/16 overlaps vpc-other"))
         self.assertEqual(order, ["account", "azs", "vpc"])
         self.assertTrue(str(err).startswith("vpc-cidr "), str(err))
+
+
+class EndpointReady(unittest.TestCase):
+    def setUp(self) -> None:
+        self.deployer = deploy.Deployer("direct")
+        self.endpoint = f"https://abc123.execute-api.{self.deployer.region}.amazonaws.com/direct"
+        # A lookup that cannot be read is tried again after a wait; the cases record the waits and do not sleep.
+        patcher = mock.patch.object(deploy.time, "sleep")
+        self.sleep = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_production_endpoint_lookup_timeout_is_30_seconds(self) -> None:
+        self.assertEqual(deploy.ENDPOINT_LOOKUP_TIMEOUT_S, 30)
+
+    def test_run_threads_optional_timeout_to_capture_and_stream_calls(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        for stream in (False, True):
+            with self.subTest(stream=stream), mock.patch.object(deploy.subprocess, "run", return_value=completed) as run:
+                self.deployer.run(["tool"], stream=stream, timeout=1.25)
+                self.assertEqual(run.call_args.kwargs["timeout"], 1.25)
+                self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+                self.assertEqual(run.call_args.kwargs["errors"], "strict")
+
+    def test_endpoint_validator_accepts_only_the_stage_execute_api_url(self) -> None:
+        rejected = [
+            "http" + self.endpoint[5:],
+            self.endpoint + "?query=1",
+            self.endpoint + "#fragment",
+            self.endpoint.replace("/direct", "/other"),
+            self.endpoint.replace("abc123", "ABC123"),
+            self.endpoint.replace("amazonaws.com", "amazonaws.com.evil.invalid"),
+            self.endpoint.replace("abc123", "user@abc123"),
+            self.endpoint.replace("/direct", ":443/direct"),
+            self.endpoint + "\n",
+        ]
+        with mock.patch.object(self.deployer, "outputs", return_value={"V1ApiUrl": self.endpoint}):
+            self.assertTrue(self.deployer.endpoint_ready())
+        for value in rejected:
+            with self.subTest(value=value), mock.patch.object(self.deployer, "outputs", return_value={"V1ApiUrl": value}), \
+                    self.assertRaisesRegex(deploy.Fail, "^endpoint invalid$"):
+                self.deployer.endpoint_ready()
+
+    def test_b835_an_endpoint_of_another_region_is_invalid(self) -> None:
+        # The host must name the stage's own Region. A mutation that loosened the Region part of the host pattern passed the MR's tests.
+        region = self.deployer.region
+        for other in ("us-west-2", "eu-west-1", "us-east-1"):
+            if other == region:
+                continue
+            value = self.endpoint.replace(f".{region}.", f".{other}.")
+            with self.subTest(value=value), mock.patch.object(self.deployer, "outputs", return_value={"V1ApiUrl": value}), \
+                    self.assertRaisesRegex(deploy.Fail, "^endpoint invalid$"):
+                self.deployer.endpoint_ready()
+        value = self.endpoint.replace(f".{region}.", ".")
+        with mock.patch.object(self.deployer, "outputs", return_value={"V1ApiUrl": value}), self.assertRaisesRegex(deploy.Fail, "^endpoint invalid$"):
+            self.deployer.endpoint_ready()
+
+    def test_b835_the_lookup_is_tried_three_times_five_and_ten_seconds_apart(self) -> None:
+        self.assertEqual((deploy.ENDPOINT_LOOKUP_ATTEMPTS, deploy.ENDPOINT_LOOKUP_WAIT_S), (3, 5))
+
+    def test_b835_a_lookup_that_cannot_be_read_is_tried_again(self) -> None:
+        # The read follows the stack changes; a slow or throttled describe-stacks must not fail a deploy whose stacks are all in place.
+        answers = [deploy.Fail("aws", "timeout"), deploy.Fail("aws", "cloudformation describe-stacks: Rate exceeded"), {"V1ApiUrl": self.endpoint}]
+        with mock.patch.object(self.deployer, "outputs", side_effect=answers) as outputs:
+            self.assertTrue(self.deployer.endpoint_ready())
+        self.assertEqual(outputs.call_count, 3)
+        self.assertEqual([c.args[0] for c in self.sleep.call_args_list], [5, 10])
+        for c in outputs.call_args_list:
+            self.assertEqual(c.kwargs["timeout"], deploy.ENDPOINT_LOOKUP_TIMEOUT_S)
+
+    def test_b835_a_lookup_that_stays_unreadable_fails_after_the_last_try(self) -> None:
+        with mock.patch.object(self.deployer, "outputs", side_effect=OSError("down")) as outputs:
+            with self.assertRaisesRegex(deploy.Fail, "^endpoint unavailable$"):
+                self.deployer.endpoint_ready()
+        self.assertEqual(outputs.call_count, 3)
+        self.assertEqual(self.sleep.call_count, 2)
+
+    def test_b835_an_answer_without_a_valid_endpoint_is_final(self) -> None:
+        # A stack that names no endpoint, or a malformed one, answers the same way the next time: no second read.
+        for answer, detail in (({}, "missing"), ({"V1ApiUrl": "not-a-url"}, "invalid"), (ValueError("shape"), "invalid")):
+            with self.subTest(detail=detail):
+                with mock.patch.object(self.deployer, "outputs", side_effect=[answer]) as outputs:
+                    with self.assertRaisesRegex(deploy.Fail, f"^endpoint {detail}$"):
+                        self.deployer.endpoint_ready()
+                self.assertEqual(outputs.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_outputs_reject_malformed_collections_and_duplicate_keys(self) -> None:
+        row = {"OutputKey": "V1ApiUrl", "OutputValue": self.endpoint}
+        malformed = (
+            {"Stacks": []},
+            {"Stacks": [{"Outputs": []}, {"Outputs": []}]},
+            {"Stacks": [{"Outputs": {}}]},
+            {"Stacks": [{"Outputs": [7]}]},
+            {"Stacks": [{"Outputs": [{"OutputKey": 7, "OutputValue": self.endpoint}]}]},
+            {"Stacks": [{"Outputs": [row, dict(row)]}]},
+        )
+        for document in malformed:
+            with self.subTest(document=document), mock.patch.object(self.deployer, "aws", return_value=document), \
+                    self.assertRaises(ValueError):
+                self.deployer.outputs("hamh-direct-control")
+
+    def test_endpoint_transport_and_json_failures_are_redacted(self) -> None:
+        cases = (
+            (subprocess.TimeoutExpired(["aws"], 30), "unavailable"),
+            (UnicodeDecodeError("utf-8", b"x", 0, 1, "bad"), "unavailable"),
+            (subprocess.CompletedProcess([], 0, "{", ""), "invalid"),
+            (subprocess.CompletedProcess([], 0, f'{{"Stacks":[{{"Outputs":[]}}],"ignored":NaN}}', ""), "invalid"),
+            (subprocess.CompletedProcess([], 0, f'{{"Stacks":[{{"Outputs":[]}}],"ignored":1e999}}', ""), "invalid"),
+            (subprocess.CompletedProcess([], 0, f'{{"Stacks":[{{"Outputs":[]}}],"ignored":-1e999}}', ""), "invalid"),
+        )
+        for result, detail in cases:
+            with self.subTest(detail=detail):
+                patch = (
+                    mock.patch.object(self.deployer, "run", side_effect=result)
+                    if isinstance(result, BaseException)
+                    else mock.patch.object(self.deployer, "run", return_value=result)
+                )
+                with patch, self.assertRaisesRegex(deploy.Fail, f"^endpoint {detail}$") as raised:
+                    self.deployer.endpoint_ready()
+                self.assertNotIn(self.endpoint, str(raised.exception))
 
 
 class ImageBuild(unittest.TestCase):
