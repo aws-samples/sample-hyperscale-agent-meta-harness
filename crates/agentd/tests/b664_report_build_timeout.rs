@@ -102,6 +102,8 @@ async fn fix515_b664_a_cargo_command_stopped_in_its_build_says_no_test_had_begun
         source: TestCommandSource::Detected,
         command: "cargo test".into(),
         logged: None,
+        install: None,
+        fallback: None,
     };
     let cwd = common::scratch("fix515-cargo-tree");
     let mut step = run_step(&env, &planned, &cwd, Duration::from_secs(2), 4096).await;

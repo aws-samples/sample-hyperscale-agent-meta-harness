@@ -1873,6 +1873,126 @@ class LockCase(SettingsBase):
         self.assertIn("no deploy lock", line)
         self.assertNotIn(LOCK, self.ssm())
 
+    def test_b804_wait_a_deploy_never_runs_under_a_lock_that_says_it_deploys_nothing(self) -> None:
+        # Setup writes deploys=no for a hold that changes nothing on the stage, and the stage's API service starts runs under such a lock
+        text = self.seed_lock("b" * 32) + "\ndeploys=no"
+        d = self.ssm()
+        d[LOCK] = text
+        (self.state / "ssm.json").write_text(json.dumps(d))
+        reason, wait, line = self.refused(self.deploy(HAMH_DEPLOY_LOCK_TOKEN="b" * 32))
+        self.assertEqual((reason, wait), ("lock", "yes"))
+        self.assertIn("deploys=no", line)
+        self.assertEqual(self.ssm()[LOCK], text, "the caller's lock is left as it is")
+        self.assertEqual(self.log("cargo"), [], "nothing is built")
+
+    def caller_deployer(self, token: str):
+        """A Deployer of this process that runs under the caller's lock (HAMH_DEPLOY_LOCK_TOKEN), with its keeper driven by hand and not from a thread."""
+        dp, d = self.deployer()
+        with mock.patch.dict(os.environ, {"HAMH_DEPLOY_LOCK_TOKEN": token}), mock.patch.object(dp.Deployer, "start_lock_keeper") as started, \
+                contextlib.redirect_stdout(io.StringIO()):
+            d.take_lock()
+        return dp, d, started
+
+    def test_b804_admit_a_deploy_under_the_callers_lock_writes_it_again_every_five_minutes(self) -> None:
+        # A setup that stops following its build (Ctrl-C, a closed terminal, a sign-in that ran out, a laptop that sleeps) writes the lock no more, and
+        # the stage's API service takes a lock that nobody wrote for 30 minutes for abandoned and starts runs again, while the build may still deploy. So the deploy
+        # that runs under the caller's lock writes that lock again while it runs: the text it reads, with one line `renewed=<UTC time>`.
+        text = self.seed_lock("b" * 32) + "\nparties=ci-host:4242@2026-11-10T16:00:00Z,other-host:7@2026-11-10T16:00:05Z"
+        store = self.ssm()
+        store[LOCK] = text
+        (self.state / "ssm.json").write_text(json.dumps(store))
+        dp, d, started = self.caller_deployer("b" * 32)
+        self.assertEqual(started.call_count, 1, "the keeper is started for the caller's lock too")
+        self.assertEqual(self.lock_puts(), [], "taking the caller's lock writes nothing")
+        clock = FakeClock(turns=9)  # 45 minutes of a deploy at the default interval
+        d.clock = clock.now
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            d.keep_lock(clock.wait)
+        puts = self.lock_puts()
+        self.assertEqual(len(puts), 9, "one write per interval")
+        self.assertEqual(clock.waits, [dp.LOCK_RENEW_S] * 10)
+        self.assertLessEqual(dp.LOCK_RENEW_S, 600, "at least every ten minutes: well inside the 30 minutes of a lock nobody renews")
+        self.assertTrue(all("--overwrite" in p for p in puts), "it writes over the lock that exists and never creates one")
+        stamps = []
+        for p in puts:
+            lines = p[p.index("--value") + 1].splitlines()
+            self.assertEqual(lines[:-1], text.splitlines(), "every line of the caller's lock is kept as it was read, in its order")
+            self.assertRegex(lines[-1], r"^renewed=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            self.assertNotIn("deploys=no", lines, "the lock still closes the stage")
+            stamps.append(lines[-1])
+        self.assertEqual(len(set(stamps)), 9, "each write changes the value, so the time SSM records for the parameter moves")
+        self.assertEqual(stamps[-1], f"renewed={clock.at:%Y-%m-%dT%H:%M:%SZ}")
+        self.assertEqual([a for a in self.aws_calls() if a[:2] in (["ssm", "delete-parameter"], ["ssm", "add-tags-to-resource"]) and LOCK in a], [],
+                         "the lock stays the caller's: the deploy neither deletes nor tags it")
+        # the end of the deploy stops the keeper and leaves the caller's lock where it is
+        calls = len(self.aws_calls())
+        with contextlib.redirect_stdout(out):
+            d.release_lock()
+            self.assertFalse(d.renew_lock(), "after the deploy has ended nothing is written any more")
+        self.assertEqual([a for a in self.aws_calls(calls) if a[:2] in (["ssm", "put-parameter"], ["ssm", "delete-parameter"])], [])
+        self.assertIn("token=" + "b" * 32, self.ssm()[LOCK])
+
+    def test_b804_admit_the_renewal_of_the_callers_lock_stops_when_the_lock_is_no_longer_the_callers_to_keep_closed(self) -> None:
+        # a lock that another deploy replaced, a lock that says its holder deploys nothing, and a lock that is gone are never written by the build
+        def put_lock(value) -> None:
+            store = self.ssm()
+            store.pop(LOCK, None)
+            if value is not None:
+                store[LOCK] = value
+            (self.state / "ssm.json").write_text(json.dumps(store))
+
+        mine = self.seed_lock("b" * 32)
+        cases = (("another deploy's lock", mine.replace("b" * 32, "e" * 32), "now belongs to another deploy"),
+                 ("a lock that deploys nothing", mine + "\ndeploys=no", "deploys=no"),
+                 ("no lock", None, "is gone"))
+        for what, value, words in cases:
+            with self.subTest(what):
+                put_lock(mine)
+                dp, d, _ = self.caller_deployer("b" * 32)
+                put_lock(value)
+                calls = len(self.aws_calls())
+                clock = FakeClock(turns=3)
+                d.clock = clock.now
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    d.keep_lock(clock.wait)
+                self.assertEqual(len(clock.waits), 1, "the keeper stops at the first renewal that finds it")
+                self.assertEqual([a for a in self.aws_calls(calls) if a[:2] in (["ssm", "put-parameter"], ["ssm", "delete-parameter"])], [], "nothing is written")
+                self.assertEqual(self.ssm().get(LOCK), value)
+                said = [ln for ln in out.getvalue().splitlines() if LOCK in ln]
+                self.assertEqual(len(said), 1, out.getvalue())
+                self.assertIn(words, said[0])
+
+    def test_b804_admit_a_renewal_of_the_callers_lock_that_fails_is_tried_again_and_never_ends_the_deploy(self) -> None:
+        self.seed_lock("b" * 32)
+        dp, d, _ = self.caller_deployer("b" * 32)
+        clock = FakeClock(turns=2)
+        d.clock = clock.now
+        out = io.StringIO()
+        d.lock_env = dict(d.env, FAKE_GET_PARAMETER_FAILS=LOCK)  # the keeper's own environment: every read of the lock is refused
+        with contextlib.redirect_stdout(out):
+            d.keep_lock(clock.wait)
+        self.assertEqual(len(clock.waits), 3, "a read that fails is tried again at the next interval")
+        self.assertEqual(self.lock_puts(), [])
+        self.assertEqual(len([ln for ln in out.getvalue().splitlines() if "could not be renewed" in ln]), 2, out.getvalue())
+
+    def test_b804_admit_the_build_renews_the_callers_lock_from_a_thread_while_it_deploys_and_leaves_it_at_the_end(self) -> None:
+        text = self.seed_lock("b" * 32)
+        proc = self.ok(HAMH_DEPLOY_LOCK_TOKEN="b" * 32, DEPLOY_LOCK_RENEW_S="0.2", FAKE_NODE_SLEEP_S="0.3")
+        puts = self.lock_puts()
+        self.assertGreaterEqual(len(puts), 3, "a renewal per interval while the nine stacks deploy")
+        self.assertTrue(all("--overwrite" in p for p in puts))
+        for p in puts:
+            lines = p[p.index("--value") + 1].splitlines()
+            self.assertEqual(lines[:-1], text.splitlines())
+            self.assertTrue(lines[-1].startswith("renewed="), lines[-1])
+        self.assertEqual([a for a in self.aws_calls() if a[:2] == ["ssm", "delete-parameter"]], [], "the holder releases its own lock")
+        left = self.ssm()[LOCK].splitlines()
+        self.assertEqual(left[:-1], text.splitlines(), "the caller's lock is there at the end, with its lines")
+        self.assertEqual(self.last(proc)[:11], "DEPLOY-PASS")
+        self.assertEqual(self.record()["status"], "deployed", "the deploy's own records are whole: the keeper's writes went beside them")
+
 
 # ---- Addendum 3 (A3.1): the keep tag and the kind of the stage ------------------------------------------------------------------------------
 

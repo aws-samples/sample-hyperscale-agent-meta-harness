@@ -362,6 +362,14 @@ async fn wait_marking(
     false
 }
 
+/// The loop drops the answer of the try it made, if that try was answered: the modules are told once. The loop returns the user's
+/// `cancelled` after a wait, not the answer it held, so that return drops the held answer too.
+fn answer_dropped(collector: &DirectCollector, answered: &mut bool) {
+    if std::mem::take(answered) {
+        collector.record_answer_dropped();
+    }
+}
+
 /// The user stopped the run while it waited: there is no prompt in flight to cancel, so the cancel is recorded and the answer is the
 /// engine's `cancelled`, which the classifier reads as the user's stop.
 async fn cancelled_while_waiting<R, W>(
@@ -557,7 +565,11 @@ where
     let mut notice_id: Option<String> = None;
     // The machine's own report is logged once, at the first -32603 that names no cause.
     let mut diagnosed = false;
+    // The last try was answered (not an error), and the loop has not returned that answer: when it goes on, the answer is dropped.
+    let mut answered = false;
     loop {
+        // Here only when the loop goes on: every other way out of it returns the result of the try before.
+        answer_dropped(collector, &mut answered);
         n += 1;
         // Each prompt is a boundary at which the session's disks are looked at.
         disk_boundary(policy, collector, record).await;
@@ -569,6 +581,7 @@ where
             DirectAttemptKind::Resume
         };
         let result = send_prompt(client, collector, session_id, &sending).await;
+        answered = result.is_ok();
         let mut attempt = DirectAttempt {
             n,
             kind,
@@ -756,6 +769,7 @@ where
             }
             let slice = failover.map_or(wait, |f| f.wait_slice);
             if wait_marking(wait, slice, plan.cancel.as_ref(), activity).await {
+                answer_dropped(collector, &mut answered);
                 return cancelled_while_waiting(client, activity, session_id).await;
             }
             sending = resume.to_string();
@@ -821,6 +835,7 @@ where
                     }
                     let slice = failover.map_or(wait, |f| f.wait_slice);
                     if wait_marking(wait, slice, plan.cancel.as_ref(), activity).await {
+                        answer_dropped(collector, &mut answered);
                         return cancelled_while_waiting(client, activity, session_id).await;
                     }
                     break 'decide;
@@ -970,6 +985,7 @@ where
                             ));
                         }
                         if wait_marking(w, f.wait_slice, plan.cancel.as_ref(), activity).await {
+                            answer_dropped(collector, &mut answered);
                             return cancelled_while_waiting(client, activity, session_id).await;
                         }
                         outage_waited += w;

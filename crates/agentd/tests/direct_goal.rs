@@ -11,6 +11,7 @@ mod common;
 mod direct_support;
 
 use agentd::BoxFuture;
+use agentd::config::Config;
 use agentd::direct::Deps;
 use agentd::direct::goal::GoalHook;
 use agentd::direct::goal::files::place_plugins;
@@ -18,9 +19,10 @@ use agentd::direct::goal::settings::GoalSettings;
 use agentd::direct::goal::state::{GoalState, pending_state, read_state, write_state};
 use agentd::direct::hooks::{DirectHook, Event, Hooks, StartupCtx, TurnEnd, TurnVote, Wire};
 use common::plugin_folder;
-use direct_support::{Direct, Opts, PROMPT};
+use direct_support::{CfgEdit, Direct, Opts, PROMPT};
 use harness_protocol::api::internal::PendingControl;
-use harness_protocol::direct::DirectOutcome;
+use harness_protocol::common::Usage;
+use harness_protocol::direct::{DirectAttemptKind, DirectAttemptResult, DirectOutcome};
 use harness_protocol::runtime::{InvocationResponse, TurnOutcome};
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
@@ -1041,4 +1043,201 @@ async fn tool_calls_that_come_with_a_changed_file_are_not_polling() {
         "{:?}",
         phases(&d)
     );
+}
+
+// ----: the usage of a run counts every engine run, not only the prompts that answered --------------------------------------------
+
+/// One retry after a provider failure and the review round on, with the review's guard at the least the setting allows.
+fn b824_stage() -> Option<CfgEdit> {
+    Some(Box::new(|cfg: &mut Config| {
+        cfg.direct.provider_retries = 1;
+        cfg.direct.review_round = true;
+        cfg.direct.review_guard = std::time::Duration::from_secs(60);
+    }))
+}
+
+/// The tokens of one scripted run of `goal_usage_failed_prompt` (input without the cache tokens).
+fn b824_run(input: u64, output: u64, cache_read: u64, cache_write: u64) -> Usage {
+    Usage {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_input_tokens: cache_read,
+        cache_write_input_tokens: cache_write,
+    }
+}
+
+fn b824_sum(runs: &[Usage]) -> Usage {
+    runs.iter().fold(Usage::default(), |a, u| Usage {
+        input_tokens: a.input_tokens + u.input_tokens,
+        output_tokens: a.output_tokens + u.output_tokens,
+        cache_read_input_tokens: a.cache_read_input_tokens + u.cache_read_input_tokens,
+        cache_write_input_tokens: a.cache_write_input_tokens + u.cache_write_input_tokens,
+    })
+}
+
+/// The owner's run of 2026-11-11 showed 67.6% of the metered cost: the prompt that ended in a provider error and the goal-loop round the engine
+/// started between two prompts were left out, because the engine reports usage only in the answer of a prompt. Here the first prompt fails after
+/// spending tokens, the resumed attempt answers, the engine's goal plugin runs one round with no prompt, and the review round answers: the usage
+/// of the run is the sum of all four runs, in every class. The round waits 300 ms before its first update, as a real round waits for its
+/// first model call: a run is matched to a prompt by when it ended, and the round must not end inside the moment the resume was answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn b824_the_run_usage_counts_the_failed_prompt_the_goal_loop_round_and_the_review_round() {
+    let d = Direct::start(Opts {
+        scenario: "goal_usage_failed_prompt",
+        timeout_s: 900,
+        edit_cfg: b824_stage(),
+        ..Opts::default()
+    })
+    .await;
+    let resp = run_goal(&d, settings(&[]), vec![]).await;
+    let failed = b824_run(3, 4100, 91_000, 21_000);
+    let resumed = b824_run(5, 7300, 402_000, 31_000);
+    let round = b824_run(4, 900, 120_000, 60_000);
+    let review = b824_run(2, 1500, 150_000, 2500);
+    let s = d.summary();
+
+    // TRIGGER PRESENT: the first try failed and the resume answered, the engine ran a round of its own, the review round ran.
+    let tries: Vec<_> = s.attempts.iter().map(|a| (a.kind, a.result)).collect();
+    assert_eq!(
+        tries,
+        vec![
+            (
+                DirectAttemptKind::Prompt,
+                DirectAttemptResult::ProviderError
+            ),
+            (DirectAttemptKind::Resume, DirectAttemptResult::Ok),
+            (DirectAttemptKind::Instruction, DirectAttemptResult::Ok),
+        ],
+        "{:?}",
+        s.attempts
+    );
+    let ends: Vec<String> = rounds(&d)
+        .iter()
+        .filter(|r| r["ev"] == "end")
+        .map(|r| r["status"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        ends,
+        ["failed", "completed", "completed", "completed"],
+        "{:?}",
+        rounds(&d)
+    );
+    assert_eq!(
+        d.prompts_received().len(),
+        3,
+        "the prompt, the resume, the review: {:?}",
+        d.prompts_received()
+    );
+    assert_eq!(
+        s.review.as_ref().map(|r| r.status.as_str()),
+        Some("ran"),
+        "{:?}",
+        s.review
+    );
+
+    let all = b824_sum(&[failed, resumed, round, review]);
+    assert_eq!(
+        s.usage,
+        Some(all),
+        "summary.json: the answered prompts alone are {:?}",
+        b824_sum(&[resumed, review])
+    );
+    assert_eq!(
+        resp.usage,
+        Some(all),
+        "turn-complete carries the same usage as the summary"
+    );
+}
+
+/// The engine ends its first try by itself (`cancelled`, after spending tokens) and the harness resumes it: the ladder drops that answer, so
+/// its tokens are not in what the prompts reported and come from the rounds log. The usage of the run is the sum of all four runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn b824_the_run_usage_counts_a_try_the_engine_ended_itself_and_the_harness_resumed() {
+    let d = Direct::start(Opts {
+        scenario: "goal_usage_engine_stop",
+        timeout_s: 900,
+        edit_cfg: Some(Box::new(|cfg: &mut Config| {
+            cfg.direct.provider_retries = 1;
+            cfg.direct.engine_stop_resumes = 1;
+            cfg.direct.review_round = true;
+            cfg.direct.review_guard = std::time::Duration::from_secs(60);
+        })),
+        ..Opts::default()
+    })
+    .await;
+    let resp = run_goal(&d, settings(&[]), vec![]).await;
+    let stopped = b824_run(6, 2200, 60_000, 18_000);
+    let resumed = b824_run(5, 7300, 402_000, 31_000);
+    let round = b824_run(4, 900, 120_000, 60_000);
+    let review = b824_run(2, 1500, 150_000, 2500);
+    let s = d.summary();
+
+    // TRIGGER PRESENT: the engine cancelled the first try itself and the resume answered; one round of its own; the review round ran.
+    let tries: Vec<_> = s.attempts.iter().map(|a| (a.kind, a.result)).collect();
+    assert_eq!(
+        tries,
+        vec![
+            (
+                DirectAttemptKind::Prompt,
+                DirectAttemptResult::EngineCancelled
+            ),
+            (DirectAttemptKind::Resume, DirectAttemptResult::Ok),
+            (DirectAttemptKind::Instruction, DirectAttemptResult::Ok),
+        ],
+        "{:?}",
+        s.attempts
+    );
+    let ends: Vec<String> = rounds(&d)
+        .iter()
+        .filter(|r| r["ev"] == "end")
+        .map(|r| r["status"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        ends,
+        ["aborted", "completed", "completed", "completed"],
+        "{:?}",
+        rounds(&d)
+    );
+    assert_eq!(
+        s.review.as_ref().map(|r| r.status.as_str()),
+        Some("ran"),
+        "{:?}",
+        s.review
+    );
+
+    let all = b824_sum(&[stopped, resumed, round, review]);
+    assert_eq!(
+        s.usage,
+        Some(all),
+        "without the dropped try: {:?}",
+        b824_sum(&[resumed, round, review])
+    );
+    assert_eq!(resp.usage, Some(all));
+}
+
+/// What the user guide says about the totals: with the goal loop off, or with OpenCode (whose loop the harness drives and which writes no
+/// rounds log), a prompt that ended in an error is not counted; nothing is added outside the answered prompts.
+#[test]
+fn b824_without_the_goal_loop_or_with_opencode_nothing_is_counted_outside_the_prompts() {
+    use agentd::acp::AcpError;
+    use agentd::direct::hooks::{PromptReplied, PromptSent};
+    // Switched off: no module at all, so the seam adds nothing.
+    assert!(GoalHook::for_engine("cline", settings(&[("AGENTD_GOAL", "off")])).is_none());
+    assert_eq!(Hooks::none().usage_outside_prompts(), None);
+    // OpenCode: the module is there (the harness drives the loop), a prompt fails, and there is nothing to add.
+    let hook =
+        GoalHook::for_engine("opencode", settings(&[])).expect("the harness loop of OpenCode");
+    hook.on_event(&Event::PromptSent(PromptSent {
+        no: 1,
+        session_id: "s1",
+        text: "build it",
+    }));
+    hook.on_event(&Event::PromptReplied(PromptReplied {
+        no: 1,
+        session_id: "s1",
+        stop_reason: None,
+        usage: None,
+        error: Some(&AcpError::Closed),
+    }));
+    assert_eq!(hook.usage_outside_prompts(), None);
 }

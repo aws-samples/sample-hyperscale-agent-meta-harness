@@ -279,6 +279,10 @@ pub struct SnapshotFetched {
     pub size_bytes: u64,
     pub run_status: harness_protocol::goal::GoalStatus,
     pub record_stale: bool,
+    /// The copy was saved when the engine had stopped: the work as the engine left it.
+    pub final_copy: bool,
+    /// The engine of the run, as the service names it; `None` from a service older than the member.
+    pub engine: Option<String>,
 }
 
 fn io(e: std::io::Error) -> SnapshotFetchError {
@@ -510,6 +514,8 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
         size_bytes: d.size_bytes,
         run_status: d.run_status,
         record_stale: d.record_stale,
+        final_copy: d.final_copy,
+        engine: d.engine.clone(),
     })
 }
 

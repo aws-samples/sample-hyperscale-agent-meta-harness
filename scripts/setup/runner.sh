@@ -84,7 +84,21 @@ RN_BLOCKED_FAILED=0
 RN_LOCK_LEFT=0
 RN_LOCK_PARTIES=""
 RN_LOCK_OTHERS=""
+# RN_LOCK_DEPLOYS is `no` while this run's hold of the lock changes nothing on the stage: an update that builds only the client (SETUP_CLIENT_ONLY), the removal of a
+# runner that was left (rn_lease_take_soft), and the time after the build has succeeded. The lock then carries the line deploys=no, and the stage's API service, which starts
+# no new runs while a deploy holds the lock, lets runs start. A lock without the line deploys. The line is never taken back: a run that finds it in the lock it shares keeps it.
+RN_LOCK_DEPLOYS=""
 RN_LOCK_AT=0
+# RN_LOCK_OPEN is 1 when the lock in the account says deploys=no as far as this run knows: it wrote the lock that way, or read it so.
+RN_LOCK_OPEN=0
+# RN_LOCK_BUSY is 1 while scripts/deploy.sh of the local route runs under this run's lock: the lock then stays through an exit (rn_lock_on_exit).
+RN_LOCK_BUSY=0
+# RN_RELEASE is what the last rn_lease_release did with this run's lock: `released` (deleted, or gone already), `shared` (another setup that follows the same build
+# is still at work under it, so the lock stays for that setup), `other` (the lock in its place holds another token and is left alone), `kept` (the read or the delete
+# failed, so the lock stays as this run left it; RN_RELEASE_ERR is the error and RN_RELEASE_HINT what it names) or `none` (this run held no lock).
+RN_RELEASE=none
+RN_RELEASE_ERR=""
+RN_RELEASE_HINT=""
 # The explicit settings of this run are SETUP_EXPLICIT_LINES (one HAMH_<NAME>=value line each) and SETUP_EXPLICIT_SETTINGS (base64 of these lines):
 # pf_explicit_settings of preflight.sh collects, checks and encodes them, and lib.sh empties both when it is sourced, so nothing here comes from the caller's shell. The
 # build receives SETUP_EXPLICIT_SETTINGS as one override (rn_start), and the deploy lock records it in its `inputs` (rn_inputs_digest).
@@ -361,7 +375,10 @@ rn_upload() {
 # shared lock reads it back after a short pause and writes itself in again when its entry is gone (rn_lock_renew); the setup that is about to remove the runner waits twice
 # that pause before its guard reads the lock (full_runner_end); and a setup that has left the lock to another one reads it once more, because that one may have ended
 # at the same moment and left it back (rn_lock_left_back). The pause is HAMH_SETUP_LOCK_SETTLE_SECONDS (5 by default; the tests set 0).
-RN_LOCK_STALE_SECONDS=1800
+# The number is the one integer line of scripts/lib/deploy-lock-stale-seconds.txt. The stage's API service embeds the same file for its own use of the rule: a lock that was
+# written within that time closes the stage to new runs. So the two cannot differ. A partial copy of the tree without the file
+# gets the same number.
+RN_LOCK_STALE_SECONDS=$(setup_number "$(head -n 1 "${SELF_DIR:-.}/scripts/lib/deploy-lock-stale-seconds.txt" 2>/dev/null)" 1800)
 
 # rn_lock_settle [times]: the pause between a write of the shared lock and the read that checks it (HAMH_SETUP_LOCK_SETTLE_SECONDS, 5 by default), times the number given.
 rn_lock_settle() {
@@ -414,6 +431,7 @@ rn_lock_token_new() {
 rn_lock_value() {
   printf 'token=%s\nholder=%s:%s\nidentity=%s\nroute=%s\nstarted=%s\ncommit=%s\ninputs=%s\nbuild=%s' "$RN_LOCK_TOKEN" "$(uname -n)" "$$" "${CALLER_ARN:-unknown}" \
     "$RN_LOCK_ROUTE" "$RN_LOCK_STARTED" "$SRC_COMMIT" "$(rn_inputs_digest)" "$1"
+  [ "$RN_LOCK_DEPLOYS" != no ] || printf '\ndeploys=no'
   [ -z "${2:-}" ] || printf '\nmark=%s' "$2"
   [ -z "$RN_LOCK_PARTIES" ] || printf '\nparties=%s' "$RN_LOCK_PARTIES"
 }
@@ -522,11 +540,19 @@ rn_lock_held_exit() {
 
 # rn_lock_adopt: a build of this commit and these inputs is running or has succeeded under the lock: this run follows it and gives the lock back at the end, as its own.
 rn_lock_adopt() {
+  # the build first: a lock that is held without a build is given back when the run ends (rn_lock_on_exit)
+  RN_LOCK_BUILD=$RN_BUILD_ID
   RN_LOCK_TOKEN=$(rn_lock_get token)
   RN_LOCK_STARTED=$(rn_lock_get started)
   RN_LOCK_ROUTE=$(rn_lock_get route)
   RN_LOCK_HELD=1
-  RN_LOCK_BUILD=$RN_BUILD_ID
+  # A hold that deploys nothing stays one
+  RN_LOCK_DEPLOYS=""
+  RN_LOCK_OPEN=0
+  if [ "$(rn_lock_get deploys)" = no ]; then
+    RN_LOCK_DEPLOYS=no
+    RN_LOCK_OPEN=1
+  fi
 }
 
 # rn_build_status <build id>: prints the status of a build, nothing when CodeBuild does not know it; returns 1 when the look itself failed.
@@ -774,12 +800,19 @@ rn_lease_take() {
   RN_LOCK_ROUTE=${1:-runner}
   RN_LOCK_PARTIES=""
   RN_LOCK_AT=$SECONDS
+  # An update of the commit the stage already runs builds only the client and changes nothing on the stage, so its lock does not close the stage to new runs
+  RN_LOCK_DEPLOYS=""
+  [ "${SETUP_CLIENT_ONLY:-0}" != 1 ] || RN_LOCK_DEPLOYS=no
   while :; do
     tries=$((tries + 1))
     [ "$RN_MODE" != stale ] || rn_lock_replace_stale
     if aws_run ssm put-parameter --name "$(rn_lock_name)" --type String --value "$(rn_lock_value "")" \
         --tags "Key=project,Value=$SETUP_PROJECT_TAG" "Key=stage,Value=$STAGE" "Key=managed-by,Value=setup.sh"; then
       RN_LOCK_HELD=1
+      RN_LOCK_OPEN=0
+      [ "$RN_LOCK_DEPLOYS" != no ] || RN_LOCK_OPEN=1
+      # Whichever way this run ends, a lock without a build goes back (rn_lock_on_exit)
+      trap rn_lock_on_exit EXIT
       trap rn_lock_interrupted INT TERM
       log_line "took the deploy lock $(rn_lock_name) for commit $SRC_COMMIT"
       return 0
@@ -803,10 +836,14 @@ rn_lease_take_soft() {
   RN_LOCK_STARTED=$(setup_now)
   RN_LOCK_ROUTE=runner
   RN_LOCK_PARTIES=""
+  # The removal of a runner changes nothing on the stage
+  RN_LOCK_DEPLOYS=no
   [ "$RN_MODE" != stale ] || rn_lock_replace_stale
   if aws_run ssm put-parameter --name "$(rn_lock_name)" --type String --value "$(rn_lock_value "")" \
       --tags "Key=project,Value=$SETUP_PROJECT_TAG" "Key=stage,Value=$STAGE" "Key=managed-by,Value=setup.sh"; then
     RN_LOCK_HELD=1
+    RN_LOCK_OPEN=1
+    trap rn_lock_on_exit EXIT
     log_line "took the deploy lock $(rn_lock_name) to remove the runner an earlier setup left"
     return 0
   fi
@@ -827,6 +864,11 @@ rn_lease_take_soft() {
 rn_lock_sync() {
   rn_lock_read || return 0
   [ -n "$RN_LOCK_TEXT" ] && [ "$(rn_lock_get token)" = "$RN_LOCK_TOKEN" ] || return 0
+  # Another setup under this lock saw the build succeed first and wrote deploys=no; this write must not take it back
+  if [ "$(rn_lock_get deploys)" = no ]; then
+    RN_LOCK_DEPLOYS=no
+    RN_LOCK_OPEN=1
+  fi
   RN_LOCK_PARTIES=""
   if rn_lock_others; then RN_LOCK_PARTIES="$RN_LOCK_OTHERS,$(uname -n):$$@$RN_LOCK_STARTED"; fi
   return 0
@@ -848,6 +890,7 @@ rn_lock_renew() {
       log_line "could not renew the deploy lock: ${AWS_ERR:-no answer}"
       return 0
     fi
+    [ "$RN_LOCK_DEPLOYS" != no ] || RN_LOCK_OPEN=1
     [ -n "$RN_LOCK_PARTIES" ] || return 0
     tries=$((tries + 1))
     [ "$tries" -lt 3 ] || return 0
@@ -857,6 +900,15 @@ rn_lock_renew() {
     rn_lock_names_me && return 0
     log_line "a write of another setup at the same moment dropped this run's entry from the deploy lock; writing it again"
   done
+}
+
+# rn_lock_open: CodeBuild says that the build of the lock has succeeded, so nothing changes the stage any more: this run writes its lock with the line deploys=no, and
+# the stage starts runs again. A write that failed leaves a lock that still closes the stage: it is said here and made again with the next renewal of this run.
+rn_lock_open() {
+  RN_LOCK_DEPLOYS=no
+  rn_lock_renew
+  [ "$RN_LOCK_HELD" != 1 ] || [ "$RN_LOCK_LEGACY" = 1 ] || [ "$RN_LOCK_OPEN" = 1 ] ||
+    warn "could not write the deploy lock $(rn_lock_name) to say that the build has succeeded (${AWS_ERR:-no answer}). The stage starts no new runs until this run ends, or until $((RN_LOCK_STALE_SECONDS / 60)) minutes after the last write of the lock."
 }
 
 # rn_lock_join: this run follows the build of another setup of the same commit and inputs (RN_MODE attach or finish) and shares its lock. It writes itself into the lock,
@@ -950,23 +1002,87 @@ rn_lock_take_out() {
   RN_LOCK_HELD=0
 }
 
-# rn_lease_release: gives the lock back, only when it is still this run's (the token decides). While another setup that follows the same build is still at work under it, the
+# rn_lease_release [quiet]: gives the lock back, only when it is still this run's (the token decides). While another setup that follows the same build is still at work under it, the
 # lock is not deleted: this run takes itself out of it (rn_lock_leave). The lease of an earlier release that this run attached through goes the same way as the lock.
+# The stage's API service starts no new runs while the lock is there, so a lock that stays is said. RN_RELEASE (above) keeps what happened, and the function returns
+# 1 when the lock stays although this run meant to give it back (`kept`: the read that checks the token, or the delete, failed). Nothing says "released" without a delete
+# that went through (rn_release_said). A lock that stays is said here as a warning (rn_release_kept); with `quiet` the caller says it, under its own message.
 rn_lease_release() {
+  RN_RELEASE=none
+  RN_RELEASE_ERR=""
+  RN_RELEASE_HINT=""
   if [ "$RN_LOCK_LEGACY" = 1 ]; then
     RN_LOCK_LEGACY=0
     [ -z "$RN_BUCKET" ] || aws_run s3api delete-object --bucket "$RN_BUCKET" --key "lease/$STAGE.json" || true
   fi
   [ "$RN_LOCK_HELD" = 1 ] || return 0
-  RN_LOCK_HELD=0
-  if rn_lock_read && [ -n "$RN_LOCK_TEXT" ] && [ "$(rn_lock_get token)" = "$RN_LOCK_TOKEN" ]; then
-    if rn_lock_others; then
-      rn_lock_leave || true
-      return 0
-    fi
-    aws_run ssm delete-parameter --name "$(rn_lock_name)" || aws_missing ||
-      warn "could not release the deploy lock $(rn_lock_name): ${AWS_ERR:-no answer}. The next setup finds it stale once its build has ended."
+  # RN_LOCK_HELD stays 1 until the outcome is known: a run that a second signal ends in the middle of these calls still gives its lock back as it ends (rn_lock_on_exit)
+  if ! rn_lock_read; then
+    rn_release_failed "${1:-}"
+  elif [ -z "$RN_LOCK_TEXT" ]; then
+    RN_RELEASE=released
+  elif [ "$(rn_lock_get token)" != "$RN_LOCK_TOKEN" ]; then
+    RN_RELEASE=other
+  elif rn_lock_others; then
+    # the lock stays for the other setup, also when this run could not take itself out of it: its entry then ages
+    rn_lock_leave || true
+    RN_RELEASE=shared
+  elif aws_run ssm delete-parameter --name "$(rn_lock_name)" || aws_missing; then
+    RN_RELEASE=released
+  else
+    rn_release_failed "${1:-}"
   fi
+  RN_LOCK_HELD=0
+  [ "$RN_RELEASE" != kept ]
+}
+
+# rn_release_failed [quiet]: the lock could not be given back; the AWS call that just failed says why.
+rn_release_failed() {
+  RN_RELEASE=kept
+  RN_RELEASE_ERR=${AWS_ERR:-no answer}
+  RN_RELEASE_HINT=$(rn_aws_hint)
+  log_line "could not release the deploy lock $(rn_lock_name): $RN_RELEASE_ERR"
+  [ "${1:-}" = quiet ] || rn_release_kept warn
+}
+
+# rn_release_kept <warn|detail>: the lines of a lock that stays (RN_RELEASE kept): why, what the stage does with new runs meanwhile, and how the lock goes. The delete
+# command is for an account in which no other setup or deploy of the stage is at work: after a read that failed, this run cannot tell whose lock is there.
+rn_release_kept() {
+  local out=$1 name
+  name=$(rn_lock_name)
+  "$out" "The deploy lock $name could not be released: $RN_RELEASE_ERR"
+  [ -z "$RN_RELEASE_HINT" ] || "$out" "$RN_RELEASE_HINT"
+  if [ "$RN_LOCK_OPEN" = 1 ]; then
+    "$out" "It stays in your account. It says deploys=no, so the stage keeps starting runs, and the next setup replaces it."
+    return 0
+  fi
+  "$out" "It stays in your account, so the stage starts no new runs until $((RN_LOCK_STALE_SECONDS / 60)) minutes after its last write."
+  "$out" "To remove it sooner, run $(rn_retry_command) again on this machine. Or, when no other setup or deploy of the stage is running, delete it:  aws ssm delete-parameter --name $name"
+}
+
+# rn_release_said [words]: what became of this run's lock at the last rn_lease_release, as detail lines under the caller's message. "Released" is said only for a lock that
+# is gone; [words] go between "is released" and the full stop.
+rn_release_said() {
+  case $RN_RELEASE in
+    released) detail "The deploy lock of the stage is released${1:-}." ;;
+    shared) detail "The deploy lock stays with the other setup that follows the same build." ;;
+    other) detail "The deploy lock of the stage belongs to another setup by now and is left alone." ;;
+    kept) rn_release_kept detail ;;
+  esac
+}
+
+# rn_lock_on_exit: the EXIT handler of a run that took the deploy lock. The stage's API service starts no new runs
+# while the lock is there, so a run that ends while it holds the lock, with no build of the lock recorded or under way, gives the lock back whichever way it ends (a step
+# that failed before the build, a signal that nothing handles, a closed terminal) and says what became of it. The lock stays when it records a build (the next run attaches
+# to that build or finishes from it), when a start-build call was under way (RN_STARTING: the build may have started, and it carries the token) and while scripts/deploy.sh
+# of the local route runs under it (RN_LOCK_BUSY). The handler never calls exit, so the exit code of the run, or the signal that ended it, stays what it was.
+rn_lock_on_exit() {
+  trap - EXIT
+  [ "$RN_LOCK_HELD" = 1 ] && [ "$RN_LOCK_LEGACY" != 1 ] || return 0
+  [ -z "$RN_LOCK_BUILD" ] && [ "$RN_STARTING" != 1 ] && [ "$RN_LOCK_BUSY" != 1 ] || return 0
+  rn_lease_release quiet
+  rn_release_said
+  log_line "the run ended while it held the deploy lock without a build: $RN_RELEASE"
   return 0
 }
 
@@ -982,8 +1098,9 @@ rn_lock_interrupted() {
   if [ "$RN_STARTING" = 1 ]; then
     detail "The build may have started. The deploy lock stays, so the next run finds that build and attaches to it instead of starting a second one."
   else
-    rn_lease_release
-    detail "No build was started and the deploy lock is released. The stage is unchanged."
+    rn_lease_release quiet
+    detail "No build was started. The stage is unchanged."
+    rn_release_said
   fi
   detail "$(rn_runner_now_text)"
   detail "Run $(rn_retry_command) again to go on."
@@ -1058,12 +1175,25 @@ rn_read_failed() {
   case ${AWS_ERR:-} in
     *xpired*|*"Unable to locate credentials"*|*SSO*|*sso*) detail "Your AWS sign-in may have run out. Sign in again before you run setup.sh again." ;;
   esac
-  if [ "$RN_LOCK_HELD" = 1 ]; then
+  if [ "$RN_LOCK_HELD" = 1 ] && [ -n "$RN_LOCK_BUILD" ]; then
     detail "The deploy lock and the runner stay, so the next run finishes from the same build without building again: run $(rn_retry_command) again."
+    rn_lock_stays_said
   else
+    # no build of the lock (the build that prints the bootstrap template): a lock this run holds goes back as the run ends (rn_lock_on_exit)
     detail "$(rn_runner_now_text) Run $(rn_retry_command) again."
   fi
   exit 6
+}
+
+# rn_lock_stays_said: a run ends and leaves its lock with the build it records. One line says what the stage does with new runs meanwhile. After a build that
+# succeeded the lock says deploys=no (full_runner_flow writes it as soon as CodeBuild says so), and the stage starts runs. A lock that could not be written that way, and
+# the lock of a build that did not succeed, close the stage until the next run or until 30 minutes after their last write. A build that only makes the client never closed it.
+rn_lock_stays_said() {
+  if [ "$RN_LOCK_OPEN" = 1 ]; then
+    [ "$RN_FINAL" != SUCCEEDED ] || [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] || detail "The build has succeeded, so the stage starts runs again."
+    return 0
+  fi
+  detail "The stage starts no new runs until you run $(rn_retry_command) again, or until $((RN_LOCK_STALE_SECONDS / 60)) minutes after the last write of the deploy lock $(rn_lock_name)."
 }
 
 # ---- the stage already runs this commit -------------------------------------------------------------------------
@@ -1147,13 +1277,64 @@ rn_live_matches() {
   return 1
 }
 
+# rn_version_pair <text>: 0 when the text is N.NN, with RN_VP set to the two numbers as one integer (the counter has two digits), else 1.
+RN_VP=0
+rn_version_pair() {
+  local text=$1 major minor
+  case $text in
+    *[!0-9.]*|''|.*|*.|*.*.*) return 1 ;;
+    *.*) ;;
+    *) return 1 ;;
+  esac
+  major=${text%.*}
+  minor=${text#*.}
+  [ "${#major}" -le 6 ] && [ "${#minor}" = 2 ] || return 1
+  RN_VP=$((10#$major * 100 + 10#$minor))
+}
+
+# rn_label_plan: the release label of an update that deploys nothing: what the backend reports now (RN_LABEL_NOW: the stage's label parameter when it names this source
+# tree, else the VERSION of the stage's record, which is what control-api was compiled with) and this clone's VERSION (RN_LABEL_NEXT). Both are empty when the plan has nothing to
+# say (equal versions, or a version this function cannot read); RN_LABEL_KEEP is 1 when the label is newer than this clone's VERSION, which an update never lowers.
+RN_LABEL_NOW=""
+RN_LABEL_NEXT=""
+RN_LABEL_KEEP=0
+rn_label_plan() {
+  local held now="" next=${SRC_VERSION_TEXT:-} at_now at_next
+  RN_LABEL_NOW=""
+  RN_LABEL_NEXT=""
+  RN_LABEL_KEEP=0
+  rn_version_pair "$next" || return 0
+  at_next=$RN_VP
+  if aws_run ssm get-parameter --name "${GEN_ROOT:-/hamh}/$STAGE/release-version" --query Parameter.Value --output text; then
+    held=$AWS_OUT
+    [ "${held#* }" != "$(rn_target_tree)" ] || now=${held%% *}
+  fi
+  rn_version_pair "$now" || now=$(pf_rec_get version)
+  rn_version_pair "$now" || return 0
+  at_now=$RN_VP
+  [ "$at_now" != "$at_next" ] || return 0
+  RN_LABEL_NOW=$now
+  RN_LABEL_NEXT=$next
+  [ "$at_now" -gt "$at_next" ] && RN_LABEL_KEEP=1
+  return 0
+}
+
 # rn_same_deployment_check: for an update (full_run calls it before the active-runs check): when the stage already runs the target, the build only makes the client
 # (SETUP_CLIENT_ONLY=1: no stage resource changes, so runs on the stage do not stop the update) and the run says so.
 rn_same_deployment_check() {
   SETUP_CLIENT_ONLY=0
+  RN_LABEL_NOW=""
+  RN_LABEL_NEXT=""
+  RN_LABEL_KEEP=0
   if rn_same_deployment; then
     SETUP_CLIENT_ONLY=1
-    say_log "This update builds only the client: the stage already runs this commit (its record names this commit, the same account file and the same settings), so nothing on the stage changes and active runs do not stop it. --force-deploy deploys anyway."
+    rn_label_plan
+    if [ -n "$RN_LABEL_NEXT" ] && [ "$RN_LABEL_KEEP" != 1 ]; then
+      # The one thing the update writes to the stage is the release label (a single parameter), and it says so
+      say_log "This update builds only the client: the stage already runs this commit (its record names this commit, the same account file and the same settings), so no stack, image or run changes, only the release label of the backend is written, and active runs do not stop it. --force-deploy deploys anyway."
+    else
+      say_log "This update builds only the client: the stage already runs this commit (its record names this commit, the same account file and the same settings), so nothing on the stage changes and active runs do not stop it. --force-deploy deploys anyway."
+    fi
   else
     log_line "the update deploys: $RN_SAME_WHY"
   fi
@@ -1192,11 +1373,12 @@ rn_start() {
     hint=$(rn_aws_hint)
     setup_exit 5 "could not start the build: ${AWS_ERR:-no answer}" ${hint:+"$hint"}
   fi
-  RN_STARTING=0
   RN_BUILD_ID=$AWS_OUT
-  setup_safe_word "$RN_BUILD_ID" || { [ -n "$nolease" ] || rn_lease_release; setup_exit 5 "CodeBuild answered with a build id setup does not trust: $RN_BUILD_ID"; }
+  # RN_STARTING stays 1 until the build of the lock is noted (RN_LOCK_BUILD): a run that ends in between leaves the lock to the build that has started (rn_lock_on_exit)
+  setup_safe_word "$RN_BUILD_ID" || { RN_STARTING=0; [ -n "$nolease" ] || rn_lease_release; setup_exit 5 "CodeBuild answered with a build id setup does not trust: $RN_BUILD_ID"; }
+  [ -n "$nolease" ] || RN_LOCK_BUILD=$RN_BUILD_ID
+  RN_STARTING=0
   if [ -z "$nolease" ]; then
-    RN_LOCK_BUILD=$RN_BUILD_ID
     rn_lease_record
     st_set buildId "$RN_BUILD_ID" || true
     st_set sourceCommit "$SRC_COMMIT" || true
@@ -1230,8 +1412,14 @@ rn_stopped_following() {
       detail "Another setup follows the same build: this run took itself out of the deploy lock, so that setup removes the runner when it ends."
     else
       detail "$(rn_runner_now_text) The deploy lock keeps the build for that run."
+      # The lock closes the stage to new runs, and the build's deploy keeps it that way (renew_caller_lock of scripts/lib/deploy.py)
+      if [ "$RN_LOCK_HELD" = 1 ] && [ "$RN_LOCK_LEGACY" != 1 ] && [ "$RN_LOCK_OPEN" != 1 ]; then
+        detail "The stage starts no new runs while this build deploys: the build renews the deploy lock by itself."
+        detail "The stage starts runs again when that run sees the build end, or $((RN_LOCK_STALE_SECONDS / 60)) minutes after the build's last write of the lock."
+      fi
     fi
   fi
+  # the build that prints the bootstrap template is no build of the lock: a lock this run holds goes back as the run ends (rn_lock_on_exit)
   log_line "stopped following $RN_BUILD_ID: $1"
   exit 6
 }
@@ -1592,6 +1780,9 @@ rn_fail_result() {
     else
       detail "The stage is unchanged. $action The runner stays installed$cdk_window."
     fi
+  elif [ "$phase" = deploy ] && [ "$step" = release-label ]; then
+    # The build deployed nothing and was writing the release label alone (deploy.sh --relabel) when it failed; the label may or may not have been written, the stage runs what it ran
+    detail "The stage runs the source tree it ran before: nothing was deployed, and only its version label is in question. The runner stays installed$cdk_window. You run $(rn_retry_command) to try again; it writes the label and builds only the client."
   elif [ "$phase" = gomod ] || [ "$phase" = scanner-rules ] || [ "$phase" = client ] || [ "$phase" = outputs ]; then
     # the deploy finished before this phase (A2.3): the stage runs the new commit, and only this step is to do again
     detail "The stage runs commit $SRC_COMMIT: its deploy finished, and only the step $phase failed. The runner stays installed$cdk_window. You run $(rn_finish_command) to finish; the stage already runs this commit, so the retry does not deploy it again. You run ./setup.sh --teardown to delete the stage and the runner."

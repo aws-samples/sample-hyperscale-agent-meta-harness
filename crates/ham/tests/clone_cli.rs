@@ -256,7 +256,9 @@ async fn a_run_with_no_zip_yet_and_a_bad_command_line_fail_plainly() {
     assert_eq!(o.status.code(), Some(1));
     let err = text(&o.stderr);
     assert!(err.starts_with("ham: "), "{err}");
-    assert!(err.contains("no zip or partial zip yet"), "{err}");
+    // The sentence for the run's status, with the command for its saved copy.
+    assert!(err.contains("is still working and has no zip yet"), "{err}");
+    assert!(err.contains(&format!("ham pull {run} --snapshot")), "{err}");
     assert!(!h.root.join("o").exists());
     assert_eq!(ham(&h, &["clone"]).await.status.code(), Some(2));
     assert_eq!(

@@ -19,6 +19,12 @@
 //!
 //! `delay_ms` is silence between the start line and the first update; `hold_ms` keeps the round open after its updates.
 //!
+//! A run may name the tokens it spent: `"usage": {"input": 10, "output": 2, "cacheRead": 50, "cacheWrite": 20}`, input without the cache
+//! tokens. The observer's end line then carries them as the pinned engine counts a run (`inputTokens` with both cache counts in it,
+//! `cacheReadTokens`, `cacheWriteTokens`), and a prompt the run answers carries them as the fork's ACP `usage` (`inputTokens` without the cache
+//! tokens, `cachedReadTokens`, `cachedWriteTokens`); a run that fails is answered with the error and no usage, as the engine does. A run without
+//! `usage` writes the end line and the answer it always wrote.
+//!
 //! A `tools` entry with `"open": true` is a call the engine announces and does not answer while the round is open.
 //! When the round ends it is answered: `completed` with a result, or, when `session/cancel` ended the round, with
 //! `finishReason: "aborted"` and no text, as the pinned engine does. A script member `swallow_after_cancel` (a number, default 0) makes the
@@ -63,6 +69,33 @@ pub struct ToolIo {
     pub open: bool,
 }
 
+/// The tokens a scripted run spent: `input` without the cache tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunTokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+impl RunTokens {
+    fn of(v: &Value) -> Option<Self> {
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        v.is_object().then(|| Self {
+            input: n("input"),
+            output: n("output"),
+            cache_read: n("cacheRead"),
+            cache_write: n("cacheWrite"),
+        })
+    }
+
+    /// The fork's ACP `usage` of a prompt this run answered.
+    fn acp(&self) -> Value {
+        json!({"inputTokens": self.input, "outputTokens": self.output, "cachedReadTokens": self.cache_read,
+            "cachedWriteTokens": self.cache_write, "totalTokens": self.input + self.output + self.cache_read + self.cache_write})
+    }
+}
+
 /// One follow-up run of the engine.
 #[derive(Clone, Debug, Default)]
 pub struct RoundScript {
@@ -86,6 +119,8 @@ pub struct RoundScript {
     pub edit_after_calls: Option<u32>,
     /// Silence between two tool calls, serviced like `delay_ms` (a polling loop calls over minutes, not in one burst).
     pub tool_gap_ms: u64,
+    /// The tokens the run spent; `None` writes the end line and the answer without them.
+    pub usage: Option<RunTokens>,
 }
 
 #[derive(Clone, Debug)]
@@ -160,6 +195,7 @@ fn round_of(v: &Value) -> RoundScript {
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
         tool_gap_ms: n("tool_gap_ms"),
+        usage: v.get("usage").and_then(RunTokens::of),
     }
 }
 
@@ -359,7 +395,14 @@ impl GoalSim {
         self.observer_line(&json!({"ev": "start", "n": self.starts, "t": now_ms()}));
     }
 
-    fn end_line(&mut self, status: &str, iterations: u32, text: &str, error: Option<&str>) {
+    fn end_line(
+        &mut self,
+        status: &str,
+        iterations: u32,
+        text: &str,
+        error: Option<&str>,
+        usage: Option<RunTokens>,
+    ) {
         self.ends += 1;
         let tail: String = {
             let chars: Vec<char> = text.chars().collect();
@@ -369,6 +412,12 @@ impl GoalSim {
             "iterations": iterations, "inputTokens": 100, "outputTokens": 10, "text": tail});
         if let Some(e) = error {
             line["error"] = json!(e);
+        }
+        if let Some(u) = usage {
+            line["inputTokens"] = json!(u.input + u.cache_read + u.cache_write);
+            line["outputTokens"] = json!(u.output);
+            line["cacheReadTokens"] = json!(u.cache_read);
+            line["cacheWriteTokens"] = json!(u.cache_write);
         }
         self.observer_line(&line);
     }
@@ -452,7 +501,13 @@ impl GoalSim {
         } else {
             "aborted"
         };
-        self.end_line(status, u32::try_from(tools).unwrap_or(0) + 1, &text, None);
+        self.end_line(
+            status,
+            u32::try_from(tools).unwrap_or(0) + 1,
+            &text,
+            None,
+            None,
+        );
         self.after_run(sid, status, io);
     }
 
@@ -665,7 +720,7 @@ impl GoalSim {
         } else {
             calls + 1
         };
-        self.end_line(&status, iterations, &r.text, r.error.as_deref());
+        self.end_line(&status, iterations, &r.text, r.error.as_deref(), r.usage);
         io.log(&format!("round {} ends {}", self.ends, status));
         self.after_run(sid, &status, io);
         (status, Flow::Go)
@@ -706,7 +761,7 @@ impl GoalSim {
         self.honor_cancel = true;
         let (status, flow) = self.exec_round(sid, &r, io);
         self.honor_cancel = false;
-        io.emit(reply_for(&status, id));
+        io.emit(reply_for(&status, id, r.usage));
         flow
     }
 
@@ -724,7 +779,7 @@ impl GoalSim {
         self.honor_cancel = false;
         self.first_done = true;
         if matches!(flow, Flow::Go) {
-            io.emit(reply_for(&status, id));
+            io.emit(reply_for(&status, id, r.usage));
         }
         flow
     }
@@ -735,11 +790,18 @@ impl GoalSim {
     }
 }
 
-/// The answer to a prompt, by how its run ended.
-fn reply_for(status: &str, id: &Value) -> Value {
+/// The answer to a prompt, by how its run ended; a run that names its tokens reports them, unless it failed (the engine answers an error).
+fn reply_for(status: &str, id: &Value, usage: Option<RunTokens>) -> Value {
+    let answer = |stop: &str| {
+        let mut result = json!({"stopReason": stop});
+        if let Some(u) = usage {
+            result["usage"] = u.acp();
+        }
+        json!({"jsonrpc": "2.0", "id": id, "result": result})
+    };
     match status {
-        "completed" => json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}}),
-        "aborted" => json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "cancelled"}}),
+        "completed" => answer("end_turn"),
+        "aborted" => answer("cancelled"),
         _ => {
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "data": {"errorName": "ServiceUnavailableException", "isRetryable": true, "statusCode": 503}, "message": "Internal error: Service unavailable"}})
         }

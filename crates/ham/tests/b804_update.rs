@@ -400,9 +400,13 @@ async fn b804_update_runs_the_fetched_setup_and_checks_both_versions_afterwards(
     let record = std::fs::read_to_string(&h.record).unwrap();
     let lines: Vec<&str> = record.lines().collect();
     let prefix = h.root.canonicalize().unwrap();
+    // Setup waits for the runs of everyone on the stage with what is left of ham's own limit (60 minutes by default)
     assert_eq!(
         lines[0],
-        format!("--update --prefix {} --yes", prefix.display())
+        format!(
+            "--update --prefix {} --yes --wait-for-runs 60",
+            prefix.display()
+        )
     );
     let clone = h
         .downloads
@@ -1709,10 +1713,15 @@ struct Driven {
 
 impl Driven {
     async fn new(label: &str) -> Driven {
+        Driven::with_setup(label, setup_installing).await
+    }
+
+    /// The same, with the stand-in setup that `setup_of(<the newest version>)` gives.
+    async fn with_setup(label: &str, setup_of: impl Fn(&str) -> String) -> Driven {
         let fake = Fake::start().await;
         let newest = next(ham::version::CLIENT, 1);
         let root = support::scratch(&format!("{label}-src"));
-        let setup = setup_installing(&newest);
+        let setup = setup_of(&newest);
         let (repo, sha) = source_repo_of(
             &root,
             &Source {
@@ -1749,6 +1758,8 @@ impl Driven {
         limit: Duration,
         ask: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     ) -> (i32, String, String) {
+        // the update reads the backend's version after setup, so no other test's answer may change it meanwhile
+        let _cell = backend_cell().await;
         let ctx = ham::update::Context {
             source: self.source.clone(),
             downloads: self.h.downloads.clone(),
@@ -2203,6 +2214,15 @@ impl ham::http::ControlPlane for ListUnreadable {
     }
 }
 
+/// The backend's version is one process-wide cell (`ham::version`) that every answer of a stand-in stage rewrites. A test that reads what the cell holds after its own
+/// answers (through `backend_after`, as `ham update` does after setup) holds this gate while it does, so that in a threaded `cargo test` run another test's answer cannot
+/// change the version it reads between its request and its read. nextest starts a process for each test and is not slowed by it.
+static BACKEND_CELL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn backend_cell() -> tokio::sync::MutexGuard<'static, ()> {
+    BACKEND_CELL.lock().await
+}
+
 /// The version `backend_after` gives is one an answer gave after the update, never the one the client remembered from before it. A read
 /// that gets no answer gives the failure. A read that fails after its answer carried the version header (a list this client cannot decode,
 /// as a newer backend may send) still gives that version: the read is made for the header alone (re-review of the 5.15 integration head,
@@ -2210,6 +2230,7 @@ impl ham::http::ControlPlane for ListUnreadable {
 #[tokio::test]
 async fn fix515b_backend_after_gives_only_a_version_read_after_the_update() {
     use ham::update::backend_after;
+    let _cell = backend_cell().await;
     let fake = Fake::start().await;
     let newest = next(ham::version::CLIENT, 1);
     *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
@@ -2274,4 +2295,426 @@ async fn fix515b_backend_after_gives_only_a_version_read_after_the_update() {
         Some(ham::version::CLIENT),
         "the stage answered once after the update with the old version, then went away"
     );
+}
+
+/// What the stand-in setup was started with: its first record line.
+fn setup_arguments(h: &Home) -> String {
+    std::fs::read_to_string(&h.record)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn b804_wait_ham_update_hands_setup_the_rest_of_its_limit() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b804-wait-pass-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b804-wait-pass", &url(&repo));
+    let bin = installed(&h);
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes", "--wait", "7"],
+        &[("B804_INSTALL_VERSION", &newest)],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+    let prefix = h.root.canonicalize().unwrap();
+    assert_eq!(
+        setup_arguments(&h),
+        format!(
+            "--update --prefix {} --yes --wait-for-runs 7",
+            prefix.display()
+        ),
+        "one limit: setup waits for everyone's runs with the minutes ham has left"
+    );
+    assert!(
+        out.contains("runs of everyone on the stage") && out.contains("new runs are refused"),
+        "the plan says what the wait covers:\n{out}"
+    );
+    nothing_cancelled(&fake);
+}
+
+#[tokio::test]
+async fn b804_wait_no_wait_hands_setup_no_wait() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b804-wait-none-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b804-wait-none", &url(&repo));
+    let bin = installed(&h);
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes", "--no-wait"],
+        &[("B804_INSTALL_VERSION", &newest)],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+    let prefix = h.root.canonicalize().unwrap();
+    assert_eq!(
+        setup_arguments(&h),
+        format!("--update --prefix {} --yes", prefix.display()),
+        "--no-wait: setup stops at once when anyone's run is active"
+    );
+    nothing_cancelled(&fake);
+}
+
+#[test]
+fn b804_wait_the_minutes_handed_to_setup_are_what_is_left_of_the_limit() {
+    use ham::update::minutes_left;
+    let limit = Duration::from_secs(60 * 60);
+    assert_eq!(minutes_left(limit, Duration::ZERO), 60);
+    assert_eq!(
+        minutes_left(limit, Duration::from_secs(1)),
+        60,
+        "rounded up"
+    );
+    assert_eq!(minutes_left(limit, Duration::from_secs(61)), 59);
+    assert_eq!(minutes_left(limit, Duration::from_secs(59 * 60 + 30)), 1);
+    assert_eq!(
+        minutes_left(limit, Duration::from_secs(61 * 60)),
+        1,
+        "never less than a minute: setup takes 1 to 1440"
+    );
+    assert_eq!(
+        minutes_left(Duration::from_secs(1440 * 60), Duration::ZERO),
+        1440
+    );
+}
+
+/// A deploy took the stage's lock a minute ago: the stage starts no new runs.
+fn close_stage(fake: &Fake) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    fake.mem.inner.lock().unwrap().deploy_lock = Some(control_api::handler::DeployLock {
+        value:
+            "token=tok-b804\nholder=laptop:4242\nroute=runner\nstarted=2026-11-11T16:00:00Z\nbuild="
+                .into(),
+        written_epoch_s: Some(now - 60),
+    });
+}
+
+const SENTENCE: &str =
+    "This stage is being updated, so it starts no new runs. Try again in a few minutes.";
+
+#[tokio::test]
+async fn b804_wait_ham_shows_the_sentence_of_a_stage_that_is_being_updated_and_running_work_can_end()
+ {
+    let fake = Fake::start().await;
+    let root = support::scratch("b804-wait-refused-src");
+    let (repo, _) = source_repo(&root, ham::version::CLIENT);
+    let h = home(&fake, "b804-wait-refused", &url(&repo));
+    let bin = installed(&h);
+    // a run that started before the update
+    let earlier = new_run(&fake, "an earlier run").await;
+    close_stage(&fake);
+    let o = run(
+        &h,
+        &bin,
+        &["Add a function", "--s3-only", "--direct", "--no-rules"],
+        &[],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(1), "{out}\n{err}");
+    assert_eq!(
+        err.lines().last().unwrap_or_default(),
+        format!("ham: {SENTENCE}"),
+        "the service's sentence alone, without the route and the status:\n{err}"
+    );
+    assert!(!out.contains("started run"), "{out}");
+    assert_eq!(
+        fake.mem.run_ids(),
+        vec![earlier.clone()],
+        "no run was created"
+    );
+    // the list and a cancel still answer: running work can end by itself or by its owner's hand
+    let o = run(&h, &bin, &["runs"], &[]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains(&earlier), "{}", text(&o.stdout));
+    let o = run(&h, &bin, &["cancel", &earlier], &[]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+}
+
+#[tokio::test]
+async fn b804_wait_the_answer_of_the_stage_carries_retry_after_and_an_older_client_prints_a_line_that_holds_the_sentence()
+ {
+    let fake = Fake::start().await;
+    close_stage(&fake);
+    let req = serde_json::from_value::<harness_protocol::api::v1::StartDirectRunRequest>(
+        json!({"prompt": "Add a function", "target": {"mode": "s3-only"}, "model": support::MODEL}),
+    )
+    .unwrap();
+    let e = api(&fake)
+        .start_direct_run(&req, "k-refused")
+        .await
+        .unwrap_err();
+    assert_eq!(e.status(), Some(409));
+    assert!(!e.is_retryable(), "a 409 is shown at once, not retried");
+    // Releases 5.14 and 5.15 have no case for this code: `ham "<prompt>"` prints `ham: POST /v1/direct/runs: <this text>`, which holds the sentence.
+    assert_eq!(
+        e.to_string(),
+        format!("HTTP 409: {SENTENCE} (stage-updating)")
+    );
+    // their retry and resume lines fall to the generic form of a code they do not know
+    assert_eq!(
+        ham_core::retry::explain(409, "a-code-of-a-later-release", SENTENCE),
+        format!("409 a-code-of-a-later-release: {SENTENCE}")
+    );
+    assert_eq!(
+        ham_core::resume::explain(409, "a-code-of-a-later-release", SENTENCE),
+        format!("409 a-code-of-a-later-release: {SENTENCE}")
+    );
+    // this release shows the sentence alone, everywhere a start can be refused
+    assert_eq!(ham::api::start_failure(&e), SENTENCE);
+    assert_eq!(
+        ham_core::retry::explain(409, "stage-updating", SENTENCE),
+        SENTENCE
+    );
+    assert_eq!(
+        ham_core::resume::explain(409, "stage-updating", SENTENCE),
+        SENTENCE
+    );
+    let posts = fake
+        .mem
+        .seen()
+        .into_iter()
+        .filter(|s| s.method == "POST" && s.path.ends_with("/direct/runs"))
+        .count();
+    assert_eq!(posts, 1, "one request, no retry");
+}
+
+/// A backend whose version is above the one on main (a label left by a proof or a withdrawn release) stops `ham update` at the plan, before setup runs. The message names the
+/// deploy that puts the backend on main's version; a `ham` that is newer than main has no such way, and its message does not offer one.
+#[tokio::test]
+async fn b839_the_refusal_for_a_backend_newer_than_main_names_the_deploy_that_sets_its_version() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let above = next(ham::version::CLIENT, 2);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(above.clone());
+    let root = support::scratch("b839-backend-above-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b839-backend-above", &url(&repo));
+    let bin = installed(&h);
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes"],
+        &[("B804_INSTALL_VERSION", &newest)],
+    )
+    .await;
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(7), "{err}");
+    assert!(
+        err.contains(&format!(
+            "the backend runs v{above}, newer than v{newest} on main"
+        )),
+        "TRIGGER PRESENT: the refusal is the one of a backend above main: {err}"
+    );
+    assert!(
+        err.contains("./setup.sh --update --force-deploy in a clone of main"),
+        "the message names the way out: {err}"
+    );
+    assert!(!h.record.exists(), "no setup ran");
+
+    // a ham that is newer than main: a deploy does not change it, so no deploy is offered
+    let (major, counter) = ham::version::CLIENT.split_once('.').unwrap();
+    let older = format!("{major}.{:02}", counter.parse::<u32>().unwrap() - 1);
+    let root = support::scratch("b839-client-above-src");
+    let (repo, _) = source_repo(&root, &older);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Same;
+    let h = home(&fake, "b839-client-above", &url(&repo));
+    let bin = installed(&h);
+    let o = run(&h, &bin, &["update", "--yes"], &[]).await;
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(7), "{err}");
+    assert!(err.contains("ham runs v"), "{err}");
+    assert!(!err.contains("--force-deploy"), "{err}");
+}
+
+/// Two stages in one process, one that answers with this ham's version and one that answers with a newer one, as two tests of this binary do when `cargo test` runs them on
+/// threads. The reader holds the gate for each read; the writer holds it for each answer; so a read never gets the version the other stage's answer wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn b839_a_read_of_the_backend_version_does_not_get_the_answer_of_another_test() {
+    use ham::update::backend_after;
+    let reader = Fake::start().await;
+    let writer = Fake::start().await;
+    *writer.faults.backend_header.lock().unwrap() =
+        BackendHeader::Value(next(ham::version::CLIENT, 1));
+    let reads = api(&reader);
+    let writes = api(&writer);
+    let other = tokio::spawn(async move {
+        for _ in 0..300 {
+            let _cell = backend_cell().await;
+            let _ = writes.list_runs().await;
+            tokio::task::yield_now().await;
+        }
+    });
+    for i in 0..300 {
+        let _cell = backend_cell().await;
+        let now = backend_after(&reads, "0.00", Duration::ZERO, Duration::from_millis(1)).await;
+        assert_eq!(
+            now.expect("the stage answers").as_deref(),
+            Some(ham::version::CLIENT),
+            "read {i}: the version is the one this stage's answer carried"
+        );
+    }
+    other.await.unwrap();
+}
+
+// ---- (U55): a release that changes no file the stage runs ------------------------------------------------------------------------------
+
+/// A stand-in setup of such a release: it installs the client as `setup_installing` does and deploys nothing; what it writes to the stage is the release label,
+/// here a marker file that the stand-in stage reads, and it ends a moment later (the real setup builds the client after it writes the label).
+fn setup_labelling(version: &str, marker: &Path) -> String {
+    let base = setup_installing(version);
+    let base = base.strip_suffix("exit 0\n").unwrap();
+    format!(
+        "{base}printf '%s\\n' '{version}' > '{}'\nsleep 1\nexit 0\n",
+        marker.display()
+    )
+}
+
+/// The stand-in stage reports the label once the marker holds it, as control-api reports its `release-version` parameter once setup has written it.
+fn stage_follows_label(fake: &Arc<Fake>, marker: PathBuf) {
+    let fake = fake.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok(v) = std::fs::read_to_string(&marker)
+                && !v.trim().is_empty()
+            {
+                *fake.faults.backend_header.lock().unwrap() =
+                    BackendHeader::Value(v.trim().to_string());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+}
+
+/// A stage that runs the source tree of the release already (setup deploys nothing) and whose label becomes the release's: the update ends `Updated`, exit 0,
+/// with no word about a backend that reports another version. (A stage that keeps reporting the older version is the next case.)
+#[tokio::test]
+async fn b839_u55_a_stage_whose_setup_deployed_nothing_and_wrote_its_label_ends_updated() {
+    let marker = support::scratch("b839-label").join("label");
+    let m = marker.clone();
+    let d = Driven::with_setup("b839-label", move |v| setup_labelling(v, &m)).await;
+    assert_eq!(
+        *d.fake.faults.backend_header.lock().unwrap(),
+        BackendHeader::Same,
+        "TRIGGER PRESENT: the stage reports this ham's version until setup has written its label"
+    );
+    stage_follows_label(&d.fake, marker);
+    let (code, out, err) = d
+        .update(&api(&d.fake), true, Duration::from_secs(5), &never_asked)
+        .await;
+    assert_eq!(code, ham::update::exit::DONE, "{out}\n{err}");
+    assert!(
+        out.contains(&format!("Updated: ham v{0} | backend v{0}.", d.newest)),
+        "{out}"
+    );
+    assert!(!err.contains("the backend reports"), "{err}");
+    // `ham doctor` shows the same two versions as equal
+    let c = ham::doctor::versions_check(&d.newest, Some(&d.newest));
+    assert!(c.pass && !c.warn, "{c:?}");
+}
+
+/// The command that gets the backend deployed again, as `ham update` prints it: the prefix of the installed client is the one setup was given, so a second client does not
+/// land in another folder, and the folder is the copy that `ham update` checked out.
+fn way_out(d: &Driven) -> String {
+    format!(
+        "./setup.sh --update --force-deploy --prefix {} in {}",
+        d.h.root.canonicalize().unwrap().display(),
+        d.clone_dir().display()
+    )
+}
+
+/// Setup ended without an error and the backend still reports the older version: the sentence names what that means and the two things to do.
+#[tokio::test]
+async fn b839_a_backend_that_still_reports_the_older_version_after_a_clean_setup_names_the_way_out()
+{
+    let d = Driven::new("b839-oldbackend").await;
+    let (code, out, err) = d
+        .update(&api(&d.fake), true, Duration::from_secs(5), &never_asked)
+        .await;
+    assert_eq!(code, ham::update::exit::CHECK_FAILED, "{out}\n{err}");
+    assert!(
+        err.contains(&format!(
+            "the backend reports v{} after the update, not v{}.",
+            ham::version::CLIENT,
+            d.newest
+        )),
+        "{err}"
+    );
+    assert!(err.contains("setup ended without an error"), "{err}");
+    assert!(err.contains("ham doctor"), "{err}");
+    assert!(
+        err.contains(&way_out(&d)),
+        "the sentence names the command, with the prefix of the installed client, and the folder to run it in: {err}"
+    );
+    assert!(
+        !err.contains("within a minute"),
+        "ham had waited for the backend already, so it does not promise one more minute: {err}"
+    );
+    // a backend that is newer than the update, or that answers with no version, is a different state and gets no such advice
+    *d.fake.faults.backend_header.lock().unwrap() = BackendHeader::Absent;
+    let (_, _, err) = d
+        .update(&api(&d.fake), true, Duration::from_secs(5), &never_asked)
+        .await;
+    assert!(!err.contains("setup ended without an error"), "{err}");
+}
+
+/// Setup ended with exit 3 or 8 (the update took effect, but setup reported a problem) and the backend still reports the older version: the line says what setup
+/// reported, not that it ended without an error, and names the same two ways out.
+#[tokio::test]
+async fn b839_a_backend_that_still_reports_the_older_version_after_setup_exit_3_or_8_says_what_setup_reported()
+ {
+    for code in [3, 8] {
+        let d = Driven::with_setup(&format!("b839-oldbackend-exit{code}"), move |v| {
+            setup_installing(v).replace("exit 0\n", &format!("exit {code}\n"))
+        })
+        .await;
+        let (got, out, err) = d
+            .update(&api(&d.fake), true, Duration::from_secs(5), &never_asked)
+            .await;
+        println!(
+            "B839 TRIGGER PRESENT: setup ended with exit {code} and the backend reports {}; code={got}\n{err}",
+            ham::version::CLIENT
+        );
+        assert_eq!(got, ham::update::exit::CHECK_FAILED, "{out}\n{err}");
+        assert!(
+            err.contains(&format!("setup.sh --update ended with exit {code}")),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!(
+                "the backend reports v{} after the update, not v{}.",
+                ham::version::CLIENT,
+                d.newest
+            )),
+            "{err}"
+        );
+        assert!(
+            !err.contains("setup ended without an error"),
+            "a setup that reported a problem did not end without an error: {err}"
+        );
+        assert!(
+            err.contains(&format!("setup reported exit {code}")),
+            "{err}"
+        );
+        assert!(err.contains("ham doctor"), "{err}");
+        assert!(err.contains(&way_out(&d)), "{err}");
+        assert!(!err.contains("within a minute"), "{err}");
+    }
 }

@@ -42,6 +42,8 @@ fn download(size: u64) -> SnapshotDownload {
         etag: "\"0cc175b9c0f1b6a831c399e269772661\"".into(),
         record_stale: false,
         run_status: GoalStatus::Active,
+        final_copy: false,
+        engine: None,
     }
 }
 

@@ -72,7 +72,10 @@ fn status_refusal(run_id: &str, status: GoalStatus) -> Option<Reply> {
         ),
         GoalStatus::Blocked => (
             "run-not-resumable",
-            format!("run {run_id} is blocked and delivered nothing; a retry starts it again"),
+            // A blocked run delivered no zip and its work is kept; the refusal says where.
+            format!(
+                "run {run_id} is blocked and delivered no zip; a retry starts it again, and `ham pull {run_id} --snapshot` downloads the latest saved copy of its work"
+            ),
         ),
         GoalStatus::Complete => (
             "run-not-resumable",
@@ -82,7 +85,9 @@ fn status_refusal(run_id: &str, status: GoalStatus) -> Option<Reply> {
         ),
         GoalStatus::Cleared => (
             "run-not-resumable",
-            format!("run {run_id} was cleared; it cannot be resumed"),
+            format!(
+                "run {run_id} was cleared; it cannot be resumed. `ham pull {run_id} --snapshot` downloads the latest saved copy of its work"
+            ),
         ),
         other @ (GoalStatus::UsageLimited | GoalStatus::BudgetLimited) => (
             "run-not-resumable",

@@ -347,7 +347,7 @@ pub enum PullArtifact {
     Zip,
     Partial,
     Evidence,
-    /// `--snapshot`: the last snapshot bundle of a live run, saved by agentd about every 10 minutes while the files change. It is
+    /// `--snapshot`: the last snapshot bundle of a live run, saved by agentd about every minute while the files change. It is
     /// not an artifact of the run, so it is never chosen with `--artifact`.
     Snapshot,
 }

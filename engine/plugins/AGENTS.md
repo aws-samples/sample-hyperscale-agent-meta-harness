@@ -27,8 +27,9 @@ fetches, bundles and verifies it. The code that places the plugins and supervise
   - The build fails (exit 6, nothing published) when any of the five differs from `lock.json`, when one is missing or extra, or when esbuild bundles
     other files than the five expected inputs or writes a warning.
 - `harness-rounds/` is the harness's own observer: `beforeRun` and `afterRun` append one JSON line each to
-  `<data dir>/plugins/harness-rounds/rounds.jsonl` (`ev` start or end, `n`, `t`, and for an end `status`, `iterations`, token counts, `error` and the last
-  1,500 characters of the final text). Every write is inside try/catch and it calls nothing else. The goal plugin queues its follow-up prompts itself, so
+  `<data dir>/plugins/harness-rounds/rounds.jsonl` (`ev` start or end, `n`, `t`, and for an end `status`, `iterations`, the run's own token counts as the engine keeps them (`inputTokens` with both
+  cache counts in it, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`; absent when the run reports none), `error` and the last 1,500 characters of the final text).
+  agentd adds the runs that no answered prompt reported (a prompt that ended in an error, the goal plugin's own rounds) to the run's usage. Every write is inside try/catch and it calls nothing else. The goal plugin queues its follow-up prompts itself, so
   these runs have no `session/prompt` response and this file is the only place that shows where each begins and ends. The file steers and measures the
   loop; the done claim rests on the ACP stream, which the model cannot write.
 - `lock.json` (version 1) holds the SHA-256 of every file of both folders under `files`, and under `sources.goal-plugin` the record of the bundle build:

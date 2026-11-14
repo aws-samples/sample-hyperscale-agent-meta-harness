@@ -2,11 +2,15 @@
 //! Environment: `TABLE_NAME`, `BUCKET_NAME`, `RUN_STATE_MACHINE_ARN`, `ACCOUNT_ID`, `DEPLOYMENT_PARAMETER_PREFIX`
 //! (`/hamh/<stage>`) and `OPERATOR_PRINCIPALS` (comma-separated ARN patterns allowed on `/v1/admin/*`). `HAMH_REPO_NAMES` (optional, comma-separated) is the stage's rule for the
 //! CodeCommit repository names an operator may allow; without it the rule is the default `hamh-e2e-*`.
+//! The version every answer reports is the release label of the stage when it holds one for the source tree it runs, else the
+//! version compiled in; `lambda::serve` is the whole path of a request, and this file only builds what it needs.
 
+use control_api::aws::SsmReleaseLabel;
 use control_api::aws::{DynamoStore, S3Blobs, SfnExecution};
-use control_api::handler::{Deps, handle_logged};
-use control_api::lambda::{log_lines, operators_setting, to_response, to_v1};
+use control_api::handler::Deps;
+use control_api::lambda::{operators_setting, serve};
 use control_api::repo_names::RepoNames;
+use control_api::version::ReleaseLabel;
 use lambda_http::{Error, Request, service_fn};
 
 fn env(name: &str) -> Result<String, Error> {
@@ -37,14 +41,13 @@ async fn main() -> Result<(), Error> {
         repo_names: RepoNames::from_lookup(|k| std::env::var(k).ok()).map_err(Error::from)?,
     };
     let deps = &deps;
+    let release = ReleaseLabel::new(SsmReleaseLabel {
+        client: aws_sdk_ssm::Client::new(&config),
+        prefix: env("DEPLOYMENT_PARAMETER_PREFIX")?,
+    });
+    let release = &release;
     lambda_http::run(service_fn(move |req: Request| async move {
-        let v1 = to_v1(&req);
-        let line_req = v1.clone();
-        let (out, diagnostics) = handle_logged(v1, deps).await;
-        for line in log_lines(&line_req, out.status, &diagnostics) {
-            println!("{line}");
-        }
-        to_response(out).map_err(Error::from)
+        serve(&req, deps, release).await.map_err(Error::from)
     }))
     .await
 }

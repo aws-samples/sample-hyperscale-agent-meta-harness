@@ -207,3 +207,115 @@ async fn a_refusal_of_the_stages_own_setup_is_not_a_retryable_answer() {
         "SSM-DENIED TRIGGER PRESENT: AccessDeniedException on the Instances parameter answers 422 compute-not-set-up"
     );
 }
+
+/// One plain start (no `compute` member) through the real adapter: the deployment read succeeds, then SSM answers `lock` for the stage's deploy
+/// lock, and Step Functions answers `sfn` when the run is started.
+async fn start_under(
+    lock: (u16, String),
+    sfn: Vec<(u16, String)>,
+) -> (World, control_api::handler::V1Response, Value, Vec<String>) {
+    let w = World::new();
+    let ssm = replay(vec![(200, DEPLOYED.to_string()), lock]);
+    let deps = Deps {
+        store: &w,
+        blobs: &w,
+        execution: SfnExecution {
+            client: client!(aws_sdk_sfn, replay(sfn)),
+            state_machine_arn: "arn:aws:states:us-west-2:123456789012:stateMachine:hamh-direct-run"
+                .into(),
+            ssm: client!(aws_sdk_ssm, ssm),
+            deployment_prefix: "/hamh/direct".into(),
+        },
+        account: "123456789012".into(),
+        operators: vec![],
+        repo_names: Default::default(),
+    };
+    let body = json!({
+        "prompt": "Add percent_change(a, b) with tests",
+        "target": {"mode": "s3-only"},
+        "model": SONNET,
+        "rules": []
+    });
+    let mut r = request(ME, "POST", "/v1/direct/runs", &[], &body.to_string());
+    r.headers.insert("idempotency-key".into(), "k-lock".into());
+    let (out, diagnostics) = handle_logged(r, &deps).await;
+    let v = serde_json::from_str(&out.body).unwrap_or(Value::Null);
+    (w, out, v, diagnostics)
+}
+
+fn lock_written(seconds_ago: u64) -> (u16, String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    (
+        200,
+        json!({"Parameter": {
+            "Name": "/hamh/direct/deploy-lock", "Type": "String", "Version": 2,
+            "Value": "token=tok-b804\nholder=laptop:4242\nroute=runner\nstarted=2026-11-11T16:00:00Z\nbuild=",
+            "LastModifiedDate": (now - seconds_ago) as f64}})
+        .to_string(),
+    )
+}
+
+fn started_execution() -> Vec<(u16, String)> {
+    vec![(
+        200,
+        json!({"executionArn": "arn:aws:states:us-west-2:123456789012:execution:hamh-direct-run:x", "startDate": 1794500000.0})
+            .to_string(),
+    )]
+}
+
+#[tokio::test]
+async fn b804_admit_a_start_through_the_real_adapter_is_refused_under_a_lock_ssm_wrote_a_minute_ago()
+ {
+    let (w, out, v, _) = start_under(lock_written(60), vec![]).await;
+    assert_eq!(out.status, 409, "{v}");
+    assert_eq!(v["code"], "stage-updating", "{v}");
+    assert_eq!(out.retry_after_s, Some(120));
+    assert!(w.runs.lock().unwrap().is_empty(), "no run was created");
+    assert_eq!(w.count("blob_put"), 0, "no request was stored");
+}
+
+#[tokio::test]
+async fn b804_admit_a_start_through_the_real_adapter_goes_on_without_a_lock_or_under_one_nobody_renews()
+ {
+    let (w, out, v, diag) =
+        start_under(ssm_error(400, "ParameterNotFound"), started_execution()).await;
+    assert_eq!(out.status, 201, "{v}");
+    assert_eq!(w.runs.lock().unwrap().len(), 1);
+    assert!(!diag.iter().any(|l| l.contains("deploy lock")), "{diag:?}");
+    let (w, out, v, diag) = start_under(lock_written(1900), started_execution()).await;
+    assert_eq!(out.status, 201, "{v}");
+    assert_eq!(w.runs.lock().unwrap().len(), 1);
+    assert_eq!(
+        diag.iter().filter(|l| l.contains("deploy lock")).count(),
+        1,
+        "{diag:?}"
+    );
+}
+
+#[tokio::test]
+async fn b804_admit_a_throttled_lock_read_is_a_503_and_a_refused_one_lets_the_run_start() {
+    for (status, kind) in [(400, "ThrottlingException"), (500, "InternalServerError")] {
+        let (w, out, v, diag) = start_under(ssm_error(status, kind), vec![]).await;
+        assert_eq!(out.status, 503, "{kind}: {v}");
+        assert_eq!(v["code"], "unavailable", "{kind}: {v}");
+        assert!(diag.iter().any(|l| l.contains(kind)), "{kind}: {diag:?}");
+        assert!(
+            w.runs.lock().unwrap().is_empty(),
+            "{kind}: no run was created"
+        );
+    }
+    // a function that is newer than its role (the grant is not there yet): no retry would help, so the run starts
+    let (w, out, v, diag) =
+        start_under(ssm_error(400, "AccessDeniedException"), started_execution()).await;
+    assert_eq!(out.status, 201, "{v}");
+    assert_eq!(w.runs.lock().unwrap().len(), 1);
+    assert!(
+        diag.iter()
+            .any(|l| l.contains("deploy lock") && l.contains("AccessDeniedException")),
+        "{diag:?}"
+    );
+    assert!(!out.body.contains("SENTINEL"), "{}", out.body);
+}

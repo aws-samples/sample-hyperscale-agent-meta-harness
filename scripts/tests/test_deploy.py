@@ -665,6 +665,7 @@ class DeployCase(unittest.TestCase):
                     FAKE_FIXTURE_DIR=str(Path(__file__).resolve().parent), DEPLOY_ENDPOINT_POLL_S="0",
                     FAKE_PROFILES=",".join(PROFILE_OF.values()))
         full.update(env)
+        full = {k: v for k, v in full.items() if v is not None}  # a case that passes None for a variable runs without it, as the setup runner does without DEPLOY_RECORD_DIR
         return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=full, timeout=300)  # nosec B603: argument list, no shell, program under test that is the interpreter, a repository script or a standard tool; B607: bare name of a standard tool such as git, bash, grep or uv looked up on PATH, as the scripts under test do
 
     def log(self, name: str) -> list:

@@ -82,7 +82,7 @@ Owned by the root contract. This directory holds the pack, its lock, the history
 
 - After any pack edit: change the contract in `contract.src` and run `python3 lifecycle/contract.py --write` (it writes `pack/AGENTS.md` and the three client assets; never edit those by hand), then `python3 lifecycle/lock.py --version X.Y.Z --write` (it also adds the old hashes to `pack.history.json`), and
   update the architecture document. A merge conflict in `pack.lock.json` is settled by running `--write` again, and one in `pack.history.json` by running `--backfill-history`, never by hand.
-- The run log has one line form: `RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <summary line>` or `NOT RUN | <what> | <reason>`; a tool that prints
+- The run log has one line form: `RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <summary line>` or `NOT RUN | <what> | <reason>`; `<command>` is the exact command as it runs from the repository root, because the clean-checkout test report runs that column again, and a note goes after it in parentheses, such as `(at BASE)`; a tool that prints
   no count is logged as unknown, never as an invented number, and a command that prints nothing is logged with "(no output)" (the checks also accept an empty or indented note).
 - A seeded text names nothing outside the run's project. The deferral table of that test (`KNOWN_DEFERRED`) is empty; an entry needs the maintainers' decision.
 - Keep the text short and checkable. A rule an agent can follow without a tool goes in the contract; the reason and the how go in the skill.

@@ -198,6 +198,24 @@ impl ApiError {
     }
 }
 
+/// Whether a failed start is the refusal of a stage that is being updated: 409 with the code [`ham_core::update::STAGE_UPDATING`]. A deploy holds the
+/// stage then, and the stage starts no new runs until it ends.
+pub fn stage_updating(e: &ApiError) -> bool {
+    matches!(e, ApiError::Http { status: 409, error } if error.code == ham_core::update::STAGE_UPDATING)
+}
+
+/// The words for a start that failed (`POST /v1/direct/runs`, a follow-up included). The refusal of a stage that is being updated is the service's one sentence,
+/// shown alone and made safe for the terminal: the route and the status say nothing a person can act on. Every other failure reads as the client words every
+/// API failure.
+pub fn start_failure(e: &ApiError) -> String {
+    match e {
+        ApiError::Http { error, .. } if stage_updating(e) => {
+            ham_core::sanitize::sanitize_line(&error.message)
+        }
+        _ => e.to_string(),
+    }
+}
+
 /// What the screen says when the service has no tag edit route (an older backend answers 404): the edits cannot be made, nothing is broken.
 pub const TAGS_UNSUPPORTED: &str = "this service cannot edit tags yet";
 

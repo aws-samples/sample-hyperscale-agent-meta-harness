@@ -1,7 +1,8 @@
-//! The work in progress: `POST /v1/runs/{runId}/snapshot/download-url`.
+//! The latest saved copy of a run's work: `POST /v1/runs/{runId}/snapshot/download-url`.
 //!
-//! agentd saves the work tree about every 10 minutes while the files change: `snapshot.bundle` (a git bundle of `refs/heads/snapshot`),
-//! then `snapshot.json` beside it. The route reads the record and the first bytes of the bundle, checks that both name the same commit,
+//! agentd saves the work tree while the files change (every minute, and after a tool call) and once more when the engine has stopped:
+//! `snapshot.bundle` (a git bundle of `refs/heads/snapshot`), then `snapshot.json` beside it. The copy of the end carries `"final": true`
+//! and is the session's final head, so the route answers for a run that ended as it does for one that works. The route reads the record and the first bytes of the bundle, checks that both name the same commit,
 //! and presigns the bundle. The worker role can write both objects, so the pair is **worker-made and not verified by the harness**
 //! ([`SNAPSHOT_TRUST_NOTE`]): matching commits show that two files agree, not who wrote them.
 //!
@@ -65,13 +66,16 @@ pub fn is_object_id(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// `snapshot.json` as agentd writes it (`{"schemaVersion":1,"headSha","baseSha","at","count"}`).
+/// `snapshot.json` as agentd writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotRecord {
     pub head_sha: String,
     pub base_sha: Option<String>,
     pub at: String,
     pub count: u32,
+    /// The copy was saved when the engine had stopped: it is the end state of the session's work. `false` for a copy made
+    /// while the run worked and for every record written before the member existed.
+    pub final_copy: bool,
 }
 
 impl SnapshotRecord {
@@ -112,11 +116,14 @@ impl SnapshotRecord {
             .and_then(serde_json::Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| bad("count is not a whole number".into()))?;
+        // Anything but the literal `true` is a copy made while the run worked.
+        let final_copy = v.get("final").and_then(serde_json::Value::as_bool) == Some(true);
         Ok(Self {
             head_sha,
             base_sha,
             at,
             count,
+            final_copy,
         })
     }
 }
@@ -203,6 +210,14 @@ pub struct SnapshotDownload {
     pub record_stale: bool,
     /// The run's status when asked: a finished run's last snapshot is not its delivered result (`ham pull` is).
     pub run_status: GoalStatus,
+    /// The copy was saved when the engine had stopped (the record's `final`): it holds the work as the engine left it. Absent
+    /// for a copy made while the run worked, when the record lags, and from a service older than the member.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub final_copy: bool,
+    /// The engine of the run (its word, as the service stores it), so a sentence about the copy names the engine that ran. Absent
+    /// from a service older than the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
 }
 
 impl std::fmt::Debug for SnapshotDownload {
@@ -218,6 +233,8 @@ impl std::fmt::Debug for SnapshotDownload {
             .field("etag", &self.etag)
             .field("record_stale", &self.record_stale)
             .field("run_status", &self.run_status)
+            .field("final_copy", &self.final_copy)
+            .field("engine", &self.engine)
             .finish()
     }
 }

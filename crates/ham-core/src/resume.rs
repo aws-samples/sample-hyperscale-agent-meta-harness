@@ -106,6 +106,8 @@ pub fn explain(status: u16, code: &str, message: &str) -> String {
         (409, "no-delivered-head" | "head-mismatch") => {
             format!("{m}; start a new run instead")
         }
+        // A stage that is being updated starts no new runs and says so in one sentence, which needs no word of ours.
+        (409, crate::update::STAGE_UPDATING) => m,
         (422, "unknown-model") => format!("{m}; start a new run and pick another model"),
         (422, "idempotency-key-reused") => {
             "the key of this resume was already used for another request; start a new run instead".to_string()
@@ -151,6 +153,33 @@ pub fn report_lines(plan: &ResumePlan, outcomes: &[Outcome]) -> Vec<String> {
         )
     }));
     lines
+}
+
+/// The ids of the runs whose resume started, read back from what `ham resume` wrote: the "started" lines of [`report_lines`], or the
+/// `resumed` objects of [`report_json`], one to a line. Every other line is ignored: a run that did not start or was skipped, a dry run, and a
+/// line that only holds the words of a start inside a reason. The terminal app uses it to take the card of a resume that did not start away
+/// from a run whose later resume started by the command.
+pub fn started_run_ids(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter_map(|l| started_run_id(l.trim()))
+        .collect()
+}
+
+fn started_run_id(line: &str) -> Option<String> {
+    if line.starts_with('{') {
+        let v: Value = serde_json::from_str(line).ok()?;
+        if v.get("result")?.as_str()? != "resumed" {
+            return None;
+        }
+        return Some(sanitize_line(v.get("runId")?.as_str()?));
+    }
+    let (id, tail) = line.strip_prefix("run ")?.split_once(": ")?;
+    (!id.is_empty()
+        && !id.contains(' ')
+        && tail.starts_with("follow-up run ")
+        && tail.ends_with(" started from the code it delivered"))
+    .then(|| id.to_string())
 }
 
 /// The same report as one JSON object per run (`ham resume --json`).

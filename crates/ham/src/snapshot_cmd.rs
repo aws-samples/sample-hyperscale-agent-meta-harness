@@ -1,6 +1,8 @@
-//! `ham pull <runId> --snapshot` and `/pull --snapshot`: the last snapshot of a live run, downloaded to the download
-//! directory with [`crate::chat_routes::fetch_snapshot`] (ranged download, size and commit check against the route's answer, rename after the
-//! check). The command prints where the file is and what it holds; it checks nothing out and merges nothing. A snapshot is a worker-made git
+//! `ham pull <runId> --snapshot` and `/pull --snapshot`: the latest saved copy of a run's work, whether the run
+//! works or has ended, downloaded to the download directory with [`crate::chat_routes::fetch_snapshot`] (ranged download, size and commit
+//! check against the route's answer, rename after the check). The command prints where the file is and what it holds: the copy the
+//! service saved when the engine had stopped is the work as the engine left it, and a copy made while the run worked says from when on
+//! changes are missing. It checks nothing out and merges nothing. A snapshot is a worker-made git
 //! bundle that the harness does not verify, and the text says so. No link is printed: the presigned URL never leaves `fetch_snapshot`.
 
 use crate::api::Api;
@@ -9,6 +11,7 @@ use crate::http::ControlPlane;
 use crate::output::Output;
 use ham_core::sanitize::sanitize_line;
 use ham_core::snapshot::{SNAPSHOT_REF, SNAPSHOT_TRUST_NOTE};
+use harness_protocol::goal::GoalStatus;
 use serde_json::json;
 use std::path::Path;
 
@@ -29,7 +32,44 @@ fn branch() -> &'static str {
         .unwrap_or(SNAPSHOT_REF)
 }
 
-/// The text of a finished download: what and where, the commit, the size, the run's state and the trust note.
+/// What the copy is. The copy of the end names the engine that ran; a copy made while the run worked says what it cannot hold.
+/// `None` when the record lags the bundle (the note about the record says so, and what the copy is cannot be told).
+fn saved_line(f: &SnapshotFetched) -> Option<String> {
+    if f.record_stale {
+        None
+    } else if f.final_copy {
+        Some(ham_core::engines::say_for(
+            f.engine.as_deref(),
+            "Saved     the work as {engine} left it (saved when {engine} stopped)",
+        ))
+    } else {
+        Some(format!(
+            "Saved     while the run worked: changes after {} are not in it",
+            sanitize_line(&f.taken_at)
+        ))
+    }
+}
+
+/// What the run's status means for the copy, in words that are true for that status; nothing for a run that works.
+fn status_note(run_id: &str, status: GoalStatus) -> Option<String> {
+    match status {
+        GoalStatus::Active => None,
+        GoalStatus::Complete | GoalStatus::Paused | GoalStatus::Stalled => Some(format!(
+            "the run delivered a zip: ham pull {run_id} downloads it"
+        )),
+        GoalStatus::Blocked => {
+            Some("the run is blocked and delivered no zip: this copy is its work".to_string())
+        }
+        GoalStatus::Cleared => {
+            Some("the run was cleared and delivered nothing: this copy is its work".to_string())
+        }
+        GoalStatus::UsageLimited | GoalStatus::BudgetLimited => Some(
+            "the run stopped at a limit and delivered no zip: this copy is its work".to_string(),
+        ),
+    }
+}
+
+/// The text of a finished download: what and where, the commit, the size, the run's state, what the copy is and the trust note.
 pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
     let path = f.path.display().to_string();
     let which = match f.count {
@@ -46,16 +86,18 @@ pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
     }
     lines.push(format!("Size      {} bytes", f.size_bytes));
     lines.push(format!("Run       {}", status_word(f.run_status)));
+    lines.extend(saved_line(f));
     if f.record_stale {
         lines.push(
             "Note      the snapshot record lags the bundle: the commit above is the bundle's own"
                 .into(),
         );
     }
-    if f.run_status.is_terminal() {
-        lines.push(format!(
-            "Note      the run has ended: its delivered result is ham pull {run_id}, not this snapshot"
-        ));
+    if f.final_copy && f.base_sha.as_deref() == Some(f.head_sha.as_str()) {
+        lines.push("Note      no file differs from the run's start".into());
+    }
+    if let Some(note) = status_note(run_id, f.run_status) {
+        lines.push(format!("Note      {note}"));
     }
     lines.push(format!("Look      git clone -b {} {path} <dir>", branch()));
     lines.push(format!("Warning   {SNAPSHOT_TRUST_NOTE}"));
@@ -77,6 +119,7 @@ pub fn json_of(run_id: &str, f: &SnapshotFetched) -> serde_json::Value {
     s.insert("sizeBytes".into(), json!(f.size_bytes));
     s.insert("runStatus".into(), json!(status_word(f.run_status)));
     s.insert("recordStale".into(), json!(f.record_stale));
+    s.insert("finalCopy".into(), json!(f.final_copy));
     s.insert("note".into(), json!(SNAPSHOT_TRUST_NOTE));
     json!({"runId": run_id, "snapshot": serde_json::Value::Object(s)})
 }

@@ -234,7 +234,7 @@ export class ControlStack extends Stack {
             // of the bundle and presigns the bundle, so the role may get these two objects of the direct agent and nothing else under
             // agents/ (the summary, the stop digests, the nonce, the final bundle and a future transcript stay closed to it).
             // s3:GetObjectVersion on the same two keys: the URL is pinned to the version whose header the route checked, so a bundle
-            // agentd overwrites meanwhile (every ten minutes) does not break a slow download; the bucket keeps noncurrent versions 30 days.
+            // agentd overwrites meanwhile (every minute while the files change) does not break a slow download; the bucket keeps noncurrent versions 30 days.
             { Sid: "SnapshotDownload", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"],
               // Each session of a run keeps its own snapshot under turns/n/, and the route reads the newest one. `?` is one
               // character: the turns 1 to 9, 10 to 99 and 100 to 256 need one pattern each, with no wildcard that spans a path (the test
@@ -245,6 +245,17 @@ export class ControlStack extends Stack {
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/??/snapshot.json`,
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/???/snapshot.bundle`,
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/???/snapshot.json`] },
+            // Whether a snapshot object exists is asked by a listing whose prefix is the key itself (`Blobs::exists`), as for the
+            // delivered head above: a GET of an absent key is 403 for a role that may not list the bucket, so a run without a copy of its work, and
+            // a run whose newest session has saved none yet, would answer 503 and never "no copy". The role may list the prefixes of exactly the
+            // keys SnapshotDownload lets it read, and nothing else under agents/.
+            { Sid: "ListSnapshot", Effect: "Allow", Action: ["s3:ListBucket"], Resource: `arn:aws:s3:::${bucket}`,
+              Condition: { StringLike: { "s3:prefix": [`runs/*/agents/direct/turns/?/snapshot.bundle`,
+                `runs/*/agents/direct/turns/?/snapshot.json`,
+                `runs/*/agents/direct/turns/??/snapshot.bundle`,
+                `runs/*/agents/direct/turns/??/snapshot.json`,
+                `runs/*/agents/direct/turns/???/snapshot.bundle`,
+                `runs/*/agents/direct/turns/???/snapshot.json`] } } },
             { Sid: "DataKeyThroughDynamoDbAndS3", Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
               Resource: security.dataKeyArn,
               Condition: { StringEquals: { "kms:ViaService": [`dynamodb.${region}.amazonaws.com`, `s3.${region}.amazonaws.com`] } } },
@@ -271,14 +282,21 @@ export class ControlStack extends Stack {
             // LeadingKeys condition of the goal-step role's health grants, so neither reaches another partition.
             { Sid: "RouteHealthRead", Effect: "Allow", Action: ["dynamodb:BatchGetItem"], Resource: table, Condition: healthPartitions },
             { Sid: "RouteHealthReset", Effect: "Allow", Action: ["dynamodb:UpdateItem"], Resource: table, Condition: healthPartitions },
-            // Each new Run item names the deployment it runs on.
+            // Each new Run item names the deployment it runs on. The same read grant covers the release label, which every answer's version
+            // header is read from beside deployed-source-tree (crates/control-api/src/version.rs): a release that deploys no file of the stage reports its VERSION through it.
             { Sid: "DeploymentParameters", Effect: "Allow", Action: ["ssm:GetParameters"],
-              Resource: ["deployment-digest", "deployed-source-tree"].map((n) => `arn:aws:ssm:${region}:${ACCOUNT}:parameter/hamh/${cfg.stage}/${n}`) },
+              Resource: ["deployment-digest", "deployed-source-tree", "release-version"].map((n) => `arn:aws:ssm:${region}:${ACCOUNT}:parameter/hamh/${cfg.stage}/${n}`) },
             // A request that names `--compute instances` is refused up front when the stage has no Instances worker runtime. control-api asks by reading that runtime's
             // ARN parameter with GetParameter (the one the runtimes stack writes with `HAMH_COMPUTE_INSTANCES=on`). The grant does not depend on the setting: an absent parameter
             // answers ParameterNotFound, a 422 the user can act on, whereas a role without the grant would answer AccessDenied for a stage that merely leaves Instances off.
             { Sid: "InstancesRuntimeArnParameter", Effect: "Allow", Action: ["ssm:GetParameter"],
               Resource: `arn:aws:ssm:${region}:${ACCOUNT}:parameter${names.runtimeArnParameter(cfg, "worker-python-instances")}` },
+            // A stage that is being updated starts no new runs. Right before it creates a run, control-api reads the stage's deploy lock with GetParameter:
+            // the parameter that setup and deploy create before they change the stage, write again while they work and delete at the end. While a deploy holds it the
+            // start is a 409 `stage-updating`. The grant is this one parameter, read only. An absent parameter answers ParameterNotFound, the normal case; a role
+            // without the grant (a function that is newer than its role) answers AccessDenied, and control-api then lets the run start and logs one line.
+            { Sid: "DeployLockParameter", Effect: "Allow", Action: ["ssm:GetParameter"],
+              Resource: `arn:aws:ssm:${region}:${ACCOUNT}:parameter/hamh/${cfg.stage}/deploy-lock` },
             { Sid: "OwnLogs", Effect: "Allow", Action: ["logs:CreateLogStream", "logs:PutLogEvents"], Resource: `${fnLogs.attrArn}` },
             { Sid: "Tracing", Effect: "Allow", Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"], Resource: "*" },
           ],

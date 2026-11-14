@@ -149,6 +149,8 @@ class FullBase(SetupBase):
 
     def env(self, **extra: str) -> dict:
         e = super().env(FAKE_AWS_STATE=str(self.state), FAKE_AWS_SCENARIO=str(self.scenario_path), HAMH_SETUP_POLL_SECONDS="0", HAMH_SETUP_LOCK_SETTLE_SECONDS="0",
+                        # No pause before the look for active runs that follows the lock, and none between two such looks
+                        HAMH_SETUP_RUN_SETTLE_SECONDS="0", HAMH_SETUP_RUN_POLL_SECONDS="0",
                         HAMH_SETUP_POLL_RETRIES="3", HAMH_SETUP_RETRY_SECONDS="0", GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
         e.update(extra)
         return e

@@ -2323,23 +2323,21 @@ async fn a_snapshot_is_uploaded_while_the_prompt_runs_and_the_repository_is_unto
     let s = d.summary();
     assert!(s.snapshots.count >= 1, "{:?}", s.snapshots);
     assert!(s.snapshots.last_at.is_some());
-    let json: serde_json::Value = serde_json::from_slice(
-        &d.aws
-            .get(&keys::snapshot_json_key(RUN))
-            .expect("snapshot.json"),
-    )
-    .unwrap();
+    // The copy of the end replaces the pair when the engine stops, so the copy made while the prompt ran is the first version of
+    // each object (the bucket keeps versions).
+    let records = d.aws.versions_of(&keys::snapshot_json_key(RUN));
+    let bundles = d.aws.versions_of(&keys::snapshot_bundle_key(RUN));
+    assert!(
+        records.len() >= 2 && bundles.len() >= 2,
+        "a copy while the prompt ran, then the copy of the end"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&records[0].1).unwrap();
     assert_eq!(json["schemaVersion"], 1);
     assert_eq!(json["baseSha"], s.git.base_sha.clone().unwrap());
+    assert!(json.get("final").is_none(), "{json}");
     let head = json["headSha"].as_str().unwrap().to_string();
     let bundle = d.dir.join("snapshot.bundle");
-    std::fs::write(
-        &bundle,
-        d.aws
-            .get(&keys::snapshot_bundle_key(RUN))
-            .expect("snapshot.bundle"),
-    )
-    .unwrap();
+    std::fs::write(&bundle, &bundles[0].1).unwrap();
     let wt = d.worktree();
     git(&wt, &["bundle", "verify", bundle.to_str().unwrap()]);
     // Cloning the bundle proves it is complete: its history reaches the base and its tree holds the engine's edits.

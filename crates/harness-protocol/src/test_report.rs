@@ -103,6 +103,12 @@ pub const MAX_REPORT_RUNNER_CHARS: usize = 40;
 pub const NOT_RUN_MARK: &str = "not run";
 /// The start of the `outputTail` of a step with [`NOT_RUN_MARK`]: the reason follows, then, for a command that was started, what it printed.
 pub const NOT_RUN_PREFIX: &str = "NOT RUN: ";
+/// How the reason of a step starts when agentd ran it and the runner refused the command as the lifecycle log wrote it: a word of the
+/// command names no file or directory of the clean checkout, which agentd checked itself, so a repository's output alone cannot make such a step.
+/// The step is no failure of the repository's tests, it keeps the claim away, and the sentence names it after the commands that ran.
+pub const NOT_AS_WRITTEN: &str = "could not run as written";
+/// How the reason of a step starts when the install step it needs failed and it was not started: `skipped: the setup step `npm ci` failed`.
+pub const SKIPPED_FOR_SETUP: &str = "skipped: the setup step ";
 
 /// How the report ended. `off` is never written by the worker: run-session puts it in a summary when the user switched the report off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -567,7 +573,11 @@ impl TestReport {
     ///
     /// A step marked not run ([`TestStep::is_not_run`]) is neither a pass nor a failure: it does not count as run, it is not the failing
     /// command, it gives no exit code and it fails no setup, and it keeps `all_exit_zero` (and so the claim) away, because a command that
-    /// did not run shows nothing. The summary's `reason` then names the first such command and why (`NOT RUN: ...`) when the report has none.
+    /// did not run shows nothing. The summary's `reason` then names the first such command and why (`NOT RUN:...`) when the report has none;
+    /// a command that could not run as written is named only when no command was left out for another reason.
+    ///
+    /// `setup_failed` holds when the first step that did not exit 0 is a setup step: the tests that need it did not run, and a test that
+    /// failed before it leads the sentence instead.
     pub fn summary(&self) -> TestReportSummary {
         let ran: Vec<&TestStep> = self.steps.iter().filter(|s| !s.is_not_run()).collect();
         let not_run: Vec<&TestStep> = self.steps.iter().filter(|s| s.is_not_run()).collect();
@@ -599,12 +609,19 @@ impl TestReport {
             _ => self.reason.clone(),
         };
         let reason = own.or_else(|| {
-            let first = not_run.first()?;
+            // A command that could not run as written says least about the repository: it is named only when nothing else was left out.
+            let (written, others): (Vec<&TestStep>, Vec<&TestStep>) =
+                not_run.iter().copied().partition(|s| {
+                    s.not_run_reason()
+                        .is_some_and(|r| r.starts_with(NOT_AS_WRITTEN))
+                });
+            let group = if others.is_empty() { written } else { others };
+            let first = group.first()?;
             let why = cut_chars(
                 first.not_run_reason().unwrap_or("a service is missing"),
                 120,
             );
-            let more = match not_run.len() {
+            let more = match group.len() {
                 1 => String::new(),
                 n => format!(", and {} more", n - 1),
             };
@@ -648,9 +665,7 @@ impl TestReport {
                 .unwrap_or(u32::MAX),
             all_exit_zero: !tests.is_empty() && ran.iter().all(|s| zero(s)) && not_run.is_empty(),
             exit_code,
-            setup_failed: ran
-                .iter()
-                .any(|s| s.role == TestStepRole::Setup && !zero(s)),
+            setup_failed: first_failing.is_some_and(|s| s.role == TestStepRole::Setup),
             failed_command: first_failing.map(|s| cut_chars(&s.command, MAX_REPORT_COMMAND_CHARS)),
             timed_out,
             counts,
@@ -927,7 +942,61 @@ fn quoted(command: &str) -> String {
     plain(command).replace('`', "'")
 }
 
+/// The parts of the line [`TestReport::summary`] writes in `reason` for the first command that was not run, ``NOT RUN: `<command>` (<why>)``
+/// with `, and N more` for more such commands: the command, the why and N. `None` for any other line.
+fn not_run_parts(line: &str) -> Option<(&str, &str, usize)> {
+    let rest = line.strip_prefix(NOT_RUN_PREFIX)?.strip_prefix('`')?;
+    let (command, rest) = rest.split_once('`')?;
+    let rest = rest.strip_prefix(" (")?;
+    let (why, more) = match rest.rsplit_once("), and ") {
+        Some((why, n)) => (why, n.strip_suffix(" more")?.parse().ok()?),
+        None => (rest.strip_suffix(')')?, 0),
+    };
+    Some((command, why, more))
+}
+
+/// `` `<command>` `` or `` `<command>` and N more ``.
+fn named(command: &str, more: usize) -> String {
+    match more {
+        0 => format!("`{command}`"),
+        n => format!("`{command}` and {n} more"),
+    }
+}
+
 impl TestReportSummary {
+    /// What the runner reported for the test commands that ran, as the end of a sentence.
+    fn counts_words(&self) -> String {
+        match self.counts {
+            Some(c) => format!(
+                "the runner reported {} passed, {} failed",
+                c.passed, c.failed
+            ),
+            None => "the runner's test counts could not be read".to_string(),
+        }
+    }
+
+    /// The sentence of a report whose only commands left out could not run as written: the commands that ran come first, then the
+    /// command the log wrote with the words the runner refused. `None` when `line` is about another reason.
+    fn as_written_sentence(&self, line: &str) -> Option<String> {
+        let (command, why, more) = not_run_parts(line)?;
+        let rest = why.strip_prefix(NOT_AS_WRITTEN)?;
+        // The reason is the first command's, and it names that command's path. For `<command> and N more` it would give that path to the others,
+        // so the sentence says what each of them lacks without naming it.
+        let rest = if more == 0 {
+            rest
+        } else {
+            ": the clean checkout has no file or directory that each of them names"
+        };
+        let written = format!("{} {NOT_AS_WRITTEN}{rest}.", named(command, more));
+        Some(match self.command {
+            None => written,
+            Some(_) => format!(
+                "The test commands that ran exited 0 in a clean checkout; {}. {written}",
+                self.counts_words()
+            ),
+        })
+    }
+
     /// The first line of `reason`: why the report ended as it did, or the first command that was not run. The second line, if any, is the plan note.
     fn why(&self) -> Option<&str> {
         self.reason
@@ -1056,7 +1125,9 @@ impl TestReportSummary {
             && self.failed_command.is_none()
             && let Some(r) = self.why().filter(|r| r.starts_with(NOT_RUN_PREFIX))
         {
-            return format!("{r}.");
+            return self
+                .as_written_sentence(r)
+                .unwrap_or_else(|| format!("{r}."));
         }
         if self.status == TestReportStatus::TimedOut {
             return match &self.timed_out {
@@ -1091,9 +1162,29 @@ impl TestReportSummary {
             .exit_code
             .map_or_else(|| "no code".to_string(), |c| c.to_string());
         if self.setup_failed {
-            return format!(
-                "Setup `{failed}` exited {code} in a clean checkout, so the test command did not run."
-            );
+            if self.command.is_none() {
+                return format!(
+                    "Setup `{failed}` exited {code} in a clean checkout, so the test command did not run."
+                );
+            }
+            // Test commands ran beside the install that failed: the sentence names the command it kept from running, or says that the
+            // commands ran without it, and what the runner reported for those that ran.
+            let head = format!("Setup `{failed}` exited {code} in a clean checkout");
+            return match self.why().and_then(not_run_parts) {
+                Some((command, why, more)) if why.starts_with(SKIPPED_FOR_SETUP) => format!(
+                    "{head}, so {} did not run; for the test commands that ran, {}.",
+                    named(command, more),
+                    self.counts_words()
+                ),
+                Some(_) => format!(
+                    "{head}; for the test commands that ran, {}.",
+                    self.counts_words()
+                ),
+                None => format!(
+                    "{head}, so the test commands ran without it; {}.",
+                    self.counts_words()
+                ),
+            };
         }
         // A step that exited non-zero while a service it needs was not available keeps its exit code and counts; the sentence says what it ran without,
         // and does not say the tests failed for that reason.

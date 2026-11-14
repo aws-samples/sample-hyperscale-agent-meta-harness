@@ -7,7 +7,7 @@
 use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use control_api::aws::{DynamoStore, PageSkips, S3Blobs, SfnExecution, skip_line};
-use control_api::handler::{Blobs, DeployedAs, Execution, Store, StoreError, TagRead};
+use control_api::handler::{Blobs, DeployLock, DeployedAs, Execution, Store, StoreError, TagRead};
 use ham_core::run_index::{RunIndexItem, owner_pk, search_sk};
 use ham_core::runtag::dynamo::{edit_update, expr_rejects};
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload, SCHEMA_VERSION};
@@ -1543,4 +1543,80 @@ async fn a_tag_attribute_an_edit_would_replace_and_cannot_read_is_reported() {
         got.unwrap().item.run_tags_off,
         Some(tag_strings(&["tech:a", "topic:b"]))
     );
+}
+
+#[tokio::test]
+async fn b804_admit_the_adapter_reads_the_one_lock_parameter_with_the_time_ssm_wrote_it() {
+    let lock =
+        "token=tok-b804\nholder=laptop:4242\nroute=runner\nstarted=2026-11-11T16:00:00Z\nbuild=";
+    let held = json!({"Parameter": {
+        "Name": "/hamh/live/deploy-lock", "Type": "String", "Value": lock, "Version": 3, "DataType": "text",
+        "LastModifiedDate": 1794500000.123,
+        "ARN": "arn:aws:ssm:us-west-2:123456789012:parameter/hamh/live/deploy-lock"}})
+    .to_string();
+    let undated =
+        json!({"Parameter": {"Name": "/hamh/live/deploy-lock", "Type": "String", "Value": lock}})
+            .to_string();
+    let missing = r#"{"__type": "ParameterNotFound", "message": "no such parameter"}"#;
+    let throttled = r#"{"__type": "ThrottlingException", "message": "slow down"}"#;
+    let fault = r#"{"__type": "InternalServerError", "message": "boom"}"#;
+    let denied = r#"{"__type": "AccessDeniedException", "message": "not allowed"}"#;
+    let invalid = r#"{"__type": "ValidationException", "message": "bad name"}"#;
+    let r = replay(vec![
+        (200, &held),
+        (200, &undated),
+        (400, missing),
+        (400, throttled),
+        (500, fault),
+        (400, denied),
+        (400, invalid),
+    ]);
+    let x = SfnExecution {
+        client: client!(aws_sdk_sfn, replay(vec![])),
+        state_machine_arn: "arn:aws:states:us-west-2:123456789012:stateMachine:hamh-live-run"
+            .into(),
+        ssm: client!(aws_sdk_ssm, r),
+        deployment_prefix: "/hamh/live".into(),
+    };
+    assert_eq!(
+        x.deploy_lock().await.unwrap(),
+        Some(DeployLock {
+            value: lock.into(),
+            written_epoch_s: Some(1_794_500_000),
+        }),
+        "the text and the time SSM wrote it, in whole seconds"
+    );
+    assert_eq!(
+        x.deploy_lock().await.unwrap(),
+        Some(DeployLock {
+            value: lock.into(),
+            written_epoch_s: None,
+        }),
+        "an answer without a time"
+    );
+    assert_eq!(
+        x.deploy_lock().await.unwrap(),
+        None,
+        "no such parameter: no deploy holds the stage"
+    );
+    for want in ["throttle", "service fault"] {
+        let e = x.deploy_lock().await.unwrap_err();
+        assert!(matches!(e, StoreError::Unavailable(_)), "{want}: {e:?}");
+    }
+    for want in ["AccessDenied", "Validation"] {
+        let e = x.deploy_lock().await.unwrap_err();
+        assert!(
+            matches!(e, StoreError::NotSetUp(ref m) if m.contains(want)),
+            "{want}: {e:?}"
+        );
+    }
+    let b = bodies(&r);
+    assert_eq!(b.len(), 7);
+    for body in &b {
+        assert_eq!(
+            body,
+            &json!({"Name": "/hamh/live/deploy-lock"}),
+            "the singular GetParameter, on the one parameter, and nothing else"
+        );
+    }
 }

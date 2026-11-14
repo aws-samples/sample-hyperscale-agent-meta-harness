@@ -60,6 +60,8 @@ fn step_of(command: &str) -> PlannedStep {
         source: TestCommandSource::LifecycleLog,
         command: command.to_string(),
         logged: None,
+        install: None,
+        fallback: None,
     }
 }
 

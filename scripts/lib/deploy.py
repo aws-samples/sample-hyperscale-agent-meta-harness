@@ -206,11 +206,33 @@ written, with the resolved word, also when the role of the account entry gave it
 with an entry of another role (setup always generates role active), so only a recorded word lets the stage keep them. A `set.` line of a setting this
 release does not know is kept as it is. A record whose schema is newer than 1 is refused (`record-downgrade`).
 
+Release label: SSM /hamh/<stage>/release-version, `<VERSION> <source tree>` (tagged, written through `put_param`). control-api reports it as the version of the
+backend when it is no older than the version compiled into it and names the source tree the stage runs; otherwise it reports the compiled version. Step 7 writes it
+with the digests (a deploy that did not finish leaves the label of the last one that did, except that a label above this deploy's VERSION is lowered to it before the first
+stack change, so a deploy that goes back to an older version never leaves a label above the code it changed). `--relabel` writes it alone for a stage that already runs this source tree
+(an update whose release changes no deployed file): the record must say `status=deployed` for this tree and the account file in use, and the stage's
+`deployed-source-tree` and `deployment-config-digest` must agree with it, else `DEPLOY-REFUSED reason=not-deployed` (exit 3). It takes the deploy lock as a deploy does,
+with the line `deploys=no`, and it runs under a caller's lock that carries that line
+(the lock of an update that builds only the client), which it neither renews nor writes. It
+never lowers the label (the label to beat is the stage's own label for this tree, else the `version=` of the record), writes nothing when the label is already right, puts the tags
+again on a label that exists (a run that stopped after the put is finished by the next one), builds nothing and changes no stack. The last line is `DEPLOY-LABEL stage=<s>
+version=<v> was=<old>` (written), `... unchanged` or `... kept: <why>`; a failure is `DEPLOY-FAIL <step> ...` (exit 1), and `version` fails first when VERSION is not N.NN.
+
 Deploy lock: SSM /hamh/<stage>/deploy-lock (`token`, `holder`, `identity`, `route`, `started`, `commit`, `inputs`, `build` lines; `commit` is the
 commit of the settings record). With
 HAMH_DEPLOY_LOCK_TOKEN set the deploy reads the lock and is refused (`lock`, wait=yes) unless its `token` line matches; it neither takes nor deletes the
-lock. Without it the deploy takes the lock itself with a create-only put (`route=manual`, tagged; a lock that exists is refused, naming its holder),
+lock. It is refused the same way under a lock with the line `deploys=no`: setup writes that line for a hold that changes nothing on the stage, and the
+stage's API service, which starts no new runs while a deploy holds the lock, starts them under such a lock. The release label alone (`--relabel`) is the one mode that
+runs under such a lock. Without it the deploy takes the lock itself with a create-only put (`route=manual`, tagged; a lock that exists is refused, naming its holder),
 renews it while it runs and deletes it when it ends, after a failure or a refusal too.
+The caller's lock is renewed too: the API service takes a lock that nobody wrote for 30 minutes for abandoned and starts runs again, and the setup that
+holds the lock may have stopped following its build (Ctrl-C, a closed terminal, a sign-in that ran out, a laptop that sleeps) while this deploy still changes
+the stage. So every LOCK_RENEW_S seconds the deploy reads the caller's lock and writes it again: every line as it read it, in its order, and one last line
+`renewed=<UTC time>` (the value changes, so the time SSM records for the parameter moves; setup reads lines by key and ignores this one, and its own next
+write drops it). It writes only while the lock still holds the caller's token and has no `deploys=no` line. A lock that is gone is the caller's to take again:
+the deploy writes nothing and stops renewing, so deleting the parameter stays the operator's way to open the stage. The renewals stop when the deploy ends;
+the lock stays where it is. SSM has no conditional write: a write of setup between this read and this write is replaced by the older text, which setup's
+next write (at least every 10 minutes, and its read-back when it shares the lock) puts right.
 Renewal and release (Addendum 4, A4.3): setup and teardown take a lock that records no build for abandoned once its `started` is 30 minutes old, and a
 deploy that builds the worker image or the Cline fork runs longer. So a daemon thread (`keep_lock`) writes a new `started` into the deploy's own lock
 every LOCK_RENEW_S seconds (300: at least every 10 minutes, with room for a slow call), through the long waits in cdk, cargo and CodeBuild too. It writes
@@ -420,10 +442,19 @@ DEFAULTS_FILE = Path(__file__).resolve().parent / "stage-defaults.tsv"
 SETTINGS_PARAM = "/hamh/{stage}/settings"
 SETTINGS_SCHEMA = "1"
 LOCK_PARAM = "/hamh/{stage}/deploy-lock"
+# The release label of the stage, `N.NN <source tree>` (the VERSION of the release the stage was given and the source tree it runs). control-api reports it when it is
+# a version no older than the one compiled into it and its tree is the one the stage runs (crates/control-api/src/version.rs). A deploy writes it with the digests; a
+# release that changes no file the stage runs writes it alone (`--relabel`).
+RELEASE_LABEL_PARAM = "/hamh/{stage}/release-version"
+VERSION_WORD = re.compile(r"[0-9]+\.[0-9]{2}")
+LABEL_VALUE = re.compile(r"([0-9]+\.[0-9]{2}) ([0-9a-f]{64})")
 LOCK_CALLER_VARIABLE = "HAMH_DEPLOY_LOCK_TOKEN"
 LOCK_FIELDS = ("token", "holder", "identity", "route", "started", "commit", "inputs", "build")
+# The line a deploy under the caller's lock adds when it writes that lock again (`renew_caller_lock`). No reader decides anything by it.
+LOCK_RENEWED_KEY = "renewed"
 # Addendum 4 (A4.3): how often the deploy writes a new `started` into the lock it took. Setup and teardown take a lock that records no build for abandoned when
-# its `started` is older than 30 minutes (scripts/setup/runner.sh RN_LOCK_STALE_SECONDS), so this stays at or below 10 minutes; 5 leaves room for a slow call.
+# its `started` is older than 30 minutes (scripts/lib/deploy-lock-stale-seconds.txt, read by scripts/setup/runner.sh as RN_LOCK_STALE_SECONDS and embedded by the
+# stage's API service, which starts no new runs while the lock was written within that time), so this stays at or below 10 minutes; 5 leaves room for a slow call.
 LOCK_RENEW_S = 300
 LOCK_RENEW_VARIABLE = "DEPLOY_LOCK_RENEW_S"
 # How long `release_lock` waits for a renewal that is under way before it reads the lock.
@@ -480,7 +511,7 @@ TAVILY_PROVIDERS = ("tavily", "auto")
 # The steps whose failure before the first stack change is a refusal (DEPLOY-REFUSED, exit 3), with whether waiting cures it.
 # Waiting cures the first two (wait=yes); the others need an action (wait=no).
 REFUSAL_STEPS = ("guard", "lock", "instances-off", "owner", "caller", "account", "azs", "vpc-cidr", "bootstrap", "fork-pointer", "settings-read",
-                 "record-downgrade", "consent")
+                 "record-downgrade", "consent", "not-deployed")
 WAIT_CURES = ("guard", "lock")
 REFUSALS = {step: "yes" if step in WAIT_CURES else "no" for step in REFUSAL_STEPS}
 
@@ -653,6 +684,10 @@ class Deployer:
         self.record: dict | None = None
         self.changed = False
         self.lock_owned = False
+        # The token of the caller's lock (HAMH_DEPLOY_LOCK_TOKEN) while this deploy runs under it; empty for a lock the deploy took itself.
+        self.lock_caller = ""
+        # With: True while the lock this process took itself is a hold that changes nothing the stage runs (the release label alone); it then carries `deploys=no`.
+        self.lock_idle = False
         self.lock_fields: dict[str, str] = {}
         self.lock_stop = threading.Event()
         self.lock_thread: threading.Thread | None = None
@@ -2326,22 +2361,137 @@ class Deployer:
         self.put_param(SETTINGS_PARAM.format(stage=self.stage), "\n".join(lines))
         say(f"settings record {SETTINGS_PARAM.format(stage=self.stage)} status={status}")
 
+    @staticmethod
+    def version_pair(text: str) -> tuple[int, int] | None:
+        """`N.NN` as numbers, None for anything else."""
+        if not VERSION_WORD.fullmatch(text or ""):
+            return None
+        major, counter = text.split(".")
+        return int(major), int(counter)
+
+    def write_release_label(self) -> None:
+        """The label follows the digests it is bound to (step 7), so a deploy that did not finish leaves the label of the last one that did. A VERSION that is
+        not N.NN (the build refuses it already) writes none."""
+        version = self.version_text()
+        if self.version_pair(version) is None:
+            say(f"release label not written: VERSION is {version!r}, not N.NN")
+            return
+        name = RELEASE_LABEL_PARAM.format(stage=self.stage)
+        self.put_param(name, f"{version} {self.tree}")
+        say(f"release label {version} {name}")
+
+    def read_param(self, name: str) -> str | None:
+        """The value of one of the stage's SSM parameters; None when it does not exist. A read that fails is a refusal to go on (`settings-read`)."""
+        try:
+            doc = self.aws("ssm", "get-parameter", "--name", name, ok_missing=("ParameterNotFound",))
+        except Fail as e:
+            raise Fail("settings-read", f"the parameter {name} cannot be read ({e.detail}).", action="Let the caller read it, then run the update again.") from None
+        return None if not doc else ((doc.get("Parameter") or {}).get("Value") or "")
+
+    def relabel(self) -> str:
+        """`--relabel`: the stage already runs this source tree, so the release writes its label alone: one tagged SSM parameter and nothing else (no build,
+        no CloudFormation, no image). The stage must say it runs this tree: its record is `status=deployed` with this tree, and the parameters the digests live in
+        (`deployed-source-tree`, `deployment-config-digest`) agree with the record and with the account file in use. Otherwise it is refused before anything is
+        written (`DEPLOY-REFUSED reason=not-deployed`, exit 3). The label is never lowered: a clone whose VERSION is older than the label leaves it as it is. The
+        label to beat is the stage's own label for this tree, else the VERSION of the record (what control-api was compiled with). The lock is taken as a deploy
+        takes it, or checked as the caller's (HAMH_DEPLOY_LOCK_TOKEN); either way it may say `deploys=no`, because this hold changes nothing the stage runs.
+        A label that is already right is not written again, and its tags are put again, so a run that
+        stopped after the put and before the tags is finished by the next one. Returns the `DEPLOY-LABEL` line."""
+        sha = self.git("rev-parse", "HEAD")
+        tree = digests.source_tree(self.root)
+        self.sha, self.tree = sha, tree
+        self.commit = self.source_commit(sha)
+        version = self.version_text()
+        say(f"stage={self.stage} sha={sha[:7]} sourceTree={tree[:12]} profile={self.env['AWS_PROFILE']} (release label)")
+        if self.version_pair(version) is None:
+            raise Fail("version", f"VERSION is {version!r}, not N.NN")
+        self.check_account()
+        self.settle_owner()
+        again = "Run ./setup.sh --update --force-deploy to deploy this commit."
+        with self.deploy_lock(deploys=False):
+            rec = self.read_settings_record()
+            if rec is None:
+                raise Fail("not-deployed", "the stage has no record of its deploy.", action=again)
+            fields = rec["fields"]
+            if fields.get("status") != "deployed":
+                raise Fail("not-deployed", f"the record of the stage says status {fields.get('status') or 'none'}: its last deploy did not finish.", action=again)
+            if fields.get("tree") != tree:
+                raise Fail("not-deployed", f"the stage runs another source tree ({str(fields.get('tree'))[:12]}, this commit has {tree[:12]}), so a label alone would not match it.",
+                           action=again)
+            live = self.read_param(f"/hamh/{self.stage}/deployed-source-tree")
+            if live != tree:
+                raise Fail("not-deployed", f"the stage's deployed-source-tree is {(live or 'none')[:12]}, this commit has {tree[:12]}: a deploy changed the stage after the record "
+                                           "was written.", action=again)
+            config = self.read_param(f"/hamh/{self.stage}/deployment-config-digest")
+            if config != self.config_digest or fields.get("accounts") != self.config_digest:
+                raise Fail("not-deployed", "the stage was deployed from another account file than the one in use.", action=again)
+            name = RELEASE_LABEL_PARAM.format(stage=self.stage)
+            held = self.read_param(name)
+            m = LABEL_VALUE.fullmatch((held or "").strip())
+            if m and m.group(2) == tree:
+                current = m.group(1)
+            else:
+                current = fields.get("version", "") if self.version_pair(fields.get("version", "")) else ""
+            then, now = self.version_pair(current), self.version_pair(version)
+            if then is None or (now is not None and now > then):
+                self.changed = True
+                self.put_param(name, f"{version} {tree}")
+                return f"DEPLOY-LABEL stage={self.stage} version={version} was={current or 'unknown'}"
+            if held is not None:
+                self.changed = True
+                self.tag_param(name)
+            if now == then:
+                return f"DEPLOY-LABEL stage={self.stage} version={current} unchanged"
+            return f"DEPLOY-LABEL stage={self.stage} version={current} kept: this commit's VERSION is {version}, older than the label."
+
+    def lower_release_label(self) -> None:
+        """A label above this deploy's VERSION is lowered to it before the first stack change. The label of the deploy that is being replaced names the live source
+        tree until this deploy writes its digests, so control-api, built with this deploy's older VERSION, would report the higher one if this deploy changed its stacks
+        and did not finish. A label that is not above this VERSION is not written (the usual forward deploy writes nothing here); a label that cannot be read is left,
+        and this deploy goes on as it did before the lowering existed."""
+        version = self.version_text()
+        now = self.version_pair(version)
+        if now is None:
+            return
+        name = RELEASE_LABEL_PARAM.format(stage=self.stage)
+        try:
+            held = self.read_param(name)
+        except Fail as e:
+            say(f"release label not read before the first stack change: {e.detail}")
+            return
+        m = LABEL_VALUE.fullmatch((held or "").strip())
+        then = self.version_pair(m.group(1)) if m else None
+        if then is None or then <= now:
+            return
+        self.put_param(name, f"{version} {m.group(2)}")
+        say(f"release label {m.group(1)} lowered to {version} {name}: this deploy builds that version")
+
     def begin_changes(self) -> None:
-        """Right before the first stack change (the bootstrap of an account that has none, else the first cdk deploy): the record says `deploying`. After
-        this point no refusal is left; a failure is DEPLOY-FAIL."""
+        """Right before the first stack change (the bootstrap of an account that has none, else the first cdk deploy): the label is brought down to this deploy's VERSION when
+        it is above it, then the record says `deploying`. After this point no refusal is left; a failure is DEPLOY-FAIL."""
         if self.changed:
             return
+        self.lower_release_label()
         self.write_settings_record("deploying")
         self.changed = True
 
     def lock_name(self) -> str:
         return LOCK_PARAM.format(stage=self.stage)
 
-    def read_lock(self, env: dict | None = None) -> dict | None:
+    def read_lock_text(self, env: dict | None = None) -> str | None:
+        """The value of the lock as SSM holds it, None when there is no lock."""
         doc = self.aws("ssm", "get-parameter", "--name", self.lock_name(), ok_missing=("ParameterNotFound",), env=env)
         if not doc:
             return None
-        return dict(line.split("=", 1) for line in ((doc.get("Parameter") or {}).get("Value") or "").splitlines() if "=" in line)
+        return (doc.get("Parameter") or {}).get("Value") or ""
+
+    @staticmethod
+    def lock_lines(text: str) -> dict:
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+    def read_lock(self, env: dict | None = None) -> dict | None:
+        text = self.read_lock_text(env=env)
+        return None if text is None else self.lock_lines(text)
 
     @staticmethod
     def describe_lock(held: dict) -> str:
@@ -2360,11 +2510,16 @@ class Deployer:
         return self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def lock_value(self) -> str:
-        return "\n".join(f"{k}={self.lock_fields[k]}" for k in LOCK_FIELDS)
+        lines = [f"{k}={self.lock_fields[k]}" for k in LOCK_FIELDS]
+        if self.lock_idle:
+            # The stage's API service starts runs under a lock with this line; the release label alone changes nothing the stage runs
+            lines.append("deploys=no")
+        return "\n".join(lines)
 
     def start_lock_keeper(self) -> None:
-        """A4.3: a daemon thread renews the lock this deploy took while the deploy runs, the long waits in cdk, cargo and CodeBuild included.
-        `release_lock` stops it; a deploy that is killed takes it along, and its lock then ages like any lock nobody renews."""
+        """A4.3: a daemon thread renews the lock this deploy took while the deploy runs, the long waits in cdk, cargo and CodeBuild included.: it
+        renews the caller's lock the same way (`renew_caller_lock`). `release_lock` stops it; a deploy that is killed takes it along, and its lock then
+        ages like any lock nobody renews."""
         self.lock_stop = threading.Event()
         self.lock_env = dict(self.env)
         self.lock_thread = threading.Thread(target=self.keep_lock, args=(self.lock_stop.wait,), name="deploy-lock-keeper", daemon=True)
@@ -2380,7 +2535,10 @@ class Deployer:
     def renew_lock(self) -> bool:
         """One renewal of the lock this deploy took: a new `started`, written over the lock only while the lock still holds this deploy's token. A lock
         that is gone is taken again (create-only, tagged). False when the lock belongs to another deploy by now, or the deploy has ended: nothing is
-        written and the renewals stop. A call that fails is said and tried again at the next interval; it never ends the deploy."""
+        written and the renewals stop. A call that fails is said and tried again at the next interval; it never ends the deploy. Under the caller's lock
+        the renewal is `renew_caller_lock`."""
+        if self.lock_caller:
+            return self.renew_caller_lock()
         name, env = self.lock_name(), self.lock_env
         try:
             held = self.read_lock(env=env)
@@ -2401,10 +2559,42 @@ class Deployer:
             say(f"the deploy lock {name} could not be renewed ({getattr(e, 'detail', '') or e}); the next try is in {self.lock_renew_s:g} s")
         return True
 
-    def take_lock(self) -> None:
-        """C6, the deploy side. With HAMH_DEPLOY_LOCK_TOKEN the caller (setup) holds the lock: the deploy only checks the token. Without it the deploy takes
-        the lock itself, create-only (a lock that exists is someone else's), tagged, with route=manual, and keeps its `started` fresh (`start_lock_keeper`);
-        `release_lock` deletes it when the deploy ends."""
+    def renew_caller_lock(self) -> bool:
+        """One renewal of the lock the caller holds (HAMH_DEPLOY_LOCK_TOKEN). The stage's API service starts no new runs while the lock was written
+        within the last 30 minutes, and the setup that holds it may have stopped following its build while this deploy still changes the stage. The lock is
+        written again as it was read, every line in its order, with one last line `renewed=<UTC time>`: the value changes, so the time SSM records moves,
+        and nothing setup decides by (`started`, `holder`, `parties`) is touched. False, with nothing written and the renewals stopped, when the lock is no
+        longer the caller's to keep closed: it holds another token, it says `deploys=no`, it is gone (the caller's to take again, and deleting it is the
+        operator's way to open the stage), or the deploy has ended. A call that fails is said and tried again at the next interval; it never ends the deploy."""
+        name, env = self.lock_name(), self.lock_env
+        try:
+            text = self.read_lock_text(env=env)
+            if text is None:
+                say(f"the deploy lock {name} is gone while this deploy runs under it; it is the caller's lock, so this deploy does not take it again and stops renewing it")
+                return False
+            held = self.lock_lines(text)
+            if held.get("token") != self.lock_caller:
+                say(f"the deploy lock {name} now belongs to another deploy ({self.describe_lock(held)}); it is left alone and this deploy stops renewing it")
+                return False
+            if held.get("deploys") == "no":
+                say(f"the deploy lock {name} now says that its holder deploys nothing (deploys=no); it is left alone and this deploy stops renewing it")
+                return False
+            if self.lock_stop.is_set():
+                return False
+            lines = [ln for ln in text.splitlines() if not ln.startswith(LOCK_RENEWED_KEY + "=")]
+            lines.append(f"{LOCK_RENEWED_KEY}={self.lock_time()}")
+            self.aws("ssm", "put-parameter", "--name", name, "--value", "\n".join(lines), "--type", "String", "--overwrite", env=env)
+        except (Fail, OSError, ValueError, RuntimeError) as e:
+            say(f"the deploy lock {name} could not be renewed ({getattr(e, 'detail', '') or e}); the next try is in {self.lock_renew_s:g} s")
+        return True
+
+    def take_lock(self, deploys: bool = True) -> None:
+        """C6, the deploy side. With HAMH_DEPLOY_LOCK_TOKEN the caller (setup) holds the lock: the deploy checks the token, takes and deletes nothing, and
+        writes the caller's lock again while it runs. Without it the deploy takes the lock itself, create-only (a lock that
+        exists is someone else's), tagged, with route=manual, and keeps its `started` fresh (`start_lock_keeper`); `release_lock` deletes it when the deploy ends.
+        `deploys` is False for the release label alone, a hold that changes nothing the stage runs: it runs under a caller's lock that says
+        `deploys=no` (the lock of an update that builds only the client; that lock is neither renewed nor written), and the lock it takes itself carries that
+        line, so the stage's API service keeps starting runs."""
         name = self.lock_name()
         token = os.environ.get(LOCK_CALLER_VARIABLE, "").strip()
         if token:
@@ -2415,8 +2605,21 @@ class Deployer:
             if held.get("token") != token:
                 raise Fail("lock", f"another deploy holds the deploy lock {name} ({self.describe_lock(held)}).",
                            action="It may be your own earlier setup. Wait until it ends, then deploy again.")
+            if held.get("deploys") == "no" and not deploys:
+                # Under: the label changes nothing the stage runs, so it is written under the lock of an update that builds only the client. That
+                # lock stays open to new runs and is the caller's to write: no keeper renews it.
+                say(f"deploy lock {name} held by the caller ({self.describe_lock(held)}); it says deploys=no, and the release label changes nothing the stage runs")
+                self.lock_caller = token
+                return
+            if held.get("deploys") == "no":
+                # The stage's API service starts runs under a lock with this line, so a deploy must never run under one.
+                raise Fail("lock", f"the deploy lock {name} says that its holder deploys nothing (deploys=no), so this deploy does not run under it.",
+                           action="Run the update again; it takes a lock of its own for the deploy.")
             say(f"deploy lock {name} held by the caller ({self.describe_lock(held)})")
+            self.lock_caller = token
+            self.start_lock_keeper()
             return
+        self.lock_idle = not deploys
         self.lock_fields = dict(zip(LOCK_FIELDS, (secrets.token_hex(16), f"{socket.gethostname()}:{os.getpid()}", self.caller_arn, "manual", self.lock_time(),
                                                   self.commit, "", "")))
         # Create-only (no --overwrite): a name that exists is another deploy's lock.
@@ -2427,30 +2630,31 @@ class Deployer:
                               f"parameter {name} and deploy again.")
         self.lock_owned = True
         self.tag_param(name)
-        say(f"deploy lock {name} taken (route manual)")
+        say(f"deploy lock {name} taken (route manual)" + ("; it says deploys=no, so the stage keeps starting runs" if self.lock_idle else ""))
         self.start_lock_keeper()
 
     @contextlib.contextmanager
-    def deploy_lock(self):
+    def deploy_lock(self, deploys: bool = True):
         """`take_lock` on entry, `release_lock` on exit, however the block ends. `take_lock` runs inside the try block: a call that fails after its create-only
-        put (the tag call) releases the lock this deploy created, instead of leaving it to block the next deploy for 30 minutes."""
+        put (the tag call) releases the lock this deploy created, instead of leaving it to block the next deploy for 30 minutes. `deploys=False` is the hold of the
+        release label alone (see `take_lock`)."""
         try:
-            self.take_lock()
+            self.take_lock(deploys)
             yield
         finally:
             self.release_lock()
 
     def release_lock(self) -> None:
-        """Ends the lock this deploy took (`take_lock` without a token); a lock the caller holds is the caller's to delete. The keeper stops first. Then
-        the lock is deleted only while it still holds this deploy's token (A4.3): a lock that another deploy replaced, as setup does with a lock it takes
-        for abandoned, is left alone, and a line says so. SSM has no conditional delete, so the token is read right before the delete."""
-        if not self.lock_owned:
-            return
-        self.lock_owned = False
+        """Ends the lock this deploy took (`take_lock` without a token); a lock the caller holds is the caller's to delete. The keeper stops first, for the
+        caller's lock too. Then the lock is deleted only while it still holds this deploy's token (A4.3): a lock that another deploy replaced, as setup does
+        with a lock it takes for abandoned, is left alone, and a line says so. SSM has no conditional delete, so the token is read right before the delete."""
         self.lock_stop.set()
         if self.lock_thread is not None:
             self.lock_thread.join(timeout=LOCK_JOIN_S)
             self.lock_thread = None
+        if not self.lock_owned:
+            return
+        self.lock_owned = False
         name = self.lock_name()
         try:
             held = self.read_lock()
@@ -2645,6 +2849,7 @@ class Deployer:
             for name, value in (("deployment-digest", digest), ("deployed-source-tree", tree), ("image-digest", img),
                                 ("worker-revision", str(self.revision)), ("deployment-config-digest", self.config_digest)):
                 self.put_param(f"/hamh/{self.stage}/{name}", value)
+            self.write_release_label()
             gomod = self.report_gomod_store()
             crit = Path(os.environ.get("DEPLOY_CRITERIA", ""))
             self.write_record({
@@ -2669,7 +2874,7 @@ class Deployer:
 
 def usage(msg: str) -> int:
     print(f"deploy.sh: {msg}\nusage: scripts/deploy.sh --stage direct [--azs 1] [--bump-worker-version] [--check-guard] [--print-settings] "
-          "[--fork-source auto|build|copy]", file=sys.stderr)
+          "[--fork-source auto|build|copy] | --stage direct --relabel", file=sys.stderr)
     return 2
 
 
@@ -2680,6 +2885,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--bump-worker-version", action="store_true")
     p.add_argument("--check-guard", action="store_true")
     p.add_argument("--print-settings", action="store_true")
+    p.add_argument("--relabel", action="store_true")
     p.add_argument("--fork-source", choices=FORK_SOURCES, default="auto")
     try:
         args, extra = p.parse_known_args(argv)
@@ -2687,6 +2893,8 @@ def main(argv: list[str]) -> int:
         return usage("bad arguments")
     if extra or not args.stage:
         return usage("bad arguments" if extra else "--stage is required")
+    if args.relabel and (args.bump_worker_version or args.check_guard or args.print_settings):
+        return usage("--relabel goes with no other mode")
     if args.azs is not None and args.azs != AZS[args.stage]:
         return usage(f"stage {args.stage} has {AZS[args.stage]} AZs (infra/lib/config.ts)")
     try:
@@ -2715,7 +2923,7 @@ def main(argv: list[str]) -> int:
         print("deploy.sh: uncommitted changes to tracked files; commit first so the deploy matches a commit", file=sys.stderr)
         return 2
     try:
-        line = d.deploy()
+        line = d.relabel() if args.relabel else d.deploy()
     except Fail as e:
         if not d.changed and e.step in REFUSALS:
             # Nothing on the stage changed; the one line says why and what to do.

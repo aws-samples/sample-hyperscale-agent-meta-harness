@@ -47,6 +47,9 @@ const WIDE_MIN_WIDTH: u16 = 100;
 /// more ends in an ellipsis. Without an error the note is one row.
 const RUNS_ERROR_ROWS: usize = 4;
 
+/// The rows the Runs table keeps under the panel of a notice: its borders, its header and two runs.
+const RUNS_PANEL_TABLE: usize = 5;
+
 fn s(text: &str) -> String {
     sanitize_line(text)
 }
@@ -288,23 +291,57 @@ impl App {
     }
 
     fn draw_runs(&self, f: &mut Frame, split: &Split) {
-        // An error that does not fit one row wraps onto up to `RUNS_ERROR_ROWS`, so the words that say what to do show on a narrow terminal too.
-        // Any other note, and an error that fits, stay one row.
+        // A notice or an error that does not fit one row wraps onto up to `RUNS_ERROR_ROWS`, so the words that say what to do show on a narrow
+        // terminal too. The usual note, and a notice or an error that fits, stay one row.
         let width = usize::from(split.area.width);
-        let error_rows: Vec<Line<'static>> = match self.runs_error_text() {
+        let long_text = self
+            .runs_notice
+            .as_deref()
+            .map(s)
+            .or_else(|| self.runs_error_text());
+        let error_rows: Vec<Line<'static>> = match long_text {
             Some(text) if cols(&text) > width => {
                 clipped(wrap(&text, width), RUNS_ERROR_ROWS, width)
             }
             _ => Vec::new(),
         };
         let status_rows = u16::try_from(error_rows.len().max(1)).unwrap_or(1);
-        let [title, body, status, help] = Layout::vertical([
+        // The whole text of a short notice: a panel between the table and the note row, a title rule and each paragraph wrapped to the
+        // width. The table keeps two rows of runs; a text that needs more rows than are left ends in an ellipsis.
+        let detail = self.runs_detail_shown();
+        let detail_lines: Vec<Line<'static>> = detail.map_or_else(Vec::new, |d| {
+            let lines: Vec<String> = d
+                .paragraphs
+                .iter()
+                .flat_map(|p| wrap(&s(p), width))
+                .collect();
+            let room = usize::from(split.area.height)
+                .saturating_sub(1 + RUNS_PANEL_TABLE + usize::from(status_rows) + 1 + 1);
+            if room == 0 {
+                Vec::new()
+            } else {
+                clipped(lines, room, width)
+            }
+        });
+        let detail_rows = if detail_lines.is_empty() {
+            0
+        } else {
+            u16::try_from(detail_lines.len() + 1).unwrap_or(u16::MAX)
+        };
+        let [title, body, panel, status, help] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
+            Constraint::Length(detail_rows),
             Constraint::Length(status_rows),
             Constraint::Length(1),
         ])
         .areas(split.area);
+        if let (Some(d), true) = (detail, detail_rows > 0) {
+            let rule = Block::default()
+                .borders(Borders::TOP)
+                .title(Line::from(format!(" {} ", s(&d.title))));
+            f.render_widget(Paragraph::new(detail_lines).block(rule), panel);
+        }
         title_line(f, split.title_over(title), "ham · Runs");
         let filter = &self.runs_filter;
         let visible = self.runs_visible();
@@ -1179,6 +1216,20 @@ impl App {
         }
     }
 
+    /// `Saved 17:40 MST, 2 min ago` (the run works), `Saved 17:47 MST, when <engine> stopped` (the copy of the end) or
+    /// `Saved 17:40 MST, while the run worked`: when the last copy of the run's work was saved, from the run's own events. `None` for a
+    /// run that saved none.
+    pub(crate) fn saved_line(&self, v: &RunView) -> Option<String> {
+        let copy = v.saved.as_ref()?;
+        Some(ham_core::saved_copy::screen_line(
+            copy,
+            ham_core::engines::of_view(v),
+            v.has_ended(),
+            self.now,
+            &|t| self.saved_clock_text(t),
+        ))
+    }
+
     /// The cards at the end of the conversation, in order: the status, the agents (folded), the blocked panel, the question and the
     /// delivery card. `width` is the columns a card line gets before it wraps.
     fn chat_cards(&self, v: &RunView, width: usize) -> Vec<Card> {
@@ -1189,10 +1240,15 @@ impl App {
         cards.push(Card {
             id: "status".into(),
             title: "status".into(),
-            lines: header_lines(v, width, self.model_fallback(&v.run_id))
-                .iter()
-                .map(line_text)
-                .collect(),
+            lines: header_lines(
+                v,
+                width,
+                self.model_fallback(&v.run_id),
+                self.saved_line(v).as_deref(),
+            )
+            .iter()
+            .map(line_text)
+            .collect(),
             folded: false,
             alert: false,
         });
@@ -1210,7 +1266,7 @@ impl App {
         if let Some(note) = self.sharing_notes.get(&v.run_id) {
             cards.push(Card {
                 id: "sharing".into(),
-                title: "provider data sharing".into(),
+                title: super::app::SHARING_TITLE.into(),
                 lines: super::transcript::wrap_text(&sanitize_line(note), width.max(1)),
                 folded: false,
                 alert: false,
@@ -1274,6 +1330,20 @@ impl App {
                 lines: text.lines().map(s).collect(),
                 folded: false,
                 alert: false,
+            });
+        }
+        // Why a retry, a follow-up or a resume from this run did not start, whole and wrapped, last: the one-row notice cuts it.
+        if let Some(r) = self.start_refusals.get(&v.run_id) {
+            cards.push(Card {
+                id: "refused".into(),
+                title: r.what.title().into(),
+                lines: r
+                    .paragraphs
+                    .iter()
+                    .flat_map(|p| super::transcript::wrap_text(&sanitize_line(p), width.max(1)))
+                    .collect(),
+                folded: false,
+                alert: true,
             });
         }
         cards
@@ -1818,7 +1888,9 @@ impl App {
                     .collect(),
                 list.len(),
                 if list.is_empty() {
-                    "the run has no artifacts yet".into()
+                    // A run that ended without a delivery has none to come; its work is in its saved copy.
+                    ham_core::saved_copy::no_delivery(self.view().and_then(|v| v.status))
+                        .unwrap_or_else(|| "the run has no artifacts yet".into())
                 } else {
                     String::new()
                 },
@@ -2271,7 +2343,13 @@ fn blocked_lines(v: &RunView) -> Vec<Line<'static>> {
     vec![Line::from(format!("reason: {}", s(&b.reason)))]
 }
 
-fn header_lines(v: &RunView, width: usize, fallback: Option<&str>) -> Vec<Line<'static>> {
+/// The status block of a run. `saved` is the line that says when the last copy of the work was saved, when the run has one.
+fn header_lines(
+    v: &RunView,
+    width: usize,
+    fallback: Option<&str>,
+    saved: Option<&str>,
+) -> Vec<Line<'static>> {
     // A direct run has no gates, tests or verdicts: its status block names the harness's label.
     let status = v
         .status
@@ -2322,6 +2400,9 @@ fn header_lines(v: &RunView, width: usize, fallback: Option<&str>) -> Vec<Line<'
         "PR     {}",
         v.pr_url.as_deref().map_or_else(|| "none yet".into(), s)
     )));
+    if let Some(saved) = saved {
+        lines.push(Line::from(cut(&s(saved), width)));
+    }
     let windows = v.windows();
     if !windows.is_empty() {
         let text = windows

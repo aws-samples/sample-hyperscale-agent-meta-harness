@@ -367,6 +367,20 @@ pub struct ObjectFacts {
 pub trait Blobs: Send + Sync {
     fn get(&self, key: &str) -> impl Future<Output = Res<Option<Vec<u8>>>> + Send;
     fn exists(&self, key: &str) -> impl Future<Output = Res<bool>> + Send;
+    /// The first `max_bytes` bytes of the object;
+    /// `None`: no such key. A client without a ranged read reads the object whole and cuts it.
+    fn get_prefix(
+        &self,
+        key: &str,
+        max_bytes: u64,
+    ) -> impl Future<Output = Res<Option<Vec<u8>>>> + Send {
+        async move {
+            Ok(self.get(key).await?.map(|mut bytes| {
+                bytes.truncate(usize::try_from(max_bytes).unwrap_or(usize::MAX));
+                bytes
+            }))
+        }
+    }
     /// Writes the object unless the key exists; `false` when it existed.
     fn put_if_absent(&self, key: &str, body: &[u8]) -> impl Future<Output = Res<bool>> + Send;
     /// At most `max_keys` (1 to 1,000) objects under `prefix` whose keys sort after `start_after`, in key order. A client that

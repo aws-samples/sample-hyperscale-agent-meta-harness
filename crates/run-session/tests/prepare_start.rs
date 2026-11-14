@@ -192,7 +192,7 @@ async fn start_session_invokes_the_microvm_with_a_valid_direct_request() {
     assert_eq!(req.model.id, MODEL);
     assert_eq!(req.model.region, "us-east-1");
     assert_eq!(req.timeout_s, 27_900);
-    assert_eq!(req.snapshot_every_s, Some(600));
+    assert_eq!(req.snapshot_every_s, Some(60));
     assert_eq!(req.provider_silence_s, None);
     assert_eq!(req.region, "us-east-1");
     assert_eq!(

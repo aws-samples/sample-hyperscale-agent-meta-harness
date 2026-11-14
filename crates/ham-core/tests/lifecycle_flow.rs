@@ -80,11 +80,15 @@ const OLD_FULL_1_12_0: &str =
 const OLD_QUICK_1_12_0: &str =
     include_str!("../../../fixtures/lifecycle/pack-earlier/1.12.0-AGENTS-quick.md.txt");
 
+// The `full` text of the contract in packs 1.13.0 to 1.15.0, before step 5 said that `<command>` is the exact command: the pack lists `auto`, and `lock.py --earlier` lists this one.
+const OLD_FULL_1_15_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.15.0-AGENTS-full.md.txt");
+
 const PINS: [(LifecycleFlow, usize, &str); 3] = [
     (
         LifecycleFlow::Full,
-        9048,
-        "b5e0532968a8456684e22d5b31e7c1b4a9e981255029d00668a1772d6e0aeebb",
+        9079,
+        "9c0386ac318aaa82d7bd08dfb80f21fa4d5981eecc22007b95cf3d2ccdd2621f",
     ),
     (
         LifecycleFlow::Quick,
@@ -93,8 +97,8 @@ const PINS: [(LifecycleFlow, usize, &str); 3] = [
     ),
     (
         LifecycleFlow::Auto,
-        11568,
-        "3973da054b8cef8bdfd175f9d6292b382f9e010210babd58d09c2cff605f3d07",
+        11599,
+        "0869aca4b1ee47dfeefa1d90ca9b2f00993405997a336e80db80783623eb8e07",
     ),
 ];
 
@@ -489,8 +493,8 @@ fn the_history_names_the_1_2_0_contract_and_an_install_of_any_flow_replaces_it()
 }
 
 #[test]
-fn the_pack_is_version_1_14_0_and_its_contract_is_the_auto_text() {
-    assert_eq!(pack::version(), "1.15.0");
+fn the_pack_is_version_1_16_0_and_its_contract_is_the_auto_text() {
+    assert_eq!(pack::version(), "1.16.0");
     let lock: serde_json::Value = serde_json::from_str(pack::LOCK).unwrap();
     assert_eq!(
         lock["files"]["AGENTS.md"].as_str(),
@@ -751,6 +755,45 @@ fn the_history_names_the_three_1_4_0_texts_and_an_install_of_any_flow_replaces_t
                 flow.word()
             );
         }
+    }
+}
+
+#[test]
+fn b834_the_history_names_the_1_15_0_full_text_and_an_install_of_any_flow_replaces_it() {
+    // Pack 1.16.0 changed the `full` and `auto` texts. A machine that holds an unedited 1.15.0 `full` rule file gets the new text from `ham rules init`, whichever flow it asks for, and an
+    // edited copy is kept. The history lists the old `auto` text through the pack and this one through `lock.py --earlier`; a lock step without `--earlier` left it out (review of q5-report).
+    assert_eq!(
+        History::pack().earlier_version("AGENTS.md", OLD_FULL_1_15_0.as_bytes()),
+        Some("1.15.0")
+    );
+    for flow in LifecycleFlow::ALL {
+        let rule = scratch(&format!("rule-1-15-0-full-{}", flow.word()));
+        std::fs::write(rule.join(pack::CONTRACT_RULE), OLD_FULL_1_15_0).unwrap();
+        assert_eq!(
+            pack::install_rule(&rule, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+            Installed::Updated {
+                was: "1.15.0".to_string()
+            },
+            "an unedited 1.15.0 full text, asked for {}",
+            flow.word()
+        );
+        assert_eq!(
+            std::fs::read_to_string(rule.join(pack::CONTRACT_RULE)).unwrap(),
+            pack::contract_text(flow)
+        );
+        let mine = scratch(&format!("rule-edited-1-15-0-full-{}", flow.word()));
+        let edited = format!("{OLD_FULL_1_15_0}\nMy own line.\n");
+        std::fs::write(mine.join(pack::CONTRACT_RULE), &edited).unwrap();
+        assert_eq!(
+            pack::install_rule(&mine, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+            Installed::KeptEdited,
+            "an edited 1.15.0 full text, asked for {}",
+            flow.word()
+        );
+        assert_eq!(
+            std::fs::read_to_string(mine.join(pack::CONTRACT_RULE)).unwrap(),
+            edited
+        );
     }
 }
 

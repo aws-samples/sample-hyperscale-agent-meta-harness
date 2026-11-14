@@ -856,8 +856,8 @@ fn b766_the_starter_tells_when_to_fill_the_project_part_and_still_holds_no_build
 }
 
 #[test]
-fn the_pack_is_version_1_15_0_and_its_contract_puts_the_records_in_the_hidden_folder() {
-    assert_eq!(pack::version(), "1.15.0");
+fn the_pack_is_version_1_16_0_and_its_contract_puts_the_records_in_the_hidden_folder() {
+    assert_eq!(pack::version(), "1.16.0");
     assert!(pack::CONTRACT.contains(".ham/lifecycle/GOAL.md"));
     assert!(!pack::CONTRACT.contains("docs/lifecycle"));
 }

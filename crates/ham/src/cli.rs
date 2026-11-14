@@ -730,6 +730,8 @@ async fn cmd_start_direct(
     }
     let started = match start_direct(&cleared.api, &request, &nonce).await {
         Ok(s) => s,
+        // A stage that is being updated says so in one sentence, which is shown alone
+        Err(e) if crate::api::stage_updating(&e) => return fail(crate::api::start_failure(&e)),
         Err(e) => return fail(format!("POST /v1/direct/runs: {e}")),
     };
     if json {
@@ -1050,6 +1052,10 @@ async fn cmd_pull<P: ControlPlane>(
 ) -> i32 {
     let pulled = match pull_with(api, run_id, which, dir, chunk).await {
         Ok(p) => p,
+        // A run without a zip is told where its work is, in words for its status.
+        Err(crate::pull::PullError::NoArtifact(_)) if *which == PullArtifact::Zip => {
+            return fail_out(out, no_zip_text(api, run_id).await);
+        }
         Err(e) => return fail_out(out, e),
     };
     let mut state = RunState::new(run_id);
@@ -1128,6 +1134,10 @@ async fn cmd_clone<P: ControlPlane>(
     let mut notice = |n: &str| out.err_line(format!("ham: {}", sanitize_line(n)));
     let (cloned, pulled) = match clone_run(api, &Git::system(), &req, &mut notice).await {
         Ok(r) => r,
+        // A run that delivered nothing has no repository to clone; its work is in its saved copy.
+        Err(crate::clone::CloneError::NoDelivery(_)) => {
+            return fail_out(out, no_zip_text(api, run_id).await);
+        }
         Err(e) => return fail_out(out, sanitize_line(&e.to_string())),
     };
     for w in &cloned.warnings {
@@ -1243,6 +1253,13 @@ fn clone_text(run_id: &str, c: &crate::clone::Cloned) -> String {
     )
 }
 
+/// What a command that needs a zip says for a run that has none: the sentence for the run's status (asked once, here) with the
+/// command that downloads the latest saved copy of its work. A status that cannot be read is not guessed.
+async fn no_zip_text<P: ControlPlane>(api: &Api<P>, run_id: &str) -> String {
+    let status = api.get_run(run_id).await.ok().map(|d| d.summary.status);
+    ham_core::saved_copy::no_zip(run_id, status)
+}
+
 /// The local time of a link's expiry for the panel (`06:12 MDT`); the stage's own text when it is no time.
 fn expiry_text(expires_at: &str) -> String {
     crate::doctor::parse_utc(expires_at)
@@ -1259,7 +1276,8 @@ async fn cmd_link<P: ControlPlane>(api: &Api<P>, run_id: &str, json: bool, out: 
     };
     let a = match select(&list, &PullArtifact::Zip) {
         Ok(a) => a,
-        Err(e) => return fail_out(out, e),
+        // No zip, so no link; the run's work is in its saved copy.
+        Err(_) => return fail_out(out, no_zip_text(api, run_id).await),
     };
     match api.download_url(run_id, &a.artifact_id).await {
         Ok(u) => {

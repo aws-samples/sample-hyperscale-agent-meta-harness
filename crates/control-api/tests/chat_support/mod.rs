@@ -217,6 +217,8 @@ pub struct World {
     pub instances: AtomicBool,
     /// The Instances lookup fails like a throttled parameter read.
     pub instances_down: AtomicBool,
+    /// The stage's deploy lock: what `Execution::deploy_lock` answers. `None` is a stage without the parameter.
+    pub deploy_lock: Mutex<Option<Result<control_api::handler::DeployLock, StoreError>>>,
 }
 
 impl World {
@@ -939,6 +941,10 @@ impl Execution for &World {
             ));
         }
         Ok(self.instances.load(Ordering::SeqCst))
+    }
+    async fn deploy_lock(&self) -> Result<Option<control_api::handler::DeployLock>, StoreError> {
+        self.log("deploy_lock");
+        self.deploy_lock.lock().unwrap().clone().transpose()
     }
 }
 

@@ -5,7 +5,8 @@
 //! is valid: the model must be in `models.json`, the rules and the nudge must pass `ham_core::rules`.
 //!
 //! After validation the start is: the idempotency claim, the request in S3, the Run item, the root Goal and `run.created`
-//! (whose payload says `"mode": "direct"`), and one execution named after the run.
+//! (whose payload says `"mode": "direct"`), and one execution named after the run. Between the claim and the request in S3 a request that
+//! would launch a run asks the stage's deploy lock: a stage that is being updated starts no new runs.
 
 use crate::body::parse_body;
 use crate::direct_models;
@@ -582,16 +583,32 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
         );
     }
     let run_id = claim.run_id;
+    // What the look at the stage's deploy lock leaves for the log.
+    let mut notes: Vec<String> = Vec::new();
     let run = match deps.store.get_run(&run_id).await {
-        Ok(Some(run)) => run,
-        Ok(None) => {
-            match create_run(
-                &run_id, caller, request, canonical, linked_to, deployed, deps,
-            )
-            .await
-            {
-                Ok(run) => run,
-                Err(e) => return unavailable(&e, RETRY),
+        // A repeat of a start that was admitted and launched (its first session pinned the worker runtime on the Run item): it returns its
+        // run whatever the stage is doing, and the StartExecution below repeats a start that happened.
+        Ok(Some(run)) if run.runtime_endpoint.is_some() => run,
+        Ok(found) => {
+            // This request would launch work: a new run, or a run that nothing shows to have started. The stage's deploy lock is read now,
+            // right before the write that creates the run, and a deploy that holds the stage refuses the start (`crate::admission`). Only
+            // the claim above is written by then, and a repeat of the key after the update creates the run.
+            match crate::admission::admit(&deps.execution, RETRY).await {
+                Ok(lines) => notes = lines,
+                Err(reply) => return reply,
+            }
+            match found {
+                Some(run) => run,
+                None => {
+                    match create_run(
+                        &run_id, caller, request, canonical, linked_to, deployed, deps,
+                    )
+                    .await
+                    {
+                        Ok(run) => run,
+                        Err(e) => return unavailable(&e, RETRY),
+                    }
+                }
             }
         }
         Err(e) => return unavailable(&e, RETRY),
@@ -602,23 +619,25 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
         .start(&run_id, &value!({ "runId": run_id }))
         .await
     {
-        return unavailable(
+        let (resp, mut logs) = unavailable(
             &e,
             &format!("run {run_id} is recorded but did not start; {RETRY}"),
         );
+        logs.extend(notes);
+        return (resp, logs);
     }
     // The search item: the run's own `createdAt` addresses it, so a retry reaches the same key and completes a first attempt's miss.
     // A failure is logged and never fails the start; the backfill makes the item later.
-    let logs: Vec<String> = crate::run_index::write_at_start(
-        &deps.store,
-        caller,
-        &run,
-        &request.prompt,
-        &request.model,
-    )
-    .await
-    .into_iter()
-    .collect();
+    notes.extend(
+        crate::run_index::write_at_start(
+            &deps.store,
+            caller,
+            &run,
+            &request.prompt,
+            &request.model,
+        )
+        .await,
+    );
     let (resp, _) = json(
         201,
         &StartRunResponse {
@@ -626,7 +645,7 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
             status: run.status,
         },
     );
-    (resp, logs)
+    (resp, notes)
 }
 
 /// The request object first, then the Run item, root Goal and `run.created` in one transaction, so a run never exists without

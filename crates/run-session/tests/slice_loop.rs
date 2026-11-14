@@ -1355,7 +1355,7 @@ fn b773_the_run_machine_outlasts_the_longest_total_time_and_the_session_wait_out
 
 #[tokio::test(flavor = "multi_thread")]
 async fn b773_a_sixty_second_session_lost_before_any_snapshot_restarts_from_the_last_bundle() {
-    // A snapshot is taken every 600 s, so a session of 60 s has none: the next session restores the bundle of the session before the lost one,
+    // A session lost before its first snapshot has none: the next session restores the bundle of the session before the lost one,
     // and only the lost session's own minute is gone.
     let mem = seeded_short(Some(3_000));
     let mut w = SliceWorld::new(

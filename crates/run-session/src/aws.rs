@@ -1289,6 +1289,37 @@ impl Blobs for S3Blobs {
         }
     }
 
+    /// A ranged GET of the first `max_bytes` bytes. An object of no bytes has no such range and reads as empty.
+    async fn get_prefix(&self, key: &str, max_bytes: u64) -> Res<Option<Vec<u8>>> {
+        use aws_sdk_s3::error::ProvideErrorMetadata as _;
+        match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .range(format!("bytes=0-{}", max_bytes.saturating_sub(1)))
+            .send()
+            .await
+        {
+            Ok(o) => {
+                let body = o
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| unavailable(e.to_string()))?;
+                Ok(Some(body.into_bytes().to_vec()))
+            }
+            Err(e) if e.as_service_error().is_some_and(|se| se.is_no_such_key()) => Ok(None),
+            Err(e)
+                if e.as_service_error()
+                    .is_some_and(|se| se.code() == Some("InvalidRange")) =>
+            {
+                Ok(Some(Vec::new()))
+            }
+            Err(e) => Err(unavailable(context(e))),
+        }
+    }
+
     async fn put_if_absent(&self, key: &str, body: &[u8]) -> Res<bool> {
         use aws_sdk_s3::error::ProvideErrorMetadata as _;
         match self

@@ -132,7 +132,7 @@ The numbers 1 to 8 in the picture match the steps below.
 
 Full service names (the picture uses the short forms): Amazon S3 = Amazon Simple Storage Service; AWS IAM = AWS Identity and Access Management; AWS STS = AWS Security Token Service; Amazon ECR = Amazon Elastic Container Registry; VPC = Amazon Virtual Private Cloud; ACP = Agent Client Protocol (agentd talks to Cline over it); TUI = text user interface.
 
-A run that ends as `blocked` delivers nothing. A lost session is not always a blocked run: the last snapshot can be delivered, without the lost conversation.
+A run that ends as `blocked` delivers no zip. Its work is kept: `ham pull <runId> --snapshot` downloads the latest saved copy. A lost session is not always a blocked run: the last snapshot can be delivered, without the lost conversation.
 
 ## Feature and capability catalog
 
@@ -156,7 +156,7 @@ A run that ends as `blocked` delivers nothing. A lost session is not always a bl
 | Long runs and resume | A run is not cut off at the 8-hour session limit. When the prompt deadline of a session comes and the run has time left, the service saves the work and continues the run in a new session under the same run id, from the best saved head, with a new Cline chat that is told where the work stands. A run lasts 24 hours in all unless `run.max_run_hours` or `--max-run-hours` says otherwise (1 to 720 hours). A run that used its total time stops as `paused`. A run whose session stopped answering, whose Cline sent no output for the silence limit, or whose sessions were lost, could not restore the earlier work or changed nothing three times in a row, stops as `stalled`. Both deliver the work and store the reason, which `ham runs --json` shows. The Runs list marks them (`=` yellow for paused, `~` magenta for stalled) and the filter finds them by status. `R` on the Runs screen and on a run, `/resume --all` and `ham resume --all` start a follow-up run for each, from the code it delivered, after one confirmation that names the count, and report what each did; `ham resume <runId>` does one. Resuming twice never starts a second run for the same run. The exit codes are 11 for paused and 16 for stalled. |
 | Fixed outcome labels | Every run ends with one fixed label: "Cline reported done", "Cline stopped: <reason>" or "Cline did not start". |
 | Correction path | After automatic recovery fails, "Cline needs you" asks you. Use p, s, m, f twice; `ham say`, `ham new-session`, `ham try-model`, `ham finish`. |
-| Snapshots | Snapshots run every 10 minutes while Cline works, when files changed. After a lost session, the service delivers the last snapshot. |
+| Snapshots | While Cline works, the service saves a copy of the work (a snapshot) when files changed: every minute, and after a tool call. When Cline stops, it saves the end state. However a run ends, `ham pull <runId> --snapshot` downloads the latest copy. After a lost session, the service delivers the last snapshot. |
 | Package proxy | A package proxy serves Python, npm and Maven packages through CodeArtifact, and Go modules from the stage's own Go module store. CodeArtifact is the AWS package service. Cline never holds the CodeArtifact token. |
 | Limited network and isolation | AWS Network Firewall allows listed hosts. It drops and logs other outbound traffic. Home-Region AWS services use VPC endpoints; S3 uses a gateway endpoint. The microVM, a small isolated virtual machine, holds no long-lived keys or GitHub token. Cline is hash-pinned with telemetry off. |
 | Provider failover | When providers fail, the harness resumes the same Cline session. Then it rotates routes and models. It waits and probes when every route is down. |
@@ -383,7 +383,7 @@ You see the usage text, which states the prerequisite:
 
 The only tool you must already have is the AWS CLI, version 2 (plus git, or a zip download of this repository, to get setup.sh).
 
-It lists every option: `--full`, `--client-only`, `--yes`, `--acknowledge-costs`, `--preflight-only`, `--keep-runner`, `--build-on`, `--account-id`, `--stage`, `--azs`, `--invocation-logging`, `--repo-name`, `--status`, `--doctor`, `--update`, `--revision`, `--allow-active-runs`, `--change-operator`, `--force-deploy`, `--teardown`, `--only`, `--network-wait-minutes`, `--from`, `--build`, `--sha256`, `--endpoint`, `--profile`, `--region`, `--default-repo`, `--prefix`, `--no-input`, `--dry-run`, `--verbose` and `--help`. `--acknowledge-teardown` appears inside the `--teardown` entry.
+It lists every option: `--full`, `--client-only`, `--yes`, `--acknowledge-costs`, `--preflight-only`, `--keep-runner`, `--build-on`, `--account-id`, `--stage`, `--azs`, `--invocation-logging`, `--repo-name`, `--status`, `--doctor`, `--update`, `--revision`, `--allow-active-runs`, `--wait-for-runs`, `--change-operator`, `--force-deploy`, `--teardown`, `--only`, `--network-wait-minutes`, `--from`, `--build`, `--sha256`, `--endpoint`, `--profile`, `--region`, `--default-repo`, `--prefix`, `--no-input`, `--dry-run`, `--verbose` and `--help`. `--acknowledge-teardown` appears inside the `--teardown` entry.
 
 #### Step 3. Preview what setup will do
 
@@ -764,7 +764,7 @@ The service refuses every other id.
 - It edits no shell startup file and deletes none of your files. Repeat runs leave finished steps alone.
 - It writes a receipt folder at `~/.config/ham/setup/<account>/<region>/`. A receipt records setup identifiers and state in `direct.json`. The folder contains one log per run and the checked client. It holds no credential.
 - It generates an account file from your account, Region, zones, and credential identity. Setup uploads the file to your bucket. It never writes the generated file into the clone.
-- It accepts `--full`, `--client-only`, `--yes`, `--acknowledge-costs`, `--keep-runner`, `--preflight-only`, `--build-on`, `--account-id`, `--stage`, `--azs`, `--invocation-logging`, `--repo-name`, `--status`, `--doctor`, `--update`, `--revision`, `--allow-active-runs`, `--change-operator`, `--force-deploy`, `--teardown`, `--acknowledge-teardown`, `--only`, `--network-wait-minutes`, `--build`, `--from`, `--sha256`, `--endpoint`, `--profile`, `--region`, `--default-repo`, `--prefix`, `--no-input`, `--dry-run`, `--verbose` and `--help`.
+- It accepts `--full`, `--client-only`, `--yes`, `--acknowledge-costs`, `--keep-runner`, `--preflight-only`, `--build-on`, `--account-id`, `--stage`, `--azs`, `--invocation-logging`, `--repo-name`, `--status`, `--doctor`, `--update`, `--revision`, `--allow-active-runs`, `--wait-for-runs`, `--change-operator`, `--force-deploy`, `--teardown`, `--acknowledge-teardown`, `--only`, `--network-wait-minutes`, `--build`, `--from`, `--sha256`, `--endpoint`, `--profile`, `--region`, `--default-repo`, `--prefix`, `--no-input`, `--dry-run`, `--verbose` and `--help`.
 - Its exit codes are: 0 done; 1 a prerequisite or step failed; 2 bad usage; 3 installed but `ham doctor` found a problem; 4 cancelled or a confirmation is missing; 5 bootstrap, deploy or initialization failed; 6 an operation is still running and safe to resume; 7 a conflicting operation or a source or configuration mismatch; 8 cleanup is incomplete. See [Setup reference](#setup-reference).
 
 ## Usage
@@ -1100,7 +1100,7 @@ Start with [Set up, step by step](#set-up-step-by-step).
 
 No. The run continues on AgentCore while your laptop is closed.
 `ham watch` rebuilds the run state when you return.
-Snapshots save changed files every 10 minutes while Cline works.
+Snapshots save changed files every minute while Cline works, and once more when Cline stops.
 If a session is lost, the service delivers the last snapshot.
 
 **Can the agent work without holding long-lived keys or package tokens?**
@@ -1465,9 +1465,10 @@ The runner is a CodeBuild project in your AWS account.
 | Full setup | `--repo-name NAME` | You choose the stage's repository names. You repeat the option or separate up to 10 entries with commas. The default is `hamh-e2e-*`. The option also applies to `--update`, where it replaces the rule. |
 | Later life | `--status` | Report stage, build, setup and client state. Exit codes: 0, 5, 6 and 8 as listed under Commands. |
 | Later life | `--doctor` | Run AWS and client diagnostic checks. |
-| Later life | `--update` | Build and deploy a revision of this clone, and install its client. Runs in progress block the update: setup exits 7 and lists the runs. |
+| Later life | `--update` | Build and deploy a revision of this clone, and install its client. Runs in progress block the update: setup exits 7 and lists the runs. Add `--wait-for-runs MINUTES` to wait for them. |
 | Later life | `--revision ID` | Select a full 40-digit commit ID for `--update`. The default is `HEAD`. An update needs it to deploy a commit older than the one the stage runs, and to deploy any commit when the stage records a commit that your clone does not hold and whose `VERSION` is not lower than the clone's. |
 | Later life | `--allow-active-runs` | Skip the early active-run check of `--update`. With active runs, the build refuses only an update that changes the worker runtime. |
+| Later life | `--wait-for-runs MINUTES` | With `--update`, wait up to that many minutes (1 to 1440) for the active runs of every user. The stage starts no new runs meanwhile, and no run is cancelled. It cannot be combined with `--allow-active-runs`. |
 | Later life | `--force-deploy` | With `--update`, deploy even when the stage already runs the commit. |
 | Later life | `--change-operator` | With `--update`, make your identity the stage's operator. Without it, an update by an identity other than the recorded operator exits 7 before it creates anything. |
 | Later life | `--teardown` | Delete the stage and runner. AgentCore network interfaces can retain network resources for up to 8 hours. |
@@ -1581,7 +1582,7 @@ Its flow is in `scripts/lib/deploy.py`.
 
 9. **Check the worker runtime.** Its `live` endpoint must be READY, use VPC mode and platform V1, have `requireMMDSV2` true, and serve the new image. The deploy creates `v<N>`, the endpoint for version N; it removes older endpoints except the rollback target and endpoints used by running runs. It then handles Bedrock invocation logging as configured, without overwriting an existing destination.
 
-10. **Record the result.** The deploy writes `/hamh/direct/deployment-digest`, `/hamh/direct/deployed-source-tree`, `/hamh/direct/image-digest`, and `/hamh/direct/worker-revision` to SSM Parameter Store, the AWS parameter service. It saves CDK asset objects in `s3://<harness bucket>/deploy/direct/cdk-assets.json` for teardown. It writes a deploy record file and prints `DEPLOY-PASS`.
+10. **Record the result.** The deploy writes `/hamh/direct/deployment-digest`, `/hamh/direct/deployed-source-tree`, `/hamh/direct/image-digest`, `/hamh/direct/worker-revision`, `/hamh/direct/deployment-config-digest`, and `/hamh/direct/release-version` to SSM Parameter Store, the AWS parameter service. It saves CDK asset objects in `s3://<harness bucket>/deploy/direct/cdk-assets.json` for teardown. It writes a deploy record file and prints `DEPLOY-PASS`.
 
 The deploy stores the worker revision in SSM as `/hamh/direct/worker-revision`.
 The worker revision is `HAMH_WORKER_REVISION`.
@@ -2162,7 +2163,7 @@ See [Security](#security) for the full model.
 - On a stage with no Tavily key, page fetch is off and `ham-research fetch` exits with code 3.
 - The session's Docker is a Podman socket with one offline image, `postgres:16`. Other images and docker compose do not work.
 - The worker image supplies Go, Java and Maven.
-- A lost session cannot be resumed. The stage delivers the last snapshot when it holds one.
+- A lost session cannot be resumed. The stage delivers the last snapshot when it holds one. A session that dies while Cline works can lose up to one minute of file changes, or more for a repository whose copies take long.
 - The project publishes no `ham` binary; full setup builds `ham` in your AWS account and downloads it from your own bucket. Client-only setup installs a `ham` that you build with `--build` or supply with `--from`; see [Set up, step by step](#set-up-step-by-step).
 - The product states no maximum number of runs at once. AgentCore allows 5,000 active session workloads per AWS account in US East (N. Virginia) and US West (Oregon) and 25 new sessions per second per account; AWS lists both as adjustable (the AWS page *Quotas for Amazon Bedrock AgentCore*). The Amazon Bedrock model token quotas of the account bind first. Only the account owner changes a Bedrock quota.
 - The sample is not a supported production service.

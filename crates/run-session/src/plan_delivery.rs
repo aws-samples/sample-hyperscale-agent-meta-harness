@@ -146,12 +146,22 @@ struct SnapshotJson {
     head_sha: String,
     #[serde(default)]
     at: Option<String>,
+    /// The head of the base the run started from.
+    #[serde(default)]
+    base_sha: Option<String>,
+    /// `true` on the copy agentd saves when the engine has stopped; absent on a copy made while the run worked.
+    #[serde(default, rename = "final")]
+    final_copy: bool,
 }
 
 /// The snapshot agentd saved last: the head its bundle holds and when it was taken.
 pub(crate) struct Snapshot {
     pub(crate) head_sha: String,
     pub(crate) at: Option<String>,
+    /// The copy of the session's end: it holds the work as the engine left it.
+    pub(crate) final_copy: bool,
+    /// The copy's head is the run's base: no file changed.
+    pub(crate) unchanged: bool,
 }
 
 /// `2026-10-13T18:50:00Z` as `2026-10-13 18:50 UTC`; `None` for anything of another shape.
@@ -431,43 +441,93 @@ async fn test_report_summary<B: Blobs>(
     }
 }
 
-async fn snapshot_head<B: Blobs>(blobs: &B, run_id: &str, slice: u32) -> Res<Option<Snapshot>> {
-    let Some(bytes) = blobs.get(&s3::snapshot_json_key_t(run_id, slice)).await? else {
-        return Ok(None);
-    };
-    let Ok(snap) = serde_json::from_slice::<SnapshotJson>(&bytes) else {
-        return Ok(None);
-    };
-    if sha_ok(&snap.head_sha)
-        && blobs
-            .exists(&s3::snapshot_bundle_key_t(run_id, slice))
-            .await?
-    {
-        Ok(Some(Snapshot {
-            head_sha: snap.head_sha,
-            at: snap.at,
-        }))
-    } else {
-        Ok(None)
-    }
+/// What the snapshot bundle of a session says of itself.
+pub(crate) enum BundleSays {
+    /// No bundle is at the key: the session has no copy.
+    Nothing,
+    /// The commit its header names for `refs/heads/snapshot`: the work the bundle holds.
+    Commit(String),
+    /// An object whose header cannot be read as a bundle's: the record names its commit and the validator judges it, as before.
+    Unread,
 }
 
-/// The snapshot that `ham pull <run> --snapshot` downloads, when there is one. The route of control-api takes the newest snapshot
-/// record of the run's sessions, the current one first, and the bundle beside it; a record without its bundle, or one that names
-/// no commit, is no snapshot to download. `slices` is the number of the run's current session. agentd saves the first snapshot one
-/// snapshot interval after a session starts and none at the end of a run, so a run that ended sooner has none.
+/// Reads the header of the snapshot bundle of session `slice` (its first 8 KiB). agentd stores the bundle and then the record, so a
+/// session that is stopped between the two leaves the bundle of its newest copy beside the record of the copy before it, or beside no
+/// record. The bundle is the work, and it names its own commit: every reader takes that commit, as the download route does, and the
+/// record says what the bundle is only when it names the same one.
+pub(crate) async fn bundle_says<B: Blobs>(blobs: &B, run_id: &str, slice: u32) -> Res<BundleSays> {
+    let key = s3::snapshot_bundle_key_t(run_id, slice);
+    if !blobs.exists(&key).await? {
+        return Ok(BundleSays::Nothing);
+    }
+    Ok(
+        match blobs
+            .get_prefix(&key, ham_core::snapshot::HEADER_BYTES)
+            .await?
+        {
+            Some(prefix) => match ham_core::snapshot::bundle_head(&prefix) {
+                Ok(commit) => BundleSays::Commit(commit),
+                Err(_) => BundleSays::Unread,
+            },
+            None => BundleSays::Nothing,
+        },
+    )
+}
+
+async fn snapshot_head<B: Blobs>(blobs: &B, run_id: &str, slice: u32) -> Res<Option<Snapshot>> {
+    let record = match blobs.get(&s3::snapshot_json_key_t(run_id, slice)).await? {
+        Some(bytes) => serde_json::from_slice::<SnapshotJson>(&bytes)
+            .ok()
+            .filter(|snap| sha_ok(&snap.head_sha)),
+        None => None,
+    };
+    let of_record = |snap: SnapshotJson| Snapshot {
+        unchanged: snap.base_sha.as_deref() == Some(snap.head_sha.as_str()),
+        head_sha: snap.head_sha,
+        at: snap.at,
+        final_copy: snap.final_copy,
+    };
+    Ok(match bundle_says(blobs, run_id, slice).await? {
+        BundleSays::Nothing => None,
+        BundleSays::Commit(head) => Some(match record.filter(|snap| snap.head_sha == head) {
+            Some(snap) => of_record(snap),
+            // The record is missing or names the copy before this one: its time and its `final` are not this bundle's.
+            None => Snapshot {
+                head_sha: head,
+                at: None,
+                final_copy: false,
+                unchanged: false,
+            },
+        }),
+        BundleSays::Unread => record.map(of_record),
+    })
+}
+
+/// The snapshot that `ham pull <run> --snapshot` downloads, when there is one. The route of control-api takes the newest session
+/// of the run that has a bundle, the current one first, and the commit that bundle names; a record without its bundle is no
+/// snapshot to download, and the session before it is asked. `slices` is the number of the run's current session. Only
+/// [`finalize`](crate::finalize) calls this, for the sentence of a blocked reason; a delivery is built from `snapshot_head` too.
+///
+/// Agentd saves a copy when the engine stops (the record's `final`). Only the one of the run's current session is the work as the
+/// engine left it; the copy of the end of an earlier session is the newest copy there is and no more, because the run worked on after it.
 pub(crate) async fn newest_snapshot<B: Blobs>(
     blobs: &B,
     run_id: &str,
     slices: u32,
 ) -> Res<Option<Snapshot>> {
-    for slice in (1..=slices.max(1)).rev() {
+    let newest = slices.max(1);
+    for slice in (1..=newest).rev() {
+        if let Some(mut found) = snapshot_head(blobs, run_id, slice).await? {
+            found.final_copy = found.final_copy && slice == newest;
+            return Ok(Some(found));
+        }
+        // The route stops at the newest session that has a bundle. A bundle whose header cannot be read and that has no record is no copy
+        // it serves (it answers that the snapshot cannot be read), and no session before it is asked.
         if blobs
-            .get(&s3::snapshot_json_key_t(run_id, slice))
+            .exists(&s3::snapshot_bundle_key_t(run_id, slice))
             .await?
-            .is_some()
         {
-            return snapshot_head(blobs, run_id, slice).await;
+            return Ok(None);
         }
     }
     Ok(None)

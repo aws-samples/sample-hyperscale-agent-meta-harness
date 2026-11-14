@@ -11,6 +11,7 @@ use agentd::direct::driver::{DriverEnd, NoProbe, PromptPlan, run_direct_prompt};
 use agentd::direct::failover::{
     FailoverPlan, FailoverRecord, OUTAGE_NOTICE_AFTER_S, ProbeAnswer, Route, RouteProbe,
 };
+use agentd::direct::hooks::{DirectHook, Event, Hooks, LadderEvent};
 use agentd::direct::retry::{
     RESUME_PROMPT, RESUME_PROMPT_INTERRUPTED, RetryPolicy, prompt_with_retry,
     prompt_with_retry_from,
@@ -263,6 +264,15 @@ struct Run {
 }
 
 async fn drive(script: Script, plan: PromptPlan, controls: Option<Arc<TurnControls>>) -> Run {
+    drive_with(script, plan, controls, Hooks::none()).await
+}
+
+async fn drive_with(
+    script: Script,
+    plan: PromptPlan,
+    controls: Option<Arc<TurnControls>>,
+    hooks: Hooks,
+) -> Run {
     let (client, wire, prompts) = engine(script, OPUS_US);
     let activity = Activity::new();
     let mut client = client.with_activity(activity.clone());
@@ -270,7 +280,7 @@ async fn drive(script: Script, plan: PromptPlan, controls: Option<Arc<TurnContro
         client = client.with_cancel(c.subscribe(), Duration::from_secs(10));
     }
     let rec = EventRecorder::new("run1", "direct");
-    let mut collector = DirectCollector::new(rec.clone());
+    let mut collector = DirectCollector::new(rec.clone()).with_hooks(hooks);
     let end = run_direct_prompt(&mut client, &mut collector, &activity, &plan, &NoProbe).await;
     Run {
         end,
@@ -1903,4 +1913,108 @@ async fn the_outage_notice_is_one_call_of_the_collector() {
     assert_eq!(events[0]["reason"], "provider_outage");
     assert_eq!(events[0]["blocking"], false);
     assert_eq!(minutes_in(&events[0]), 31);
+}
+
+// ---- the answer of a try the loop drops -------------------------------------------------------------------------------------
+
+/// What a module that counts the usage of a run is told about the prompts: when each went out and was answered, and when the loop dropped
+/// an answered try for another (so that run's tokens are counted from the log, not from the answer).
+#[derive(Default)]
+struct Trace(Mutex<Vec<String>>);
+
+impl DirectHook for Trace {
+    fn name(&self) -> &'static str {
+        "trace"
+    }
+
+    fn on_event(&self, event: &Event<'_>) {
+        let line = match event {
+            Event::PromptSent(p) => format!("sent {}", p.no),
+            Event::PromptReplied(r) => format!("replied {}", r.no),
+            Event::Ladder(LadderEvent::AnswerDropped) => "dropped".to_string(),
+            _ => return,
+        };
+        self.0.lock().unwrap().push(line);
+    }
+}
+
+async fn traced(
+    script: Script,
+    plan: PromptPlan,
+    controls: Option<Arc<TurnControls>>,
+) -> Vec<String> {
+    let trace = Arc::new(Trace::default());
+    let hooks = Hooks::new(vec![trace.clone() as Arc<dyn DirectHook>]);
+    drive_with(script, plan, controls, hooks).await;
+    trace.0.lock().unwrap().clone()
+}
+
+fn words(list: &[&str]) -> Vec<String> {
+    list.iter().map(ToString::to_string).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn b824_an_answered_try_dropped_after_the_probe_found_the_route_down_is_reported_dropped() {
+    // The engine ended the prompt `cancelled` with no cancel request, completed no call, and the route does not answer a small test
+    // request: the class is a provider failure, not an engine stop, and the answer is dropped all the same.
+    let (probes, p) = probed(ProbeAnswer::Down("503".into()));
+    let script = Script::new(vec![vec![Step::Cancelled], done("The route came back.")]);
+    let seen = traced(script, p, None).await;
+    assert_eq!(probes.asked.lock().unwrap().len(), 1);
+    assert_eq!(
+        seen,
+        words(&["sent 1", "replied 1", "dropped", "sent 2", "replied 2"])
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn b824_an_answered_try_dropped_for_an_engine_stop_is_reported_dropped_once() {
+    let (_, p) = probed(ProbeAnswer::Healthy);
+    let script = Script::new(vec![vec![Step::Cancelled], done("Resumed.")]);
+    let seen = traced(script, p, None).await;
+    assert_eq!(
+        seen,
+        words(&["sent 1", "replied 1", "dropped", "sent 2", "replied 2"])
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn b824_an_answer_the_loop_returns_is_never_reported_dropped() {
+    // An answer that ends the prompt.
+    let seen = traced(Script::new(vec![done("Done.")]), plan(four()), None).await;
+    assert_eq!(seen, words(&["sent 1", "replied 1"]));
+    // A provider error is no answer: its try is resumed and there is nothing to take back.
+    let script = Script::new(vec![transient(), done("Back.")]);
+    let seen = traced(script, plan(four()), None).await;
+    assert_eq!(seen, words(&["sent 1", "replied 1", "sent 2", "replied 2"]));
+    // The engine's own stop with no resume left: the loop returns the answer, so the driver counts it.
+    let mut p = plan(four());
+    p.engine_stop_resumes = 0;
+    let seen = traced(Script::new(vec![vec![Step::Cancelled]]), p, None).await;
+    assert_eq!(seen, words(&["sent 1", "replied 1"]));
+    // The first stop is resumed and dropped; the second is returned.
+    let script = Script::new(vec![vec![Step::Cancelled], vec![Step::Cancelled]]);
+    let seen = traced(script, plan(four()), None).await;
+    assert_eq!(
+        seen,
+        words(&["sent 1", "replied 1", "dropped", "sent 2", "replied 2"])
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn b824_a_user_cancel_while_the_loop_waits_after_dropping_an_answer_reports_it_dropped() {
+    // The loop returns the user's `cancelled`, not the answer it held, so the held answer's usage is not the driver's.
+    let script = Script::new(vec![loop_guard_stop(5), done("never")]);
+    let (controls, _) = TurnControls::new();
+    let mut p = plan(four());
+    p.cancel = Some(controls.subscribe());
+    let c = controls.clone();
+    let canceller = tokio::spawn(async move {
+        // The loop-guard prompt takes 6 x 30 s; the wait before the resume is 5 s after it.
+        tokio::time::sleep(Duration::from_secs(183)).await;
+        c.deliver(&[PendingControl::Cancel]);
+    });
+    let seen = traced(script, p, Some(controls)).await;
+    canceller.await.unwrap();
+    assert_eq!(seen, words(&["sent 1", "replied 1", "dropped"]));
 }

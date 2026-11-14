@@ -77,7 +77,8 @@ impl Progress {
     pub fn ended(&self, status: TestReportStatus) {
         let text = match status {
             TestReportStatus::Ran => {
-                "The repository's test commands ended; the report is in the zip."
+                // Said before the delivery is decided, so it promises no zip: a run that ends blocked has none.
+                "The repository's test commands ended; the report is saved with the run and goes into the zip when one is delivered."
             }
             TestReportStatus::TimedOut => {
                 "The repository's test commands ended: a command timed out or the report's time ran out."

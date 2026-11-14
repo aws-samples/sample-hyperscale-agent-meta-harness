@@ -19,6 +19,7 @@ Owned by the root contract. `engines/<name>/` is owned with the matching `engine
   It includes the CDK step's output, the runner's `DEPLOY-FAIL` and `SETUP-FAIL` lines, and CodeBuild's closing `[Container]` lines, with one log line per line.
   It contains no account id, build id, or host name. `scripts/tests/test_setup_failure_excerpt.py` reads it.
 - `setup/accounts-generated.json`: the example of the account file `setup.sh` generates for the account it deploys into, read through `HAMH_ACCOUNTS_FILE` by the tests of the override (placeholder account `111122223333`, Region `us-east-1`).
+- `release-label/cases.json`: the labels that the deploy writes into `/hamh/<stage>/release-version`, one case per state: the label, the source tree the stage runs, the version compiled into the backend, whether the label is well formed and the version the backend reports. `scripts/tests/test_setup_release_label.py` holds the form the deploy writes and the relabel reads to it, and `crates/control-api/tests/b839_release_label.rs` holds what the Lambda reports to it, so the two sides cannot drift apart.
 - `engines/<name>/`: data a local fake engine reads. The commit that adds a fake engine touches
   only `engine/profiles/**` and `fixtures/engines/**`. Only `engines/fake-acp/` exists; `fake-acp-engine`
   (`crates/ham-e2e`), the tests of `crates/ham-e2e` and the tests of `crates/agentd` read it.

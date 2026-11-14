@@ -425,7 +425,7 @@ impl App {
                 return vec![];
             }
             Plan::Retry => {
-                self.panel = Some(Panel::not_run("Nothing was sent", retry::HINT));
+                self.panel = Some(Panel::not_run("Nothing was sent", &self.retry_hint()));
                 return vec![];
             }
             Plan::FollowUp | Plan::Unavailable(_) => {
@@ -809,23 +809,25 @@ impl App {
                 return self.follow_up_found(&run_id, result);
             }
             Done::FollowUpStarted { run_id, result } => {
-                return self.follow_up_done(&run_id, result);
+                return self.follow_up_done(&run_id, result, None);
             }
             Done::FollowUpNoted {
                 run_id,
                 result,
                 note,
             } => {
-                let started = result.is_ok();
-                if let Ok(new_run) = &result {
-                    self.sharing_notes.insert(new_run.clone(), note.clone());
-                }
-                let fx = self.follow_up_done(&run_id, result);
-                // A start that failed already says why; the line of the switch goes in front of it, because the account may have changed.
-                if started {
+                let new_run = match result {
+                    Ok(new_run) => new_run,
+                    // A start that failed after ham looked at the account: the card of the run puts the line in front of why, because the account
+                    // may have changed.
+                    Err(why) => return self.follow_up_done(&run_id, Err(why), Some(&note)),
+                };
+                self.sharing_notes.insert(new_run.clone(), note.clone());
+                let fx = self.follow_up_done(&run_id, Ok(new_run), None);
+                if self.screen == Screen::Runs {
+                    self.runs_detail_add(SHARING_TITLE, note);
+                } else {
                     self.say(&note);
-                } else if let Some(n) = self.notice.take() {
-                    self.say(&format!("{note} {n}"));
                 }
                 return fx;
             }
@@ -837,28 +839,36 @@ impl App {
                 result,
                 note,
             } => {
-                // The retry started after ham looked at the account: the new run keeps the line as its card, and the notice shows it.
-                if let Ok(new_run) = &result {
+                // The retry started after ham looked at the account: the new run keeps the line as its card. The notice keeps what
+                // started; on the Runs screen the panel above it shows the line whole.
+                let started = result.as_ref().ok().cloned();
+                if let Some(new_run) = &started {
                     self.sharing_notes.insert(new_run.clone(), note.clone());
                 }
                 let fx = self.retry_done(&run_id, result);
-                self.say(&note);
+                // The account is switched for every run, so the line is said wherever the person is: in the panel of the Runs screen, on the
+                // card of the new run when it is the run on screen, and in the notice otherwise (a screen the person went to while the
+                // retry was out), the way a follow-up says it.
+                let new_run_on_screen = self.screen == Screen::Dashboard
+                    && started.is_some()
+                    && self.focused_run() == started.as_deref();
+                if self.screen == Screen::Runs {
+                    self.runs_detail_add(SHARING_TITLE, note);
+                } else if !new_run_on_screen {
+                    self.say(&note);
+                }
                 return fx;
             }
             Done::Resumed { outcomes } => {
-                return self.resume_done(&outcomes);
+                return self.resume_done(&outcomes, &[]);
             }
             Done::ResumedNoted { outcomes, notes } => {
-                // Each run that started after ham looked at its account keeps its line as the card of the new run. The line of the first one
-                // goes in front of the summary on the Runs screen, because the account may have changed.
+                // Each run that started after ham looked at its account keeps its line as the card of the new run. On the Runs screen the panel
+                // above the summary shows each line once.
                 for (new_run, note) in &notes {
                     self.sharing_notes.insert(new_run.clone(), note.clone());
                 }
-                let fx = self.resume_done(&outcomes);
-                if let (Some((_, note)), Some(summary)) = (notes.first(), self.runs_notice.take()) {
-                    self.runs_notice = Some(format!("{note} {summary}"));
-                }
-                return fx;
+                return self.resume_done(&outcomes, &notes);
             }
             Done::Head { run_id, result } => {
                 return self.head_done(&run_id, result);
@@ -1235,7 +1245,7 @@ impl App {
                 &self.engine_say(&format!("{}\n{}", followup::OFFER, followup::NOTE)),
             )),
             // A blocked run says what happened and what Enter does as soon as the box holds text.
-            Plan::Retry => Some(Panel::not_run("Blocked run", retry::HINT)),
+            Plan::Retry => Some(Panel::not_run("Blocked run", &self.retry_hint())),
             _ => None,
         }
     }
@@ -1547,9 +1557,16 @@ impl App {
     }
 
     /// The answer to the start of a follow-up.
-    fn follow_up_done(&mut self, source: &str, result: Result<String, String>) -> Vec<Effect> {
+    /// The answer to a follow-up. `note` is the line of provider data sharing of a start that failed after ham looked at the account.
+    fn follow_up_done(
+        &mut self,
+        source: &str,
+        result: Result<String, String>,
+        note: Option<&str>,
+    ) -> Vec<Effect> {
         match result {
             Ok(new_run) => {
+                self.start_refusals.remove(source);
                 self.send.confirm = None;
                 self.panel = None;
                 if self.focused_run() == Some(source) {
@@ -1567,10 +1584,13 @@ impl App {
                     self.send.delivered = None;
                     self.send.lookup = HeadLookup::NotAsked;
                 }
-                self.say(&format!(
-                    "the follow-up run did not start: {}; your text is kept",
-                    ham_core::sanitize::sanitize_line(&why)
-                ));
+                let why = ham_core::sanitize::sanitize_line(&why);
+                let card = note
+                    .map(str::to_string)
+                    .into_iter()
+                    .chain([why.clone()])
+                    .collect();
+                self.start_refused(source, Refused::FollowUp, card, &why, true);
                 vec![]
             }
         }
@@ -1666,6 +1686,12 @@ impl App {
 
     // ---- the retry of a blocked run ----------------------------------------------------------------------------------
 
+    /// The hint of a blocked run with where its work is: saved (when the run's events show a copy) and the command that downloads it.
+    fn retry_hint(&self) -> String {
+        let run = self.focused_run().unwrap_or_default().to_string();
+        retry::hint(&run, self.view().and_then(|v| v.saved).as_ref())
+    }
+
     /// Whether the run on screen ended blocked (the box offers the retry, and `c`, `/cancel` and the answer keys have nothing to act on).
     pub(crate) fn run_is_blocked(&self) -> bool {
         self.send_plan() == Plan::Retry
@@ -1682,7 +1708,12 @@ impl App {
         let has_text = self.chat_text().is_some_and(|t| !t.trim().is_empty());
         self.panel = Some(Panel::info(
             retry::CONFIRM_TITLE,
-            &retry::confirmation(&run, target.as_deref(), has_text),
+            &retry::confirmation_with(
+                &run,
+                target.as_deref(),
+                has_text,
+                self.view().and_then(|v| v.saved).as_ref(),
+            ),
         ));
         self.send.confirm = Some(Confirm::Retry {
             shown_ms: self.key_ms,
@@ -1749,9 +1780,7 @@ impl App {
         self.send.confirm = None;
         self.panel = None;
         if !self.run_is_blocked() {
-            self.say(
-                "the run changed while you looked: it is not blocked now, so nothing was started",
-            );
+            self.say("the run changed while you looked: it is not blocked now; nothing started");
             return vec![];
         }
         if self.send.retrying {
@@ -1771,6 +1800,7 @@ impl App {
         self.send.retrying = false;
         match result {
             Ok(new_run) => {
+                self.start_refusals.remove(blocked);
                 if self.focused_run() != Some(blocked) {
                     self.say(&retry::started(blocked, &new_run, false));
                     return vec![];
@@ -1781,16 +1811,14 @@ impl App {
                 if kept {
                     self.set_chat_text(&text);
                 }
-                self.say(&retry::started(blocked, &new_run, kept));
+                self.say(&retry::started_here(blocked, kept));
                 effects
             }
             Err(why) => {
-                if self.focused_run() == Some(blocked) {
-                    self.say(&format!(
-                        "the retry did not start: {}; your text is kept",
-                        ham_core::sanitize::sanitize_line(&why)
-                    ));
-                }
+                // The blocked run keeps the whole reason as a card; its screen says so in one row.
+                let why = ham_core::sanitize::sanitize_line(&why);
+                let here = self.focused_run() == Some(blocked);
+                self.start_refused(blocked, Refused::Retry, vec![why.clone()], &why, here);
                 vec![]
             }
         }

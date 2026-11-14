@@ -193,6 +193,11 @@ fn notify(v: &Value) -> String {
             "The provider rejects the saved conversation; a fresh session starts it over."
                 .to_string()
         }
+        // The service's own sentence, once per streak of copies that could not be saved.
+        "copy_not_saved" => match string(v, "detail").map(clean).filter(|d| !d.is_empty()) {
+            Some(detail) => detail,
+            None => "A copy of the work could not be saved.".to_string(),
+        },
         other => with_detail(
             format!("Notice from the run ({})", clean(other)),
             string(v, "detail"),

@@ -73,7 +73,7 @@ async fn the_owner_gets_a_url_for_the_last_snapshot_and_what_it_holds() {
         signed,
         vec![(s3::snapshot_bundle_key(RUN), DOWNLOAD_URL_TTL)]
     );
-    // Pinned to the version whose header was checked: agentd overwrites the bundle every ten minutes, and a slow download of the
+    // Pinned to the version whose header was checked: agentd overwrites the bundle every minute while the files change, and a slow download of the
     // checked one must not end in a replaced file.
     let versions = w.presigned_versions.lock().unwrap().clone();
     assert_eq!(versions, vec![Some(version_of(&bundle(HEAD, 5_000_000)))]);
@@ -123,16 +123,27 @@ async fn no_snapshot_yet_is_a_404_that_says_when_one_comes() {
     let (status, body, _) = post(&w, ME, &path(), &[], "").await;
     assert_eq!(status, 404, "{body}");
     assert_eq!(body["code"], "no-snapshot");
+    // A run that works is told when to ask again: once it has changed a file.
     assert!(
-        body["message"].as_str().unwrap().contains("10 minutes"),
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("ask again when the run has changed a file"),
         "{body}"
     );
-    // The record without its bundle, and the bundle without its record, are no snapshot either.
+    // The record without its bundle is no snapshot either. A bundle that was just written and has no record yet is a pair that is
+    // still being saved.
     w.put_object(&s3::snapshot_json_key(RUN), record(HEAD));
     assert_eq!(post(&w, ME, &path(), &[], "").await.0, 404);
     w.objects.lock().unwrap().clear();
-    w.put_object(&s3::snapshot_bundle_key(RUN), bundle(HEAD, 10));
-    assert_eq!(post(&w, ME, &path(), &[], "").await.0, 404);
+    w.put_object_at(
+        &s3::snapshot_bundle_key(RUN),
+        bundle(HEAD, 10),
+        &control_api::ids::now_rfc3339(),
+    );
+    let (status, body, _) = post(&w, ME, &path(), &[], "").await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["code"], "snapshot-updating");
     assert!(w.presigned.lock().unwrap().is_empty());
 }
 
@@ -261,7 +272,8 @@ async fn a_store_failure_is_a_503_and_the_url_is_in_no_log() {
     let (status, body, logs) = post(&w, ME, &path(), &[], "").await;
     assert_eq!(status, 503, "{body}");
     assert!(!body.to_string().contains("throttled"));
-    assert!(logs.iter().any(|l| l.contains("object read")), "{logs:?}");
+    // The route asks whether the record exists by a listing before it reads it, so the listing is what fails.
+    assert!(logs.iter().any(|l| l.contains("object list")), "{logs:?}");
     w.objects_down.store(false, Ordering::SeqCst);
     w.presign_down.store(true, Ordering::SeqCst);
     let (status, _, logs) = post(&w, ME, &path(), &[], "").await;

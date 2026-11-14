@@ -1683,6 +1683,9 @@ class Cli:
             raise AwsError("An error occurred (ParameterAlreadyExists) when calling the PutParameter operation: The parameter already exists. To overwrite this value, "
                            "set the overwrite option in the request to true.", 254)
         created = name not in self.world.w.get("params", {})
+        if name.endswith("/deploy-lock"):
+            # Every text written to a stage's deploy lock, in order
+            self.world.w.setdefault("lock_writes", []).append(value)
         version = self.world.put_param(name, value, tags if created else None)
         self.emit({"Version": version, "Tier": "Standard"})
 
@@ -2295,6 +2298,20 @@ class Cli:
         arn = self.opts.get("--state-machine-arn", "")
         name = arn.rsplit(":", 1)[-1]
         running = (self.world.scenario.get("executions") or {}).get(name, [])
+        # `executions_by_look` ({machine: [[names the first look finds], [the second], ...]}; the last entry repeats) lets runs start or end between two looks.
+        # `looks_seen` keeps the stage's deploy lock as it was at each look, and `replace_lock_at_look: n` makes another setup's lock stand in its place from
+        # the nth look on (a setup that replaced a lock it took for abandoned).
+        look = self.world.w.get("run_looks", 0) + 1
+        self.world.w["run_looks"] = look
+        by_look = (self.world.scenario.get("executions_by_look") or {}).get(name)
+        if by_look:
+            running = by_look[min(look, len(by_look)) - 1]
+        lock_name = f"/hamh/{name.removeprefix('hamh-').removesuffix('-run')}/deploy-lock"
+        params = self.world.w.setdefault("params", {})
+        if self.world.scenario.get("replace_lock_at_look") == look and lock_name in params:
+            params[lock_name] = ("token=" + "f" * 32 + "\nholder=elsewhere:77\nidentity=arn:aws:iam::111122223333:user/other\nroute=runner\n"
+                                 "started=2026-11-11T16:00:00Z\ncommit=" + "c" * 40 + "\ninputs=other\nbuild=")
+        self.world.w.setdefault("looks_seen", []).append({"machine": name, "lock": params.get(lock_name)})
         stopped = self.world.w.setdefault("stopped_executions", [])
         self.emit({"executions": [{"name": e, "executionArn": f"arn:aws:states:{self.world.region()}:{self.world.account()}:execution:{name}:{e}", "status": "RUNNING"}
                                   for e in running if e not in stopped]})

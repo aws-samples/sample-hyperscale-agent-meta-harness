@@ -6,6 +6,39 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.19] - 2026-11-13
+
+### Added
+
+- A run keeps a copy of its latest work in your account while it works. The copy is saved every minute and after a tool call that changed a file.
+- When the engine stops, the run saves the end state as the latest copy before it checks or delivers anything. A delivery that does not go through keeps this copy.
+- `ham pull <run id> --snapshot` downloads the latest copy of a run that works or has ended in any way: complete, blocked, paused, stalled or cleared. The output says whether the copy is the work as the engine left it or an earlier copy, and when it was saved.
+- The reason of a blocked run ends with where its work is and the command that downloads it.
+- The run screen shows a `Saved` line with the time of the last copy. A run that cannot save a copy says so.
+- `./setup.sh --update --wait-for-runs <minutes>` waits for the active runs of everyone on the stage before it deploys. It never cancels a run.
+- A release that changes no file the stage runs gives the backend its version. `./setup.sh --update` deploys nothing for such a release and writes the stage's version label. The plan says `label: the backend reports vA and will report vB`.
+- `scripts/deploy.sh --stage direct --relabel` writes the version label alone for a stage that already runs the source tree. It never lowers the label.
+
+### Changed
+
+- While an update waits for runs or deploys, the stage starts no new runs. A new run, a follow-up, a retry or a resume gets the sentence `This stage is being updated, so it starts no new runs. Try again in a few minutes.` Reading runs, downloading results, answering questions, sending messages, cancelling and editing tags keep working.
+- An update that builds only the client deploys nothing, so the stage keeps starting runs during it.
+- An update that deploys looks for active runs again after you confirm it: it pauses 45 seconds, then looks every 30 seconds until two looks in a row show no run. A run found there ends a plain `./setup.sh --update` with exit 7, and nothing is installed or built.
+- `ham pull <run id>`, `ham clone <run id>` and `ham link <run id>` on a run without a zip say whether the run still works or how it ended, and name `ham pull <run id> --snapshot`.
+- `ham update` waits for your own runs and then hands the rest of its wait limit to setup. One limit covers the runs of everyone on the stage.
+- `ham update` ends with `Updated` after a release that changes no file the stage runs, and `ham doctor` shows equal versions.
+- When the backend still reports an older version after an update, `ham update` names `ham doctor` and the command that deploys the commit again, `./setup.sh --update --force-deploy`.
+- When the backend runs a version newer than the main branch, `ham update` names the deploy that sets its version.
+- With Cline and its goal loop on, the usage totals of a run count a prompt that ended in a provider error and the goal-loop rounds between prompts. The totals are an estimate and can be lower than the bill of your AWS account.
+- Lifecycle pack 1.16.0: the run log holds the exact command of each test step, with notes in parentheses.
+
+### Fixed
+
+- The clean-checkout test report installs the project's packages right before the first test command that needs them. A failed install skips only the tests that need it.
+- The test report does not rerun text of the run log that is not a command. A command that could not run as written does not lead the `Tests` line.
+- Resume and retry notices on the Runs screen fit the row at 80 and 120 columns. The row shows a short notice and a panel or card shows the whole text.
+- A copy of the work is saved also when the engine removed or replaced the `.git` folder of the repository.
+
 ## [5.18] - 2026-11-13
 
 ### Changed

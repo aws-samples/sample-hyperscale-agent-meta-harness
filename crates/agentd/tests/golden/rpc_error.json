@@ -142,6 +142,19 @@
     },
     {
       "payload": {
+        "savedCopy": {
+          "at": "<time>",
+          "count": 1,
+          "final": true,
+          "headSha": "<sha>",
+          "session": 1
+        },
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
         "directOutcome": "stopped_provider_error",
         "label": "Cline stopped: the model provider failed",
         "lastCommitSha": "<sha>",
@@ -220,7 +233,8 @@
     "runId": "01M4XTESTRUNDIRECT00000001",
     "schemaVersion": 1,
     "snapshots": {
-      "count": 0
+      "count": 1,
+      "lastAt": "<time>"
     },
     "stopReason": null,
     "timing": {

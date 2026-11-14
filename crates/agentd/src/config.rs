@@ -25,6 +25,12 @@ pub struct DirectConfig {
     pub upload_retry_pause: Duration,
     /// `AGENTD_DIRECT_SNAPSHOT_EVERY_MS` (tests only): replaces the invocation's snapshot interval.
     pub snapshot_interval: Option<Duration>,
+    /// `AGENTD_DIRECT_SNAPSHOT_FLOOR_MS`: replaces `snapshot::COPY_FLOOR`, the shortest time between the start of one
+    /// copy and the start of a copy that a tool call asked for.
+    pub snapshot_floor: Option<Duration>,
+    /// `AGENTD_DIRECT_FINAL_COPY_BUDGET_MS`: the longest the copy of a session's end may take, the wait for a copy
+    /// in flight included. A copy that is not stored by then is given up, so that it never holds back the delivery that follows it.
+    pub final_copy_budget: Duration,
     /// `AGENTD_DIRECT_PROVIDER_RETRIES` (default 3, at most 6): how many times the prompt is retried on the same engine session
     /// after a provider failure (the first slice of provider failover). 0 switches it off; a bad value is the default.
     pub provider_retries: u32,
@@ -160,6 +166,10 @@ impl DirectConfig {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|v| *v > 0)
                 .map(Duration::from_millis),
+            snapshot_floor: get("AGENTD_DIRECT_SNAPSHOT_FLOOR_MS")
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_millis),
+            final_copy_budget: ms("AGENTD_DIRECT_FINAL_COPY_BUDGET_MS", 120_000),
             provider_retries: get("AGENTD_DIRECT_PROVIDER_RETRIES")
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .map_or(3, |n| n.min(crate::direct::retry::MAX_CONFIGURED_RETRIES)),

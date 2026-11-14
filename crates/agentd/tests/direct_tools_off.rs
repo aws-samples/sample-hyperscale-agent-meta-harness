@@ -228,8 +228,15 @@ fn sorted(v: Value) -> Value {
     }
 }
 
+/// One run of the real `agentd serve`, with the copies while the engine works off (`snapshotEveryS` 0) as the golden streams run them:
+/// a copy that a tool call or the timer starts during a short scenario is stored or not by timing, and would make
+/// two runs of the same product name a different number of copies. The copy of the end is in every record.
 async fn served_run(opts: Opts) -> Direct {
-    let d = Direct::start_process(opts).await;
+    let d = Direct::start_process(Opts {
+        snapshot_every_s: Some(0),
+        ..opts
+    })
+    .await;
     d.invoke().await;
     d.wait_healthy().await;
     d

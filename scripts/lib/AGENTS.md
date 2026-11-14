@@ -95,7 +95,11 @@ Owned by `scripts/AGENTS.md`, which documents each wrapper's user-facing contrac
   it deploys from a source archive with a commit of its own; else HEAD); the deploy record file keeps `codeSha`, the HEAD of the tree that was built. `take_lock` and
   `release_lock` hold SSM `/hamh/<stage>/deploy-lock` (create-only, `route=manual`) unless `HAMH_DEPLOY_LOCK_TOKEN` names the caller's lock; while the deploy
   runs, `keep_lock` (a daemon thread, `renew_lock` every `LOCK_RENEW_S` seconds) writes a new `started` into the lock as long as it holds this deploy's token,
-  and `release_lock` deletes it only then, so a lock that another deploy replaced is left alone. A Fail of a step
+  and `release_lock` deletes it only then, so a lock that another deploy replaced is left alone. Under the caller's lock the same thread
+  writes that lock again every `LOCK_RENEW_S` seconds (`renew_caller_lock`): the text as it read it and one last line `renewed=<UTC time>`, only while
+  the lock holds the caller's token and has no `deploys=no` line. The stage's API service therefore keeps the stage closed to new runs while the deploy
+  runs, also when the setup that holds the lock has stopped following its build. A lock that is gone is never written again, and the deploy never deletes
+  the caller's lock. A Fail of a step
   in `REFUSALS` before the first stack change prints `DEPLOY-REFUSED reason=<step> wait=<yes|no> stage=unchanged :: <action>` and exits 3; any other failure
   before it prints `DEPLOY-STAGE unchanged` on the line before its `DEPLOY-FAIL`. `--print-settings` runs the resolution alone and writes nothing.
   Tests: `scripts/tests/test_setup_deploy_settings.py`.
@@ -110,6 +114,11 @@ Owned by `scripts/AGENTS.md`, which documents each wrapper's user-facing contrac
   comes from the catalog, the Region or the role). A changed default changes this file and `infra/lib/config.ts` together (the tests pin them).
 - `bootstrap-min-version.txt`: one positive integer line, the CDK bootstrap version a deploy needs when the synthesized assembly names none.
   `deploy.py` reads it (`MIN_BOOTSTRAP`, `read_min_bootstrap`), and setup's preflight compares the account's bootstrap with it.
+- `deploy-lock-stale-seconds.txt`: one positive integer line (1800), the seconds after its last write for which a deploy lock still counts as renewed.
+  `scripts/setup/runner.sh` reads it (`RN_LOCK_STALE_SECONDS`; its fallback is the same number), and the stage's API service embeds it at build time
+  (`crates/control-api/src/admission.rs`, `STALE_AFTER_S`): a lock written within that time closes the stage to new runs. `scripts/tests/test_setup_b804_wait.py` and
+  `crates/control-api/tests/b804_admit.rs` hold the readers to it. With `HAMH_DEPLOY_LOCK_TOKEN`, `deploy.py` also refuses (`lock`) under a caller's lock that has the
+  line `deploys=no`: setup writes that line for a hold that changes nothing on the stage, and the API service starts runs under such a lock.
 - `teardown.py`: implementation of `scripts/teardown.sh` (the selected entry of the tree's `accounts.json`;
   it restores the invocation logging deploy.sh recorded before enabling it); flow, ownership rules, the
   record (`write_record`) and test hooks `TEARDOWN_*` in its

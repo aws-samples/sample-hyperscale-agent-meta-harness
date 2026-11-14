@@ -56,6 +56,13 @@ pub async fn cmd_cancel<P: ControlPlane>(
                 sanitize_line(&r.run_id),
                 word(&r.status)
             ));
+            // A cleared run delivers nothing, and clearing it deletes nothing: its saved copy stays.
+            if r.status == GoalStatus::Cleared {
+                let run = sanitize_line(&r.run_id);
+                out.out_line(format!(
+                    "ham pull {run} --snapshot downloads the latest saved copy of its work."
+                ));
+            }
             0
         }
         Err(e) => fail(out, format!("cancel {run_id}: {e}")),

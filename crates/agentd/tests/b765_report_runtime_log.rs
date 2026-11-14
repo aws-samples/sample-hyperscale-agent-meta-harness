@@ -138,6 +138,8 @@ async fn run_in(env: &RunEnv, work: &Path, command: &str) -> TestStep {
         source: TestCommandSource::TestCommandFile,
         command: command.to_string(),
         logged: None,
+        install: None,
+        fallback: None,
     };
     run_step(env, &step, &cwd, Duration::from_secs(30), 4096).await
 }

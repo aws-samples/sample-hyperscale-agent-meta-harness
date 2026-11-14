@@ -444,6 +444,8 @@ pub async fn start(
             source: TestCommandSource::Detected,
             command: command.clone(),
             logged: None,
+            install: None,
+            fallback: None,
         };
         let mut step = if left < Duration::from_secs(10) {
             TestStep::not_run(

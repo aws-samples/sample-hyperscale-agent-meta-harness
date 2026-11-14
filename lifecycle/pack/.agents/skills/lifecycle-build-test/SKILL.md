@@ -17,6 +17,9 @@ The record paths below (.ham/lifecycle, .ham/research, .ham/context) follow `.ha
 5. Append to .ham/lifecycle/LOG.md right after each run and before any other edit, one line each, in these forms:
    RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <the runner's summary line, copied>
    NOT RUN | <what> | <reason>
+   In a RUN line, <command> is the command exactly as the shell ran it from the repository root, and nothing more: the
+   harness runs that column again in a clean checkout of your work. Put any note after it in parentheses, such as
+   (at BASE) for a run in a base-commit worktree or (after the last edit); words after the command become arguments.
    Write unknown for a count the tool does not print. When a command printed nothing, write "(no output)" as the last field;
    never leave a field empty, and never put the runner's counts in place of pass unknown fail unknown. Never write a line for
    a run you did not just make.

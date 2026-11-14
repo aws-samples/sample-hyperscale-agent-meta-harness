@@ -588,7 +588,7 @@ async fn submit<P: ControlPlane>(
                 None => Msg::Started(Ok(response)),
             }
         }
-        Err(e) => Msg::Started(Err(cleared.failed(e))),
+        Err(e) => Msg::Started(Err(cleared.failed(crate::api::start_failure(&e)))),
     }
 }
 

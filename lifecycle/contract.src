@@ -53,8 +53,8 @@ Records. A first prompt line naming the records folder replaces .ham below. Read
    get green. Skill: lifecycle-tdd (LC-3, LC-4).
 5. Build and test. Build, lint, type-check and run the whole suite. Run anything visible from outside once through the real path. Read the output and the logs. Right
    after each run, append one line to .ham/lifecycle/LOG.md: "RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <the runner's summary line>", or
-   "NOT RUN | <what> | <reason>". Fill every field: when a command prints nothing write "(no output)", and when it prints no pass count write pass unknown fail unknown.
-   Skill: lifecycle-build-test (LC-5).
+   "NOT RUN | <what> | <reason>". <command> is the exact command; a note goes in parentheses: (at BASE). Fill every field; with no output write "(no output)", with
+   no count pass unknown fail unknown. Skill: lifecycle-build-test (LC-5).
 6. Loop. A cycle is one change followed by a full build-and-test run. Repeat 4 and 5 until every check on the card passes in a run made after your last edit, then go to
    7. Progress stalls when one check still fails after three fixes resting on three different theories, or when two cycles in a row leave the same failures. Then log each
    theory, change and result, end the log with "BLOCKED: <what in this checkout cannot go on>", and end your final message with that line. Skill: lifecycle-loop (LC-6).

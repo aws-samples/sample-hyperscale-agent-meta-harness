@@ -217,10 +217,19 @@ fn b804_help_says_what_the_wait_covers_and_what_it_does_not() {
     let text = ham_core::help::command_text("update").unwrap();
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     for part in [
-        "waits only for your own runs",
-        "does not stop anyone from starting a run",
-        "setup stops with exit 7 while any run on the stage is active",
+        "waits for the runs of everyone on the stage",
+        "the stage starts no new runs",
+        "can still let a new run start",
+        "setup stops with exit 7 at once while any run on the stage is active",
+        "never cancels a run",
     ] {
         assert!(flat.contains(part), "{part:?} missing from:\n{text}");
+    }
+    // The sentences of the release that had no refusal of new runs are gone.
+    for gone in [
+        "waits only for your own runs",
+        "does not stop anyone from starting a run",
+    ] {
+        assert!(!flat.contains(gone), "{gone:?} is still in:\n{text}");
     }
 }

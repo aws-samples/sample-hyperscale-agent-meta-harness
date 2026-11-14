@@ -149,7 +149,7 @@ async fn a_run_with_no_snapshot_exits_1_with_the_servers_sentence() {
     let h = home(&fake, "pull-snapshot-none");
     let p = shell(&h, &["pull", &run, "--snapshot"]).await;
     assert_eq!(p.code, 1, "{} {}", p.out, p.err);
-    assert!(p.err.contains("no snapshot"), "{}", p.err);
+    assert!(p.err.contains("no copy of this run's work"), "{}", p.err);
     assert_eq!(std::fs::read_dir(&h.downloads).unwrap().count(), 0);
 }
 

@@ -2,8 +2,8 @@
 //! harness-protocol serde types plus `PK`/`SK` from their key builders.
 
 use crate::handler::{
-    Blobs, DeployedAs, Execution, ObjectError, ObjectInfo, ObjectPage, ObjectPrefix, RunUsage,
-    Store, StoreError, TagRead,
+    Blobs, DeployLock, DeployedAs, Execution, ObjectError, ObjectInfo, ObjectPage, ObjectPrefix,
+    RunUsage, Store, StoreError, TagRead,
 };
 use crate::ids::rfc3339;
 use aws_sdk_dynamodb::error::DisplayErrorContext;
@@ -1725,6 +1725,26 @@ impl Execution for SfnExecution {
         }
     }
 
+    async fn deploy_lock(&self) -> Result<Option<DeployLock>, StoreError> {
+        // A call of its own, on the one parameter the role may read for this, so a missing grant never fails the deployment read below.
+        let name = format!("{}/deploy-lock", self.deployment_prefix);
+        match self.ssm.get_parameter().name(&name).send().await {
+            Ok(out) => Ok(out.parameter().map(|p| DeployLock {
+                value: p.value().unwrap_or_default().to_string(),
+                written_epoch_s: p.last_modified_date().map(|at| at.secs()),
+            })),
+            Err(e)
+                if e.as_service_error()
+                    .is_some_and(|s| s.is_parameter_not_found()) =>
+            {
+                Ok(None)
+            }
+            // The classes of the Instances parameter above: a read that may pass on a retry, and a read the stage's own setup refuses.
+            Err(e) if may_pass(&e) => Err(unavailable(e)),
+            Err(e) => Err(StoreError::NotSetUp(DisplayErrorContext(e).to_string())),
+        }
+    }
+
     async fn deployment(&self) -> Result<DeployedAs, StoreError> {
         let digest = format!("{}/deployment-digest", self.deployment_prefix);
         let tree = format!("{}/deployed-source-tree", self.deployment_prefix);
@@ -1746,6 +1766,41 @@ impl Execution for SfnExecution {
         Ok(DeployedAs {
             digest: value(&digest),
             source_tree: value(&tree),
+        })
+    }
+}
+
+/// The release label of the stage: its parameter `<prefix>/release-version` and the source tree the stage runs, `<prefix>/deployed-source-tree`, read in one
+/// call that is separate from the run start's read of the deployment (`SfnExecution::deployment`), so a label that cannot be read never reaches a run.
+#[derive(Clone, Debug)]
+pub struct SsmReleaseLabel {
+    pub client: aws_sdk_ssm::Client,
+    /// `/hamh/<stage>`.
+    pub prefix: String,
+}
+
+impl crate::version::LabelStore for SsmReleaseLabel {
+    async fn read(&self) -> Result<crate::version::LabelParameters, String> {
+        let label = format!("{}/release-version", self.prefix);
+        let tree = format!("{}/deployed-source-tree", self.prefix);
+        let out = self
+            .client
+            .get_parameters()
+            .names(&label)
+            .names(&tree)
+            .send()
+            .await
+            .map_err(|e| DisplayErrorContext(e).to_string())?;
+        let value = |name: &str| {
+            out.parameters()
+                .iter()
+                .find(|p| p.name() == Some(name))
+                .and_then(|p| p.value())
+                .map(str::to_string)
+        };
+        Ok(crate::version::LabelParameters {
+            label: value(&label),
+            tree: value(&tree),
         })
     }
 }

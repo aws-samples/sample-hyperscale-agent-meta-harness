@@ -180,12 +180,13 @@ fn b825_the_commands_of_the_goal_card_get_the_install_step_too() {
             ("requirements.txt", "flask==3.0.3\n"),
         ],
     );
+    // Each install stands right before the first command it serves.
     assert_eq!(
         lines(&root),
         [
             "setup detected npm ci".to_string(),
-            format!("setup detected {VENV_INSTALL}"),
             "test card npm test".to_string(),
+            format!("setup detected {VENV_INSTALL}"),
             "test card .ham-venv/bin/python -m pytest -q".to_string(),
         ]
     );

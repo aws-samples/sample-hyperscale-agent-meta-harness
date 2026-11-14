@@ -1308,9 +1308,24 @@ pf_owner_check() {
 # names, separated by spaces) and ACTIVE_RUN_COUNT. A state machine that does not exist has no running run. A look that fails for another reason (the credentials may not call
 # states:ListExecutions) is a warning and no end: the build's own deploy guard looks again before it changes the worker runtime.
 pf_active_runs() {
+  pf_active_runs_look
+  [ "$ACTIVE_RUNS_LOOK" = ok ] ||
+    warn "could not list the running executions of hamh-$STAGE-run: $ACTIVE_RUNS_ERR. The update continues. The build checks again before it changes the worker runtime."
+  return 0
+}
+
+# pf_active_runs_look: one look at the RUNNING executions of hamh-<stage>-run, without a word on the screen. ACTIVE_RUNS and ACTIVE_RUN_COUNT as above, and ACTIVE_RUNS_LOOK
+# says how the look went: ok (it answered; a state machine that does not exist has no run), denied (these credentials may not list executions) or failed (anything else: a
+# throttle, no answer), with the failure's text in ACTIVE_RUNS_ERR. The look that follows the deploy lock reads it: a look that failed is
+# never taken as "no run".
+ACTIVE_RUNS_LOOK=ok
+ACTIVE_RUNS_ERR=""
+pf_active_runs_look() {
   local machine=hamh-$STAGE-run name
   ACTIVE_RUNS=""
   ACTIVE_RUN_COUNT=0
+  ACTIVE_RUNS_LOOK=ok
+  ACTIVE_RUNS_ERR=""
   if aws_run stepfunctions list-executions --state-machine-arn "arn:aws:states:$REGION:$ACCOUNT:stateMachine:$machine" --status-filter RUNNING \
       --query 'executions[].name' --output text; then
     case $AWS_OUT in
@@ -1324,7 +1339,11 @@ pf_active_runs() {
   fi
   [ "$(aws_error_code)" != StateMachineDoesNotExist ] || return 0
   aws_missing && return 0
-  warn "could not list the running executions of $machine: ${AWS_ERR:-no answer}. The update continues. The build checks again before it changes the worker runtime."
+  ACTIVE_RUNS_ERR=${AWS_ERR:-no answer}
+  case $(aws_error_code) in
+    AccessDenied|AccessDeniedException) ACTIVE_RUNS_LOOK=denied ;;
+    *) ACTIVE_RUNS_LOOK=failed ;;
+  esac
   return 0
 }
 
@@ -1342,7 +1361,7 @@ pf_active_runs_check() {
   hint=$(pf_retry_hint)
   setup_exit 7 "the update is stopped: $ACTIVE_RUN_COUNT running run(s) on hamh-$STAGE-run pin the worker runtime: $shown$more" \
     "The stage is unchanged and no runner was installed." \
-    "You cancel runs with $HAMH_CLIENT_BIN cancel <runId> or wait until they end." \
+    "You cancel runs with $HAMH_CLIENT_BIN cancel <runId> or wait until they end; ./setup.sh --update --wait-for-runs MINUTES waits for them." \
     ${hint:+"$hint"} "You run ./setup.sh --update again."
 }
 

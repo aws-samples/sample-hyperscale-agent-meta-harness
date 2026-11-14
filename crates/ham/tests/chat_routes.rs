@@ -737,5 +737,5 @@ async fn the_snapshot_of_a_live_run_downloads_and_verifies_through_the_real_rout
     let e = fetch_snapshot_with(&api(&fake), &other, &tmp("snap-none"), 1024)
         .await
         .unwrap_err();
-    assert!(e.to_string().contains("no snapshot"), "{e}");
+    assert!(e.to_string().contains("no copy of this run's work"), "{e}");
 }

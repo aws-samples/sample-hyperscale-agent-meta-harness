@@ -156,6 +156,19 @@
     },
     {
       "payload": {
+        "savedCopy": {
+          "at": "<time>",
+          "count": 1,
+          "final": true,
+          "headSha": "<sha>",
+          "session": 1
+        },
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
         "directOutcome": "stopped_silence",
         "label": "Cline stopped: no output for the silence limit",
         "lastCommitSha": "<sha>",
@@ -233,7 +246,8 @@
     "runId": "01M4XTESTRUNDIRECT00000001",
     "schemaVersion": 1,
     "snapshots": {
-      "count": 0
+      "count": 1,
+      "lastAt": "<time>"
     },
     "stopReason": null,
     "timing": {

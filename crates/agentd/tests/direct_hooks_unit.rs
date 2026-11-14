@@ -85,6 +85,7 @@ impl DirectHook for Fake {
                     LadderEvent::ProviderRetry { .. } => "provider-retry",
                     LadderEvent::Switch(_) => "switch",
                     LadderEvent::EngineStop { .. } => "engine-stop",
+                    LadderEvent::AnswerDropped => "answer-dropped",
                     LadderEvent::Wait { .. } => "wait",
                     LadderEvent::Outage { .. } => "outage",
                     LadderEvent::OutageNotice { .. } => "outage-notice",

@@ -830,6 +830,9 @@ pub struct App {
     declared: Vec<(String, bool)>,
     /// A line for the Runs screen's status row, such as the paste it ignored; the next key clears it.
     pub(crate) runs_notice: Option<String>,
+    /// The whole text of a Runs notice that its row cannot hold: the panel above the note row shows it while `runs_notice` is still
+    /// its `row`, so a later notice or the next key takes it away.
+    pub(crate) runs_detail: Option<RunsDetail>,
     /// The question `R` asked on the Runs screen: the plan it named and when it was shown. Enter or `R` again, 300 ms or more later,
     /// starts it; Esc or any other key withdraws it.
     pub(crate) resume_ask: Option<ResumeAsk>,
@@ -847,6 +850,9 @@ pub struct App {
     /// The line of provider data sharing of each run this process started, keyed by run id: the switch of the account's Bedrock data
     /// retention mode, or why ham left it alone. The run screen keeps it as a card, because the notice row holds one row and cuts it.
     pub(crate) sharing_notes: HashMap<String, String>,
+    /// Why a retry, a follow-up or a resume did not start, keyed by the run it was started from. The run screen keeps it as a card of that
+    /// run, wrapped to the width, because the notice row holds one row; a later start from the run that succeeds takes it away.
+    pub(crate) start_refusals: HashMap<String, Refusal>,
     /// The first look at a sent line.
     sink: CommandSink,
     /// The preview waiting for its second Enter.
@@ -926,6 +932,8 @@ pub struct App {
     time_text: ClockText,
     /// The last expiry written: Unix seconds and its text, so a draw does not ask the clock again.
     clock_memo: std::cell::RefCell<Option<(i64, String)>>,
+    /// The same memo for the time of the last saved copy, so the two times never push each other out of one slot.
+    saved_clock_memo: std::cell::RefCell<Option<(i64, String)>>,
 }
 
 impl App {
@@ -1016,6 +1024,7 @@ impl App {
             backend_pick: None,
             declared: Vec::new(),
             runs_notice: None,
+            runs_detail: None,
             resume_ask: None,
             resume_skipped: Vec::new(),
             runs_answered: false,
@@ -1023,6 +1032,7 @@ impl App {
             opens_typing: false,
             drafts: HashMap::new(),
             sharing_notes: HashMap::new(),
+            start_refusals: HashMap::new(),
             sink: pass_sink,
             armed: None,
             panel: None,
@@ -1069,6 +1079,7 @@ impl App {
             open_command: None,
             time_text: ham_core::render::utc_clock,
             clock_memo: std::cell::RefCell::new(None),
+            saved_clock_memo: std::cell::RefCell::new(None),
         }
     }
 
@@ -1081,6 +1092,19 @@ impl App {
     pub fn set_clock(&mut self, clock: ClockText) {
         self.time_text = clock;
         *self.clock_memo.borrow_mut() = None;
+        *self.saved_clock_memo.borrow_mut() = None;
+    }
+
+    /// The time of the last saved copy as the reader's clock, asking the clock once per distinct time.
+    pub(crate) fn saved_clock_text(&self, epoch: i64) -> String {
+        if let Some((at, text)) = &*self.saved_clock_memo.borrow()
+            && *at == epoch
+        {
+            return text.clone();
+        }
+        let text = (self.time_text)(epoch);
+        *self.saved_clock_memo.borrow_mut() = Some((epoch, text.clone()));
+        text
     }
 
     /// `epoch` as the reader's clock, asking it once per distinct time.
@@ -2409,6 +2433,7 @@ impl App {
 
     fn runs_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         self.runs_notice = None;
+        self.runs_detail = None;
         if self.runs_editing {
             return self.runs_find_key(key);
         }
@@ -2518,30 +2543,131 @@ impl App {
         self.runs_key(*key)
     }
 
-    /// The answer to [`Job::ResumeRuns`]: one line on the Runs screen that says what each run did, and a fresh read of the list, which shows the
-    /// new runs with the mark of a run that continues another.
-    pub(crate) fn resume_done(&mut self, outcomes: &[ham_core::resume::Outcome]) -> Vec<Effect> {
+    /// The answer to [`Job::ResumeRuns`]: one short line on the Runs screen that says what each run did, and a fresh read of the list, which shows
+    /// the new runs with the mark of a run that continues another. The lines of provider data sharing (`notes`, the new run and its line) and
+    /// the reason each run did not start go whole in the panel above it: the lines first, because the account may have changed, then
+    /// each reason once with the runs it stopped. A run that did not start keeps its reason as a card; one that started loses that card.
+    pub(crate) fn resume_done(
+        &mut self,
+        outcomes: &[ham_core::resume::Outcome],
+        notes: &[(String, String)],
+    ) -> Vec<Effect> {
         let skipped = std::mem::take(&mut self.resume_skipped);
         let started = outcomes.iter().filter(|o| o.result.is_ok()).count();
-        let mut parts: Vec<String> = outcomes
-            .iter()
-            .map(|o| {
-                let id = short_id(&o.run_id);
-                match &o.result {
-                    Ok(new) => format!("{id} -> {}", short_id(new)),
-                    Err(why) => format!("{id} not started: {}", sanitize_line(why)),
+        let mut parts: Vec<String> = Vec::new();
+        let mut reasons: Vec<(String, Vec<String>)> = Vec::new();
+        for o in outcomes {
+            let id = short_id(&o.run_id);
+            match &o.result {
+                Ok(new) => {
+                    self.start_refusals.remove(&o.run_id);
+                    parts.push(format!("{id} -> {}", short_id(new)));
                 }
-            })
-            .collect();
+                Err(why) => {
+                    let why = sanitize_line(why);
+                    self.start_refusals.insert(
+                        o.run_id.clone(),
+                        Refusal {
+                            what: Refused::Resume,
+                            paragraphs: vec![why.clone()],
+                        },
+                    );
+                    parts.push(format!("{id} not started"));
+                    match reasons.iter_mut().find(|(w, _)| *w == why) {
+                        Some((_, ids)) => ids.push(id),
+                        None => reasons.push((why, vec![id])),
+                    }
+                }
+            }
+        }
         if !skipped.is_empty() {
             parts.push(format!("{} skipped", skipped.len()));
         }
-        self.runs_notice = Some(format!(
+        let row = format!(
             "resumed {started} of {}: {}",
             outcomes.len(),
             parts.join(" · ")
-        ));
+        );
+        let mut paragraphs: Vec<String> = Vec::new();
+        for (_, note) in notes {
+            if !paragraphs.contains(note) {
+                paragraphs.push(note.clone());
+            }
+        }
+        let lines = paragraphs.len();
+        paragraphs.extend(
+            reasons
+                .into_iter()
+                .map(|(why, ids)| format!("{} not started: {why}", ids.join(", "))),
+        );
+        let title = match (lines, paragraphs.len() - lines) {
+            (0, 0) => None,
+            (_, 0) => Some(SHARING_TITLE),
+            (0, _) => Some("not started"),
+            _ => Some("resume details"),
+        };
+        match title {
+            Some(title) => self.runs_say_detailed(row, title, paragraphs),
+            None => {
+                self.runs_detail = None;
+                self.runs_notice = Some(row);
+            }
+        }
         vec![Effect::LoadRuns]
+    }
+
+    /// The panel of the Runs notice, while the notice it belongs to is the one shown.
+    pub(crate) fn runs_detail_shown(&self) -> Option<&RunsDetail> {
+        self.runs_detail
+            .as_ref()
+            .filter(|d| self.runs_notice.as_deref() == Some(d.row.as_str()))
+    }
+
+    /// The Runs notice `row` with its whole text in the panel above it.
+    pub(crate) fn runs_say_detailed(&mut self, row: String, title: &str, paragraphs: Vec<String>) {
+        self.runs_detail = Some(RunsDetail {
+            row: row.clone(),
+            title: title.to_string(),
+            paragraphs,
+        });
+        self.runs_notice = Some(row);
+    }
+
+    /// The Runs notice shown now keeps `paragraph` whole in the panel above it; on any other screen nothing changes.
+    pub(crate) fn runs_detail_add(&mut self, title: &str, paragraph: String) {
+        if self.screen != Screen::Runs {
+            return;
+        }
+        if let Some(row) = self.runs_notice.clone() {
+            self.runs_say_detailed(row, title, vec![paragraph]);
+        }
+    }
+
+    /// A retry or a follow-up from `source` that did not start: the run keeps `card` (the line of provider data sharing when the account
+    /// was switched first, then the reason) as a card. On the Runs screen the note row says what did not start and the panel above it shows
+    /// `card`; elsewhere, when `say` holds, the notice row has the sentence with `why` when it fits [`NOTICE_COLUMNS`], else a short one that
+    /// points to the card.
+    pub(crate) fn start_refused(
+        &mut self,
+        source: &str,
+        what: Refused,
+        card: Vec<String>,
+        why: &str,
+        say: bool,
+    ) {
+        self.start_refusals.insert(
+            source.to_string(),
+            Refusal {
+                what,
+                paragraphs: card.clone(),
+            },
+        );
+        if self.screen == Screen::Runs {
+            self.runs_say_detailed(what.runs_row(source), what.title(), card);
+        } else if say {
+            let here = self.focused_run() == Some(source);
+            self.say(&what.notice(source, why, here));
+        }
     }
 
     /// Opens the selected run, if the filter shows it.
@@ -4704,6 +4830,13 @@ impl App {
             }
             Msg::Answered(result) => self.answered(result),
             Msg::CommandDone { argv, out } => {
+                // A resume that started by the command (`/resume <id>`, `/resume --all`, `R` on a run's screen) takes the card of a resume of
+                // that run that did not start away, as one that started from the Runs screen does.
+                if argv.first().is_some_and(|w| w == "resume") {
+                    for id in ham_core::resume::started_run_ids(&out.lines()) {
+                        self.start_refusals.remove(&id);
+                    }
+                }
                 // The editor `e` opened on the Settings screen came back: the screen reads the file again; its panel is not for this screen.
                 if let Some(effects) = self.settings.edit_done(&argv, &out) {
                     return effects;
@@ -4742,8 +4875,13 @@ impl App {
         let delivered = self.view().is_some_and(|v| v.zip.is_some())
             || matches!(self.download, DownloadState::Done(_));
         if !delivered {
-            self.notice =
-                Some("nothing is delivered yet, so there is nothing to clone".to_string());
+            // A run that ended without a zip is told where its work is.
+            self.notice = Some(
+                ham_core::saved_copy::no_delivery(self.view().and_then(|v| v.status))
+                    .unwrap_or_else(|| {
+                        "nothing is delivered yet, so there is nothing to clone".to_string()
+                    }),
+            );
             return vec![];
         }
         match self.clone {
@@ -4786,7 +4924,11 @@ impl App {
                 }]
             }
             None => {
-                self.notice = Some("there is no link yet: nothing is delivered".to_string());
+                self.notice = Some(
+                    ham_core::saved_copy::no_delivery(view.status).unwrap_or_else(|| {
+                        "there is no link yet: nothing is delivered".to_string()
+                    }),
+                );
                 vec![]
             }
         }
@@ -4799,8 +4941,11 @@ impl App {
             return vec![];
         };
         let Some(zip) = view.zip.clone() else {
-            self.notice =
-                Some("nothing is delivered yet, so there is nothing to download".to_string());
+            self.notice = Some(
+                ham_core::saved_copy::no_delivery(view.status).unwrap_or_else(|| {
+                    "nothing is delivered yet, so there is nothing to download".to_string()
+                }),
+            );
             return vec![];
         };
         let next = match std::mem::replace(&mut self.download, DownloadState::None) {
@@ -4879,6 +5024,98 @@ pub(crate) struct ResumeAsk {
     pub plan: ham_core::resume::ResumePlan,
     pub shown_ms: u64,
 }
+
+/// The whole text of a Runs notice: `row` is the short notice on the note row; the panel above it shows `title` and each paragraph wrapped
+/// to the width.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunsDetail {
+    pub(crate) row: String,
+    pub(crate) title: String,
+    pub(crate) paragraphs: Vec<String>,
+}
+
+/// The title of the Runs panel and of the card that hold a line of provider data sharing.
+pub(crate) const SHARING_TITLE: &str = "provider data sharing";
+
+/// What did not start from a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refused {
+    Retry,
+    FollowUp,
+    Resume,
+}
+
+impl Refused {
+    /// The title of the card.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Refused::Retry => "retry did not start",
+            Refused::FollowUp => "follow-up did not start",
+            Refused::Resume => "resume did not start",
+        }
+    }
+
+    /// What did not start, in the words of a notice.
+    fn word(self) -> &'static str {
+        match self {
+            Refused::FollowUp => "follow-up",
+            Refused::Retry => "retry",
+            Refused::Resume => "resume",
+        }
+    }
+
+    /// The notice off the Runs screen: the whole sentence when it fits [`NOTICE_COLUMNS`]. A longer one is cut to a short sentence, which
+    /// points to the card above when `here` holds (the screen shows the run the start came from, which keeps the card) and names the run
+    /// otherwise, because the card is on that run's screen only.
+    fn notice(self, source: &str, why: &str, here: bool) -> String {
+        let (whole, short) = match self {
+            Refused::FollowUp => (
+                format!("the follow-up run did not start: {why}; your text is kept"),
+                "the follow-up run did not start (the card above says why); your text is kept",
+            ),
+            Refused::Retry => (
+                format!("the retry did not start: {why}; your text is kept"),
+                "the retry did not start (the card above says why); your text is kept",
+            ),
+            Refused::Resume => (
+                format!("the resume did not start: {why}"),
+                "the resume did not start (the card above says why)",
+            ),
+        };
+        if ratatui::text::Span::raw(whole.as_str()).width() <= NOTICE_COLUMNS {
+            whole
+        } else if here {
+            short.to_string()
+        } else {
+            format!(
+                "the {} of run {} did not start: open it to see why",
+                self.word(),
+                short_id(source)
+            )
+        }
+    }
+
+    /// The short notice on the Runs screen, above which the panel shows why.
+    fn runs_row(self, source: &str) -> String {
+        let source = sanitize_line(source);
+        match self {
+            Refused::Retry => format!("the retry of run {source} did not start"),
+            Refused::FollowUp => format!("the follow-up of run {source} did not start"),
+            Refused::Resume => format!("the resume of run {source} did not start"),
+        }
+    }
+}
+
+/// Why a start from a run did not start: the paragraphs of the run's card (the line of provider data sharing, when the account was
+/// switched first, then the reason).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    pub(crate) what: Refused,
+    pub(crate) paragraphs: Vec<String>,
+}
+
+/// The widest notice the run screen's one notice row shows whole on the narrowest screen ham is made for.
+pub(crate) const NOTICE_COLUMNS: usize = 80;
 
 /// The first eight characters of a run id, made safe to print.
 fn short_id(id: &str) -> String {
@@ -5583,4 +5820,35 @@ fn utc_civil(epoch: i64) -> (i64, u32, u32, u32, u32, u32) {
     let month = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
     let year = yoe + era * 400 + i64::from(month <= 2);
     (year, month, day, secs / 3600, (secs % 3600) / 60, secs % 60)
+}
+
+#[cfg(test)]
+mod refused_tests {
+    use super::*;
+
+    /// The longest run id the service makes.
+    const ID: &str = "01K6A0000000000000000000R1";
+
+    /// Each sentence a start that did not start can say on the notice row, for each of the three starts, fits the one row of the
+    /// narrowest screen with the longest run id; a long reason is cut to a short sentence that points to the card on the run's own screen and
+    /// names the run on every other screen. The resume's wording is not reached through `start_refused` (the Runs screen's answer writes it
+    /// whole), so this test is the only thing that holds it.
+    #[test]
+    fn b832_every_notice_of_a_start_that_did_not_start_fits_one_row() {
+        for what in [Refused::Retry, Refused::FollowUp, Refused::Resume] {
+            for here in [true, false] {
+                let short = what.notice(ID, "the service did not answer", here);
+                assert!(short.contains("the service did not answer"), "{short}");
+                let long = what.notice(ID, &"x".repeat(600), here);
+                assert!(long.chars().count() <= NOTICE_COLUMNS, "{long}");
+                assert_eq!(long.contains("the card above says why"), here, "{long}");
+                assert_eq!(long.contains(&short_id(ID)), !here, "{long}");
+                assert!(long.contains(what.word()), "{long}");
+            }
+            let row = what.runs_row(ID);
+            assert!(row.chars().count() <= NOTICE_COLUMNS, "{row}");
+            assert!(row.contains(ID) && row.contains(what.word()), "{row}");
+            assert!(!what.title().is_empty());
+        }
+    }
 }

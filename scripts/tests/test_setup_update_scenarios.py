@@ -50,6 +50,14 @@ HAMH_TAVILY_ALARMS|yes|remove|^(on|off)$|The alarms on the stored search key, on
 DEPLOY = r'''#!/bin/sh
 printf "%s|%s|%s\n" "$*" "${HAMH_ACCOUNTS_FILE:-}" "${HAMH_AWS_PROFILE:-}" >> "$STUB_LOG/deploy.log"
 { printenv | grep -E '^(HAMH_|CAH_|DEPLOY_RECORD_DIR=|DEPLOY_CRITERIA=)' | sort; echo --; } >> "$STUB_LOG/deploy-env.log"  # COMPAT-CAH: the earlier spelling must not reach the deploy
+case " $* " in *" --relabel "*)
+  # The release label of an update that deploys nothing (scripts/deploy.sh --relabel), which these cases count apart from the deploys
+  case "${FAKE_RELABEL:-pass}" in
+    pass) echo "DEPLOY-LABEL stage=direct version=${FAKE_LABEL_VERSION:-9.99} was=9.98"; exit 0 ;;
+    refused) echo "DEPLOY-REFUSED reason=not-deployed wait=no stage=unchanged :: the stage does not run this source tree"; exit 3 ;;
+    fail) echo "DEPLOY-FAIL release-label could not write the parameter"; exit 1 ;;
+  esac ;;
+esac
 case "${FAKE_DEPLOY:-pass}" in
   instances) [ "${HAMH_COMPUTE_INSTANCES:-}" = on ] || { echo "DEPLOY-FAIL instances-off the stage has the Instances part and HAMH_COMPUTE_INSTANCES is not set"; exit 1; } ;;
   fail) echo "deploy: cdk deploy hamh-direct-network"; echo "DEPLOY-FAIL stack hamh-direct-network UPDATE_FAILED"; exit 1 ;;

@@ -214,3 +214,23 @@ fn retry_is_a_word_of_the_terminal_app_that_starts_a_billable_run() {
     assert!(popup("ret").iter().any(|p| p.name == "retry"));
     assert!(popup("").iter().any(|p| p.name == "retry"));
 }
+
+/// The notice after a retry started on the run screen is one row of at most 80 columns, with the longest id the service makes and with
+/// the text kept.
+#[test]
+fn b832_the_notice_after_a_retry_that_opened_on_screen_fits_the_row() {
+    let long_id = "01M4ZHFBV5SDX7J92E6YRH4QTW";
+    for kept in [false, true] {
+        let line = ham_core::retry::started_here(long_id, kept);
+        assert!(
+            line.chars().count() <= 80,
+            "{} columns: {line}",
+            line.chars().count()
+        );
+        assert!(line.contains(long_id) && line.contains("started"), "{line}");
+        assert_eq!(line.contains("your text is in the box"), kept, "{line}");
+    }
+    // An id with a control character is made safe before it is counted.
+    let dirty = ham_core::retry::started_here("01M4\u{1b}[31mX", true);
+    assert!(!dirty.contains('\u{1b}'), "{dirty:?}");
+}

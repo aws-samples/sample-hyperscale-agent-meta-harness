@@ -81,10 +81,11 @@ class EarlyGuardCase(UpdateBase):
         p = self.run_full(*self.UPDATE)
         self.assertEqual(p.returncode, 0, self.out(p))
         calls = self.list_run_calls()
-        self.assertEqual(len(calls), 1, calls)
-        words = calls[0]
-        self.assertEqual(words[words.index("--state-machine-arn") + 1], f"arn:aws:states:us-east-1:{self.ACCOUNT}:stateMachine:hamh-direct-run")
-        self.assertEqual(words[words.index("--status-filter") + 1], "RUNNING")
+        # The early look, then two looks in a row after the stage's deploy lock is taken (test_setup_b804_wait.py)
+        self.assertEqual(len(calls), 3, calls)
+        for words in calls:
+            self.assertEqual(words[words.index("--state-machine-arn") + 1], f"arn:aws:states:us-east-1:{self.ACCOUNT}:stateMachine:hamh-direct-run")
+            self.assertEqual(words[words.index("--status-filter") + 1], "RUNNING")
 
     def test_the_look_is_made_before_the_runner_is_installed(self) -> None:
         self.deployed()

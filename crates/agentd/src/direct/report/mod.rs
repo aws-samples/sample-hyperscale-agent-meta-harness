@@ -45,7 +45,7 @@ use harness_protocol::direct::{
 };
 use harness_protocol::envelope::EventType;
 use harness_protocol::output_pins::OutputPin;
-use plan::{Plan, PlannedStep};
+use plan::{Install, Plan, PlannedStep};
 use progress::Progress;
 use run::{RunEnv, SKIPPED_FOR_DISK, checkout, ran_out_of_disk, run_step_scanned};
 use std::collections::BTreeMap;
@@ -444,7 +444,8 @@ fn elapsed_ms(since: Instant) -> u64 {
 
 /// Runs the planned steps one after the other within the shared budget. A setup step that fails ends the run of steps, and the steps behind it
 /// are listed as not run with the setup step that stopped them, so the report names the step and counts no test as failed for want of
-/// it; a step that hits the time limit ends the run of steps too.
+/// it; a step that hits the time limit ends the run of steps too. An install the report added ([`Install`]) stops only the test steps that
+/// need it: each is listed as not run with that install named, or, when it has the command the log wrote, runs that command instead.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_steps(
     env: &RunEnv,
@@ -459,6 +460,8 @@ pub async fn run_steps(
     let mut done: Vec<TestStep> = Vec::new();
     // A `cargo test` the harness chose from the manifest of a workspace carries a line that says so and how many members it runs.
     let members = plan::detected_workspace_members(steps, cwd);
+    // The installs of the report that failed, with the reason each gives the steps that need it.
+    let mut failed_installs: Vec<(Install, String)> = Vec::new();
     for (i, planned) in steps.iter().enumerate() {
         let left = settings.budget.saturating_sub(started.elapsed());
         if left.is_zero() {
@@ -468,6 +471,35 @@ pub async fn run_steps(
                 Some("the report time limit ended before every command ran".into()),
             );
         }
+        // A test step whose install failed runs the command the log wrote when it has one, else it is listed as not run.
+        let as_written: PlannedStep;
+        let failed = planned
+            .install
+            .and_then(|k| failed_installs.iter().find(|(f, _)| *f == k));
+        let planned = match (failed, planned.role) {
+            (Some((_, why)), TestStepRole::Test) => match &planned.fallback {
+                Some(command) => {
+                    as_written = PlannedStep {
+                        command: command.clone(),
+                        install: None,
+                        fallback: None,
+                        ..planned.clone()
+                    };
+                    &as_written
+                }
+                None => {
+                    done.push(TestStep::not_run(
+                        planned.role,
+                        planned.source,
+                        &redact(&planned.command),
+                        why,
+                        planned.logged,
+                    ));
+                    continue;
+                }
+            },
+            _ => planned,
+        };
         let limit = settings.step.min(left);
         // The screen hears which command starts and with how long to run; the report records the same limit on the command.
         let limit_s = progress.running(i + 1, steps.len(), &planned.command, limit);
@@ -511,6 +543,11 @@ pub async fn run_steps(
             break;
         }
         if let Some(why) = failed_setup {
+            if let (TestStepRole::Setup, Some(install)) = (planned.role, planned.install) {
+                // An install the report added: only the steps that need it are left out, as they come.
+                failed_installs.push((install, why));
+                continue;
+            }
             // The tests need what the setup did not give them, so none is started: a test that failed for want of an install is no result of
             // the repository's tests.
             done.extend(steps[i + 1..].iter().map(|later| {

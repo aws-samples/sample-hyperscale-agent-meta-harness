@@ -60,6 +60,8 @@ pub struct DirectCollector {
     started: Instant,
     /// The modules of the seam (`crate::direct::hooks`); empty for a run with none.
     hooks: Hooks,
+    /// Notified when a tool call ended ([`Self::with_tree_wake`]).
+    tree_wake: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl DirectCollector {
@@ -80,6 +82,7 @@ impl DirectCollector {
             session: 1,
             started: Instant::now(),
             hooks: Hooks::none(),
+            tree_wake: None,
         }
     }
 
@@ -92,6 +95,13 @@ impl DirectCollector {
     /// The modules that watch this run. The collector raises their ladder events from the functions that already record them.
     pub fn with_hooks(mut self, hooks: Hooks) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    /// `wake` is notified when a tool call ended (completed or failed), which is when the work tree may have changed: the copy task
+    /// of the run then looks at the tree without waiting for its timer.
+    pub fn with_tree_wake(mut self, wake: Arc<tokio::sync::Notify>) -> Self {
+        self.tree_wake = Some(wake);
         self
     }
 
@@ -345,6 +355,10 @@ impl DirectCollector {
             self.resolved.pop_front();
         }
         self.resolved.push_back(id.to_string());
+        // The tool call may have changed the work tree; the copy task looks.
+        if let Some(wake) = &self.tree_wake {
+            wake.notify_one();
+        }
         if status == "completed" {
             self.facts.completed += 1;
             self.facts.failed_tail = 0;
@@ -407,6 +421,14 @@ impl DirectCollector {
                 backoff_s,
                 detail: &self.clean(detail),
             }));
+        }
+    }
+
+    /// The retry loop drops the answer of the try it just made and sends another: the modules are told, so that one which matches
+    /// engine runs to answered prompts takes that prompt's window back. Nothing is recorded in the run's events.
+    pub fn record_answer_dropped(&self) {
+        if !self.hooks.is_empty() {
+            self.hooks.event(&Event::Ladder(LadderEvent::AnswerDropped));
         }
     }
 

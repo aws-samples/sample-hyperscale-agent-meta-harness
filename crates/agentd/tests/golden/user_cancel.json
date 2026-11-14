@@ -99,6 +99,19 @@
     },
     {
       "payload": {
+        "savedCopy": {
+          "at": "<time>",
+          "count": 1,
+          "final": true,
+          "headSha": "<sha>",
+          "session": 1
+        },
+        "turn": 1
+      },
+      "type": "turn.progress"
+    },
+    {
+      "payload": {
         "directOutcome": "stopped_by_user",
         "label": "Cline stopped: you stopped the run",
         "lastCommitSha": "<sha>",
@@ -173,7 +186,8 @@
     "runId": "01M4XTESTRUNDIRECT00000001",
     "schemaVersion": 1,
     "snapshots": {
-      "count": 0
+      "count": 1,
+      "lastAt": "<time>"
     },
     "stopReason": "cancelled",
     "timing": {

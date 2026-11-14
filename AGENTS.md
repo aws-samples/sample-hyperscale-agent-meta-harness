@@ -158,6 +158,13 @@ The documentation set is `README.md` and `docs/` (`docs/AGENTS.md`). `setup.sh` 
    For an `accounts.json` entry with role `test`, the CDK app also tags what it creates with `auto-delete=no`, so an account clean-up service that deletes untagged resources keeps them; see `infra/AGENTS.md`.
 8. No persistent password is created, stored or committed, by this repository or by any project an agent builds. Identity replaces it (IAM roles,
    STS, SigV4, IAM database authentication, OIDC); a throwaway container uses trust authentication on 127.0.0.1 or a random secret made at run time.
+9. A run never loses its work: "we must never lose code, always have at least a checkpoint style mechanism on s3 while running so we can
+   always get back latest state of the working codebase up to the most recent write". It binds agentd, run-session, control-api and `ham`:
+   while a run works, agentd saves a copy of the work tree to the stage's bucket when it changed (every `DEFAULT_SNAPSHOT_EVERY_S` seconds
+   and after a tool call); when the engine has stopped, it saves the end state before the session's bundle and before anything can refuse
+   a delivery; no check that refuses or fails a delivery removes or hides that copy; and however a run ends, `ham pull <runId> --snapshot`
+   downloads the latest copy and every text about the run says so. A session that dies while the engine works loses at most one minute of
+   file changes, or more for a repository whose copies take long. `docs/user-guide.md` ("Your work is kept") states the guarantee, the most that can be lost and how long copies are kept.
 
 ## Custom rules
 

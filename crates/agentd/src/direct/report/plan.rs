@@ -7,7 +7,11 @@
 //! 2. the lifecycle run log `.ham/lifecycle/LOG.md`: the test runs the engine logged, the last run of each command (a part of a suite is left
 //!    out), so the report can set what the log said beside what a clean checkout gives. The notes a model writes after a command in the
 //!    command column (`(3 tests)`, `# all green`, `exit 0`) are cut first (`command::strip_notes`), then a leading `timeout N`, the model's own
-//!    limit on a run;
+//!    limit on a run, then words of plain English written after the command without parentheses.
+//!    A row whose note starts with the place of the run, the base commit
+//!    (`(at BASE)`, `at BASE worktree`), was made outside this checkout and is left out; a note that only mentions the base
+//!    commit belongs to a run of the head. A note in parentheses is cut from any command; words written after the command without parentheses are read
+//!    only after a command of plain words, so `cd api && pytest -q at BASE worktree` and `pytest -q | tail -5 at BASE worktree` run as written;
 //! 3. the numbered checks of the goal card `.ham/lifecycle/GOAL.md`;
 //!
 //! The run log and the goal card sit where `.ham/records` says ([`Records`]): in the folder it names (`docs/lifecycle` for the value `docs`), in
@@ -26,7 +30,10 @@
 //! (source 4) carries the install step it knows: the lockfile or `npm install` for a `package.json`, and for a Python tree with a
 //! `requirements.txt` the report's own virtual environment ([`VENV_INSTALL`]), in which the tests then run. Test commands that come from the
 //! lifecycle log or the goal card (sources 2 and 3) are the model's own lines and carry no install, so the plan puts the same install steps in
-//! front of them. A plain Python layout whose packages are named by a file the report has no install step for
+//! front of them, each right before the first command it serves; the Node install also stands before a command that
+//! may use the packages without naming a Node tool (`make test`). An install the report adds is the
+//! [`Install`] of the commands that need it: when it fails, only those commands are not run, and a logged Python command that was moved into the
+//! virtual environment runs as the log wrote it ([`PlannedStep::fallback`]). A plain Python layout whose packages are named by a file the report has no install step for
 //! (`pyproject.toml`, `Pipfile`, `setup.py`, `setup.cfg`, a requirements file besides `requirements.txt`) is not run, and the reason says so:
 //! the tests would fail for want of a step that is the report's own. `.ham/test-command` and the test
 //! scripts of the repository are run as they are: their `setup:` lines and their own commands say what to install.
@@ -52,6 +59,15 @@ use harness_protocol::direct::{
 use std::io::Read;
 use std::path::Path;
 
+/// An install step the report adds for the test commands that need it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// The Node packages at the root of the tree: `npm ci`, `npm install` or `pnpm install --frozen-lockfile`.
+    Node,
+    /// The report's virtual environment with the packages of `requirements.txt` ([`VENV_INSTALL`]).
+    Venv,
+}
+
 /// One command to run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannedStep {
@@ -60,6 +76,12 @@ pub struct PlannedStep {
     pub command: String,
     /// For a command of the lifecycle log: what the log said about its last run.
     pub logged: Option<LoggedRun>,
+    /// On a setup step: the install it is. When it fails, only the test steps that need the same install are not run; a setup step with
+    /// `None` (a `setup:` line of `.ham/test-command`) stops every later step. On a test step: the install it needs.
+    pub install: Option<Install>,
+    /// On a test step of the log or the goal card that runs in the report's virtual environment: the command as it was written, which runs
+    /// in its place when the environment could not be made.
+    pub fallback: Option<String>,
 }
 
 /// The plan for a checkout.
@@ -209,6 +231,138 @@ pub fn is_focused(command: &str) -> bool {
     })
 }
 
+/// The words of a pytest run that pytest reads as paths: for a command of plain words that starts `pytest` or `py.test`, or a Python
+/// (`python`, `python3`, `python3.N`, the report's environment) with `-m pytest`, the words after it that are not options. The value of an
+/// option is among them; the caller compares them with the word pytest said it did not find. `None` for any other command.
+pub fn pytest_words(command: &str) -> Option<Vec<String>> {
+    let Ok(Parsed::Plain { argv, .. }) = classify(command) else {
+        return None;
+    };
+    let (program, rest) = argv.split_first()?;
+    let name = base(program);
+    let args = if name == "pytest" || name == "py.test" {
+        rest
+    } else if name.starts_with("python")
+        && rest.first().is_some_and(|w| w == "-m")
+        && rest.get(1).is_some_and(|w| w == "pytest")
+    {
+        &rest[2..]
+    } else {
+        return None;
+    };
+    Some(
+        args.iter()
+            .filter(|w| !w.starts_with('-'))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// Words of plain English that start a note a model wrote after a command without parentheses: `pytest -q at BASE worktree`,
+/// `go test./... with the race detector`. None is a test runner's subcommand.
+const PROSE_WORDS: [&str; 30] = [
+    "after", "again", "against", "and", "at", "because", "before", "during", "for", "from", "in",
+    "inside", "of", "on", "outside", "over", "per", "since", "then", "to", "under", "until",
+    "using", "versus", "via", "vs", "when", "while", "with", "without",
+];
+
+/// `command` without the words of plain English a model wrote after it, and those words. The words start with one of [`PROSE_WORDS`],
+/// in any letter case, that names nothing in the tree; no option (`-x`) follows it; and there are two words or more, or the one word does not
+/// follow an option (one word after an option may be its value: `pytest -p at`). Only a command of plain words is read, so a quoted value is
+/// one word, and the program itself is never cut. The `NAME=value` prefixes stay. Any other command is returned as it is, with no words.
+fn without_prose(root: &Path, command: &str) -> (String, String) {
+    let unchanged = || (command.to_string(), String::new());
+    let Ok(Parsed::Plain { env, argv }) = classify(command) else {
+        return unchanged();
+    };
+    let Some(start) = (1..argv.len()).find(|&i| {
+        let tail = &argv[i..];
+        PROSE_WORDS.contains(&argv[i].to_ascii_lowercase().as_str())
+            && !root.join(&argv[i]).exists()
+            && !tail.iter().any(|w| w.starts_with('-'))
+            && (tail.len() >= 2 || !argv[i - 1].starts_with('-'))
+    }) else {
+        return unchanged();
+    };
+    let mut words: Vec<String> = env
+        .iter()
+        .map(|(k, v)| format!("{k}={}", shell_word(v)))
+        .collect();
+    words.extend(argv[..start].iter().map(|w| shell_word(w)));
+    (words.join(" "), argv[start..].join(" "))
+}
+
+/// The nouns after `base` that name a copy of the tree: `base worktree`, `base-commit checkout`.
+const BASE_NOUNS: [&str; 6] = [
+    "commit",
+    "worktree",
+    "worktrees",
+    "checkout",
+    "tree",
+    "copy",
+];
+
+/// Whether `word` is a commit id as a model writes it after `base`: 7 to 40 hexadecimal digits.
+fn is_commit_id(word: &str) -> bool {
+    (7..=40).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A word that may stand in front of `base` in a note that places a run: `the base worktree`, `clean base-commit worktree`.
+fn is_base_filler(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "the" | "a" | "clean" | "fresh" | "git"
+    )
+}
+
+/// Whether one part of a note (its words) places the run at the base commit: `at`, `in` or `on`, the filler words, `base` in any letter case, and
+/// then nothing, a noun of [`BASE_NOUNS`] or a commit id (`at BASE`, `in the base worktree`, `at base abc1234`); or `base` and a noun
+/// (`base-commit checkout`, `clean base-commit worktree`); or the capital word `BASE` alone.
+fn names_base_part(words: &[&str]) -> bool {
+    let placed = words
+        .first()
+        .is_some_and(|w| matches!(w.to_ascii_lowercase().as_str(), "at" | "in" | "on"));
+    let words = if placed { &words[1..] } else { words };
+    let skip = words.iter().take_while(|w| is_base_filler(w)).count();
+    let Some((base, after)) = words[skip..].split_first() else {
+        return false;
+    };
+    if !base.eq_ignore_ascii_case("base") {
+        return false;
+    }
+    match after.first() {
+        None => placed || *base == "BASE",
+        Some(next) => {
+            BASE_NOUNS.contains(&next.to_ascii_lowercase().as_str())
+                || (placed && is_commit_id(next))
+        }
+    }
+}
+
+/// Whether a note says the run was made at the base commit, in a copy of the tree other than this checkout. The contract asks for the note
+/// `(at BASE)`, so only a note that starts with the place of the run counts: a note that merely speaks of the base commit (`(green; was red at base)`,
+/// `(ran on base and head)`, `(BASE_URL unset)`, `(compare vs base: 3 failed)`, `on the base branch`) belongs to a run of the head, and dropping
+/// that row can leave a whole suite out of the report. The note is read in parts, cut at `(`, `)`, `;`, `,`, `:` and `#`, and a part counts when
+/// [`names_base_part`] says so; `(at BASE worktree)`, `at BASE worktree`, `(in the base worktree)`, `(base-commit checkout)` and `(clean base-commit
+/// worktree)` are such notes, and `(base case)` and `(database tests)` are not. A note that also names the head (`at base: 2 failed, head: 0 failed`)
+/// sets two runs side by side and is a row of the head. A word is made of letters, digits and `_`.
+fn names_base(note: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    if note
+        .split(|c: char| !is_word(c))
+        .any(|w| w.eq_ignore_ascii_case("head"))
+    {
+        return false;
+    }
+    note.split(['(', ')', ';', ',', ':', '#']).any(|part| {
+        let words: Vec<&str> = part
+            .split(|c: char| !is_word(c))
+            .filter(|w| !w.is_empty())
+            .collect();
+        names_base_part(&words)
+    })
+}
+
 /// A `RUN | <command> | exit <code> | pass <n or unknown> fail <n or unknown> | <summary>` line of the lifecycle log.
 pub fn parse_log_line(line: &str) -> Option<(String, LoggedRun)> {
     let rest = line.trim().strip_prefix("RUN | ")?;
@@ -272,6 +426,16 @@ fn step(role: TestStepRole, source: TestCommandSource, command: &str) -> Planned
         source,
         command: command.to_string(),
         logged: None,
+        install: None,
+        fallback: None,
+    }
+}
+
+/// `step` as a step of `install`: the install itself for a setup step, the install it needs for a test step.
+fn of_install(install: Install, step: PlannedStep) -> PlannedStep {
+    PlannedStep {
+        install: Some(install),
+        ..step
     }
 }
 
@@ -422,7 +586,15 @@ fn logged_commands(root: &Path, records: &Records) -> Vec<(String, LoggedRun)> {
         };
         // The log has the exit code and the counts in columns of their own, so text after the command in this column is a note. A
         // `timeout N` in front is the model's own limit on the run and not part of the command: the report gives every step its limit.
-        let command = strip_timeout(&strip_notes(&column));
+        // Words of plain English after the command are a note written without parentheses.
+        let column = column.trim();
+        let without_notes = strip_notes(column);
+        let notes = column.get(without_notes.len()..).unwrap_or_default();
+        let (command, prose) = without_prose(root, &strip_timeout(&without_notes));
+        // A run the note places at the base commit was made outside this checkout: the report has nothing to set beside it.
+        if names_base(notes) || names_base(&prose) {
+            continue;
+        }
         if !plain_command(&command) {
             continue;
         }
@@ -564,14 +736,22 @@ fn detect(root: &Path) -> Vec<PlannedStep> {
     };
     if !commands.is_empty() {
         // The test steps come with the install step their tree needs: the packages of requirements.txt, in the environment the tests run in.
-        let python = if has_file(root, "requirements.txt") {
-            steps.push(step(Setup, Detected, VENV_INSTALL));
-            VENV_PYTHON
-        } else {
-            "python3"
-        };
+        let venv = has_file(root, "requirements.txt");
+        if venv {
+            steps.push(of_install(
+                Install::Venv,
+                step(Setup, Detected, VENV_INSTALL),
+            ));
+        }
         for args in &commands {
-            steps.push(step(Test, Detected, &format!("{python} {args}")));
+            steps.push(if venv {
+                of_install(
+                    Install::Venv,
+                    step(Test, Detected, &format!("{VENV_PYTHON} {args}")),
+                )
+            } else {
+                step(Test, Detected, &format!("python3 {args}"))
+            });
         }
     }
     if let Some(pkg) = read_source(root, "package.json")
@@ -579,18 +759,15 @@ fn detect(root: &Path) -> Vec<PlannedStep> {
         && let Some(test) = v.pointer("/scripts/test").and_then(|t| t.as_str())
         && !test.contains("no test specified")
     {
-        if has_file(root, "pnpm-lock.yaml") {
-            steps.push(step(Setup, Detected, "pnpm install --frozen-lockfile"));
-            steps.push(step(Test, Detected, "pnpm test"));
+        let (install, test) = if has_file(root, "pnpm-lock.yaml") {
+            ("pnpm install --frozen-lockfile", "pnpm test")
+        } else if has_file(root, "package-lock.json") {
+            ("npm ci", "npm test")
         } else {
-            let install = if has_file(root, "package-lock.json") {
-                "npm ci"
-            } else {
-                "npm install"
-            };
-            steps.push(step(Setup, Detected, install));
-            steps.push(step(Test, Detected, "npm test"));
-        }
+            ("npm install", "npm test")
+        };
+        steps.push(of_install(Install::Node, step(Setup, Detected, install)));
+        steps.push(of_install(Install::Node, step(Test, Detected, test)));
     }
     if has_file(root, "go.mod") {
         steps.push(step(Test, Detected, "go test -v ./..."));
@@ -1008,41 +1185,84 @@ fn in_venv(command: &str) -> Option<String> {
     Some(words.join(" "))
 }
 
-/// The steps of test commands that came from the lifecycle log or the goal card, with the install steps their tree needs in front. The
+/// Whether every program `command` starts is one that does not use the Node packages of the tree: a runner of another language, and the `cd` and
+/// the pipe consumers (`tee`, `tail`, `head`, `grep`, `cat`) that stand beside it. A command that is anything else (`make test`, a script, tox, a tool the
+/// report does not know) may call `npm` or `jest` itself, so it is not known to need no install.
+fn needs_no_node(command: &str) -> bool {
+    first_words(command).iter().all(|w| {
+        let program = base(w[0]);
+        matches!(
+            program,
+            "go" | "cargo"
+                | "python"
+                | "python3"
+                | "pytest"
+                | "py.test"
+                | "mvn"
+                | "mvnw"
+                | "gradle"
+                | "gradlew"
+                | "dotnet"
+                | "cd"
+                | "pushd"
+                | "tee"
+                | "tail"
+                | "head"
+                | "grep"
+                | "cat"
+        ) || program
+            .strip_prefix("python3.")
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// The steps of test commands that came from the lifecycle log or the goal card, with the install steps their tree needs. The
 /// commands are the model's own lines and carry no install, and a clean checkout has no `node_modules` and none of the packages the session
-/// installed: `npm test` then fails to load a test file of code whose tests pass. The install steps are the ones the detection knows, each for
-/// the commands it serves:
+/// installed: `npm test` then fails to load a test file of code whose tests pass. The install steps are the ones the detection knows:
 ///
-/// - a command that starts a Node tool at the root gets the install of the lockfile, or of the packages `package.json` names ([`node_install`]);
+/// - a command that starts a Node tool at the root gets the install of the lockfile, or of the packages `package.json` names ([`node_install`]). The
+///   install stands before the first command that starts such a tool or that may use the packages without naming a tool (`make test`, a script, tox:
+///   anything [`needs_no_node`] does not know), and after the commands of other languages that come first, so that a Go suite listed first runs first.
+///   Only the commands that start a Node tool are stopped when it fails;
 /// - a plain Python command at the root of a tree with a `requirements.txt` runs in the report's virtual environment ([`in_venv`]), which
-///   [`VENV_INSTALL`] makes first.
+///   [`VENV_INSTALL`] makes right before the first such command; the command as it was written is its [`PlannedStep::fallback`].
 ///
 /// A command that changes the folder, a command of another runner and a Python command the shell has to read stay as they are and bring no
-/// install. An install step that fails ends the steps, and the test commands behind it are listed as not run (`report::run_steps`).
-fn with_installs(root: &Path, mut steps: Vec<PlannedStep>) -> Vec<PlannedStep> {
+/// install. An install step that fails stops only the commands that need it (`report::run_steps`): they are listed as not run, and a Python
+/// command runs as it was written.
+fn with_installs(root: &Path, steps: Vec<PlannedStep>) -> Vec<PlannedStep> {
     use TestCommandSource::Detected;
     use TestStepRole::Setup;
+    let needs_node = |s: &PlannedStep| works_at_root(&s.command) && runs_node(&s.command);
+    // The Node install is added only when some command needs it.
+    let node = node_install(root).filter(|_| steps.iter().any(needs_node));
+    let venv = has_file(root, "requirements.txt");
+    let (mut node_placed, mut venv_placed) = (false, false);
     let mut out = Vec::new();
-    if steps
-        .iter()
-        .any(|s| works_at_root(&s.command) && runs_node(&s.command))
-        && let Some(install) = node_install(root)
-    {
-        out.push(step(Setup, Detected, install));
-    }
-    if has_file(root, "requirements.txt") {
-        let mut moved = false;
-        for s in &mut steps {
-            if let Some(command) = in_venv(&s.command) {
-                s.command = command;
-                moved = true;
+    for mut s in steps {
+        let serves = node.is_some() && needs_node(&s);
+        if let Some(install) = node
+            && !node_placed
+            && (serves || !needs_no_node(&s.command))
+        {
+            out.push(of_install(Install::Node, step(Setup, Detected, install)));
+            node_placed = true;
+        }
+        if serves {
+            s.install = Some(Install::Node);
+        } else if venv && let Some(command) = in_venv(&s.command) {
+            if !venv_placed {
+                out.push(of_install(
+                    Install::Venv,
+                    step(Setup, Detected, VENV_INSTALL),
+                ));
+                venv_placed = true;
             }
+            s.fallback = Some(std::mem::replace(&mut s.command, command));
+            s.install = Some(Install::Venv);
         }
-        if moved {
-            out.push(step(Setup, Detected, VENV_INSTALL));
-        }
+        out.push(s);
     }
-    out.append(&mut steps);
     out
 }
 

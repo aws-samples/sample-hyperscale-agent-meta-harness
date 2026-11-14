@@ -16,6 +16,7 @@
 //! | [`DirectHook::on_controls`] | a batch of controls from the internal API | nothing |
 //! | [`DirectHook::on_turn_end`] | a prompt (with its retries) ended: is the run done? (also after a module's [`DriverCtl::interrupt`]) | the next prompt, the end of the run, or a hold ([`TurnVote::Wait`]) |
 //! | [`DirectHook::on_seal`] | everything else says the run is over: the one atomic last question | the next prompt |
+//! | [`DirectHook::usage_outside_prompts`] | the engine is reaped, before the run's usage is set | adds to the run's usage |
 //! | [`DirectHook::on_shutdown`] | the engine is gone, before the tree is committed and uploaded | nothing |
 //! | [`DirectHook::on_summary`] | `summary.json` is built, before it is checked and uploaded | the summary |
 //! | [`DirectHook::on_report`] | the delivered head is committed, bundled and uploaded and `summary.json` is in the bucket; the package proxy, the container runtime and the flusher (the heartbeat) still run | one refused create-only report write may signal an upload conflict; otherwise nothing |
@@ -500,6 +501,11 @@ pub enum LadderEvent<'a> {
     OutageNotice { waited_s: u64 },
     /// A prompt succeeded after an outage notice.
     OutageRecovered { waited_s: u64 },
+    /// The answer of the try just made was dropped: the loop sends another try instead of returning it (an engine stop the harness resumes,
+    /// a stop the probe found to be a provider failure, or the user's cancel while it waits). The usage that answer reported is not the
+    /// run's, so a module that matches engine runs to answered prompts takes that prompt's window back. It is raised once for each
+    /// dropped answer, never for an answer the loop returns and never for a try that ended in an error.
+    AnswerDropped,
     /// A fact the recovery ladder tells its readers (`history_unusable`, ...).
     Notify { reason: &'a str, detail: &'a str },
     /// A silence ended a stage and the run resumes the session once.
@@ -704,6 +710,13 @@ pub trait DirectHook: Send + Sync {
     /// have nothing more to do). The one atomic last question: "is anything pending? if not, the run is sealed". A `Prompt` continues the run.
     fn on_seal<'a>(&'a self, _end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
         ready(TurnVote::Done)
+    }
+
+    /// The engine is reaped and the driver sets the usage of the run: the tokens this module saw the engine spend that no answered
+    /// prompt reported (a prompt that ended in an error, a round the engine started itself). The driver adds them to what the prompts
+    /// reported. Synchronous; a panic switches the module off and adds nothing.
+    fn usage_outside_prompts(&self) -> Option<Usage> {
+        None
     }
 
     /// The engine is gone, before the tree is committed and uploaded. Stop what runs for the engine (a server), flush what depends on the
@@ -971,6 +984,20 @@ impl Hooks {
     /// Raises an event. A module that panics is switched off.
     pub fn event(&self, event: &Event<'_>) {
         self.inner.each("on_event", |h| h.on_event(event));
+    }
+
+    /// What the modules saw the engine spend outside the prompts that reported usage, added up; `None` when no module saw any.
+    pub fn usage_outside_prompts(&self) -> Option<Usage> {
+        let sum = std::cell::Cell::new(None::<Usage>);
+        self.inner.each("usage_outside_prompts", |h| {
+            if let Some(u) = h.usage_outside_prompts() {
+                sum.set(Some(
+                    sum.get()
+                        .map_or(u, |s| crate::direct::summary::add_usage(s, u)),
+                ));
+            }
+        });
+        sum.get()
     }
 
     /// Shows a batch of controls to the modules.

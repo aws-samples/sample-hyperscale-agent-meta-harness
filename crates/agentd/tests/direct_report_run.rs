@@ -30,6 +30,8 @@ fn step(command: &str) -> PlannedStep {
         source: TestCommandSource::TestCommandFile,
         command: command.to_string(),
         logged: None,
+        install: None,
+        fallback: None,
     }
 }
 

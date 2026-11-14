@@ -159,7 +159,7 @@ impl UsageSum {
 }
 
 /// The sum of two usages; a counter that would overflow stops at the largest value.
-fn add_usage(a: Usage, b: Usage) -> Usage {
+pub(crate) fn add_usage(a: Usage, b: Usage) -> Usage {
     Usage {
         input_tokens: a.input_tokens.saturating_add(b.input_tokens),
         output_tokens: a.output_tokens.saturating_add(b.output_tokens),

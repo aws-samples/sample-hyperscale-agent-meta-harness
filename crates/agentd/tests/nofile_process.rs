@@ -109,6 +109,8 @@ async fn children_of_a_capped_process_see_the_cap_through_the_engine_launcher_an
         source: TestCommandSource::TestCommandFile,
         command: "ulimit -S -n; ulimit -H -n".to_string(),
         logged: None,
+        install: None,
+        fallback: None,
     };
     let s = run_step(&env, &step, &cwd, Duration::from_secs(30), 4096).await;
     assert_eq!(s.exit_code, Some(0), "{s:?}");

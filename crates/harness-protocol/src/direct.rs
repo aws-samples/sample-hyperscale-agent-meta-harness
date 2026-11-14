@@ -75,8 +75,10 @@ pub const DIRECT_TASK_ID: &str = "root";
 pub const DIRECT_ENGINE: &str = "cline";
 /// The microVM lifetime (28,800 s) less a 900 s reserve for commit, bundle, upload and turn-complete.
 pub const MAX_DIRECT_TIMEOUT_S: u32 = 27_900;
-/// How often agentd saves a snapshot while the prompt runs.
-pub const DEFAULT_SNAPSHOT_EVERY_S: u32 = 600;
+/// How often agentd looks at the work tree for a copy while the prompt runs.
+/// agentd also copies after a tool call that changed the tree, and when the engine
+/// has stopped.
+pub const DEFAULT_SNAPSHOT_EVERY_S: u32 = 60;
 /// The longest silence limit an invocation may ask for.
 pub const MAX_PROVIDER_SILENCE_S: u32 = 3_600;
 /// The shortest non-zero snapshot interval.

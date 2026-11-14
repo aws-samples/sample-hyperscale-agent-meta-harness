@@ -35,19 +35,22 @@ pub mod rounds;
 pub mod settings;
 pub mod state;
 pub mod tree;
+pub mod usage;
 pub mod watch;
 
 use crate::BoxFuture;
 use crate::acp::{AcpError, Dir, Watched};
 use crate::direct::classify::scrub_detail;
 use crate::direct::hooks::{
-    DirectHook, DriverCtl, Event, HookEnv, Shutdown, StartupCtx, TurnEnd, TurnVote, Wire,
+    DirectHook, DriverCtl, Event, HookEnv, LadderEvent, Shutdown, StartupCtx, TurnEnd, TurnVote,
+    Wire,
 };
 use crate::engine::goal::{GoalEngine, LoopKind, goal_engine};
 use crate::time::{format_rfc3339, now_unix};
 use busy::{BusyProbe, ProcBusy};
 use command::{CommandProbe, ProcProbe};
 use files::place_plugins;
+use harness_protocol::common::Usage;
 use harness_protocol::direct::{DIRECT_TURN, check_goal};
 use harness_protocol::envelope::EventType;
 use machine::{Brake, Decision, Fp, Limits, Machine, Obs, Rule};
@@ -61,6 +64,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use tree::TreeFp;
+use usage::{FINAL_READS, OutsideUsage, now_ms};
 use watch::{Command, HelperRule, HelperStall, HoldNote, Watch, span};
 
 /// The sentence a dead loop is given (sent as a prompt in the same session through the driver, so it is never sent beside a user's message).
@@ -540,6 +544,8 @@ pub struct GoalHook {
     helper_stalls: AtomicU32,
     /// The nonce of the claim line of the loop the harness drives (`harness`); made when the module arms.
     nonce: OnceLock<String>,
+    /// The prompts and the runs of the engine, for what it spent outside the prompts that reported usage.
+    outside: Mutex<OutsideUsage>,
 }
 
 impl std::fmt::Debug for GoalHook {
@@ -664,6 +670,7 @@ impl GoalHook {
             last_files: Mutex::new(None),
             helper_stalls: AtomicU32::new(0),
             nonce: OnceLock::new(),
+            outside: Mutex::new(OutsideUsage::default()),
         })
     }
 
@@ -1275,6 +1282,21 @@ impl GoalHook {
         }
     }
 
+    /// One read of the rounds log. The tokens of the runs it found are kept for [`DirectHook::usage_outside_prompts`].
+    fn poll_rounds(&self) -> rounds::Polled {
+        let polled = lock(&self.reader)
+            .as_mut()
+            .map(RoundsReader::poll)
+            .unwrap_or_default();
+        if !polled.usage.is_empty() {
+            let mut o = lock(&self.outside);
+            for run in &polled.usage {
+                o.run_ended(*run);
+            }
+        }
+        polled
+    }
+
     /// One look at the loop: the done claim, the rounds log, the tree, the state file; then the rules decide. `armed`: the engine has not
     /// been seen to claim the goal yet, and this look decides whether it did.
     async fn advance(&self, at: Instant, paths: &Paths, armed: bool) -> TurnVote {
@@ -1287,10 +1309,7 @@ impl GoalHook {
             let mut w = lock(&self.wire);
             (w.candidate.take(), w.last_line)
         };
-        let polled = lock(&self.reader)
-            .as_mut()
-            .map(RoundsReader::poll)
-            .unwrap_or_default();
+        let polled = self.poll_rounds();
         let polled_present = polled.present;
         if !polled.lines.is_empty()
             && let Some(rw) = self.round.get()
@@ -1478,10 +1497,7 @@ impl GoalHook {
         let Some(state) = paths.state.clone() else {
             return TurnVote::Done;
         };
-        let polled = lock(&self.reader)
-            .as_mut()
-            .map(RoundsReader::poll)
-            .unwrap_or_default();
+        let polled = self.poll_rounds();
         let goal = read_state(&state);
         let (verdict, owner) = {
             let mut c = lock(&self.core);
@@ -1597,6 +1613,17 @@ impl DirectHook for GoalHook {
     }
 
     fn on_event(&self, event: &Event<'_>) {
+        // When each prompt went out and whether its answer reported usage.
+        match event {
+            Event::PromptSent(p) => lock(&self.outside).prompt_sent(p.no, now_ms()),
+            Event::PromptReplied(r) => lock(&self.outside).prompt_replied(
+                r.no,
+                now_ms(),
+                r.usage.filter(|_| r.error.is_none()),
+            ),
+            Event::Ladder(LadderEvent::AnswerDropped) => lock(&self.outside).try_dropped(),
+            _ => {}
+        }
         match event {
             // The user's cancel ends the run: the engine's loop is told to stop (its rounds ignore `session/cancel`). A cancel the driver
             // wrote for a stall or the deadline is not final (the ladder may resume once, the deadline ends the run by itself), so the loop
@@ -1634,5 +1661,18 @@ impl DirectHook for GoalHook {
     fn on_shutdown<'a>(&'a self, _end: &'a Shutdown<'a>) -> BoxFuture<'a, ()> {
         self.watch_done();
         Box::pin(std::future::ready(()))
+    }
+
+    fn usage_outside_prompts(&self) -> Option<Usage> {
+        // The engine is gone: read what it wrote last, a bounded number of reads, then add up.
+        let mut found = Vec::new();
+        if let Some(reader) = lock(&self.reader).as_mut() {
+            rounds::read_to_end(reader, FINAL_READS, |polled| found.extend(polled.usage));
+        }
+        let mut o = lock(&self.outside);
+        for run in found {
+            o.run_ended(run);
+        }
+        o.total()
     }
 }

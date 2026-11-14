@@ -432,6 +432,15 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
         lines.push(format!("{CLONE_LABEL}ham clone {}", v.run_id));
         lines.push(format!("{PUSH_LABEL}ham push {} <git-url>", v.run_id));
     }
+    // Where the latest saved copy of the work is, whatever the run delivered: a blocked run has no zip and still has its work.
+    if let Some(copy) = &v.saved {
+        lines.push(crate::saved_copy::card_line(
+            copy,
+            crate::engines::of_view(v),
+            v.has_ended(),
+            &v.run_id,
+        ));
+    }
     if let Some(u) = card.usage {
         lines.push(u.line());
     }

@@ -540,6 +540,13 @@ pub trait Execution: Send + Sync {
     fn instances_available(&self) -> impl Future<Output = Result<bool, StoreError>> + Send {
         async { Ok(false) }
     }
+    /// The stage's deploy lock: the SSM parameter `<deployment prefix>/deploy-lock` that setup and deploy create before they change the stage,
+    /// write again while they work and delete at the end. `Ok(None)` is a stage without the parameter, the normal case; `Err(Unavailable)` is a read
+    /// that may pass on a retry (a throttle, a service fault, no answer); `Err(NotSetUp)` is a read the stage's own setup refuses (a role without the
+    /// grant). Asked only by a request that would launch a run, right before the write that creates it (`crate::admission`). Defaults to no lock.
+    fn deploy_lock(&self) -> impl Future<Output = Result<Option<DeployLock>, StoreError>> + Send {
+        async { Ok(None) }
+    }
     /// Stops the `run` execution `name` with `cause`; a name with no execution is a success.
     fn stop(&self, name: &str, cause: &str) -> impl Future<Output = Result<(), StoreError>> + Send {
         let _ = (name, cause);
@@ -557,6 +564,16 @@ pub trait Execution: Send + Sync {
 pub struct DeployedAs {
     pub digest: Option<String>,
     pub source_tree: Option<String>,
+}
+
+/// The stage's deploy lock as SSM holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeployLock {
+    /// The parameter's text: `key=value` lines (token, holder, identity, route, started, commit, inputs, build and, for a hold that deploys
+    /// nothing, `deploys=no`).
+    pub value: String,
+    /// When SSM wrote the parameter last (`LastModifiedDate`), in Unix seconds; `None` when the answer named no time.
+    pub written_epoch_s: Option<i64>,
 }
 
 /// How the engine of a run is named in the words an answer carries: the display name of the Run item's engine, the default engine's when the item
@@ -598,13 +615,22 @@ pub struct V1Request {
 pub struct V1Response {
     pub status: u16,
     pub body: String,
+    /// The seconds of a `Retry-After` header; `None` sends no such header.
+    pub retry_after_s: Option<u32>,
 }
 
 pub(crate) type Reply = (V1Response, Vec<String>);
 
 pub(crate) fn json<T: Serialize>(status: u16, v: &T) -> Reply {
     let body = serde_json::to_string(v).unwrap_or_else(|_| "{}".into());
-    (V1Response { status, body }, vec![])
+    (
+        V1Response {
+            status,
+            body,
+            retry_after_s: None,
+        },
+        vec![],
+    )
 }
 
 pub(crate) fn error(status: u16, code: &str, message: &str) -> Reply {

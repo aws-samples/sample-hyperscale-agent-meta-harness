@@ -2,6 +2,8 @@
 // <data dir>/plugins/harness-rounds/rounds.jsonl when an engine run starts and one when it ends.
 // The goal plugin queues its follow-up prompts itself, so those runs have no session/prompt response:
 // these two hooks are the only place that sees when each run starts and how it ends (status, final text, error).
+// The end line also carries the run's own token counts as the engine keeps them (inputTokens with both cache counts in it,
+// outputTokens, cacheReadTokens, cacheWriteTokens): agentd adds the runs that no answered prompt reported to the run's usage.
 // It writes a file and calls nothing else. Every write is inside try/catch: a failed write must never fail a run, and
 // the supervisor in agentd falls back to the ACP stream, the silence watchdog and the deadline when the file is missing or damaged.
 // The done claim never rests on this file: the model can write it, the ACP stream it cannot.
@@ -46,6 +48,8 @@ export default {
           iterations: result.iterations,
           inputTokens: result.usage?.inputTokens,
           outputTokens: result.usage?.outputTokens,
+          cacheReadTokens: result.usage?.cacheReadTokens,
+          cacheWriteTokens: result.usage?.cacheWriteTokens,
           error: err,
           text: String(result.outputText ?? "").slice(-TEXT_TAIL),
         });

@@ -36,6 +36,9 @@ pub struct Scanned {
     pub missing_program: Option<String>,
     /// The first line of the output that says the disk is full ([`out_of_disk_line`]). Read from the whole stream, not only the tail.
     pub out_of_disk: Option<String>,
+    /// The word of the first line in which pytest says it found no file or directory. Read from the whole stream.
+    /// It says what the output claims; the caller checks the command and the checkout.
+    pub pytest_not_found: Option<String>,
     /// The ports of this machine that a line of the output says a connection to was refused ([`refused_port`]), each once. Read from the whole
     /// stream, not only the tail, because the first error is often cut off from it.
     pub refused_ports: Vec<u16>,
@@ -112,6 +115,17 @@ pub fn out_of_disk_line(line: &str) -> Option<String> {
     let skip = kept.chars().count().saturating_sub(MAX_DISK_LINE_CHARS);
     let kept: String = kept.chars().skip(skip).collect();
     Some(kept.trim().to_string())
+}
+
+/// The word pytest says it found no file or directory for, in its usage error: `at` for `ERROR: file or directory not found: at`
+/// (pytest 7 and later) and for `ERROR: file not found: at` (earlier). `None` for any other line.
+pub fn pytest_not_found(line: &str) -> Option<String> {
+    let line = line.trim();
+    let word = line
+        .strip_prefix("ERROR: file or directory not found: ")
+        .or_else(|| line.strip_prefix("ERROR: file not found: "))?
+        .trim();
+    (!word.is_empty()).then(|| word.to_string())
 }
 
 /// The bare program name a shell's "not found" line names: `cargo` for `sh: 1: cargo: not found` (dash) and for `bash: line 2: cargo: command
@@ -392,6 +406,7 @@ pub struct OutputScan {
     container_runtime_missing: bool,
     missing_program: Option<String>,
     out_of_disk: Option<String>,
+    pytest_not_found: Option<String>,
     refused_ports: Vec<u16>,
     runtime_lines: Vec<String>,
     /// The bytes of `runtime_lines`, one more for each line's newline.
@@ -424,6 +439,7 @@ impl OutputScan {
             container_runtime_missing: false,
             missing_program: None,
             out_of_disk: None,
+            pytest_not_found: None,
             refused_ports: Vec::new(),
             runtime_lines: Vec::new(),
             runtime_bytes: 0,
@@ -509,6 +525,9 @@ impl OutputScan {
         }
         if self.out_of_disk.is_none() {
             self.out_of_disk = out_of_disk_line(line);
+        }
+        if self.pytest_not_found.is_none() {
+            self.pytest_not_found = pytest_not_found(line);
         }
         if let Some(port) = refused_port(line)
             && !self.refused_ports.contains(&port)
@@ -723,6 +742,7 @@ impl OutputScan {
             container_runtime_missing: scan.container_runtime_missing,
             missing_program: scan.missing_program,
             out_of_disk: scan.out_of_disk,
+            pytest_not_found: scan.pytest_not_found,
             refused_ports: scan.refused_ports,
             runtime_lines: scan.runtime_lines,
         }

@@ -281,14 +281,18 @@ describe("control stack", () => {
     expect(upd.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RUN#*"] } });
     expect(text).toContain("kms:ViaService");
     const ssm = stmts.filter((x: any) => JSON.stringify(x.Action).includes("ssm:"));
-    // Two SSM statements: the deployment words every new Run item records, and the Instances runtime ARN, below.
-    expect(ssm.map((x: any) => x.Sid).sort()).toEqual(["DeploymentParameters", "InstancesRuntimeArnParameter"]);
+    // Three SSM statements: the deployment words every new Run item records, the Instances runtime ARN and the stage's deploy lock, below.
+    expect(ssm.map((x: any) => x.Sid).sort()).toEqual(["DeployLockParameter", "DeploymentParameters", "InstancesRuntimeArnParameter"]);
     const deployment = ssm.find((x: any) => x.Sid === "DeploymentParameters");
     expect(deployment.Action).toEqual(["ssm:GetParameters"]);
+    // The same read grant covers the stage's release label (`release-version`), which control-api reads beside `deployed-source-tree` to report the version of a
+    // release that deployed no file of the stage. Read only: the label is written by setup and by the deploy, never by the API.
     expect(deployment.Resource).toEqual([
       `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/hamh/direct/deployment-digest`,
       `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/hamh/direct/deployed-source-tree`,
+      `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/hamh/direct/release-version`,
     ]);
+    expect(JSON.stringify(stmts.filter((x: any) => JSON.stringify(x.Resource ?? "").includes("release-version")).map((x: any) => x.Action))).not.toMatch(/Put|Delete|AddTags/);
   });
 
   // A request that names `--compute instances` makes control-api ask whether the stage has an Instances worker runtime, by reading that runtime's ARN
@@ -309,6 +313,27 @@ describe("control stack", () => {
       // It is the parameter the runtimes stack writes and control-api reads (`{DEPLOYMENT_PARAMETER_PREFIX}/worker-python-instances-runtime-arn`).
       const fn = Object.values(resourcesOf(control, "AWS::Lambda::Function")).map((r) => r.Properties as any).find((f) => f.FunctionName === "hamh-direct-control-api");
       expect(`${fn.Environment.Variables.DEPLOYMENT_PARAMETER_PREFIX}/worker-python-instances-runtime-arn`).toBe(names.runtimeArnParameter(stageConfig("direct"), "worker-python-instances"));
+    }
+  });
+
+  // A stage that is being updated starts no new runs. control-api reads the stage's deploy lock, the SSM parameter that setup and deploy create before
+  // they change the stage and delete at the end, right before it creates a run. The grant is GetParameter on that one parameter: the role can neither write nor
+  // delete it, and no SSM statement of the role names a wildcard.
+  test("b804_admit: control-api may read the stage's deploy lock with GetParameter, that one parameter only", () => {
+    const role = Object.values(resourcesOf(t, "AWS::IAM::Role")).map((r) => r.Properties as any)
+      .find((r) => r.RoleName === "hamh-direct-control-api");
+    const stmts = role.Policies.flatMap((p: any) => p.PolicyDocument.Statement);
+    expect(stmts.find((x: any) => x.Sid === "DeployLockParameter")).toEqual({
+      Sid: "DeployLockParameter", Effect: "Allow", Action: ["ssm:GetParameter"],
+      Resource: `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/hamh/direct/deploy-lock`,
+    });
+    // It is the parameter control-api reads (`{DEPLOYMENT_PARAMETER_PREFIX}/deploy-lock`) and the one the deploy writes (scripts/lib/deploy.py LOCK_PARAM).
+    const fn = Object.values(resourcesOf(t, "AWS::Lambda::Function")).map((r) => r.Properties as any).find((f) => f.FunctionName === "hamh-direct-control-api");
+    expect(`${fn.Environment.Variables.DEPLOYMENT_PARAMETER_PREFIX}/deploy-lock`).toBe("/hamh/direct/deploy-lock");
+    const ssm = stmts.filter((x: any) => JSON.stringify(x.Action).includes("ssm:"));
+    for (const s of ssm) {
+      expect([s.Action].flat().filter((a: string) => a !== "ssm:GetParameter" && a !== "ssm:GetParameters"), s.Sid).toEqual([]);
+      expect(JSON.stringify(s.Resource), s.Sid).not.toContain("*");
     }
   });
 
@@ -345,7 +370,7 @@ describe("control stack", () => {
       Resource: `${bucket}/runs/*/agents/direct/turns/1/transcript/*`,
     });
     // The follow-up run's listing has its own test below; this one pins the transcript's.
-    const list = stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket") && x.Sid !== "ListDeliveredHead");
+    const list = stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket") && !["ListDeliveredHead", "ListSnapshot"].includes(x.Sid));
     expect(list).toEqual([{
       Sid: "ListTranscriptPrefix", Effect: "Allow", Action: ["s3:ListBucket"], Resource: bucket,
       Condition: { StringLike: { "s3:prefix": ["runs/*/agents/direct/turns/1/transcript/*"] } },
@@ -353,9 +378,9 @@ describe("control stack", () => {
     // The role holds no S3 write, no delete, no version read and no other bucket-wide grant.
     const s3 = stmts.filter((x: any) => JSON.stringify(x.Action ?? "").includes("s3:"));
     const actions = s3.flatMap((x: any) => [x.Action].flat()).sort();
-    // The presign statement, this one, the snapshot download, the read of a stored request and the request upload; two
-    // ListBucket, the transcript's and the follow-up run's.
-    expect(actions).toEqual(["s3:GetObject", "s3:GetObject", "s3:GetObject", "s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucket", "s3:PutObject"]);
+    // The presign statement, this one, the snapshot download, the read of a stored request and the request upload; three
+    // ListBucket, the transcript's, the follow-up run's and the snapshot's.
+    expect(actions).toEqual(["s3:GetObject", "s3:GetObject", "s3:GetObject", "s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucket", "s3:ListBucket", "s3:PutObject"]);
     expect(stmts.find((x: any) => [x.Action].flat().includes("s3:PutObject")).Resource).toBe(`${bucket}/runs/*/input/request.json`);
     // Version reads belong to the snapshot download alone; nothing else in S3 may delete, read versions, list versions or touch the bucket.
     for (const x of s3.filter((y: any) => y.Sid !== "SnapshotDownload")) {
@@ -377,9 +402,33 @@ describe("control stack", () => {
     // The bucket itself (ListBucket is a bucket-level action), narrowed by the prefix the listing carries.
     expect(list.Resource).toBe(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}`);
     expect(list.Condition).toEqual({ StringLike: { "s3:prefix": ["runs/*/deliverable/verified.bundle"] } });
-    // The only other listing is the transcript route's (its own test above), and none reads the hidden tests.
-    expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort()).toEqual(["ListDeliveredHead", "ListTranscriptPrefix"]);
+    // The other listings are the transcript route's and the snapshot route's (each has its own test), and none reads the hidden tests.
+    expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort()).toEqual(["ListDeliveredHead", "ListSnapshot", "ListTranscriptPrefix"]);
     expect(JSON.stringify(list)).not.toMatch(/hidden|agents/);
+  });
+
+  // The snapshot route asks whether a copy of a run's work exists by a listing whose prefix is the key itself, for the reason
+  // ListDeliveredHead exists: a GET of an absent key is 403 for a role that may not list the bucket, so a run without a copy, and a run whose
+  // newest session has saved none yet, would answer 503 and never "no copy". The role may list the prefixes of exactly the keys it may read.
+  test("b823 control-api may list the bucket by the exact keys of a snapshot, so a run without a copy is not an outage", () => {
+    const role = Object.values(resourcesOf(t, "AWS::IAM::Role")).map((r) => r.Properties as any)
+      .find((r) => r.RoleName === "hamh-direct-control-api");
+    const stmts = role.Policies.flatMap((p: any) => p.PolicyDocument.Statement);
+    const list = stmts.find((x: any) => x.Sid === "ListSnapshot");
+    expect(list, "the statement exists").toBeDefined();
+    expect(list.Effect).toBe("Allow");
+    expect([list.Action].flat()).toEqual(["s3:ListBucket"]);
+    expect(list.Resource).toBe(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}`);
+    // The keys the role may read (SnapshotDownload), as listing prefixes: nothing else under agents/ becomes listable.
+    const read = stmts.find((x: any) => x.Sid === "SnapshotDownload");
+    const keys = [read.Resource].flat().map((r: string) => r.replace(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/`, "")).sort();
+    expect(keys).toHaveLength(6);
+    expect([...list.Condition.StringLike["s3:prefix"]].sort()).toEqual(keys);
+    expect(Object.keys(list.Condition)).toEqual(["StringLike"]);
+    expect(JSON.stringify(list)).not.toMatch(/agents\/\*|turns\/\*|\/hidden|transcript|summary/);
+    // Three listings in all, each by the keys of one route.
+    expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort())
+      .toEqual(["ListDeliveredHead", "ListSnapshot", "ListTranscriptPrefix"]);
   });
 
   // `POST /v1/runs/{runId}/retry` starts a blocked run again with the request it was started with, so the role reads the stored request
@@ -426,9 +475,9 @@ describe("control stack", () => {
     ]);
     expect(snap.Condition).toBeUndefined();
     expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:GetObjectVersion")).map((x: any) => x.Sid)).toEqual(["SnapshotDownload"]);
-    // The only listings are the transcript route's (inside the transcript prefix) and the follow-up run's (the exact key of a delivered head); each has
-    // its own test.
-    expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort()).toEqual(["ListDeliveredHead", "ListTranscriptPrefix"]);
+    // The listings are the transcript route's (inside the transcript prefix), the follow-up run's (the exact key of a delivered head) and this route's
+    // own; each has its own test.
+    expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort()).toEqual(["ListDeliveredHead", "ListSnapshot", "ListTranscriptPrefix"]);
     expect(JSON.stringify(snap)).not.toMatch(/agents\/\*|turns\/\*|\/hidden/);
   });
 
@@ -441,7 +490,7 @@ describe("control stack", () => {
       .find((r) => r.RoleName === "hamh-direct-control-api");
     const stmts = role.Policies.flatMap((p: any) => p.PolicyDocument.Statement);
     expect(stmts.map((x: any) => x.Sid).sort()).toEqual([
-      "CancelRun", "DataKeyThroughDynamoDbAndS3", "DeploymentParameters", "HarnessTable", "InstancesRuntimeArnParameter", "ListDeliveredHead", "ListTranscriptPrefix", "OwnLogs",
+      "CancelRun", "DataKeyThroughDynamoDbAndS3", "DeployLockParameter", "DeploymentParameters", "HarnessTable", "InstancesRuntimeArnParameter", "ListDeliveredHead", "ListSnapshot", "ListTranscriptPrefix", "OwnLogs",
       "PresignArtifacts", "ReadRunRequests", "ReadTranscriptChunks", "RepositoryAllowlist", "RouteHealthRead", "RouteHealthReset", "RunControl", "RunIndex", "RunRequests",
       "RunsByOwner", "SnapshotDownload", "StartRun", "Tracing", "VerifyRouteLadder",
     ]);

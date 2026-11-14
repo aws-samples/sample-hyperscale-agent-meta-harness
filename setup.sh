@@ -57,6 +57,8 @@ KEEP_RUNNER=0
 ACK_COSTS=0
 ACK_TEARDOWN=0
 ALLOW_ACTIVE_RUNS=0
+WAIT_FOR_RUNS=""
+WAIT_FOR_RUNS_SET=0
 FORCE_DEPLOY=0
 CHANGE_OPERATOR=0
 PREFLIGHT_ONLY=0
@@ -305,6 +307,8 @@ Later life of the system (they read or change this deployment only; --profile, -
   --update        build and deploy a revision of this clone (HEAD, or the full commit id of --revision).
                   Active runs stop ./setup.sh --update with exit 7 before anything is installed or built.
                   --allow-active-runs skips that check; the build then refuses only an update that changes the worker runtime.
+                  --wait-for-runs MINUTES (1 to 1440) waits for the active runs to end instead. The stage starts no new runs meanwhile.
+                  At the limit the update stops with exit 7, and nothing was deployed or installed. No run is cancelled.
                   An update takes about 20 to 25 minutes when it reuses the Cline binary, and about 21 to 27 minutes more when it rebuilds it.
   --revision ID        the full 40-digit commit id to deploy with --update (it must be in this clone). An update to a commit older than the one the stage runs
                        stops with exit 7 unless --revision names it; a commit whose setup files differ from this clone's stops with exit 2 (run its own setup.sh).
@@ -394,6 +398,7 @@ set_opt() { # option value
     --account-id) ACCOUNT_ID_OPT=$2; ACCOUNT_ID_SET=1 ;;
     --revision) REVISION=$2 ;;
     --only) TEARDOWN_ONLY=$2 ;;
+    --wait-for-runs) WAIT_FOR_RUNS=$2; WAIT_FOR_RUNS_SET=1 ;;
     --network-wait-minutes) NETWORK_WAIT_OPT=$2; NETWORK_WAIT_SET=1 ;;
     --invocation-logging) INV_LOGGING=$2; FULL_ONLY=1; FULL_VIA=${FULL_VIA:-$1} ;;
     --repo-name) REPO_NAMES=${REPO_NAMES:+$REPO_NAMES,}$2; REPO_NAMES_SET=1; FULL_ONLY=1; FULL_VIA=${FULL_VIA:-$1} ;;
@@ -431,13 +436,13 @@ while [ $# -gt 0 ]; do
     --force-deploy) FORCE_DEPLOY=1 ;;
     --change-operator) CHANGE_OPERATOR=1 ;;
     --preflight-only) PREFLIGHT_ONLY=1; FULL_ONLY=1; FULL_VIA=${FULL_VIA:-$1} ;;
-    --prefix|--endpoint|--profile|--region|--default-repo|--from|--sha256|--build-on|--stage|--azs|--account-id|--revision|--only|--invocation-logging|--repo-name|--network-wait-minutes)
+    --prefix|--endpoint|--profile|--region|--default-repo|--from|--sha256|--build-on|--stage|--azs|--account-id|--revision|--only|--invocation-logging|--repo-name|--network-wait-minutes|--wait-for-runs)
       [ $# -ge 2 ] || usage_die "$1 needs a value"
       case $2 in --*) usage_die "$1 needs a value, not the option $2" ;; esac
       set_opt "$1" "$2"
       shift
       ;;
-    --prefix=*|--endpoint=*|--profile=*|--region=*|--default-repo=*|--from=*|--sha256=*|--build-on=*|--stage=*|--azs=*|--account-id=*|--revision=*|--only=*|--invocation-logging=*|--repo-name=*|--network-wait-minutes=*)
+    --prefix=*|--endpoint=*|--profile=*|--region=*|--default-repo=*|--from=*|--sha256=*|--build-on=*|--stage=*|--azs=*|--account-id=*|--revision=*|--only=*|--invocation-logging=*|--repo-name=*|--network-wait-minutes=*|--wait-for-runs=*)
       set_opt "${1%%=*}" "${1#*=}" ;;
     *) usage_die "unknown option: $1" ;;
   esac
@@ -504,6 +509,19 @@ if [ -n "$TEARDOWN_ONLY" ]; then
 fi
 if [ "$ALLOW_ACTIVE_RUNS" = 1 ] && [ "$CMD" != update ]; then
   usage_die "--allow-active-runs goes with --update"
+fi
+# --wait-for-runs MINUTES: an update waits for the runs of every user of the stage to end, up to that many minutes (full_runs_gate of scripts/setup/full.sh).
+if [ "$WAIT_FOR_RUNS_SET" = 1 ]; then
+  [ "$CMD" = update ] || usage_die "--wait-for-runs goes with --update"
+  [ "$ALLOW_ACTIVE_RUNS" != 1 ] || usage_die "give --wait-for-runs or --allow-active-runs, not both: the first waits for the active runs to end, the second updates while they run"
+  case $WAIT_FOR_RUNS in
+    ''|*[!0-9]*|???????*) usage_die "--wait-for-runs must be a whole number of minutes from 1 to 1440 (got: $WAIT_FOR_RUNS)" ;;
+  esac
+  # 10#: "08" is eight minutes, not an octal error
+  if [ "$((10#$WAIT_FOR_RUNS))" -lt 1 ] || [ "$((10#$WAIT_FOR_RUNS))" -gt 1440 ]; then
+    usage_die "--wait-for-runs must be a whole number of minutes from 1 to 1440 (got: $WAIT_FOR_RUNS)"
+  fi
+  WAIT_FOR_RUNS=$((10#$WAIT_FOR_RUNS))
 fi
 if [ "$FORCE_DEPLOY" = 1 ] && [ "$CMD" != update ]; then
   usage_die "--force-deploy goes with --update"

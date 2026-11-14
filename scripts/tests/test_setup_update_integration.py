@@ -73,7 +73,11 @@ class IntBase(ScenarioBase, RunnerUpdateBase):
         return out
 
     def deploy_runs(self) -> int:
-        return len(self.log_lines("deploy.log"))
+        """The deploys of the local stand-in: the release label step of a client-only update is no deploy and is counted by `relabel_runs`."""
+        return len([ln for ln in self.log_lines("deploy.log") if "--relabel" not in ln])
+
+    def relabel_runs(self) -> int:
+        return len([ln for ln in self.log_lines("deploy.log") if "--relabel" in ln])
 
 
 class SettingsChainCase(IntBase):
@@ -315,7 +319,8 @@ class LocalSameDeploymentCase(IntBase):
         p = self.run_local()
         self.assertEqual(p.returncode, 0, self.out(p))
         self.assertIn("the stage already runs this commit", p.stdout + p.stderr)
-        self.assertEqual(self.deploy_runs(), runs, "TRIGGER PRESENT: the record names this commit and this account file; scripts/deploy.sh is not run again")
+        self.assertEqual(self.deploy_runs(), runs, "TRIGGER PRESENT: the record names this commit and this account file; scripts/deploy.sh deploys nothing again")
+        self.assertEqual(self.relabel_runs(), 1, "it is run once for the release label of the commit, which writes nothing when the label is right")
         self.assertGreater(len(self.log_lines("cargo.log")), cargo, "the client is still built here")
         # --force-deploy deploys anyway: the active runs stop it, and without them the deploy runs
         q = self.run_local("--force-deploy")

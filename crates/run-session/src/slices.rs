@@ -423,29 +423,32 @@ pub fn brief_of(message: &str) -> Option<String> {
     Some(text[start..].trim_start().to_string())
 }
 
-/// The last snapshot a slice saved: its head, when `snapshot.json` and `snapshot.bundle` both exist.
+/// The last snapshot a slice saved: the commit its bundle names; the record's commit only for a bundle whose header cannot be read.
 async fn snapshot_of<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<Restore>> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Json {
         head_sha: String,
     }
-    let Some(bytes) = blobs.get(&s3::snapshot_json_key_t(run_id, n)).await? else {
-        return Ok(None);
+    let record = match blobs.get(&s3::snapshot_json_key_t(run_id, n)).await? {
+        Some(bytes) => serde_json::from_slice::<Json>(&bytes)
+            .ok()
+            .map(|snap| snap.head_sha)
+            .filter(|head| sha_ok(head)),
+        None => None,
     };
-    let Ok(snap) = serde_json::from_slice::<Json>(&bytes) else {
-        return Ok(None);
+    // The commit the bundle itself names. A session stopped between its two uploads leaves the record of the copy before, and a
+    // repository restored from the bundle is never at that commit.
+    let head = match crate::plan_delivery::bundle_says(blobs, run_id, n).await? {
+        crate::plan_delivery::BundleSays::Nothing => None,
+        crate::plan_delivery::BundleSays::Commit(head) => Some(head),
+        crate::plan_delivery::BundleSays::Unread => record,
     };
-    let key = s3::snapshot_bundle_key_t(run_id, n);
-    if sha_ok(&snap.head_sha) && blobs.exists(&key).await? {
-        Ok(Some(Restore {
-            kind: RestoreKind::Snapshot,
-            key,
-            head: Some(snap.head_sha),
-        }))
-    } else {
-        Ok(None)
-    }
+    Ok(head.map(|head| Restore {
+        kind: RestoreKind::Snapshot,
+        key: s3::snapshot_bundle_key_t(run_id, n),
+        head: Some(head),
+    }))
 }
 
 /// The final bundle slice n reported, when it is the slice's own key and exists.

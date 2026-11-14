@@ -6,6 +6,7 @@
 //! a time, each line bounded, and a file that shrank or changed identity is "damaged" (the supervisor then falls back to the ACP stream, the
 //! silence watchdog and the deadline). It steers and measures the loop; the done claim rests on the ACP stream, which the model cannot write.
 
+use harness_protocol::common::Usage;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use serde_json::Value;
 use std::os::unix::fs::FileExt;
@@ -19,6 +20,9 @@ pub const MAX_LINE: usize = 64 * 1024;
 pub const MAX_TEXT_CHARS: usize = 2000;
 /// The most characters of a blocked line shown in words a person reads.
 pub const SHOWN_CHARS: usize = 120;
+/// The most tokens of one kind one end line is believed to count: ten thousand calls of a one-million-token context. The file is the
+/// engine user's to write, so a larger number is not taken.
+pub const MAX_RUN_TOKENS: u64 = 10_000_000_000;
 
 /// How one engine run ended, from its end line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +42,54 @@ pub struct RoundEnd {
 pub enum RoundLine {
     Start { n: u64 },
     End(RoundEnd),
+}
+
+/// The tokens one engine run spent, from its end line: when the run ended, by the engine's clock, in milliseconds since the epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunUsage {
+    pub t_ms: u64,
+    /// Input without the cache tokens, as the run's usage is kept everywhere else.
+    pub usage: Usage,
+}
+
+/// The tokens of an end line: its time `t` and the four counts the observer writes as the engine counts a run (`inputTokens` with
+/// both cache counts in it, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`). `None` for a start line, a line without the time or
+/// without all four counts (an observer older than the cache counts, whose input could not be priced), a count that is not a whole number
+/// or is larger than [`MAX_RUN_TOKENS`], and cache counts larger than the input they are part of.
+pub fn parse_usage(line: &str) -> Option<RunUsage> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("ev")?.as_str()? != "end" {
+        return None;
+    }
+    let count = |k: &str| -> Option<u64> { v.get(k)?.as_u64().filter(|n| *n <= MAX_RUN_TOKENS) };
+    let read = count("cacheReadTokens")?;
+    let write = count("cacheWriteTokens")?;
+    let input = count("inputTokens")?
+        .checked_sub(read)?
+        .checked_sub(write)?;
+    Some(RunUsage {
+        t_ms: v.get("t")?.as_u64()?,
+        usage: Usage {
+            input_tokens: input,
+            output_tokens: count("outputTokens")?,
+            cache_read_input_tokens: read,
+            cache_write_input_tokens: write,
+        },
+    })
+}
+
+/// Reads the log to its end, at most `max_reads` reads, and hands each read to `each`. It stops
+/// when a read moved nothing or found the file damaged: a read that only skipped part of an overlong line returns no line and still moved.
+pub fn read_to_end(reader: &mut RoundsReader, max_reads: usize, mut each: impl FnMut(Polled)) {
+    for _ in 0..max_reads {
+        let before = reader.offset();
+        let polled = reader.poll();
+        let stop = polled.damaged || reader.offset() == before;
+        each(polled);
+        if stop {
+            break;
+        }
+    }
 }
 
 /// One line of the log, or `None` for anything that is not a start or an end line.
@@ -102,6 +154,8 @@ pub struct Polled {
     /// The file exists and is a regular file that was not reached through a link.
     pub present: bool,
     pub lines: Vec<RoundLine>,
+    /// The tokens of the end lines among them that carry counts ([`parse_usage`]), in the order read.
+    pub usage: Vec<RunUsage>,
     /// Lines in this read that were not round lines or were too long.
     pub bad_lines: u32,
     /// The file shrank or is another file than the one first read: nothing it says is trusted from then on.
@@ -136,6 +190,11 @@ impl RoundsReader {
 
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// How far the file has been read, in bytes.
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 
     /// The file is there and is a regular file reached without a link (it has not been read).
@@ -225,7 +284,14 @@ impl RoundsReader {
                 continue;
             }
             match parse_line(&text) {
-                Some(l) => out.lines.push(l),
+                Some(l) => {
+                    if matches!(l, RoundLine::End(_))
+                        && let Some(u) = parse_usage(&text)
+                    {
+                        out.usage.push(u);
+                    }
+                    out.lines.push(l);
+                }
                 None => out.bad_lines += 1,
             }
         }

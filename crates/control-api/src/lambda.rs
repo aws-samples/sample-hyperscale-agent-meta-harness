@@ -1,7 +1,7 @@
 //! API Gateway REST (v1) proxy event <-> handler request and response.
 
-use crate::handler::{V1Request, V1Response};
-use crate::version::{LEGACY_VERSION_HEADER, VERSION, VERSION_HEADER};
+use crate::handler::{Blobs, Deps, Execution, Store, V1Request, V1Response, handle_logged};
+use crate::version::{LEGACY_VERSION_HEADER, LabelStore, ReleaseLabel, VERSION, VERSION_HEADER};
 use lambda_http::request::RequestContext;
 use lambda_http::{Body, Request, RequestExt, Response};
 use std::collections::BTreeMap;
@@ -60,17 +60,49 @@ pub fn to_v1(req: &Request) -> V1Request {
     }
 }
 
-/// The answer for a handler's `V1Response`. This is the one place that builds a Lambda response, so every answer (2xx, 4xx and 5xx) carries the
-/// backend's version in `x-hamh-backend-version` and, for the compatibility window, in its earlier name ([`LEGACY_VERSION_HEADER`]).
+/// One request of the Lambda, from the API Gateway event to the answer: the handler, the access line and one line per diagnostic, and the answer with the version the stage
+/// reports now. `main.rs`
+/// builds the dependencies and calls this and nothing else, so the tests drive the path the Lambda runs, with a stand-in store and a scripted parameter store.
+pub async fn serve<S: Store, B: Blobs, E: Execution, L: LabelStore>(
+    req: &Request,
+    deps: &Deps<S, B, E>,
+    release: &ReleaseLabel<L>,
+) -> Result<Response<Body>, lambda_http::http::Error> {
+    let v1 = to_v1(req);
+    let line_req = v1.clone();
+    let (out, diagnostics) = handle_logged(v1, deps).await;
+    for line in log_lines(&line_req, out.status, &diagnostics) {
+        println!("{line}");
+    }
+    let version = release.current().await;
+    to_response_labelled(out, &version)
+}
+
+/// The answer for a handler's `V1Response` with the compiled-in version. See [`to_response_labelled`], which the Lambda uses.
 pub fn to_response(out: V1Response) -> Result<Response<Body>, lambda_http::http::Error> {
-    Response::builder()
+    to_response_labelled(out, VERSION)
+}
+
+/// The answer for a handler's `V1Response`. This is the one place that builds a Lambda response, so every answer (2xx, 4xx and 5xx) carries the
+/// backend's version in `x-hamh-backend-version` and, for the compatibility window, in its earlier name ([`LEGACY_VERSION_HEADER`]). `version` is the
+/// version to report: `ReleaseLabel::current`, which is the compiled version unless the stage holds a newer release label for the source tree it runs.
+/// An answer with `retry_after_s` carries `Retry-After` too.
+pub fn to_response_labelled(
+    out: V1Response,
+    version: &str,
+) -> Result<Response<Body>, lambda_http::http::Error> {
+    let mut answer = Response::builder()
         .status(out.status)
         .header("content-type", "application/json")
         // A body may hold a presigned URL, a bearer capability: no cache keeps an answer.
         .header("cache-control", "no-store")
-        .header(VERSION_HEADER, VERSION)
-        .header(LEGACY_VERSION_HEADER, VERSION)
-        .body(Body::Text(out.body))
+        .header(VERSION_HEADER, version)
+        .header(LEGACY_VERSION_HEADER, version);
+    // The refusal of a start while the stage is being updated names a pause before the next try.
+    if let Some(seconds) = out.retry_after_s {
+        answer = answer.header("retry-after", seconds.to_string());
+    }
+    answer.body(Body::Text(out.body))
 }
 
 /// One JSON access line per request: caller, source IP (`ip`, null when the event has none),

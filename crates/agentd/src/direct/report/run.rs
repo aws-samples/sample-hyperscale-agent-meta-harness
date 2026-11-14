@@ -14,12 +14,13 @@
 
 use crate::direct::report::command::{self, Parsed, UNREADABLE};
 use crate::direct::report::parse::{OutputScan, last_bytes};
-use crate::direct::report::plan::{PlannedStep, first_words, uses_container_tools};
+use crate::direct::report::plan::{PlannedStep, first_words, pytest_words, uses_container_tools};
 use crate::engine::{LaunchSpec, command_argv};
 use harness_core::refusal::redact;
 use harness_protocol::direct::{
-    NEEDS_PREFIX, NOT_RUN_MARK, NOT_RUN_PREFIX, PLAN_NOTE_COMMAND, PLAN_NOTE_PREFIX,
-    STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep, TestStepRole, plan_note_line,
+    NEEDS_PREFIX, NOT_AS_WRITTEN, NOT_RUN_MARK, NOT_RUN_PREFIX, PLAN_NOTE_COMMAND,
+    PLAN_NOTE_PREFIX, SKIPPED_FOR_SETUP, STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep,
+    TestStepRole, plan_note_line,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -257,6 +258,32 @@ fn program_missing_here<'a>(
         .then_some(program)
 }
 
+/// The word of a pytest command that explains its exit code as a usage error of the runner and not as a result of the tests: pytest
+/// exited 4 (not at its limit) and said it found no file or directory for a word, that word is one of the command's own path words
+/// ([`pytest_words`]), and nothing of that name (the part before `::`) is in the clean checkout, which agentd looks at itself. The output only
+/// names the word: a repository that prints the line for a path it has stays a failure. The word is cut to 60 characters, with a backtick of its
+/// own as an apostrophe.
+fn not_as_written_here(
+    command: &str,
+    cwd: &Path,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    missing: Option<&str>,
+) -> Option<String> {
+    let word = missing?;
+    if timed_out || exit_code != Some(4) {
+        return None;
+    }
+    let path = word.split("::").next().unwrap_or(word);
+    let named = pytest_words(command)?.iter().any(|w| w == word);
+    (named && !path.is_empty() && !cwd.join(path).exists()).then(|| {
+        word.chars()
+            .take(60)
+            .map(|c| if c == '`' { '\'' } else { c })
+            .collect()
+    })
+}
+
 /// The line that explains a failed step as a full disk: the step ended with a code other than 0 (not at its limit), the output said the disk is full,
 /// and the runner did not report failing tests of its own (counts that show a failure leave the step red; counts of tests that passed before the
 /// disk filled go with the step, they measure an incomplete run). The repository's output can print the words; the line is shown with the step, so
@@ -471,8 +498,9 @@ pub fn add_runtime_block(step: &mut TestStep, socket: Option<&str>, lines: &[Str
     step.output_truncated |= cut;
 }
 
-/// Marks a step that ran and failed for want of a container runtime, or of the program it starts, as not run: the reason first, then what it printed (the end of it, so the
-/// whole stays within `cap` bytes). The exit code stays as the attempt gave it; the counts go, they measure nothing.
+/// Marks a step that ran and failed for want of a container runtime, or of the program it starts, or because its runner refused the command as
+/// written, as not run: the reason first, then what it printed (the end of it, so the whole stays within `cap` bytes). The exit code stays
+/// as the attempt gave it; the counts go, they measure nothing.
 pub fn mark_not_run(result: &mut TestStep, reason: &str, cap: usize) {
     let head = format!("{NOT_RUN_PREFIX}{reason}\n");
     let room = cap.saturating_sub(head.len());
@@ -639,7 +667,7 @@ pub fn skipped_for_setup(setup: &TestStep) -> String {
     } else {
         "failed"
     };
-    format!("skipped: the setup step `{command}` {how}")
+    format!("{SKIPPED_FOR_SETUP}`{command}` {how}")
 }
 
 /// A step whose command could not be read: marked not run with [`UNREADABLE`] and the detail on the second line. It has no exit code, no counts
@@ -863,6 +891,7 @@ pub async fn run_step_scanned(
     let missing_runtime = scanned.container_runtime_missing;
     let missing_program = scanned.missing_program.clone();
     let out_of_disk = scanned.out_of_disk.clone();
+    let pytest_not_found = scanned.pytest_not_found.clone();
     let refused_ports = scanned.refused_ports.clone();
     let runtime_lines = scanned.runtime_lines.clone();
     result.output_tail = redact(&scanned.tail);
@@ -908,6 +937,22 @@ pub async fn run_step_scanned(
         mark_not_run(
             &mut result,
             &format!("{OUT_OF_DISK}: {}", redact(line)),
+            tail_bytes,
+        );
+    } else if let Some(word) = not_as_written_here(
+        &step.command,
+        cwd,
+        result.exit_code,
+        timed_out,
+        pytest_not_found.as_deref(),
+    ) {
+        // The command the log wrote names a path the clean checkout does not have: pytest refused it before any test, so the step is
+        // no result of the repository's tests, and the reason says what was missing in plain words.
+        mark_not_run(
+            &mut result,
+            &redact(&format!(
+                "{NOT_AS_WRITTEN}: the clean checkout has no file or directory `{word}`"
+            )),
             tail_bytes,
         );
     }

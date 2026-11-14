@@ -1076,7 +1076,8 @@ async fn b821_the_snapshot_the_reason_names_is_the_one_the_pull_command_finds() 
         "{reason}"
     );
 
-    // The newest record decides, as it does for the command: the second session's record has no bundle.
+    // The newest session that has a bundle decides, as it does for the command: the second session's record has no bundle, so
+    // the first session's copy is the one `ham pull --snapshot` downloads.
     let mem = seeded(repo_target());
     in_slice(&mem, 2);
     mem.put_snapshot_t(1, HEAD);
@@ -1088,7 +1089,7 @@ async fn b821_the_snapshot_the_reason_names_is_the_one_the_pull_command_finds() 
         .remove(&s3::snapshot_bundle_key_t(RUN, 2));
     let reason = blocked_reason(&mem, engine_config()).await;
     assert!(
-        reason.ends_with(&format!(": refused. {NO_SNAPSHOT}")),
+        reason.ends_with(&format!(": refused. {}", snapshot_words())),
         "{reason}"
     );
 
@@ -1173,8 +1174,9 @@ async fn b821_the_blocked_reason_for_a_secret_says_that_a_follow_up_is_refused_t
 }
 
 #[tokio::test]
-async fn b821_a_blocked_reason_without_a_protected_path_or_a_secret_is_the_one_it_was() {
-    // A snapshot exists, and the reason of another refusal still reads as it did.
+async fn b821_a_blocked_reason_without_a_protected_path_or_a_secret_keeps_its_words() {
+    // Another refusal reads as it did and names no follow-up. A run that saved a snapshot now ends every blocked reason with the
+    // command that downloads it, so the words of the refusal are followed by the snapshot sentence.
     let mem = seeded(repo_target());
     mem.put_snapshot(HEAD);
     let reason = blocked_reason(
@@ -1187,11 +1189,29 @@ async fn b821_a_blocked_reason_without_a_protected_path_or_a_secret_is_the_one_i
     .await;
     assert_eq!(
         reason,
-        "bundle validation failed: path-glob x/y: x/y is outside the allowed paths; bundle-size: the bundle is 3 bytes; the limit is 2 bytes"
+        format!(
+            "bundle validation failed: path-glob x/y: x/y is outside the allowed paths; bundle-size: the bundle is 3 bytes; the limit is 2 bytes. {}",
+            snapshot_words()
+        )
     );
-    // A run that was blocked before any validation.
+    assert!(!reason.contains("ham continue"), "{reason}");
+    // Without a snapshot the reason is the one it was: there is no command to name.
     let mem = seeded(repo_target());
-    mem.put_snapshot(HEAD);
+    let reason = blocked_reason(
+        &mem,
+        json!([violation(
+            "path-glob",
+            "x/y",
+            "x/y is outside the allowed paths"
+        )]),
+    )
+    .await;
+    assert_eq!(
+        reason,
+        "bundle validation failed: path-glob x/y: x/y is outside the allowed paths"
+    );
+    // A run that was blocked before any validation and saved nothing.
+    let mem = seeded(repo_target());
     let out = call(
         &mem,
         json!({"op": "mark-blocked", "runId": RUN, "state": {"runId": RUN,

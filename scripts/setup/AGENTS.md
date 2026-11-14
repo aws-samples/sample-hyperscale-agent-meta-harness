@@ -81,8 +81,8 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
 - Same deployment: `rn_same_deployment` reads the record `/hamh/<stage>/settings`; with `status=deployed`, this commit (or this source tree, `rn_target_tree`, which is `digests.source_tree` made
   with git), the account file of this update, every explicit setting at its recorded value and every stack complete, `full_run` (`rn_same_deployment_check`, called before `pf_commit_order`) skips the active-runs stop and the build
   runs with `SETUP_CLIENT_ONLY=1`: `runner-build.sh` checks the account (deployed tree, account file, stacks) and skips `deploy`; `gomod` and `scanner-rules` run as always, leave a current
-  store and version as they are and finish what an earlier build left. The local route has no build, so `rn_same_deployment` itself reads `/hamh/<stage>/deployed-source-tree` and
-  `/hamh/<stage>/deployment-config-digest` there and deploys when either is not the record's `tree=` or `accounts=` (`rn_live_matches`; Addendum 4, A4.9). `SETUP_FORCE_DEPLOY=1` deploys anyway.
+  store and version as they are and finish what an earlier build left. Before it skips `deploy`, `phase_client_only` writes the release label of this commit, and `rn_label_plan` puts `label: the backend reports vA and will report vB` (or `keeps it`) in the plan. The local route has no build, so `rn_same_deployment` itself reads `/hamh/<stage>/deployed-source-tree` and
+  `/hamh/<stage>/deployment-config-digest` there and deploys when either is not the record's `tree=` or `accounts=` (`rn_live_matches`; Addendum 4, A4.9). `SETUP_FORCE_DEPLOY=1` deploys anyway. The local route's client-only update calls `scripts/deploy.sh --stage <s> --relabel` itself (`full_local_flow`; exit 5 on a failure, `The stage is unchanged.` on a refusal).
 - A runner stack in `DELETE_FAILED` is named before the confirmation with what removes it (`rn_runner_check`, exit 7); the sentence about a runner that is still installed names
   `./setup.sh --full` on a deployed stage, which builds nothing and only removes it (`rn_standing_text`).
 - Platforms: `darwin-arm64`, `linux-amd64`, `linux-arm64`. The generated account file names the profile `hamh-setup` in the runner route (the runner writes a profile of that name for the
@@ -197,6 +197,42 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
     a `CDKToolkit` stack that exists without the bootstrap parameter, an update to an older commit than the stage's record names, an update whose VERSION is not higher than that of a recorded commit the clone does not hold, an update by another operator without `--change-operator`, a stage whose network is not in the zone its record names, an exported setting that would remove the Instances part
   - 8 cleanup is incomplete: a stack of the stage that stays, retained resources, a runner that could not be removed, a teardown step that failed, something of the stage that the final
     read still finds, or a read that failed (the zero line then is not printed and the read is named)
+- New runs and an update.
+  The stage's API service starts no new runs while a deploy holds the deploy lock. So an update that deploys
+  looks for the runs of every user twice: early, before the question (`pf_active_runs_check`: exit 7 at once), and again after it has taken the lock, on both routes. The
+  second look comes after a pause (`HAMH_SETUP_RUN_SETTLE_SECONDS`, 45: longer than the 28-second limit of the API function, which a test holds) and is repeated every
+  `HAMH_SETUP_RUN_POLL_SECONDS` (30) until two looks in a row answer and show no run; then the lock is read back with this run's token. A run found there ends a plain update:
+  the lock is given back, exit 7, nothing installed. `--wait-for-runs MINUTES` (1 to 1440; with `--update` only and not with `--allow-active-runs`, else exit 2) waits
+  instead. The early look then only lists the runs for the plan. Each look that shows runs prints
+  `Waiting for N active run(s) to end: M min left. New runs are refused meanwhile. No run is cancelled.`, the lock is written again every
+  `HAMH_SETUP_LOCK_REFRESH_SECONDS`, and at the limit the lock is given back and the run ends with exit 7 and
+  `No deployment or client change was made. No run was cancelled.` Ctrl-C during the looks, or a closed terminal (HUP), gives the lock back and is exit 4. A look that fails
+  is never taken as "no run": three in a row are exit 6 (with the option they are made again until the limit). A read or a write of the lock that fails at a renewal of the wait
+  is said and made again at the next look (`full_gate_keep`, which moves `RN_LOCK_AT` only with a write that went through). A lock this run could not write for the 30
+  minutes ends the update with exit 6, because the stage has started runs again (`full_gate_closed`). Before the update goes on, a renewal that is due is made and the
+  lock is read back, three tries each (`full_gate_own`, then exit 6). Credentials that may
+  not list executions keep the warning of the early look, and the update goes on. The looks are not made for a full setup, for an update that builds only the client, with `--allow-active-runs`, or by a run that follows another setup's build.
+  Setup never cancels a run. `HAMH_SETUP_RUN_MINUTE_SECONDS` (60) is the length of a minute of the limit, for the tests.
+- `deploys=no`: the deploy lock carries this line while its holder changes nothing on the stage: an update that builds only the
+  client (`SETUP_CLIENT_ONLY`), the removal of a runner that was left (`rn_lease_take_soft`), and the time after the build has succeeded (the renewal after `rn_settle` in
+  `full_runner_flow`). The API service starts runs under such a lock. A lock without the line deploys. The line is never taken back: a run that adopts a lock or writes a
+  shared lock again keeps it (`rn_lock_adopt`, `rn_lock_sync`), and `deploy.py` refuses to deploy under it. `RN_LOCK_STALE_SECONDS` is read from
+  `scripts/lib/deploy-lock-stale-seconds.txt`, the file the API service embeds. The line is written as soon as CodeBuild says that the build has succeeded, before the
+  result is read (`rn_lock_open`, called by `full_runner_flow`), and a run that finishes from a build that succeeded writes it with its first write; `RN_LOCK_OPEN` is 1 while the lock in the
+  account says so as far as this run knows.
+- A lock that a run leaves or gives back.
+  The API service refuses new runs while a lock without `deploys=no` is there, so every end of a run says what became of
+  its lock. `rn_lease_release` keeps the outcome in `RN_RELEASE` (`released`, `shared`, `other`, `kept`, `none`) and returns 1 for `kept`: the read that checks the token,
+  or the delete, failed. "The deploy lock of the stage is released." is printed only for `released`. A lock that stays is named with the error, with "the stage starts no
+  new runs until 30 minutes after its last write", and with the way out (the same command again on this machine, or the delete command when no other setup or deploy of
+  the stage is running): as detail lines under the caller's message (`quiet`), else as warnings. The EXIT handler `rn_lock_on_exit`, installed when the lock is taken,
+  gives back a lock that records no build whichever way the run ends (a `setup_exit` before the build, a signal nothing handles, a second signal in the middle of a
+  release: `RN_LOCK_HELD` stays 1 until `rn_lease_release` knows its outcome); it leaves the lock when a build is
+  recorded, when a start-build call was under way (`RN_STARTING`, kept at 1 until `RN_LOCK_BUILD` is set) and while `scripts/deploy.sh` of the local route runs
+  (`RN_LOCK_BUSY`), and it never calls exit. A run that stops following its build (`rn_stopped_following`) says that the build keeps the stage closed by itself
+  (`renew_caller_lock` of `scripts/lib/deploy.py`) and when the stage starts runs again; the build that prints the bootstrap template is no build of the lock, so that
+  lock goes back. A read that fails after the build (`rn_read_failed`) says whether the lock that stays closes the stage, and a write of `deploys=no` that fails after the
+  build succeeded is a warning (`rn_lock_open`).
 - The state of the stage decides what a run does (`pf_stage`): `none`; `partial` (no control stack, or a stack that rolled back on its first create, `ROLLBACK_COMPLETE`, which holds
   nothing: the CDK deploy deletes it and makes it again (its `isCreationFailure` handling), and the plan says so; or every stack complete but no deploy record, `STAGE_UNFINISHED=1`: the
   first pass of the two-pass deploy leaves all nine stacks, and the SSM parameter `/hamh/<stage>/deployment-digest`, which `scripts/lib/deploy.py` writes after its last stack, the runtime checks and the
@@ -212,7 +248,8 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
   already points at the stage. The checked client also stays in `~/.config/<config dir>/setup/<account>/<region>/download/verified`; a run on a deployed stage that finds no client installed installs that
   copy again when it still hashes to its `SHA256SUMS` line (`full_reuse_client`; a copy of the operator tool that no longer matches its line stops the reuse), and a runner that an earlier run left behind is removed by the run that finds the stage deployed. An update of the commit the stage
   already runs installs that copy as well, with no lock, no runner and no build, when the receipt's `clientCommit` and `clientConfig` (written after the download) name this commit and
-  account file and the receipt does not say the client was installed. A client that was never downloaded (a second machine) is built again with `--update`, which installs the runner
+  account file and the receipt does not say the client was installed. While the update still has the release label to write
+  (`RN_LABEL_NEXT` is set and `RN_LABEL_KEEP` is not 1), the copy is not installed alone: the client-only build runs, because it writes the label. A client that was never downloaded (a second machine) is built again with `--update`, which installs the runner
   again for the client phase.
 - A runner that is left behind says so on every run (`rn_note_installed`, `--status`, `--doctor`): anyone who may start its builds acts with the authority of the CDK roles until the
   expiry it carries (`RN_EXPIRES`, read from the stack), after which its role assumes nothing. `--teardown` removes it with the caller's own credentials and never installs it again: the

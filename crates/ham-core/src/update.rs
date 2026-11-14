@@ -11,6 +11,10 @@ pub const DEFAULT_SOURCE: &str =
 /// The value of `update_source` that turns `ham update` off.
 pub const OFF: &str = "off";
 
+/// The `code` of the answer a stage gives a request that would start a run while the stage is being updated: HTTP 409 with the service's own
+/// sentence and a `Retry-After` header. The API service sends it and the client shows the sentence alone.
+pub const STAGE_UPDATING: &str = "stage-updating";
+
 /// Where the newest version comes from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {

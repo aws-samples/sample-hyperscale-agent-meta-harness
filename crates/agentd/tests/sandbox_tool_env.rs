@@ -209,6 +209,8 @@ async fn a_report_step_in_the_sandbox_gets_the_same_java_variables_for_its_own_f
         source: TestCommandSource::TestCommandFile,
         command: "echo \"opts=$JAVA_TOOL_OPTIONS gradle=$GRADLE_USER_HOME\"".to_string(),
         logged: None,
+        install: None,
+        fallback: None,
     };
     let done = run_step(&env, &step, &cwd, Duration::from_secs(30), 4096).await;
     assert_eq!(done.exit_code, Some(0), "{done:?}");

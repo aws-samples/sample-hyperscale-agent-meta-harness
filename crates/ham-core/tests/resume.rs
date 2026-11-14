@@ -265,3 +265,43 @@ fn b689_a_failed_resume_is_one_json_object_with_its_reason() {
         vec![json!({"runId": A, "result": "failed", "reason": "the service did not answer"})]
     );
 }
+
+/// The runs a `ham resume` report says started: what the terminal app reads from the child's answer to take the card of a resume that
+/// did not start away from a run whose resume started later.
+#[test]
+fn b832_the_runs_a_report_says_started_are_the_ones_whose_resume_started() {
+    let plan = resume::plan(&[
+        run(A, "paused", Some("follow_up"), None),
+        run(B, "stalled", Some("follow_up"), None),
+        run(C, "paused", Some("none"), None),
+    ]);
+    let outcomes = [
+        Outcome {
+            run_id: A.to_string(),
+            result: Ok(D.to_string()),
+        },
+        Outcome {
+            run_id: B.to_string(),
+            // A reason that holds the words of a start does not make the run one that started.
+            result: Err(format!(
+                "run {E}: follow-up run {D} started from the code it delivered"
+            )),
+        },
+    ];
+    let lines = resume::report_lines(&plan, &outcomes);
+    assert_eq!(resume::started_run_ids(&lines), vec![A.to_string()]);
+    // The same report as JSON lines.
+    let json: Vec<String> = resume::report_json(&plan, &outcomes)
+        .iter()
+        .map(Value::to_string)
+        .collect();
+    assert_eq!(resume::started_run_ids(&json), vec![A.to_string()]);
+    // Not a report: a dry run, a line of another command, a blank line, and the line of a line that only looks like one.
+    let other = [
+        format!("run {A}: would start a follow-up run"),
+        String::new(),
+        format!("run {A}: skipped: already continued by run {D}"),
+        format!("not started: run {A}: follow-up run {D} started from the code it delivered"),
+    ];
+    assert!(resume::started_run_ids(&other).is_empty(), "{other:?}");
+}

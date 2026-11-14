@@ -421,6 +421,9 @@ fn failed_validation(state: &Value) -> Option<&Value> {
 /// back. True whether the run saved no snapshot or its newest snapshot record has no bundle that can be read.
 const NO_SNAPSHOT_NOTE: &str = "The run has no snapshot to download.";
 
+/// The last sentence of a blocked reason when the copy of the session's end is the run's base: the engine changed no file.
+const NO_CHANGE_NOTE: &str = "The run changed no file, so there is no work to download.";
+
 /// What a refused secret means for a follow-up.
 const SECRET_FOLLOW_UP_NOTE: &str = "A follow-up of this run is refused for the same secret, which stays in its commits. Start a new run instead.";
 
@@ -486,7 +489,19 @@ enum SnapshotLookup {
 
 /// The sentences of [`way_back`], in the order a reader needs them: the follow-up that brings all of the work, what a secret means,
 /// then the snapshot `ham pull` finds, the fact that there is none, or that the bucket could not say.
-fn way_back_note(way: &WayBack, run_id: &str, snapshot: &SnapshotLookup) -> String {
+///
+/// Every blocked reason whose run saved a copy ends with the command that downloads it, whatever blocked the run (`way` is then the
+/// empty one and `refused` is false), so a refused or failed delivery never hides the work. The copy agentd saved when the engine had
+/// stopped holds the work as `engine` left it; a copy made while the run worked is named with its time, as before; a copy of the end that
+/// equals the run's base says that no file changed. That there is no snapshot is said only for the refusals (`refused`), whose
+/// reason names ways back; any other reason of a run without a copy says by itself why there is no work.
+fn way_back_note(
+    way: &WayBack,
+    run_id: &str,
+    snapshot: &SnapshotLookup,
+    engine: &str,
+    refused: bool,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if way.zip_follow_up {
         let allow = if way.allow_third_party {
@@ -502,6 +517,12 @@ fn way_back_note(way: &WayBack, run_id: &str, snapshot: &SnapshotLookup) -> Stri
         parts.push(SECRET_FOLLOW_UP_NOTE.to_string());
     }
     match snapshot {
+        SnapshotLookup::Found(s) if s.final_copy && s.unchanged => {
+            parts.push(NO_CHANGE_NOTE.to_string());
+        }
+        SnapshotLookup::Found(s) if s.final_copy => parts.push(format!(
+            "The run's work is saved as {engine} left it. Download it with `ham pull {run_id} --snapshot`."
+        )),
         SnapshotLookup::Found(s) => parts.push(match s.at.as_deref().and_then(utc_words) {
             Some(at) => format!(
                 "The run's last snapshot was saved at {at}. Download it with `ham pull {run_id} --snapshot`; it does not hold work done after that time."
@@ -510,7 +531,9 @@ fn way_back_note(way: &WayBack, run_id: &str, snapshot: &SnapshotLookup) -> Stri
                 "Download the run's last snapshot with `ham pull {run_id} --snapshot`; it does not hold work done after it was saved."
             ),
         }),
-        SnapshotLookup::None if !way.zip_follow_up => parts.push(NO_SNAPSHOT_NOTE.to_string()),
+        SnapshotLookup::None if refused && !way.zip_follow_up => {
+            parts.push(NO_SNAPSHOT_NOTE.to_string());
+        }
         SnapshotLookup::None => {}
         SnapshotLookup::Unread => parts.push(format!(
             "Whether the run saved a snapshot could not be read; `ham pull {run_id} --snapshot` downloads it if it did."
@@ -669,17 +692,35 @@ where
     // A delivery refused for a protected path or a secret names the ways to get the work back that exist for this run. The
     // sentence about the snapshot is advice: a bucket that cannot answer does not keep the run from being recorded as blocked, and
     // the reason then says that the snapshot could not be read.
-    if let Some(way) = way_back(state, &run.target) {
+    // The blocked reason of every run that saved a copy ends with the command that downloads it, whatever blocked the run; that
+    // there is no snapshot is said only for the refusals above, whose reason names ways back.
+    {
+        let known = way_back(state, &run.target);
+        let refused = known.is_some();
+        let way = known.unwrap_or(WayBack {
+            zip_follow_up: false,
+            allow_third_party: false,
+            secret: false,
+        });
         let snapshot = match newest_snapshot(&deps.blobs, run_id, run.slice.unwrap_or(1)).await {
             Ok(Some(found)) => SnapshotLookup::Found(found),
             Ok(None) => SnapshotLookup::None,
             Err(_) => SnapshotLookup::Unread,
         };
-        if !reason.ends_with(['.', '!', '?']) {
-            reason.push('.');
+        let note = way_back_note(
+            &way,
+            run_id,
+            &snapshot,
+            Engine::or_default(run.engine).display_name(),
+            refused,
+        );
+        if !note.is_empty() {
+            if !reason.ends_with(['.', '!', '?']) {
+                reason.push('.');
+            }
+            reason.push(' ');
+            reason.push_str(&note);
         }
-        reason.push(' ');
-        reason.push_str(&way_back_note(&way, run_id, &snapshot));
     }
     let ms = blocked_base_ms(deps, run_id, state).await?;
     // The engine of the run: the Run item's, Cline when the request named none.

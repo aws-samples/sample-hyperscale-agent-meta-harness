@@ -484,7 +484,7 @@ fn the_body_limit_and_the_constants_are_the_contract_values() {
     assert_eq!(DIRECT_TASK_ID, "root");
     assert_eq!(DIRECT_ENGINE, "cline");
     assert_eq!(MAX_DIRECT_TIMEOUT_S, 27_900);
-    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 600);
+    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 60);
     assert_eq!(MAX_DIRECT_BODY_BYTES, 64 * 1024);
     assert_eq!(SUMMARY_SCHEMA_VERSION, 1);
     assert_eq!(MAX_DIRECT_SUMMARY_BYTES, 1024 * 1024);

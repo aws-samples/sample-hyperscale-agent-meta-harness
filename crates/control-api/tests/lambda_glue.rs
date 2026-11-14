@@ -62,6 +62,7 @@ fn responses_are_json_with_the_handler_status() {
     let resp = to_response(V1Response {
         status: 201,
         body: "{\"runId\":\"x\"}".into(),
+        retry_after_s: None,
     })
     .unwrap();
     assert_eq!(resp.status(), 201);
@@ -84,6 +85,7 @@ fn every_answer_names_the_backend_version_whatever_its_status() {
         let resp = to_response(V1Response {
             status,
             body: "{}".into(),
+            retry_after_s: None,
         })
         .unwrap();
         assert_eq!(resp.status(), status);
@@ -117,6 +119,7 @@ fn every_answer_also_names_the_backend_version_under_the_earlier_header() {
         let resp = to_response(V1Response {
             status,
             body: "{}".into(),
+            retry_after_s: None,
         })
         .unwrap();
         assert_eq!(
@@ -275,4 +278,35 @@ fn every_diagnostic_is_wrapped_with_the_request_path() {
     // A line that looks like an embedded metric is wrapped too: the handler writes none.
     let lines = log_lines(&v1, 200, &["{\"_aws\": {}}".to_string()]);
     assert!(lines[1].contains("diagnostic"));
+}
+
+#[test]
+fn b804_admit_the_refusal_of_a_start_carries_retry_after_and_no_other_answer_does() {
+    let refused = to_response(V1Response {
+        status: 409,
+        body: "{}".into(),
+        retry_after_s: Some(120),
+    })
+    .unwrap();
+    assert_eq!(refused.status(), 409);
+    assert_eq!(refused.headers()["retry-after"], "120");
+    // the headers every answer carries are still there
+    assert_eq!(refused.headers()["content-type"], "application/json");
+    assert_eq!(refused.headers()["cache-control"], "no-store");
+    assert_eq!(
+        refused.headers()["x-hamh-backend-version"],
+        root_version().as_str()
+    );
+    for status in [200, 201, 409, 503] {
+        let plain = to_response(V1Response {
+            status,
+            body: "{}".into(),
+            retry_after_s: None,
+        })
+        .unwrap();
+        assert!(
+            !plain.headers().contains_key("retry-after"),
+            "status {status}"
+        );
+    }
 }

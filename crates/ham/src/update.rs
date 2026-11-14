@@ -450,6 +450,12 @@ pub async fn drain<P: ControlPlane>(
     }
 }
 
+/// The minutes `ham update` hands to `setup.sh --update --wait-for-runs`: what is left of `limit` after `elapsed`, rounded up, and never less than
+/// one (setup takes 1 to 1440). Setup waits that long for the runs of everyone on the stage, so a person sees one limit.
+pub fn minutes_left(limit: Duration, elapsed: Duration) -> u64 {
+    limit.saturating_sub(elapsed).as_secs().div_ceil(60).max(1)
+}
+
 /// The SHA-256 of a file, in lower-case hex.
 pub fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut f = std::fs::File::open(path)?;
@@ -621,9 +627,18 @@ fn changes_json(changes: &[Change]) -> Vec<serde_json::Value> {
 fn refusal_text(r: &Refusal, newest: &str) -> String {
     match r {
         Refusal::BackendUnknown => "the backend reports no version, so ham update cannot tell whether main is newer. Update from a clone with ./setup.sh --update.".into(),
-        Refusal::Downgrade { part, runs } => format!(
-            "{part} runs v{runs}, newer than v{newest} on main, and ham update never moves a version back."
-        ),
+        Refusal::Downgrade { part, runs } => {
+            // A backend can run a version that main does not have without running newer code (a release label a withdrawn release or a test left behind), and a deploy of
+            // main from a clone writes main's version; setup says if it needs more (a stage that runs newer code stops it with the way to go on). A client has no such way.
+            let way = if *part == "the backend" {
+                " To put the backend on main's version, run ./setup.sh --update --force-deploy in a clone of main."
+            } else {
+                ""
+            };
+            format!(
+                "{part} runs v{runs}, newer than v{newest} on main, and ham update never moves a version back.{way}"
+            )
+        }
         Refusal::BadVersion(v) => format!("{v:?} is not a version of the form N.NN"),
     }
 }
@@ -639,12 +654,9 @@ fn setup_code_text(code: i32, dir: &Path) -> String {
         3 => "setup installed ham, and ham doctor found a problem. Its message is above. The versions are checked below.".into(),
         8 => "setup finished the update, but could not remove its runner. Its message is above. The versions are checked below.".into(),
         4 => "setup was cancelled before it changed anything.".into(),
-        6 => format!(
-            "the update is still running in your AWS account. To follow it again: cd {} && ./setup.sh --update",
-            dir.display()
-        ),
+        6 => "setup could not finish a read or write in your AWS account, or its build is still running there. Its message above says which. Run ham update again.".into(),
         7 => format!(
-            "setup stopped before the update, and its message is above. If the cause is a conflicting operation (for example runs of other people that are still active, or another deploy), run ham update again once it is gone. If the cause is a stage commit that this clone cannot be shown to be newer than, ham update fetches the same clone again and stops the same way: run the command that the message names in {}, for example ./setup.sh --update --revision <commit>.",
+            "setup stopped before the update, and its message is above. If the cause is a conflicting operation (for example runs that were still active at the end of the wait, or another deploy), run ham update again once it is gone. If the cause is a stage commit that this clone cannot be shown to be newer than, ham update fetches the same clone again and stops the same way: run the command that the message names in {}, for example ./setup.sh --update --revision <commit>.",
             dir.display()
         ),
         _ => "its message is above.".into(),
@@ -744,11 +756,18 @@ pub async fn run<P: ControlPlane>(
         }
     }
     out.out_line(format!(
-        "  how:     wait until your active runs end (at most {} min), then run the setup.sh --update of this commit from {}: it deploys the backend in the AWS account of your profile, then installs ham in {}/bin. No run is cancelled.",
-        req.drain.limit.as_secs().div_ceil(60),
+        "  how:     wait until your active runs end, then run the setup.sh --update of this commit from {}: it waits for the runs of everyone on the stage, deploys the backend in the AWS account of your profile, then installs ham in {}/bin.",
         dir.display(),
         prefix.display()
     ));
+    if req.drain.no_wait {
+        out.out_line("  wait:    none (--no-wait): the update stops when a run is active, yours or anyone's. No run is cancelled.");
+    } else {
+        out.out_line(format!(
+            "  wait:    at most {} min for both waits together. While setup waits, new runs are refused. No run is cancelled.",
+            req.drain.limit.as_secs().div_ceil(60)
+        ));
+    }
     if !req.yes {
         if !ctx.terminal {
             out.err_line("ham update: there is no terminal to ask on. Add --yes to update without the question. Nothing was changed.");
@@ -784,6 +803,7 @@ pub async fn run<P: ControlPlane>(
         ));
     }
     // 6. The wait for the caller's runs.
+    let wait_started = Instant::now();
     match drain(api, &req.drain, out).await {
         Ok(DrainEnd::Clear) => {}
         Ok(DrainEnd::Waited { seconds }) => out.err_line(format!(
@@ -818,7 +838,11 @@ pub async fn run<P: ControlPlane>(
     }
     // 7. setup.sh --update of the fetched commit: the backend first, then the client.
     let before = sha256_file(&ctx.exe).ok();
-    let code = run_setup(&fetched.dir, &prefix, out).await;
+    // Setup takes the stage's deploy lock, so the stage starts no new runs, and waits for the runs of everyone on the stage with what is left of
+    // this limit. With --no-wait it gets no wait and stops at once when anyone's run is active.
+    let wait_for_runs =
+        (!req.drain.no_wait).then(|| minutes_left(req.drain.limit, wait_started.elapsed()));
+    let code = run_setup(&fetched.dir, &prefix, wait_for_runs, out).await;
     if code != 0 {
         out.err_line(format!(
             "ham update: setup.sh --update ended with exit {code}: {}",
@@ -863,6 +887,26 @@ pub async fn run<P: ControlPlane>(
                     "ham update: the backend reports v{} after the update, not v{newest}.",
                     now.as_deref().unwrap_or("?.??")
                 ));
+                // After a setup that ended without an error the stage was deployed or given the release's label, and the backend reads the label every 30 seconds,
+                // so a version that is still older after the wait is a state setup did not repair. After setup's 3 or 8 nothing is known about the stage beyond what
+                // setup said. Either way setup can deploy the commit again; the command carries the prefix this update gave setup, so no second client is installed.
+                if backend_is_older(now.as_deref(), &newest) {
+                    let cause = if code == 0 {
+                        format!(
+                            "setup ended without an error, so the backend should report v{newest}, but it did not within the {} s that ham waited",
+                            ctx.backend_recheck.as_secs()
+                        )
+                    } else {
+                        format!(
+                            "setup reported exit {code} (its message is above), so the backend may not have taken the release"
+                        )
+                    };
+                    out.err_line(format!(
+                        "ham update: {cause}. Run ham doctor to look again. If it still reports an older version, run ./setup.sh --update --force-deploy --prefix {} in {}.",
+                        prefix.display(),
+                        fetched.dir.display()
+                    ));
+                }
                 fits = false;
             }
             now
@@ -889,17 +933,31 @@ pub async fn run<P: ControlPlane>(
     }
 }
 
-/// Runs `<dir>/setup.sh --update --prefix <prefix> --yes` in `dir` with the terminal handed over. Ctrl-C reaches setup, which handles it;
-/// ham waits for setup to end and returns its exit code.
-async fn run_setup(dir: &Path, prefix: &Path, out: &Output) -> i32 {
-    let mut child = match tokio::process::Command::new(dir.join("setup.sh"))
+/// Whether the backend's version is a version older than `newest` (a backend that reports none, or one that is newer, is another state).
+fn backend_is_older(backend: Option<&str>, newest: &str) -> bool {
+    match (
+        backend.and_then(ham_core::update::parse_version),
+        ham_core::update::parse_version(newest),
+    ) {
+        (Some(b), Some(n)) => b < n,
+        _ => false,
+    }
+}
+
+/// Runs `<dir>/setup.sh --update --prefix <prefix> --yes` in `dir` with the terminal handed over, and with `--wait-for-runs <minutes>` when
+/// `wait_for_runs` names the minutes setup may wait for the runs of everyone on the stage. Ctrl-C reaches setup, which handles it; ham waits for
+/// setup to end and returns its exit code.
+async fn run_setup(dir: &Path, prefix: &Path, wait_for_runs: Option<u64>, out: &Output) -> i32 {
+    let mut command = tokio::process::Command::new(dir.join("setup.sh"));
+    command
         .arg("--update")
         .arg("--prefix")
         .arg(prefix)
-        .arg("--yes")
-        .current_dir(dir)
-        .spawn()
-    {
+        .arg("--yes");
+    if let Some(minutes) = wait_for_runs {
+        command.arg("--wait-for-runs").arg(minutes.to_string());
+    }
+    let mut child = match command.current_dir(dir).spawn() {
         Ok(c) => c,
         Err(e) => {
             out.err_line(format!(
@@ -1046,4 +1104,23 @@ pub fn running_exe() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.canonicalize().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Setup ends with 6 before any build too (a read or a write of the deploy lock that could not finish), so the sentence does not
+    /// say that an update is running, and it names no setup command, which would install into the default folder.
+    #[test]
+    fn b804_the_sentence_for_setup_code_6_covers_an_end_before_the_build() {
+        let said = setup_code_text(6, Path::new("/clone"));
+        assert!(!said.contains("the update is still running"), "{said}");
+        assert!(!said.contains("./setup.sh --update"), "{said}");
+        assert!(
+            said.contains("could not finish a read or write in your AWS account"),
+            "{said}"
+        );
+        assert!(said.ends_with("Run ham update again."), "{said}");
+    }
 }

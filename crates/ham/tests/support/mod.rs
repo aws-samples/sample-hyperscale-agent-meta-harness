@@ -103,6 +103,8 @@ fn arrived_ms() -> u64 {
 
 #[derive(Default)]
 pub struct Inner {
+    /// The stage's deploy lock: what `Execution::deploy_lock` answers. `None` is a stage no deploy holds.
+    pub deploy_lock: Option<control_api::handler::DeployLock>,
     pub idem: BTreeMap<String, IdempotencyItem>,
     pub runs: BTreeMap<String, RunItem>,
     pub goals: BTreeMap<String, GoalItem>,
@@ -807,6 +809,9 @@ impl Blobs for Mem {
 }
 
 impl Execution for Mem {
+    async fn deploy_lock(&self) -> Result<Option<control_api::handler::DeployLock>, StoreError> {
+        Ok(self.inner.lock().unwrap().deploy_lock.clone())
+    }
     async fn stop(&self, name: &str, cause: &str) -> Result<(), StoreError> {
         self.inner
             .lock()
@@ -1601,12 +1606,19 @@ impl Fake {
             // The run is recorded; the answer is lost: the client must retry with its key.
             panic!("fake: dropping the connection after the run was recorded");
         }
-        (
+        let mut answer = (
             StatusCode::from_u16(out.status).unwrap(),
             [("content-type", "application/json")],
             out.body,
         )
-            .into_response()
+            .into_response();
+        // The refusal of a start while the stage is being updated names a pause, as the Lambda's answer does.
+        if let Some(seconds) = out.retry_after_s {
+            answer
+                .headers_mut()
+                .insert("retry-after", seconds.to_string().parse().unwrap());
+        }
+        answer
     }
 
     fn object(&self, key: &str, query: &str, h: &BTreeMap<String, String>) -> Response {

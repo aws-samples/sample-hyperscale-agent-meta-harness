@@ -899,6 +899,44 @@ async fn an_object_is_read_whole_and_a_missing_key_is_none() {
     );
 }
 
+/// The header of a snapshot bundle is read by a ranged GET of its first bytes; a missing key is none, an object of no bytes reads as
+/// empty, and any other error is an outage.
+#[tokio::test]
+async fn b823_the_header_of_a_bundle_is_read_by_a_ranged_get() {
+    let r = replay(vec![
+        event(
+            206,
+            "application/octet-stream",
+            "# v2 git bundle
+",
+        ),
+        s3_error(404, "NoSuchKey"),
+        s3_error(416, "InvalidRange"),
+        s3_error(500, "InternalError"),
+    ]);
+    let b = s3(&r);
+    let key = "runs/x/agents/direct/turns/1/snapshot.bundle";
+    assert_eq!(
+        b.get_prefix(key, 8_192).await.unwrap(),
+        Some(
+            b"# v2 git bundle
+"
+            .to_vec()
+        )
+    );
+    assert_eq!(b.get_prefix(key, 8_192).await.unwrap(), None);
+    assert_eq!(b.get_prefix(key, 8_192).await.unwrap(), Some(Vec::new()));
+    assert_eq!(
+        b.get_prefix(key, 8_192).await.unwrap_err().error_type(),
+        "RunSessionUnavailable"
+    );
+    for q in r.actual_requests() {
+        assert_eq!(q.method(), "GET");
+        assert_eq!(q.headers().get("range"), Some("bytes=0-8191"));
+        assert!(q.uri().contains(key), "{}", q.uri());
+    }
+}
+
 #[tokio::test]
 async fn a_key_exists_when_it_answers_a_head_and_not_when_it_answers_not_found() {
     let r = replay(vec![

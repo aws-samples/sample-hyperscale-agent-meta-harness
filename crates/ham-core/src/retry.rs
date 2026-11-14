@@ -27,6 +27,12 @@ pub fn start_key(blocked_run: &str) -> String {
 /// The hint on a blocked run while the box holds text: what happened and what Enter does.
 pub const HINT: &str = "This run is blocked: it ended without a result and takes no messages. Enter offers to start it again as a new run with the same request. Your text stays in the box and is not sent.";
 
+/// [`HINT`] and where the work of the blocked run is ([`crate::saved_copy::blocked_work`]): that it stays saved when the run's events
+/// show the copy of the end, the time of an earlier copy, else what the snapshot command does.
+pub fn hint(run_id: &str, saved: Option<&crate::saved_copy::SavedCopy>) -> String {
+    format!("{HINT} {}", crate::saved_copy::blocked_work(run_id, saved))
+}
+
 /// What `/retry` says on a run that is not blocked.
 pub const NOT_BLOCKED: &str =
     "Nothing to retry: only a blocked run can be retried, and this run is not blocked.";
@@ -48,7 +54,20 @@ pub fn header(run_id: &str) -> String {
 /// run's summary spells it when it is known, and that the text in the box, if any, is kept and not sent. The words must match the call the
 /// second Enter makes (`ham::tui::send`).
 pub fn confirmation(run_id: &str, target: Option<&str>, has_text: bool) -> String {
+    confirmation_with(run_id, target, has_text, None)
+}
+
+/// [`confirmation`] with where the work of the blocked run is: a retry starts from the request alone, so the panel says that this
+/// run's work stays saved (when the run's events show the copy of the end; for an earlier copy, its time) and names the command that
+/// downloads it.
+pub fn confirmation_with(
+    run_id: &str,
+    target: Option<&str>,
+    has_text: bool,
+    saved: Option<&crate::saved_copy::SavedCopy>,
+) -> String {
     let run = sanitize_line(run_id);
+    let work = crate::saved_copy::blocked_work(run_id, saved);
     let target = match target.map(sanitize_line).filter(|t| !t.trim().is_empty()) {
         Some(t) => format!("\nTarget: {t}, as before."),
         None => String::new(),
@@ -59,7 +78,7 @@ pub fn confirmation(run_id: &str, target: Option<&str>, has_text: bool) -> Strin
         ""
     };
     engines::say(&format!(
-        "This starts a new billable run with the same request as run {run}: the same prompt, target, model, rules and settings. The new run is linked to run {run}.{target}\nThe new {{engine}} receives the request only, not this run's history.{kept}\nEnter starts it \u{b7} Esc cancels"
+        "This starts a new billable run with the same request as run {run}: the same prompt, target, model, rules and settings. The new run is linked to run {run}.{target}\nThe new {{engine}} receives the request only, not this run's history.\n{work}{kept}\nEnter starts it \u{b7} Esc cancels"
     ))
 }
 
@@ -73,6 +92,20 @@ pub fn started(blocked_run: &str, new_run: &str, kept_text: bool) -> String {
     format!(
         "started run {}, a retry of run {}{tail}",
         sanitize_line(new_run),
+        sanitize_line(blocked_run)
+    )
+}
+
+/// The notice when the service started the retry and the new run opened on screen: the run it retries and where the text of the box
+/// went, in at most 80 columns, because the run screen's notice row is one row.
+pub fn started_here(blocked_run: &str, kept_text: bool) -> String {
+    let tail = if kept_text {
+        "; your text is in the box"
+    } else {
+        ""
+    };
+    format!(
+        "the retry of run {} started{tail}",
         sanitize_line(blocked_run)
     )
 }
@@ -91,6 +124,8 @@ pub fn explain(status: u16, code: &str, message: &str) -> String {
         (409, "no-delivered-head" | "head-mismatch") => {
             format!("{m}; start a new run instead")
         }
+        // A stage that is being updated starts no new runs and says so in one sentence, which needs no word of ours.
+        (409, crate::update::STAGE_UPDATING) => m,
         (422, "unknown-model") => format!("{m}; start a new run and pick another model"),
         (422, "idempotency-key-reused") => {
             "the key of this retry was already used for another request; start a new run instead".to_string()

@@ -555,6 +555,8 @@ async fn b600_with_the_services_up_a_failing_step_is_a_failed_step_with_no_need(
             source: harness_protocol::direct::TestCommandSource::Detected,
             command: "bash scripts/test-integration.sh".into(),
             logged: None,
+            install: None,
+            fallback: None,
         }],
         &started.live,
         &|_| false,
@@ -593,6 +595,8 @@ async fn b600_a_step_that_passes_or_names_no_local_port_gets_no_need() {
         source: harness_protocol::direct::TestCommandSource::Detected,
         command: c.into(),
         logged: None,
+        install: None,
+        fallback: None,
     };
     let got = run_all(
         &env,

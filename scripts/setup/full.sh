@@ -177,6 +177,11 @@ full_costs() {
   say "  Teardown takes about 20 to 40 minutes when AgentCore has no network interface in the stage's VPC, and about 50 minutes when AgentCore still holds its network interface. AgentCore can keep that interface for up to 8 hours after its runtime is deleted. Teardown retains the network resources the interface holds. You run ./setup.sh --teardown again to remove them."
 }
 
+# full_minutes <n>: "1 minute" or "<n> minutes".
+full_minutes() {
+  if [ "$1" = 1 ]; then printf '1 minute'; else printf '%s minutes' "$1"; fi
+}
+
 # full_first_runs: the names of the first 20 running runs, separated by spaces, and how many more there are.
 full_first_runs() {
   local _name n=0 shown=""
@@ -359,6 +364,14 @@ full_plan() {
     say "  commit:        $COMMIT_CHANGE (the commit the stage records, then the one this update deploys)"
   fi
   [ -z "${COMMIT_ORDER_NOTE:-}" ] || say "  order:         $COMMIT_ORDER_NOTE"
+  if [ -n "${RN_LABEL_NEXT:-}" ] && [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
+    # A release that changes no file the stage runs still has a version of its own; the update writes the label the backend reports, and nothing else on the stage
+    if [ "${RN_LABEL_KEEP:-0}" = 1 ]; then
+      say "  label:         the backend reports v$RN_LABEL_NOW and keeps it (this clone's VERSION is $RN_LABEL_NEXT, which is older)"
+    else
+      say "  label:         the backend reports v$RN_LABEL_NOW and will report v$RN_LABEL_NEXT (this release changes no file the stage runs, so nothing is deployed and only its version label is written)"
+    fi
+  fi
   full_settings_lines "$action"
   [ "${INSTANCES_PRESENT:-0}" != 1 ] || say "  Instances part: present, kept (the capacity provider and the second worker runtime stay; the deploy keeps the part from the stage's record or the live stage)"
   full_client_lines "$action"
@@ -392,6 +405,12 @@ full_plan() {
   else
     if [ "${FULL_REUSE:-0}" = 1 ]; then
       how="nothing on the stage changes; no runner is installed"
+    elif [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] && [ "${BUILD_ON:-runner}" = local ]; then
+      how="nothing is deployed; only the client is built here, and no runner is installed"
+    elif [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] && [ "${KEEP_RUNNER:-0}" = 1 ]; then
+      how="nothing is deployed; the runner is installed again, builds only the client and is kept (--keep-runner)"
+    elif [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
+      how="nothing is deployed; the runner is installed again, builds only the client and is removed afterwards"
     elif [ "${BUILD_ON:-runner}" = local ]; then
       how="the stage keeps its resources and gets the new revision; no runner is installed"
     elif [ "${KEEP_RUNNER:-0}" = 1 ]; then
@@ -400,7 +419,8 @@ full_plan() {
       how="the stage keeps its resources and gets the new revision; the runner is installed again for the build and removed afterwards"
     fi
     say "  update:        $how"
-    case ${IMG_PLAN:-unknown} in
+    # An update that deploys nothing builds no image and runs no deploy, so its plan names neither the image nor a deploy's duration.
+    [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] || case ${IMG_PLAN:-unknown} in
       none|image)
         say "  image:         $IMG_TEXT"
         say "  duration:      about 20 to 25 minutes" ;;
@@ -422,6 +442,16 @@ full_plan() {
       say "  guard:         active runs are not checked before the build; the build refuses only when the worker runtime changes"
       if [ "${ACTIVE_RUN_COUNT:-0}" -gt 0 ]; then
         say "  active runs:   $ACTIVE_RUN_COUNT running run(s): $(full_first_runs). They keep running (--allow-active-runs), and the Lambda functions and the run state machine change under them; their worker runtime stays."
+      fi
+    elif [ -n "${WAIT_FOR_RUNS:-}" ] && [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
+      say "  guard:         this update changes nothing on the stage, so it waits for no run (--wait-for-runs) and the stage keeps starting runs."
+    elif [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
+      say "  guard:         this update deploys nothing, so active runs do not stop it and the stage keeps starting runs."
+    elif [ -n "${WAIT_FOR_RUNS:-}" ]; then
+      say "  guard:         the update takes the stage's deploy lock, so the stage starts no new runs, and waits up to $(full_minutes "$WAIT_FOR_RUNS") for the active runs to end (--wait-for-runs). No run is cancelled."
+      say "                 The build also refuses worker runtime changes while runs are active."
+      if [ "${ACTIVE_RUN_COUNT:-0}" -gt 0 ]; then
+        say "  active runs:   $ACTIVE_RUN_COUNT running run(s): $(full_first_runs). The update waits up to $(full_minutes "$WAIT_FOR_RUNS") for them to end; new runs are refused meanwhile. No run is cancelled."
       fi
     else
       say "  guard:         Active runs stop ./setup.sh --update with exit 7 before anything is installed or built."
@@ -528,6 +558,9 @@ full_runner_flow() {
   case $RN_MODE in
     new|stale)
       rn_lease_take
+      # The stage starts no new runs while this lock is held, so the look for active runs that decides comes now. A run that attached to the build of another
+      # setup meanwhile makes none: that setup made it.
+      case $RN_MODE in new|stale) full_runs_gate ;; esac
       rn_install
       rn_upload
       rn_bootstrap
@@ -539,6 +572,8 @@ full_runner_flow() {
         rn_lock_join
         rn_follow
       else
+        # The build has succeeded, so this run's first write of the lock it shares already says deploys=no
+        RN_LOCK_DEPLOYS=no
         rn_lock_join
         RN_FINAL=SUCCEEDED
       fi ;;
@@ -551,12 +586,16 @@ full_runner_flow() {
       rn_follow ;;
     finish)
       say_log "The build $RN_BUILD_ID already succeeded; reading its result"
+      # A run that finishes from a build that succeeded never closes the stage again
+      RN_LOCK_DEPLOYS=no
       rn_lock_join
       RN_FINAL=SUCCEEDED ;;
   esac
+  # CodeBuild says the build has succeeded: this run still reads and checks the result, downloads and installs the client and removes the runner, and keeps the lock until
+  # then (A4.4). Every step that changes the stage ran inside the build, so from this write on the lock says deploys=no and the stage starts runs again, whatever
+  # becomes of this run: a read that fails after it (rn_read_failed) leaves a lock that no longer closes the stage.
+  [ "$RN_FINAL" != SUCCEEDED ] || rn_lock_open
   rn_settle
-  # the build succeeded: this run still downloads and installs the client and removes the runner, and keeps the lock until then (A4.4)
-  rn_lock_renew
   endpoint=$(rn_res endpoint)
   if ! valid_stage_endpoint "$endpoint"; then
     rn_lease_release
@@ -668,6 +707,210 @@ full_runner_end() {
 # trap: the progress line of the runner's removal runs in the background, and a background job started while the shell exits outlives it.
 full_runner_cleanup() { full_runner_end; }
 
+# ---- the look for active runs that decides, and the wait for them ------------------------------------------------------------
+
+# full_runs_gate: the look for the runs of every user that decides whether an update deploys. It is made after this run has taken the stage's deploy lock (rn_lease_take), on
+# both routes. From the moment the lock exists the stage's API service starts no new runs (it reads the lock right before it creates a run and answers 409 stage-updating;
+# crates/control-api/src/admission.rs), so a run that is not there at this look cannot start before the deploy. The early look of the preflight (pf_active_runs_check) stays:
+# it stops a plain update in seconds, before the question.
+#   1. A pause (HAMH_SETUP_RUN_SETTLE_SECONDS, 45 by default; the tests set 0): a start that read "no lock" a moment before the lock was created ends inside the time limit
+#      of the API function (28 seconds, infra/lib/stacks/control.ts; a test holds the pause above it), and the listing of executions can lag behind a start.
+#   2. A look every HAMH_SETUP_RUN_POLL_SECONDS (30 by default; the tests set 0). The update goes on after two looks in a row that answer and show no run, and after the
+#      lock was read back with this run's token (full_gate_own).
+# Without --wait-for-runs a run ends the update: the lock is given back and the run ends with exit 7, the stage unchanged and no runner installed. With it (WAIT_FOR_RUNS,
+# minutes) this run waits: one line for each look that shows runs, with their number and the minutes left; the lock written again every HAMH_SETUP_LOCK_REFRESH_SECONDS
+# (full_gate_keep), so that the API service keeps the stage closed; and at the limit the lock is given back and the run ends with exit 7: nothing was deployed or installed,
+# and no run was cancelled. Setup never cancels a run. Ctrl-C during the looks, or a terminal that is closed, gives the lock back and ends with exit 4 (full_gate_interrupted).
+# A look that fails is never taken as "no run": it is said and made again. Three in a row end a plain update with exit 6; with the option they are made again until the limit.
+# The looks hold only while the lock closes the stage: a lock this run could not write for 30 minutes ends the update with exit 6 (full_gate_closed), and before the update
+# goes on a renewal that is due is made (three tries) and the lock is read back (full_gate_own).
+# Every end here gives the lock back first and then says what became of it: `@lock@` in the lines for full_gate_stop is the place of that sentence (rn_release_said), and
+# "released" is said only for a lock that is gone. A lock that could not be given back is named, with what the stage does meanwhile and how the lock goes.
+# One case keeps the rule of the early look: credentials that may not list executions (pf_active_runs_look says denied) cannot look at all, so the update goes on, and the
+# build's own deploy guard looks again with the runner's role before it changes the worker runtime.
+# Not made for a full setup, for an update that deploys nothing (SETUP_CLIENT_ONLY), or with --allow-active-runs. HAMH_SETUP_RUN_MINUTE_SECONDS is the length of a minute of
+# the limit (60; a test shortens it).
+full_runs_gate() {
+  local settle poll minute limit=0 started=$SECONDS left=0 empty=0 failed=0 waited=0 pause tries=0
+  [ "${FULL_ACTION:-full}" = update ] || return 0
+  [ "${SETUP_CLIENT_ONLY:-0}" != 1 ] && [ "${ALLOW_ACTIVE_RUNS:-0}" != 1 ] || return 0
+  settle=$(setup_number "${HAMH_SETUP_RUN_SETTLE_SECONDS:-45}" 45)
+  poll=$(setup_number "${HAMH_SETUP_RUN_POLL_SECONDS:-30}" 30)
+  minute=$(setup_number "${HAMH_SETUP_RUN_MINUTE_SECONDS:-60}" 60)
+  [ "$minute" -ge 1 ] || minute=1
+  [ -z "${WAIT_FOR_RUNS:-}" ] || limit=$((WAIT_FOR_RUNS * minute))
+  trap full_gate_interrupted INT TERM HUP
+  say_log "The stage starts no new runs while this update holds its deploy lock. Looking for runs that are still active ..."
+  [ "$settle" -eq 0 ] || sleep "$settle"
+  while :; do
+    pf_active_runs_look
+    case $ACTIVE_RUNS_LOOK in
+      denied)
+        [ -z "${WAIT_FOR_RUNS:-}" ] ||
+          warn "--wait-for-runs cannot wait: these credentials may not list the running executions of hamh-$STAGE-run. The update continues. The build checks again before it changes the worker runtime."
+        log_line "the running executions cannot be listed with these credentials ($ACTIVE_RUNS_ERR); the update goes on"
+        break ;;
+      failed)
+        empty=0
+        failed=$((failed + 1))
+        if [ -z "${WAIT_FOR_RUNS:-}" ] && [ "$failed" -ge 3 ]; then
+          full_gate_stop 6 "could not look for the active runs of stage $STAGE: $ACTIVE_RUNS_ERR" \
+            "A look that fails is not taken as no run. The stage is unchanged and no runner was installed." @lock@ \
+            "Run $(rn_retry_command) again."
+        fi
+        warn "could not look for the active runs of stage $STAGE ($ACTIVE_RUNS_ERR); looking again" ;;
+      *)
+        failed=0
+        if [ "$ACTIVE_RUN_COUNT" -eq 0 ]; then
+          empty=$((empty + 1))
+          [ "$empty" -lt 2 ] || break
+        else
+          empty=0
+          if [ -z "${WAIT_FOR_RUNS:-}" ]; then
+            full_gate_stop 7 "the update is stopped: $ACTIVE_RUN_COUNT running run(s) on hamh-$STAGE-run: $(full_first_runs)" \
+              "The stage is unchanged and no runner was installed." @lock@ \
+              "You cancel runs with $HAMH_CLIENT_BIN cancel <runId> or wait until they end; ./setup.sh --update --wait-for-runs MINUTES waits for them." \
+              "You run ./setup.sh --update again."
+          fi
+        fi ;;
+    esac
+    pause=$poll
+    if [ -n "${WAIT_FOR_RUNS:-}" ] && [ "$empty" -eq 0 ]; then
+      left=$((limit - (SECONDS - started)))
+      if [ "$left" -le 0 ]; then
+        if [ "$failed" -gt 0 ]; then
+          full_gate_stop 6 "could not look for the active runs of stage $STAGE at the end of the wait of $(full_minutes "$WAIT_FOR_RUNS"): $ACTIVE_RUNS_ERR" \
+            "A look that fails is not taken as no run. No deployment or client change was made. No run was cancelled." \
+            @lock@ "Run $(rn_retry_command) again."
+        fi
+        full_gate_stop 7 "$ACTIVE_RUN_COUNT run(s) are still active after $(full_minutes "$WAIT_FOR_RUNS"): $(full_first_runs)" \
+          "No deployment or client change was made. No run was cancelled." \
+          @lock-open@ \
+          "Run $(rn_retry_command) again when they have ended, or give a longer --wait-for-runs."
+      fi
+      if [ "$failed" -eq 0 ]; then
+        say "Waiting for $ACTIVE_RUN_COUNT active run(s) to end: $(((left + minute - 1) / minute)) min left. New runs are refused meanwhile. No run is cancelled."
+        log_line "waiting for $ACTIVE_RUN_COUNT active run(s): $ACTIVE_RUNS"
+        waited=1
+      fi
+      [ "$pause" -le "$left" ] || pause=$left
+    fi
+    full_gate_keep || true
+    [ "$pause" -le 0 ] || sleep "$pause"
+  done
+  # before the update goes on, a renewal that is due is made: the runner install and the upload take minutes before the build is recorded in the lock
+  until full_gate_keep; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 3 ] || full_gate_stop 6 "could not renew the deploy lock $(rn_lock_name) of stage $STAGE before the update goes on: ${AWS_ERR:-no answer}" \
+      "No deployment or client change was made. No run was cancelled." @lock@ "Run $(rn_retry_command) again."
+    [ "$poll" -le 0 ] || sleep "$poll"
+  done
+  full_gate_own "$poll"
+  trap - HUP
+  trap rn_lock_interrupted INT TERM
+  if [ "$waited" = 1 ]; then
+    ok "the active runs have ended (waited $(full_minutes $(((SECONDS - started + minute - 1) / minute))))"
+  else
+    log_line "no run is active on the stage"
+  fi
+}
+
+# full_gate_keep: while this run looks and waits it writes its lock again every HAMH_SETUP_LOCK_REFRESH_SECONDS seconds (600 by default), after it has read that the lock
+# is still its own (full_gate_mine). The lock then never counts as one nobody renews (30 minutes), neither for another setup nor for the stage's API service. No build is
+# recorded yet, and no other setup shares a lock without a build. A read that fails here does not end the wait: it is said, nothing is written, and the renewal is due
+# again at the next look. The read-back that lets the update go on stays strict (full_gate_own). Returns 1 when a renewal was due and was not made (the read or the write
+# failed; RN_LOCK_AT moves only with a write that went through), and ends the update when the lock was not written for 30 minutes (full_gate_closed).
+full_gate_keep() {
+  full_gate_closed
+  [ $((SECONDS - RN_LOCK_AT)) -ge "$(setup_number "${HAMH_SETUP_LOCK_REFRESH_SECONDS:-600}" 600)" ] || return 0
+  if ! rn_lock_read; then
+    warn "could not read the deploy lock $(rn_lock_name) of stage $STAGE (${AWS_ERR:-no answer}); reading it again at the next look"
+    return 1
+  fi
+  full_gate_mine
+  RN_LOCK_STARTED=$(setup_now)
+  if aws_run ssm put-parameter --name "$(rn_lock_name)" --type String --value "$(rn_lock_value "")" --overwrite; then
+    RN_LOCK_AT=$SECONDS
+    return 0
+  fi
+  log_line "could not renew the deploy lock: ${AWS_ERR:-no answer}"
+  warn "could not write the deploy lock $(rn_lock_name) of stage $STAGE again (${AWS_ERR:-no answer}); writing it again at the next look"
+  return 1
+}
+
+# full_gate_closed: the stage's API service takes a lock that was not written for 30 minutes (RN_LOCK_STALE_SECONDS) for one nobody renews, and starts runs again. When this
+# run could not write its lock for that long (reads or writes that failed, a machine that slept), what its looks found no longer holds: the update ends with exit 6, and
+# the lock is given back.
+full_gate_closed() {
+  [ $((SECONDS - RN_LOCK_AT)) -gt "$RN_LOCK_STALE_SECONDS" ] || return 0
+  full_gate_stop 6 "the deploy lock $(rn_lock_name) of stage $STAGE was not written for more than $((RN_LOCK_STALE_SECONDS / 60)) minutes while this run looked for active runs" \
+    "The stage has started runs again meanwhile, so this run deploys nothing. No deployment or client change was made. No run was cancelled." @lock@ \
+    "Run $(rn_retry_command) again."
+}
+
+# full_gate_own [pause]: the read-back before the update goes on: the lock is still this run's. A read that fails never counts as "still mine": it is said and made again
+# after the pause of the looks, and the third in a row ends the update with exit 6.
+full_gate_own() {
+  local tries=0
+  while ! rn_lock_read; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 3 ] || full_gate_stop 6 "could not read the deploy lock $(rn_lock_name) of stage $STAGE: ${AWS_ERR:-no answer}" \
+      "A failed read is not taken as this run's lock. No deployment or client change was made. No run was cancelled." @lock@ "Run $(rn_retry_command) again."
+    warn "could not read the deploy lock $(rn_lock_name) of stage $STAGE (${AWS_ERR:-no answer}); reading it again"
+    [ "${1:-0}" -le 0 ] || sleep "$1"
+  done
+  full_gate_mine
+}
+
+# full_gate_mine: the lock just read (RN_LOCK_TEXT) is still this run's (the token decides). A machine that slept through the 30 minutes of a lock nobody renews may find
+# the lock of another setup in its place: this run then deploys nothing and leaves that lock alone. Exit 7.
+full_gate_mine() {
+  [ "$(rn_lock_get token)" != "$RN_LOCK_TOKEN" ] || return 0
+  RN_LOCK_HELD=0
+  trap - INT TERM HUP
+  st_set state failed || true
+  st_save || true
+  [ -n "$RN_LOCK_TEXT" ] || setup_exit 7 "the deploy lock $(rn_lock_name) of this run was removed by someone else while it looked for active runs" \
+    "This run deploys nothing, so it cannot race another deploy. No deployment or client change was made. No run was cancelled." "Run $(rn_retry_command) again."
+  rn_lock_held_exit "another setup took it while this run looked for active runs, so this run deploys nothing"
+}
+
+# full_gate_stop <exit code> <message> [detail line ...]: the looks end the update before anything was installed or deployed: the lock is given back first. A detail line
+# `@lock@` is the place of the sentence that says what became of the lock (rn_release_said); `@lock-open@` adds what a released lock means for new runs.
+full_gate_stop() {
+  local code=$1 line
+  trap - INT TERM HUP
+  rn_lease_release quiet
+  st_set state failed || true
+  st_save || true
+  log_line "the update stopped before anything was installed or deployed: $2"
+  err "$2"
+  shift 2
+  for line in "$@"; do
+    case $line in
+      @lock@) rn_release_said ;;
+      @lock-open@) rn_release_said ", so the stage starts runs again" ;;
+      *) detail "$line" ;;
+    esac
+  done
+  exit "$code"
+}
+
+# full_gate_interrupted: Ctrl-C, a TERM or a closed terminal (HUP) while this run looks or waits for active runs. Nothing was installed or deployed; the lock is given
+# back, and the lines say what became of it. Exit 4.
+full_gate_interrupted() {
+  trap - INT TERM HUP
+  rn_lease_release quiet
+  st_set state failed || true
+  st_save || true
+  err "Stopped while it looked for active runs (you stopped it)."
+  detail "No deployment or client change was made. No run was cancelled."
+  rn_release_said
+  detail "Run $(rn_retry_command) again to go on."
+  log_line "stopped during the look for active runs"
+  exit 4
+}
+
 # ---- the local route -------------------------------------------------------------------------------------------------------------
 
 # full_quiet_cdk <line>: 0 when the line is a CDK notice that repeats for every stack and the screen leaves out: the deprecation warning of aws-cdk-lib with its two indented lines,
@@ -752,11 +995,13 @@ full_local_lock_refresh() {
 # given back, and the stage holds what the deploy had changed until then. Exit 6.
 full_local_interrupted() {
   trap - INT TERM
-  rn_lease_release
+  RN_LOCK_BUSY=0
+  rn_lease_release quiet
   st_set state failed || true
   st_save || true
   err "Stopped (you stopped it) while scripts/deploy.sh was running on this machine."
-  detail "The deploy lock of the stage is released. The stage may contain partial deployment changes; ./setup.sh --status shows its stacks."
+  rn_release_said
+  detail "The stage may contain partial deployment changes; ./setup.sh --status shows its stacks."
   detail "Run $(rn_retry_command) to deploy again."
   log_line "stopped during the local deploy"
   exit 6
@@ -820,8 +1065,27 @@ full_local_flow() {
     mkdir -p "$records" || exit 1
   ) || setup_exit 1 "could not make $records"
   if [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
-    # the stage already runs this commit with these settings (rn_same_deployment_check; C7): nothing is deployed, so no lock is taken, and only the client is built here
-    say_log "scripts/deploy.sh is not run: the stage already runs this commit. The client is built on this machine."
+    # the stage already runs this commit with these settings (rn_same_deployment_check; C7): nothing is deployed, so setup takes no lock, and only the client is built here.
+    # scripts/deploy.sh writes the label of this release alone.
+    say_log "scripts/deploy.sh deploys nothing: the stage already runs this commit. It writes the release label, and the client is built on this machine."
+    (
+      cd "$SELF_DIR" || exit 1
+      [ -z "$cfg" ] || export AWS_CONFIG_FILE=$cfg
+      export DEPLOY_RECORD_DIR="$records" DEPLOY_CRITERIA="$ST_DIR/deploy-checks.json"
+      HAMH_ACCOUNTS_FILE=$file HAMH_AWS_PROFILE=$ACCT_PROFILE_FILE scripts/deploy.sh --stage "$STAGE" --relabel 2>&1
+    ) | while IFS= read -r line; do
+      log_line "deploy: $line"
+      printf '  %s\n' "$line"
+    done
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" = 3 ]; then
+      full_local_failed "$rc"
+    elif [ "$rc" != 0 ]; then
+      st_set state failed || true
+      st_save || true
+      setup_exit 5 "scripts/deploy.sh could not write the release label (exit $rc)" "Its output is above and in $RUN_LOG." \
+        "The stage runs the source tree it ran before; only its version label is in question. Run $(full_retry_command) to try again."
+    fi
   else
     # The deploy lock of the stage (C6), taken right after the question and before anything in the account changes. scripts/deploy.sh gets its token and only checks it
     # (HAMH_DEPLOY_LOCK_TOKEN); this run gives the lock back however the deploy ends, also when you stop it.
@@ -833,7 +1097,11 @@ full_local_flow() {
         RN_LOCK_LEGACY=0
         rn_lock_held_exit "another setup took it a moment ago, so this run deploys nothing" ;;
     esac
+    # With the lock held the stage starts no new runs; the look for active runs that decides comes before the deploy
+    full_runs_gate
     trap full_local_interrupted INT TERM
+    # The deploy runs under the lock from here, so an exit that nothing handles leaves the lock to it (rn_lock_on_exit)
+    RN_LOCK_BUSY=1
     FULL_LOCK_AT=$SECONDS
     say_log "Running scripts/deploy.sh on this machine (the account file is $file) ..."
     (
@@ -849,6 +1117,7 @@ full_local_flow() {
       printf '  %s\n' "$line"
     done
     rc=${PIPESTATUS[0]}
+    RN_LOCK_BUSY=0
     trap - INT TERM
     rn_lease_release
     if [ "$rc" != 0 ]; then
@@ -941,6 +1210,9 @@ FULL_REUSE=0
 full_update_reuse_check() {
   FULL_REUSE=0
   [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] && [ "${BUILD_ON:-runner}" != local ] && [ -z "${FROM:-}" ] || return 0
+  # While the backend still reports an older version, the client-only build is what writes the release label (rn_label_plan), so the kept copy is not
+  # installed alone: without the build the update would end with the older version still reported.
+  [ -z "${RN_LABEL_NEXT:-}" ] || [ "${RN_LABEL_KEEP:-0}" = 1 ] || return 0
   [ "$(st_get clientCommit)" = "$SRC_COMMIT" ] && [ "$(st_get clientConfig)" = "$ACCT_DIGEST" ] && [ "$(st_get state)" != installed ] || return 0
   full_verified_copy || return 0
   FULL_REUSE=1
@@ -1050,6 +1322,9 @@ full_run() {
         elif [ "${ALLOW_ACTIVE_RUNS:-0}" = 1 ]; then
           pf_active_runs
           pf_image_refuse
+        elif [ -n "${WAIT_FOR_RUNS:-}" ]; then
+          # --wait-for-runs: the runs are listed for the plan; the wait comes after the question and the lock (full_runs_gate)
+          pf_active_runs
         else
           pf_active_runs_check
         fi

@@ -108,7 +108,9 @@ impl Panel {
         if out.code == 0 && changes_a_setting(argv) {
             lines.push("The running app keeps its old settings until you restart ham.".to_string());
         }
-        let mut panel = Self::new(command_title(argv), lines, State::Done(out.code), false);
+        // The report of `resume` is sentences, not a table: its lines wrap, so a reason and a line of provider data sharing stay whole.
+        let wrap = argv.first().is_some_and(|w| w == "resume");
+        let mut panel = Self::new(command_title(argv), lines, State::Done(out.code), wrap);
         panel.bearer = out.bearer.clone().map(Bearer::new);
         panel
     }

@@ -352,6 +352,12 @@ pub struct RunView {
     /// The newest `report` event of the clean-checkout test report: what the report was doing when the run last said so. `None` for a run
     /// that wrote none (a stage without the report, a report switched off, an agentd older than the events).
     pub report: Option<crate::report_progress::ReportNow>,
+    /// The newest copy of its work the run saved, from the `savedCopy` member of the direct agent's progress events. `None` for a
+    /// run that saved none and for a service older than the member.
+    pub saved: Option<crate::saved_copy::SavedCopy>,
+    /// When the engine last started a session (`session.started`, Unix seconds). A copy of an end from before it is the end of an
+    /// earlier session of a run that renewed its session, so the view does not call it the end.
+    pub engine_started_unix: Option<i64>,
 }
 
 impl RunView {
@@ -411,6 +417,12 @@ impl RunView {
             parts.push(format!("every model route down for {m} min"));
         }
         parts
+    }
+
+    /// The run works no more: its last word is read ([`Self::is_over`]), or its status is any word but `active` (a blocked,
+    /// paused or stalled run has ended although its status admits another transition).
+    pub fn has_ended(&self) -> bool {
+        self.is_over() || self.status.is_some_and(|s| s != GoalStatus::Active)
     }
 
     /// The run's last word is read: `run.completed` or `run.aborted`, or a terminal goal status.
@@ -609,6 +621,8 @@ impl RunState {
             skills: None,
             engine_config: None,
             report: None,
+            saved: None,
+            engine_started_unix: None,
         };
         let mut tools = ToolTracker::default();
         for e in self.events.values() {
@@ -692,6 +706,18 @@ fn str_field(e: &Envelope, k: &str) -> Option<String> {
 
 fn typed<T: DeserializeOwned>(e: &Envelope, k: &str) -> Option<T> {
     serde_json::from_value(inline(e)?.get(k)?.clone()).ok()
+}
+
+/// The saved copy of the view is the end of the run only while no session started after it. A run that renewed its session works
+/// on after the copy of the end of the session before: `e` is a `session.started` or a `turn.started`, and a copy of an end that is older
+/// than it is held as an ordinary copy. The two times are the service's and the worker's own (a session takes seconds to start).
+fn engine_started(v: &mut RunView, e: &Envelope) {
+    if let Some(t) = harness_protocol::common::parse_utc_unix(&e.ts) {
+        v.engine_started_unix = Some(v.engine_started_unix.map_or(t, |held| held.max(t)));
+        if let Some(copy) = v.saved.as_mut().filter(|c| c.at_unix < t) {
+            copy.final_copy = false;
+        }
+    }
 }
 
 fn agent<'a>(v: &'a mut RunView, id: &str) -> &'a mut AgentLine {
@@ -790,6 +816,7 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             }
         }
         EventType::SessionStarted => {
+            engine_started(v, e);
             let id = str_field(e, "agentId").or(agent_id);
             if let Some(id) = id {
                 let line = agent(v, &id);
@@ -800,6 +827,9 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             }
         }
         EventType::TurnStarted => {
+            // Every session's worker writes this once, the sessions after the first included (the service writes `session.started` for
+            // the first only).
+            engine_started(v, e);
             v.route.working_again();
             if let Some(id) = agent_id {
                 agent(v, &id).turns += 1;
@@ -816,6 +846,16 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             }
         }
         EventType::TurnProgress | EventType::TurnEnded => {
+            // A stored copy of the work. The event carries nothing else, and only a newer copy replaces the one the view holds.
+            if let Some(mut copy) = crate::saved_copy::parse(e) {
+                if v.saved.as_ref().is_none_or(|held| copy.newer_than(held)) {
+                    // The events of two sessions can arrive in either order.
+                    copy.final_copy =
+                        copy.final_copy && v.engine_started_unix.is_none_or(|t| t <= copy.at_unix);
+                    v.saved = Some(copy);
+                }
+                return;
+            }
             if e.event_type == EventType::TurnProgress {
                 fold_progress(v, e, tools);
             }

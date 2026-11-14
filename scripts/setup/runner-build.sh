@@ -19,7 +19,8 @@
 #                       holds, and the stage's record must name the commit the user asked for, so that the next update can place it
 #   SETUP_FORCE_DEPLOY  1: `setup.sh --update --force-deploy`. The phase deploy runs even when an earlier build finished it for this commit and account file
 #   SETUP_CLIENT_ONLY   1: the stage already runs this commit (C7). The phase deploy is skipped, after a check that the account records this source tree and account file as
-#                       deployed and that every stack is complete (a refusal, phase refused, when it does not); gomod, scanner-rules and the client run as always
+#                       deployed and that every stack is complete (a refusal, phase refused, when it does not), and after `scripts/deploy.sh --relabel` has written the label of this
+#                       release; gomod, scanner-rules and the client run as always
 #   CODEBUILD_BUILD_ID  the id of this build, the key of its results      AWS_REGION  the Region of the build
 # The script lives in that archive, so it builds the tree it belongs to. CodeBuild has extracted the archive there already; this script makes a git repository of it
 # (deploy.sh and codebuild-run.sh build a commit), and checks that the archive names the commit of its key.
@@ -667,7 +668,26 @@ phase_client_only() {
   if [ -z "$tree" ] || [ "$current" != "$tree" ] || [ "$config" != "$SETUP_CONFIG_SHA256" ] || ! stacks_complete; then
     fail_run refused "reason=not-deployed wait=no stage=unchanged :: The stage does not run this source tree and account file (deployed-source-tree ${current:-none}, this tree ${tree:-unknown}${STACK_PROBLEM:+; $STACK_PROBLEM}), so the client alone would not match it. Run ./setup.sh --update --force-deploy to deploy it."
   fi
-  record_phase deploy skipped 0 "client only: the stage already runs this source tree and account file"
+  # The stage runs this source tree, and a release that changes no file the stage runs still has its own VERSION. The label of the release is written alone
+  # (scripts/deploy.sh --relabel: one SSM parameter, no build, no stack change), so the version the backend reports follows the release and the client it goes with.
+  # deploy.py checks the record and the stage's parameters again under the lock setup holds; it never lowers a label.
+  local -a assigns=("HAMH_SOURCE_COMMIT=$COMMIT")
+  local rc re_refused='^DEPLOY-REFUSED (reason=([a-z0-9-]+) wait=(yes|no) stage=unchanged :: .+)$' re_label='^DEPLOY-LABEL stage=[a-z]+ version=([0-9.]+) ?(.*)$' refused failed label
+  [ -z "${SETUP_DEPLOY_LOCK_TOKEN:-}" ] || assigns+=("HAMH_DEPLOY_LOCK_TOKEN=$SETUP_DEPLOY_LOCK_TOKEN")
+  run_logged "$WORK/relabel.log" env "${assigns[@]}" bash "$ROOT/scripts/deploy.sh" --stage "$STAGE" --relabel
+  rc=$?
+  if [ "$rc" = 3 ]; then
+    refused=$(grep -E '^DEPLOY-REFUSED ' "$WORK/relabel.log" | tail -n 1 | cut -c1-600)
+    if [[ $refused =~ $re_refused ]]; then STAGE_UNCHANGED=1; FAILED_STEP=${BASH_REMATCH[2]}; fail_run refused "${BASH_REMATCH[1]}"; fi
+  fi
+  if [ "$rc" != 0 ]; then
+    failed=$(grep -E '^DEPLOY-FAIL ' "$WORK/relabel.log" | tail -n 1 | cut -c1-600)
+    FAILED_STEP=release-label
+    fail_run deploy "release label: ${failed:-scripts/deploy.sh --relabel ended with exit $rc without a DEPLOY-FAIL line}"
+  fi
+  label=$(grep -E '^DEPLOY-LABEL ' "$WORK/relabel.log" | tail -n 1 | cut -c1-300)
+  [[ $label =~ $re_label ]] || fail_run deploy "release label: scripts/deploy.sh --relabel ended with exit 0 and no DEPLOY-LABEL line"
+  record_phase deploy skipped 0 "client only: the stage already runs this source tree and account file; release label ${BASH_REMATCH[1]}${BASH_REMATCH[2]:+ (${BASH_REMATCH[2]})}"
   DEPLOY_DIGEST12=""
 }
 

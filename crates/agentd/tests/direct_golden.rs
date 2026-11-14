@@ -216,6 +216,16 @@ fn check(name: &str, d: &Direct) {
     }
 }
 
+/// The options every golden scenario starts from. Agentd copies the work after a tool call and on a timer while the engine works, and
+/// whether such a copy is stored before a short scenario ends depends on timing; with the looks off (`snapshotEveryS` 0) each stream holds
+/// the one copy every run makes, the copy of the end, at the same place every time.
+fn golden_opts() -> Opts {
+    Opts {
+        snapshot_every_s: Some(0),
+        ..Opts::default()
+    }
+}
+
 async fn run(d: &Direct) {
     d.invoke().await;
     d.wait_healthy().await;
@@ -251,7 +261,7 @@ fn quick(more: impl FnOnce(&mut Config) + 'static) -> Option<CfgEdit> {
 /// The plain run: one prompt, tool calls, files written, reported done, everything delivered.
 #[tokio::test(flavor = "multi_thread")]
 async fn golden_reported_done() {
-    let d = Direct::start(Opts::default()).await;
+    let d = Direct::start(golden_opts()).await;
     run(&d).await;
     check("reported_done", &d);
 }
@@ -267,7 +277,7 @@ async fn golden_nudge() {
             sha256: sha(text.as_bytes()),
             max_nudges: 3,
         }),
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -281,7 +291,7 @@ async fn golden_retry_and_switch() {
         scenario: "provider_down_then_done",
         edit_cfg: quick(|_| {}),
         failover: vec![route_spec(OPUS_GLOBAL)],
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -294,7 +304,7 @@ async fn golden_engine_stop() {
     let d = Direct::start(Opts {
         scenario: "loop_guard_always",
         edit_cfg: quick(|_| {}),
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -308,7 +318,7 @@ async fn golden_user_cancel() {
         scenario: "end_turn_done",
         engine_env: vec![("FAKE_ACP_HOLD_PROMPTS", "1".into())],
         timeout_s: 60,
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     d.aws.cancel_on(EventType::TurnStarted);
@@ -323,7 +333,7 @@ async fn golden_question_and_message() {
         scenario: "gave_up_then_done",
         input_wait_s: Some(30),
         edit_cfg: quick(|_| {}),
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     d.aws.instruct_on(
@@ -346,7 +356,7 @@ async fn golden_question_and_fresh_session() {
         ],
         input_wait_s: Some(30),
         edit_cfg: quick(|_| {}),
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     d.aws.instruct_on(
@@ -362,7 +372,7 @@ async fn golden_question_and_fresh_session() {
 async fn golden_setup_failed() {
     let d = Direct::start(Opts {
         tamper_request: true,
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -374,7 +384,7 @@ async fn golden_setup_failed() {
 async fn golden_rpc_error() {
     let d = Direct::start(Opts {
         scenario: "rpc_error",
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -386,7 +396,7 @@ async fn golden_rpc_error() {
 async fn golden_refusal() {
     let d = Direct::start(Opts {
         scenario: "refusal",
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -399,7 +409,7 @@ async fn golden_engine_exits_at_start() {
     let d = Direct::start(Opts {
         rules: vec![],
         engine_env: vec![("WRAP_EXIT", "7".into())],
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -413,7 +423,7 @@ async fn golden_deadline() {
         scenario: "end_turn_done",
         engine_env: vec![("FAKE_ACP_HOLD_PROMPTS", "1".into())],
         timeout_s: 15,
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;
@@ -427,7 +437,7 @@ async fn golden_silence() {
         scenario: "writes_files",
         engine_env: vec![("FAKE_ACP_SILENCE_S", "3600".into())],
         provider_silence_s: Some(1),
-        ..Opts::default()
+        ..golden_opts()
     })
     .await;
     run(&d).await;

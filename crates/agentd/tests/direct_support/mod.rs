@@ -154,6 +154,10 @@ pub struct AwsState {
     cancel_sent: Mutex<bool>,
     /// `(substring of bucket/key, pause)`: a GET whose key contains the substring is answered after the pause.
     get_delays: Mutex<Vec<(String, Duration)>>,
+    /// `(substring of bucket/key, pause)`: a PUT whose key contains the substring is answered after the pause.
+    put_delays: Mutex<Vec<(String, Duration)>>,
+    /// `(substring of bucket/key, pause, left)`: the next `left` PUTs whose key contains the substring are answered after the pause.
+    put_delays_next: Mutex<Vec<(String, Duration, u32)>>,
     /// The next this-many `/internal/turn-complete` posts answer 500.
     complete_failures: Mutex<u32>,
     complete_attempts: Mutex<u32>,
@@ -291,6 +295,27 @@ async fn s3_put(
     body: Bytes,
 ) -> axum::response::Response {
     let full = format!("{bucket}/{key}");
+    let next = s
+        .put_delays_next
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|(sub, _, left)| *left > 0 && full.contains(sub.as_str()))
+        .map(|(_, d, left)| {
+            *left -= 1;
+            *d
+        });
+    let pause = next.or_else(|| {
+        s.put_delays
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(sub, _)| full.contains(sub.as_str()))
+            .map(|(_, d)| *d)
+    });
+    if let Some(d) = pause {
+        tokio::time::sleep(d).await;
+    }
     *s.put_attempts
         .lock()
         .unwrap()
@@ -870,6 +895,25 @@ impl FakeAws {
     pub fn delay_gets(&self, substring: &str, pause: Duration) {
         self.state
             .get_delays
+            .lock()
+            .unwrap()
+            .push((substring.to_string(), pause));
+    }
+
+    /// The next `times` PUTs whose bucket/key contains `substring` are answered after `pause`; the ones after them at once (one request
+    /// that hangs, then a store that answers again).
+    pub fn delay_next_puts(&self, substring: &str, pause: Duration, times: u32) {
+        self.state
+            .put_delays_next
+            .lock()
+            .unwrap()
+            .push((substring.to_string(), pause, times));
+    }
+
+    /// A PUT whose bucket/key contains `substring` is answered after `pause` (a store that is slow to take an object).
+    pub fn delay_puts(&self, substring: &str, pause: Duration) {
+        self.state
+            .put_delays
             .lock()
             .unwrap()
             .push((substring.to_string(), pause));

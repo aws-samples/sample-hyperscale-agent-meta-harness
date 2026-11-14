@@ -173,7 +173,8 @@ import subprocess
 st = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True).stdout
 log = subprocess.run(["git", "log", "--format=%H"], capture_output=True, text=True).stdout.split()
 acc = os.environ.get("HAMH_ACCOUNTS_FILE")
-record("deploy", {"git_status": st, "commits": len(log), "accounts_json_in_tree": os.path.isfile("accounts.json"),
+# The label step of a client-only build is its own call, so the cases that count deploys count deploys only
+record("relabel" if "--relabel" in sys.argv[1:] else "deploy", {"git_status": st, "commits": len(log), "accounts_json_in_tree": os.path.isfile("accounts.json"),
                   "accounts_file_text": open(acc).read() if acc and os.path.isfile(acc) else None})
 heal = os.environ.get("FAKE_DEPLOY_HEAL")
 if heal:
@@ -185,6 +186,15 @@ if heal:
     with open(path, "w") as f:
         json.dump(st_doc, f)
 PY
+case " $* " in *" --relabel "*)
+  case "${FAKE_RELABEL:-pass}" in
+    pass) echo "deploy: label"; echo "DEPLOY-LABEL stage=direct version=${FAKE_LABEL_VERSION:-5.14} was=5.13"; exit 0 ;;
+    unchanged) echo "DEPLOY-LABEL stage=direct version=${FAKE_LABEL_VERSION:-5.14} unchanged"; exit 0 ;;
+    refused) echo "DEPLOY-REFUSED reason=not-deployed wait=no stage=unchanged :: The stage does not run this source tree. Run ./setup.sh --update --force-deploy to deploy it."; exit 3 ;;
+    fail) echo "DEPLOY-FAIL release-label could not write /hamh/direct/release-version"; exit 1 ;;
+    line) echo "deploy: label"; echo "$FAKE_RELABEL_LINE"; exit 0 ;;
+  esac ;;
+esac
 case "${FAKE_DEPLOY:-pass}" in
   pass) echo "deploy: stage=direct sha=abcdef0"; echo "DEPLOY-PASS stage=direct digest=__DIGEST12__ sourceTree=fedcba987654"; exit 0 ;;
   fail) echo "deploy: stack hamh-direct-network"; echo "DEPLOY-FAIL stack hamh-direct-network"; exit 1 ;;

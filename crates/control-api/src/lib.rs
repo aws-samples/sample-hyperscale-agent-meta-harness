@@ -13,9 +13,12 @@
 //! same bytes, linked to the blocked one; `direct` holds the checks and the write that it shares with a fresh start.
 //! `resume` is the continuation of a run that stopped delivered, `paused` or `stalled`: `POST /v1/runs/{runId}/resume` starts a follow-up
 //! run from the code the stopped run delivered, with the stopped run's request and a continuation paragraph on the prompt.
+//! `admission` is the look at the stage's deploy lock before a run is created: a stage that is being updated answers a start with 409
+//! `stage-updating` and `Retry-After`.
 //! `version` is the backend's version (the root `VERSION` file that `build.rs` embeds) with the header that carries it on every answer;
 //! `version_check` is the shape check `build.rs` shares with the library.
 
+pub mod admission;
 pub mod aws;
 pub mod body;
 pub mod chat_events;

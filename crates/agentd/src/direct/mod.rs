@@ -75,7 +75,9 @@ use crate::direct::probe::BedrockProbe;
 use crate::direct::request::{rule_refs, rules_digest, rules_manifest};
 use crate::direct::retry::RetryPolicy;
 use crate::direct::review::{GitRepo, ReviewPlan};
-use crate::direct::snapshot::{GitSource, Snapshotter, snapshot_json};
+use crate::direct::snapshot::{
+    Cadence, CopyClock, GitSource, SnapshotMade, Snapshotter, snapshot_json,
+};
 use crate::direct::summary::{
     InputNote, SummaryExtras, SummaryInputs, build_summary_with, nudge_note, reclassify,
 };
@@ -680,6 +682,12 @@ struct State {
     prompt_s: Option<u64>,
     exit_note: Option<String>,
     snapshots: Arc<Mutex<DirectSnapshots>>,
+    /// The copies of the work of this session (the private repository and where its copies go); `None` before the checkout exists
+    /// and when the private repository could not be made.
+    copies: Option<Copies>,
+    /// Why the private repository of the copies could not be made. The run was told when it happened, and the end of the turn
+    /// names it, because such a session saves no copy at all.
+    copies_error: Option<String>,
     /// Every try of the prompt, when the run retried after a provider failure.
     attempts: Vec<DirectAttempt>,
     /// Every confirmed switch of route or model (failover).
@@ -1557,6 +1565,16 @@ async fn start_and_prompt(
         // The deadline counts from the moment the invocation was accepted, whatever setup cost.
         let deadline = received + Duration::from_secs(u64::from(req.timeout_s));
 
+        // The private repository of the copies is made for every session, before the engine starts: it is seeded from the base,
+        // which agentd can read only while `.git` is the checkout's own, and an engine may move or remove `.git` at once.
+        match Copies::open(app, req, &agent_data, &wt, &base, st.snapshots.clone(), rec).await {
+            Ok(copies) => st.copies = Some(copies),
+            Err(e) => {
+                copies_off(app, &st.snapshots, rec, &e);
+                st.copies_error = Some(e);
+            }
+        }
+
         // 11. the engine
         let spec = LaunchSpec {
             argv: launch.argv.clone(),
@@ -1605,12 +1623,18 @@ async fn start_and_prompt(
                 .with_tap(tap)
                 .with_interrupt(hook_env.ctl.client_side(), CANCEL_GRACE);
         }
+        // The copies of the work. The private repository is made before the engine starts (above), the copy of the end is made in
+        // `finish`, and the task below looks at the tree on the timer and when a tool call ended.
+        let tree_wake = Arc::new(tokio::sync::Notify::new());
         let mut collector = DirectCollector::new(rec.clone())
             .with_engine(&req.engine)
             .with_secret_set(st.secrets.clone())
-            .with_hooks(hooks.clone());
-        let snapshots =
-            start_snapshots(app, req, &agent_data, &wt, &base, st.snapshots.clone()).await;
+            .with_hooks(hooks.clone())
+            .with_tree_wake(tree_wake.clone());
+        let snapshots = st
+            .copies
+            .as_ref()
+            .and_then(|copies| start_snapshots(app, req, copies.clone(), tree_wake));
         // Stale cargo build output is pruned while a prompt runs: the look stops with the stage loop, below.
         let pruning = start_prune(app, &agent_data, rec);
         // The first prompt of a slice after the first is the harness's: the task, the work tree's facts and the earlier session's last message.
@@ -1749,7 +1773,18 @@ async fn start_and_prompt(
             st.exit_note = crate::turn::closed_note(&exit, &host.capture);
         }
         st.pinned = end.pinned;
-        st.usage = end.usage;
+        // The engine's runs that no answered prompt reported (a prompt that ended in an error, the goal plugin's own rounds).
+        let outside = hooks.usage_outside_prompts();
+        if let Some(u) = outside {
+            app.log.line(&format!(
+                "direct usage outside the answered prompts: input {} output {} cache read {} cache write {}",
+                u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_write_input_tokens
+            ));
+        }
+        st.usage = match (end.usage, outside) {
+            (Some(a), Some(b)) => Some(summary::add_usage(a, b)),
+            (a, b) => a.or(b),
+        };
         st.tool_calls = collector.tool_calls();
         st.nudges_sent = end.nudges_sent;
         st.max_silent_gap_s = end.max_silent_gap_s;
@@ -2137,14 +2172,317 @@ impl Drop for SnapshotTask {
     }
 }
 
-/// Starts the periodic snapshot task; `None` when snapshots are off or the snapshot repository could not be made.
-async fn start_snapshots(
+/// The copies of the work that a session keeps in the bucket: agentd's private repository under one lock, where a copy goes, and what
+/// the run is told. The copy task ([`start_snapshots`]) and the copy of the end ([`Copies::save_final`]) use the same handle, so they never
+/// run at once and they count in one place.
+#[derive(Clone)]
+struct Copies {
+    snapshotter: Arc<tokio::sync::Mutex<Snapshotter>>,
+    creds: Arc<crate::creds::CredStore>,
+    log: Arc<dyn crate::logging::LogSink>,
+    region: String,
+    endpoint: Option<String>,
+    bucket: String,
+    run: String,
+    /// Slice n keeps its snapshots under its own turn, so a later slice never overwrites the one an earlier slice's restore names.
+    turn: u32,
+    pause: Duration,
+    stats: Arc<Mutex<DirectSnapshots>>,
+    rec: Arc<EventRecorder>,
+    /// A copy failed and none has been stored since: the run was told once.
+    failing: Arc<std::sync::atomic::AtomicBool>,
+    /// The longest the copy of the end may take (`final_copy_budget`).
+    final_budget: Duration,
+}
+
+/// What a look at the tree did.
+enum Looked {
+    /// The tree had not changed.
+    Same,
+    /// A copy was stored: the size of its bundle, and when git had made it (the uploads came after).
+    Stored {
+        bytes: u64,
+        git_ended: std::time::Instant,
+    },
+    /// A copy could not be made or stored.
+    Failed,
+}
+
+/// The sentence the run is told when a copy cannot be saved, once per streak of failures.
+pub const COPY_NOT_SAVED: &str = "A copy of the work could not be saved; ham keeps trying.";
+
+/// The sentence the run is told when the copy of the end cannot be saved and no earlier failure was said: nothing tries again
+/// after the end, so it promises nothing.
+pub const END_COPY_NOT_SAVED: &str = "The last copy of the work could not be saved.";
+
+/// One request of the first try of the copy of the end has the copy's budget divided by this (30 s of the default 120 s). A
+/// request that gets no answer then ends early enough for the tries after it: three fit with their pauses (30 + 2 + 30 + 4 + 30 s).
+pub const FINAL_COPY_REQUEST_SHARE: u32 = 4;
+
+/// The sentence the run is told when a session cannot make the private repository of its copies: it saves none, so nothing is
+/// promised but the delivery.
+pub const COPIES_OFF: &str = "Copies of the work cannot be saved in this session. The work is kept only if the run delivers it.";
+
+/// The private repository of the copies could not be made: counted as a failed copy, logged, and the run is told (`COPIES_OFF`).
+fn copies_off(app: &App, stats: &Mutex<DirectSnapshots>, rec: &EventRecorder, e: &str) {
+    stats.lock().unwrap_or_else(|p| p.into_inner()).failures += 1;
+    app.log
+        .line(&format!("direct turn snapshots off: {}", scrub_detail(e)));
+    rec.record(
+        EventType::TurnProgress,
+        serde_json::json!({
+            "turn": DIRECT_TURN,
+            "kind": "notify",
+            "reason": "copy_not_saved",
+            "outageMinutes": null,
+            "detail": COPIES_OFF,
+        }),
+    );
+}
+
+impl Copies {
+    /// Makes the private repository of the session's copies for the work tree at `wt`; the error says why it cannot be made
+    /// ([`copies_off`] tells the run).
+    async fn open(
+        app: &App,
+        req: &DirectInvocationRequest,
+        agent_data: &Path,
+        wt: &Worktree,
+        base: &str,
+        stats: Arc<Mutex<DirectSnapshots>>,
+        rec: &Arc<EventRecorder>,
+    ) -> Result<Self, String> {
+        let snapshotter = Snapshotter::new(agent_data, &wt.repo, base).await?;
+        Ok(Self {
+            snapshotter: Arc::new(tokio::sync::Mutex::new(snapshotter)),
+            creds: app.creds.clone(),
+            log: app.log.clone(),
+            region: req.region.clone(),
+            endpoint: app.cfg.s3_endpoint.clone(),
+            bucket: s3::split_uri(&req.request.uri)
+                .map(|(b, _)| b.to_string())
+                .unwrap_or_default(),
+            run: req.run_id.clone(),
+            turn: req.turn,
+            pause: app.cfg.direct.upload_retry_pause,
+            stats,
+            rec: rec.clone(),
+            failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            final_budget: app.cfg.direct.final_copy_budget,
+        })
+    }
+
+    /// Uploads `made` (the bundle, then the record, so a reader that sees the record finds the bundle), counts it and tells the run: one
+    /// `turn.progress` event with a `savedCopy` member and no `kind`, which a client that does not know the member ignores.
+    ///
+    /// `request` is the limit of one request; `None` is the client's own. The first try of the copy of the end sets one
+    /// ([`FINAL_COPY_REQUEST_SHARE`]).
+    async fn store(&self, made: &SnapshotMade, request: Option<Duration>) -> Result<(), String> {
+        let s3_objects = S3Objects::new(self.region.clone(), self.endpoint.clone());
+        let s3_objects = match request {
+            Some(limit) => s3_objects.with_request_timeout(limit),
+            None => s3_objects,
+        };
+        let c = self.creds.current().await.map_err(|e| e.to_string())?;
+        let bundle_uri = s3::uri(
+            &self.bucket,
+            &s3::snapshot_bundle_key_t(&self.run, self.turn),
+        );
+        upload_file(&s3_objects, &bundle_uri, &c, &made.bundle, self.pause).await?;
+        let at = format_rfc3339(now_unix());
+        let json_path = made.bundle.with_file_name("snapshot.json");
+        std::fs::write(&json_path, snapshot_json(made, &at)).map_err(|e| e.to_string())?;
+        let json_uri = s3::uri(&self.bucket, &s3::snapshot_json_key_t(&self.run, self.turn));
+        upload_file(&s3_objects, &json_uri, &c, &json_path, self.pause).await?;
+        {
+            let mut s = self.stats.lock().unwrap_or_else(|p| p.into_inner());
+            s.count = made.count;
+            s.last_at = Some(at.clone());
+        }
+        self.failing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut saved = serde_json::json!({
+            "at": at,
+            "count": made.count,
+            "headSha": made.commit,
+            "session": self.turn,
+        });
+        if made.final_copy {
+            saved["final"] = serde_json::json!(true);
+        }
+        self.rec.record(
+            EventType::TurnProgress,
+            serde_json::json!({"turn": DIRECT_TURN, "savedCopy": saved}),
+        );
+        Ok(())
+    }
+
+    /// What the clean-up of the private repository after a look could not do is logged; the copy itself is not affected.
+    fn log_tidy(&self, snapshotter: &mut Snapshotter) {
+        if let Some(e) = snapshotter.take_tidy_error() {
+            self.log.line(&format!(
+                "direct turn copy repository clean-up failed: {}",
+                scrub_detail(&e)
+            ));
+        }
+    }
+
+    /// A copy failed: it is counted and logged, and the run is told (`sentence`) when it is the first failure since a copy was stored.
+    fn failed(&self, what: &str, e: &str, sentence: &str) {
+        self.count_failed(what, e);
+        self.tell_failed(sentence);
+    }
+
+    /// A copy failed: it is counted and logged. The run is not told here.
+    fn count_failed(&self, what: &str, e: &str) {
+        self.stats
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .failures += 1;
+        self.log
+            .line(&format!("direct turn {what} failed: {}", scrub_detail(e)));
+    }
+
+    /// The run is told (`sentence`) that a copy could not be saved, when it is the first failure since a copy was stored.
+    fn tell_failed(&self, sentence: &str) {
+        if !self.failing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.rec.record(
+                EventType::TurnProgress,
+                serde_json::json!({
+                    "turn": DIRECT_TURN,
+                    "kind": "notify",
+                    "reason": "copy_not_saved",
+                    "outageMinutes": null,
+                    "detail": sentence,
+                }),
+            );
+        }
+    }
+
+    /// One look of the copy task: a copy when the tree changed since the last one.
+    async fn look(&self) -> Looked {
+        let mut snapshotter = self.snapshotter.lock().await;
+        let looked = snapshotter.snapshot().await;
+        self.log_tidy(&mut snapshotter);
+        let made = match looked {
+            Ok(Some(made)) => made,
+            Ok(None) => return Looked::Same,
+            Err(e) => {
+                self.failed("snapshot", &e, COPY_NOT_SAVED);
+                return Looked::Failed;
+            }
+        };
+        // What the spacing counts ends here: the uploads cost the engine nothing, and one that hangs must not hold the next look back.
+        let git_ended = std::time::Instant::now();
+        match self.store(&made, None).await {
+            Ok(()) => Looked::Stored {
+                bytes: made.bundle_bytes,
+                git_ended,
+            },
+            Err(e) => {
+                // The tree has no stored copy yet: the next look copies it again, changed or not.
+                snapshotter.forget_last();
+                self.failed("snapshot", &e, COPY_NOT_SAVED);
+                Looked::Failed
+            }
+        }
+    }
+
+    /// The copy of the end, made when the engine and everything it started have stopped and the copy task is over: the final
+    /// `head` when the end commit was made, else the tree as it is (no git call reads the engine's repository then). It is tried a second
+    /// time as the tree when the head cannot be copied. `Some(text)` is what the turn's error says when no copy could be stored.
+    ///
+    /// The whole of it (the wait for a copy in flight, git, both uploads) has `final_budget`: the delivery that follows must not wait on
+    /// a copy that does not come. Giving up drops the work in flight: git is killed with its future and an upload is abandoned. An
+    /// upload whose bytes were sent can still be stored after that, so the words are "not confirmed"; a bundle that went up without its
+    /// record is served by the route from the bundle's own commit once it is old enough.
+    ///
+    /// This is the first try. One request of it has a quarter of the budget ([`FINAL_COPY_REQUEST_SHARE`]), so that a request that gets
+    /// no answer leaves room for the tries after it. A failure is counted and logged; the run is told by [`Copies::save_final_again`] or
+    /// [`Copies::end_copy_not_saved`], once it is known that no later try stored the copy.
+    async fn save_final(&self, head: Option<&str>) -> Option<String> {
+        self.save_final_within(head, Some(self.final_budget / FINAL_COPY_REQUEST_SHARE))
+            .await
+    }
+
+    /// The copy of the end once more, for a first try that said `first`: the session's own bundle went up after it, so the
+    /// bucket answers. A request has the client's own limit this time, and the try has a budget of the same length as the first. `None`
+    /// when the copy is stored now; else what the turn's error says, and the run is told.
+    async fn save_final_again(&self, head: Option<&str>, first: &str) -> Option<String> {
+        let said = self.save_final_within(head, None).await;
+        match &said {
+            None => self.log.line(&format!(
+                "direct turn final copy stored at the second try; the first said: {}",
+                scrub_detail(first)
+            )),
+            Some(_) => self.end_copy_not_saved(),
+        }
+        said
+    }
+
+    /// The end state of the work has no copy and nothing tries again: the run is told, unless an earlier failure was said already.
+    fn end_copy_not_saved(&self) {
+        self.tell_failed(END_COPY_NOT_SAVED);
+    }
+
+    async fn save_final_within(
+        &self,
+        head: Option<&str>,
+        request: Option<Duration>,
+    ) -> Option<String> {
+        match tokio::time::timeout(self.final_budget, self.save_final_unbounded(head, request))
+            .await
+        {
+            Ok(said) => said,
+            Err(_) => {
+                let e = format!("not confirmed within {} s", self.final_budget.as_secs_f32());
+                self.count_failed("final copy", &e);
+                Some(format!("final copy: {e}"))
+            }
+        }
+    }
+
+    async fn save_final_unbounded(
+        &self,
+        head: Option<&str>,
+        request: Option<Duration>,
+    ) -> Option<String> {
+        let mut snapshotter = self.snapshotter.lock().await;
+        let made = match snapshotter.final_copy(head).await {
+            Ok(made) => Ok(made),
+            Err(e) if head.is_some() => {
+                self.log_tidy(&mut snapshotter);
+                self.log.line(&format!(
+                    "direct turn final copy of the head failed, copying the tree: {}",
+                    scrub_detail(&e)
+                ));
+                snapshotter.final_copy(None).await
+            }
+            Err(e) => Err(e),
+        };
+        self.log_tidy(&mut snapshotter);
+        let stored = match made {
+            Ok(made) => self.store(&made, request).await,
+            Err(e) => Err(e),
+        };
+        match stored {
+            Ok(()) => None,
+            Err(e) => {
+                self.count_failed("final copy", &e);
+                Some(format!("final copy: {}", scrub_detail(&e)))
+            }
+        }
+    }
+}
+
+/// Starts the copy task: it looks at the tree every `snapshotEveryS` seconds, counted from the start of one look to the start of
+/// the next, and when a tool call ended ([`Cadence`]), and stores a copy when the tree changed. `None` when the invocation switched the
+/// copies off (0); the copy of the end is made all the same.
+fn start_snapshots(
     app: &App,
     req: &DirectInvocationRequest,
-    agent_data: &Path,
-    wt: &Worktree,
-    base: &str,
-    stats: Arc<Mutex<DirectSnapshots>>,
+    copies: Copies,
+    wake: Arc<tokio::sync::Notify>,
 ) -> Option<SnapshotTask> {
     let every = match app.cfg.direct.snapshot_interval {
         Some(d) => d,
@@ -2153,57 +2491,33 @@ async fn start_snapshots(
             s => Duration::from_secs(u64::from(s)),
         },
     };
-    let mut snapshotter = match Snapshotter::new(agent_data, &wt.repo, base).await {
-        Ok(s) => s,
-        Err(e) => {
-            app.log.line(&format!("direct turn snapshots off: {e}"));
-            return None;
-        }
-    };
-    let creds = app.creds.clone();
-    let log = app.log.clone();
-    let s3_objects = S3Objects::new(req.region.clone(), app.cfg.s3_endpoint.clone());
-    let (bucket, run) = (
-        s3::split_uri(&req.request.uri)
-            .map(|(b, _)| b.to_string())
-            .unwrap_or_default(),
-        req.run_id.clone(),
-    );
-    // Slice n keeps its snapshots under its own turn, so a later slice never overwrites the one an earlier slice's restore names.
-    let turn = req.turn;
-    let pause = app.cfg.direct.upload_retry_pause;
+    let mut cadence = Cadence::new(Some(every));
+    if let Some(floor) = app.cfg.direct.snapshot_floor {
+        cadence = cadence.with_floor(floor);
+    }
     Some(SnapshotTask(tokio::spawn(async move {
+        // The cadence counts in real time (`std`); the sleeps are tokio's.
+        let mut clock = CopyClock::default();
+        let mut next_tick = Instant::now() + every;
         loop {
-            tokio::time::sleep(every).await;
-            let outcome = async {
-                let Some(made) = snapshotter.snapshot().await? else {
-                    return Ok::<_, String>(None);
-                };
-                let c = creds.current().await.map_err(|e| e.to_string())?;
-                let bundle_uri = s3::uri(&bucket, &s3::snapshot_bundle_key_t(&run, turn));
-                upload_file(&s3_objects, &bundle_uri, &c, &made.bundle, pause).await?;
-                let at = format_rfc3339(now_unix());
-                let json_path = made.bundle.with_file_name("snapshot.json");
-                std::fs::write(&json_path, snapshot_json(&made, &at)).map_err(|e| e.to_string())?;
-                let json_uri = s3::uri(&bucket, &s3::snapshot_json_key_t(&run, turn));
-                upload_file(&s3_objects, &json_uri, &c, &json_path, pause).await?;
-                Ok(Some((made.count, at)))
+            // The timer, or a tool call that ended while the bundles are small.
+            let woke = tokio::select! {
+                () = tokio::time::sleep_until(next_tick) => false,
+                () = wake.notified(), if cadence.wakes(&clock) => true,
+            };
+            let wait = cadence.delay(&clock, woke, std::time::Instant::now());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait).await;
             }
-            .await;
-            let mut s = stats.lock().unwrap_or_else(|p| p.into_inner());
-            match outcome {
-                Ok(Some((count, at))) => {
-                    s.count = count;
-                    s.last_at = Some(at);
+            let started = std::time::Instant::now();
+            next_tick = Instant::now() + every;
+            match copies.look().await {
+                Looked::Stored { bytes, git_ended } => {
+                    clock.looked(started, git_ended, Some(bytes));
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    s.failures += 1;
-                    log.line(&format!(
-                        "direct turn snapshot failed: {}",
-                        scrub_detail(&e)
-                    ));
-                }
+                Looked::Same => clock.looked(started, std::time::Instant::now(), None),
+                // Nothing is spaced after a copy that failed: the next tick tries again, as the run was told.
+                Looked::Failed => clock.failed(started),
             }
         }
     })))
@@ -2375,6 +2689,8 @@ async fn finish(
     };
     let mut upload_error: Option<String> = None;
     let mut tree_files: Option<u32> = None;
+    // Whether the copy of the end was tried in the commit step below.
+    let mut final_copy_tried = false;
     // The flow the run declared; stays `None` when the checkout cannot be read (untrusted), as the summary leaves the member out.
     let mut flow: Option<DirectFlow> = None;
     // An end-of-run object that was in the bucket before agentd's create-only write (S3's 412, or a retry's HEAD showing another writer's
@@ -2415,6 +2731,16 @@ async fn finish(
             }
         };
         git.committed_by_harness = head.is_some() && head != before;
+        // The copy of the end, before the session's own bundle is written and before anything that can refuse a delivery. Without a
+        // head (the commit failed) it is the tree as it is.
+        // What it says goes into the turn's errors here, once the second try (below) has had its turn.
+        let final_copy_at = errors.len();
+        let final_head = head.clone();
+        let mut final_copy_said: Option<String> = None;
+        if let Some(copies) = &st.copies {
+            final_copy_said = copies.save_final(head.as_deref()).await;
+            final_copy_tried = true;
+        }
         if let Some(base) = &st.base
             && let Ok(set) = workspace::changed_between(wt, base).await
         {
@@ -2488,6 +2814,37 @@ async fn finish(
             }
             Err(e) => errors.push(format!("bundle: {e}")),
         }
+        // The first try of the copy of the end was not stored. When the session's own bundle went up after it the bucket answers,
+        // so the copy is tried once more; without that sign nothing more is tried and the end sequence goes on. Either way the run is
+        // told when its end state has no copy.
+        if let (Some(copies), Some(first)) = (&st.copies, final_copy_said) {
+            let said = if git.bundle_uri.is_some() {
+                copies.save_final_again(final_head.as_deref(), &first).await
+            } else {
+                copies.end_copy_not_saved();
+                Some(first)
+            };
+            if let Some(e) = said {
+                errors.insert(final_copy_at.min(errors.len()), e);
+            }
+        }
+    }
+
+    // A checkout agentd runs no git in still has its end state copied: the tree as it is, hashed in agentd's own repository, which
+    // has its own configuration and reads nothing but files from the checkout. When the engine removed or replaced `.git` the copy holds
+    // the whole tree, without the history it can no longer read. No session bundle follows it, so there is one try.
+    if !final_copy_tried
+        && let Some(copies) = &st.copies
+        && let Some(e) = copies.save_final(None).await
+    {
+        copies.end_copy_not_saved();
+        errors.push(e);
+    }
+    // A session that could not make the private repository saved no copy at all: the end of the turn says so.
+    if st.copies.is_none()
+        && let Some(e) = &st.copies_error
+    {
+        errors.push(format!("final copy: {}", scrub_detail(e)));
     }
 
     // Row 16: the engine's end_turn with a message is "reported done" only when the delivered tree differs from the base.
