@@ -26,6 +26,20 @@
 //! A tree that gives none of these is `Plan::NoCommand` with the list of what the plan looked for ([`NO_COMMAND_REASON`]); a `.ham/test-command` file
 //! names the command of any other layout.
 //!
+//! A row of the log that names a part of a suite (a test file, a test id, a name filter: [`is_focused`]) is never a command of the plan: a part
+//! must not stand for the suite. When such rows are the only ones of their language,
+//! a plan made from the log or the goal card
+//! that holds no whole-suite command of that language gets what source 4 gives for it, behind the model's own commands, and a plan that is
+//! source 4 holds that step already: the step runs in place of the rows ([`PlanNotes::stand_ins`]). Source 4 reads the Python test files
+//! at the root and directly in `tests/` and `test/`; pytest collects more, so for rows that ran pytest in a tree where source 4 finds no
+//! Python command the step is `python3 -m pytest -q` when the tree holds test files in a folder below `tests/` or `test/` or at a path the
+//! rows name ([`pytest_from_the_root`]), also when no source gave a command at all. Rows with nothing in their place (no
+//! layout the report knows, a command that works in another folder, a file that names packages the report does not install: no Python step
+//! is added to such a tree, with or without pytest settings, because it would fail for want of an install that is the report's own) are
+//! [`PlanNotes::left_out`] with the reason, and a tree with no command at all names them in its reason. Nothing is added and nothing is said beside a
+//! whole-suite command of the same language, beside a command that may run the suite of any language (`make test`, a script, tox), or for a plan
+//! made from `.ham/test-command` or the repository's test scripts.
+//!
 //! The install steps. A test command needs the packages its tree declares, and a clean checkout has none of them. A plan made from the manifests
 //! (source 4) carries the install step it knows: the lockfile or `npm install` for a `package.json`, and for a Python tree with a
 //! `requirements.txt` the report's own virtual environment ([`VENV_INSTALL`]), in which the tests then run. Test commands that come from the
@@ -53,8 +67,8 @@ use crate::direct::report::command::{Parsed, classify};
 use crate::direct::report::command::{strip_notes, strip_timeout};
 use crate::direct::report::parse::{gotestsum_runs_tests, is_gotestsum_word};
 use harness_protocol::direct::{
-    LoggedRun, MAX_REPORT_COMMAND_CHARS, MAX_REPORT_STEPS, NO_COMMAND_FOUND_TESTS,
-    PLAN_NOTE_COMMAND, TestCommandSource, TestStepRole,
+    LeftOutWhy, LoggedRun, MAX_PLAN_LINE_COMMAND_CHARS, MAX_REPORT_COMMAND_CHARS, MAX_REPORT_STEPS,
+    NO_COMMAND_FOUND_TESTS, PLAN_NOTE_COMMAND, TestCommandSource, TestStepRole,
 };
 use std::io::Read;
 use std::path::Path;
@@ -479,12 +493,16 @@ fn from_command_file(root: &Path) -> Vec<PlannedStep> {
     steps
 }
 
-fn plain_command(c: &str) -> bool {
+/// Whether `c` is a test command the plan may read: not empty, within the length of a command, no control character, a runner the report knows.
+fn test_command(c: &str) -> bool {
     !c.is_empty()
         && c.chars().count() <= MAX_REPORT_COMMAND_CHARS
         && !c.chars().any(char::is_control)
         && is_test_command(c)
-        && !is_focused(c)
+}
+
+fn plain_command(c: &str) -> bool {
+    test_command(c) && !is_focused(c)
 }
 
 /// Whether `value` names a place in the tree that a clean checkout does not have: a relative path (it holds a `/`, does not start with one and has no
@@ -574,12 +592,30 @@ fn is_aggregate(script: &str) -> bool {
     )
 }
 
+/// A test command of the lifecycle log, made fit for the clean checkout, with what the log said of its last run.
+struct LoggedRow {
+    command: String,
+    logged: LoggedRun,
+    /// The command names a part of a suite ([`is_focused`]): it is no command of the plan.
+    focused: bool,
+}
+
 /// Every plain test command of the lifecycle log made fit for the clean checkout, in the order of each command's last run.
 fn logged_commands(root: &Path, records: &Records) -> Vec<(String, LoggedRun)> {
+    logged_rows(root, records)
+        .into_iter()
+        .filter(|r| !r.focused)
+        .map(|r| (r.command, r.logged))
+        .collect()
+}
+
+/// Every test command of the lifecycle log made fit for the clean checkout, in the order of each command's last run: the whole-suite commands
+/// and, marked, the ones that name a part of a suite. The two kinds never share a command, so each list is what it would be alone.
+fn logged_rows(root: &Path, records: &Records) -> Vec<LoggedRow> {
     let Some(text) = records.log().and_then(|rel| read_source(root, &rel)) else {
         return Vec::new();
     };
-    let mut seen: Vec<(String, LoggedRun)> = Vec::new();
+    let mut seen: Vec<LoggedRow> = Vec::new();
     for line in text.lines() {
         let Some((column, logged)) = parse_log_line(line) else {
             continue;
@@ -595,14 +631,19 @@ fn logged_commands(root: &Path, records: &Records) -> Vec<(String, LoggedRun)> {
         if names_base(notes) || names_base(&prose) {
             continue;
         }
-        if !plain_command(&command) {
+        if !test_command(&command) {
             continue;
         }
+        let focused = is_focused(&command);
         let Some(command) = fit_for_checkout(root, &command) else {
             continue;
         };
-        seen.retain(|(c, _)| *c != command);
-        seen.push((command, logged));
+        seen.retain(|r| r.command != command);
+        seen.push(LoggedRow {
+            command,
+            logged,
+            focused,
+        });
     }
     seen
 }
@@ -664,17 +705,17 @@ fn entry_scripts(root: &Path, records: &Records) -> Vec<PlannedStep> {
         .collect()
 }
 
-fn from_log(root: &Path, records: &Records) -> Vec<PlannedStep> {
-    let mut seen = logged_commands(root, records);
+fn from_log(rows: &[LoggedRow]) -> Vec<PlannedStep> {
+    let mut seen: Vec<&LoggedRow> = rows.iter().filter(|r| !r.focused).collect();
     let keep = seen.len().saturating_sub(MAX_TEST_STEPS);
     seen.drain(..keep);
     seen.into_iter()
-        .map(|(command, logged)| PlannedStep {
-            logged: Some(logged),
+        .map(|row| PlannedStep {
+            logged: Some(row.logged),
             ..step(
                 TestStepRole::Test,
                 TestCommandSource::LifecycleLog,
-                &command,
+                &row.command,
             )
         })
         .collect()
@@ -734,26 +775,7 @@ fn detect(root: &Path) -> Vec<PlannedStep> {
     } else {
         plain_python_layout(root)
     };
-    if !commands.is_empty() {
-        // The test steps come with the install step their tree needs: the packages of requirements.txt, in the environment the tests run in.
-        let venv = has_file(root, "requirements.txt");
-        if venv {
-            steps.push(of_install(
-                Install::Venv,
-                step(Setup, Detected, VENV_INSTALL),
-            ));
-        }
-        for args in &commands {
-            steps.push(if venv {
-                of_install(
-                    Install::Venv,
-                    step(Test, Detected, &format!("{VENV_PYTHON} {args}")),
-                )
-            } else {
-                step(Test, Detected, &format!("python3 {args}"))
-            });
-        }
-    }
+    steps.extend(python_steps(root, &commands));
     if let Some(pkg) = read_source(root, "package.json")
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg)
         && let Some(test) = v.pointer("/scripts/test").and_then(|t| t.as_str())
@@ -789,6 +811,35 @@ fn detect(root: &Path) -> Vec<PlannedStep> {
         steps.push(step(Test, Detected, "./gradlew test"));
     }
     steps.truncate(MAX_REPORT_STEPS);
+    steps
+}
+
+/// The steps of the Python test commands `commands` (the arguments that follow the interpreter) with the install step their tree needs:
+/// the packages of `requirements.txt`, in the report's own virtual environment, in which the tests then run. Empty for no command.
+fn python_steps(root: &Path, commands: &[String]) -> Vec<PlannedStep> {
+    use TestCommandSource::Detected;
+    use TestStepRole::{Setup, Test};
+    let mut steps = Vec::new();
+    if commands.is_empty() {
+        return steps;
+    }
+    let venv = has_file(root, "requirements.txt");
+    if venv {
+        steps.push(of_install(
+            Install::Venv,
+            step(Setup, Detected, VENV_INSTALL),
+        ));
+    }
+    for args in commands {
+        steps.push(if venv {
+            of_install(
+                Install::Venv,
+                step(Test, Detected, &format!("{VENV_PYTHON} {args}")),
+            )
+        } else {
+            step(Test, Detected, &format!("python3 {args}"))
+        });
+    }
     steps
 }
 
@@ -1037,6 +1088,92 @@ fn plain_python_test_files(root: &Path) -> Vec<String> {
     found
 }
 
+/// The most folders [`has_nested_python_tests`] reads.
+const MAX_NESTED_DIRS: usize = 256;
+/// How many folders below `tests/` or `test/` [`has_nested_python_tests`] goes down.
+const MAX_NESTED_DEPTH: usize = 6;
+
+/// Whether the tree holds a Python test file (`test_*.py`, `*_test.py`) in `tests/` or `test/` or in a folder below them, as far as the
+/// reading goes. pytest collects such a file from the root; [`plain_python_test_files`] reads only the files directly in the two
+/// folders. A link is not followed, and hidden folders, `node_modules` and `__pycache__` are passed over.
+fn has_nested_python_tests(root: &Path) -> bool {
+    let inside = |dir: &Path| {
+        dir.canonicalize()
+            .is_ok_and(|p| p.starts_with(root) && p.is_dir())
+    };
+    let mut folders: Vec<(std::path::PathBuf, usize)> = PLAIN_TEST_DIRS
+        .iter()
+        .map(|d| (root.join(d), 0))
+        .filter(|(dir, _)| inside(dir))
+        .collect();
+    let mut read = 0;
+    while let Some((dir, depth)) = folders.pop() {
+        if read == MAX_NESTED_DIRS {
+            return false;
+        }
+        read += 1;
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok).take(10_000) {
+            let (Ok(name), Ok(kind)) = (entry.file_name().into_string(), entry.file_type()) else {
+                continue;
+            };
+            if kind.is_file() && python_test_name(&name) {
+                return true;
+            }
+            if kind.is_dir()
+                && depth < MAX_NESTED_DEPTH
+                && !name.starts_with('.')
+                && name != "node_modules"
+                && name != "__pycache__"
+            {
+                folders.push((dir.join(&name), depth + 1));
+            }
+        }
+    }
+    false
+}
+
+/// The Python files `command` names: the words behind the program of each of its segments that end in `.py`, a test id cut off
+/// (`tests/test_a.py::test_x` names `tests/test_a.py`), without a leading `./`. An option is no file.
+fn named_python_files(command: &str) -> Vec<String> {
+    first_words(command)
+        .iter()
+        .flat_map(|words| words.iter().skip(1).copied())
+        .filter(|word| !word.starts_with('-'))
+        .map(|word| word.split("::").next().unwrap_or(word))
+        .filter(|path| path.ends_with(".py"))
+        .map(|path| path.trim_start_matches("./").to_string())
+        .collect()
+}
+
+/// What pytest gives a tree that the detection has no Python command for, when rows of the log that work at the root ran pytest on parts of
+/// a suite: `python3 -m pytest -q` from the root, with the install its tree needs, when the tree holds test files that pytest
+/// collects from there: in a folder below `tests/` or `test/` ([`has_nested_python_tests`]), or at a path one of the rows names (a file of
+/// the tree with a name pytest collects, such as `src/textstats/test_textstats.py`). Empty for rows of another runner (a unittest row names
+/// its files itself), for rows the shell has to read, and for a tree with no such file: a file whose name pytest does not collect runs only
+/// when it is named, and that run would be a part of a suite.
+fn pytest_from_the_root(root: &Path, at_root: &[(usize, &LoggedRow)]) -> Vec<PlannedStep> {
+    let pytest_rows: Vec<&str> = at_root
+        .iter()
+        .map(|(_, row)| row.command.as_str())
+        .filter(|command| pytest_words(command).is_some())
+        .collect();
+    if pytest_rows.is_empty() {
+        return Vec::new();
+    }
+    let named = pytest_rows
+        .iter()
+        .flat_map(|command| named_python_files(command))
+        .any(|file| python_test_name(base(&file)) && has_file(root, &file));
+    if named || has_nested_python_tests(root) {
+        python_steps(root, &["-m pytest -q".to_string()])
+    } else {
+        Vec::new()
+    }
+}
+
 /// The arguments of the test commands of a plain Python layout with no settings, as they follow the interpreter: `-m pytest -q`, or for
 /// files that all use unittest the discoveries that find them all, one command each ([`unittest_discoveries`]). Empty when the tree has no
 /// Python test file.
@@ -1266,29 +1403,636 @@ fn with_installs(root: &Path, steps: Vec<PlannedStep>) -> Vec<PlannedStep> {
     out
 }
 
-/// The plan for the tree at `tree`.
-pub fn plan(tree: &Path) -> Plan {
+// ---- the rows of the log that name a part of a suite --------------------------------------------------------------------------
+
+/// Test commands of the lifecycle log that the plan left out because each names a part of a suite: the last one run and the number
+/// of the others.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftOut {
+    pub command: String,
+    pub more: usize,
+}
+
+/// Test commands of the lifecycle log that were left out with nothing in their place, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Omitted {
+    pub rows: LeftOut,
+    pub why: LeftOutWhy,
+    /// What the log said of the last run of the command `rows` names, when that run did not pass (an exit code other than 0, or failed
+    /// tests). The command is not run in the clean checkout, so the report passes the log's word on.
+    pub logged: Option<LoggedRun>,
+}
+
+/// What the plan says about the test commands of the lifecycle log that it left out. The report writes it at the head of the output
+/// of the steps that carry it (`report::note_left_out`), and the summary reads it there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanNotes {
+    /// A test step of the plan that the harness chose from the layout of the tree, by its place in the plan, and the commands of the log that
+    /// it runs in place of: the rows of its language, which work at the root as it does.
+    pub stand_ins: Vec<(usize, LeftOut)>,
+    /// The commands of the log that were left out with nothing in their place: one entry for each reason, in the order of the first row
+    /// that has it.
+    pub left_out: Vec<Omitted>,
+    /// The place of the first step the report added behind the commands of a plan made from the log or the goal card; every step from
+    /// there on is its own addition. `None` for a plan it added nothing to and for a plan that holds no command of the model's. Such a
+    /// step never makes the report read as timed out (`report::run_planned`): the model's commands have run, and their result stands.
+    pub chosen_from: Option<usize>,
+}
+
+/// The language of a test command, by the program it starts. The detection has a layout for the first six. `Dotnet`, `Ruby` and
+/// `Php` are the runners of one language that it has none for: such a command runs no suite of another language, so the rows of the other
+/// languages keep their step, and a row of these languages that names a part of a suite is listed as left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Family {
+    Python,
+    Node,
+    Go,
+    Rust,
+    Maven,
+    Gradle,
+    Dotnet,
+    Ruby,
+    Php,
+}
+
+/// The language of the program that `words`, the words of one segment of a command, start. `None` for a program that may run the suite
+/// of any language (`make`, a script, tox, which runs whatever its environments name) and for a segment that starts no runner (`cd api`).
+fn family_of(words: &[&str]) -> Option<Family> {
+    match base(words[0]) {
+        "pytest" | "py.test" => Some(Family::Python),
+        "npm" | "pnpm" | "yarn" | "bun" | "npx" | "pnpx" | "node" | "jest" | "vitest" | "mocha" => {
+            Some(Family::Node)
+        }
+        "go" | "gotestsum" => Some(Family::Go),
+        "cargo" => Some(Family::Rust),
+        "mvn" | "mvnw" => Some(Family::Maven),
+        "gradle" | "gradlew" => Some(Family::Gradle),
+        "dotnet" => Some(Family::Dotnet),
+        "rspec" => Some(Family::Ruby),
+        "bundle" if words.get(1) == Some(&"exec") && words.get(2) == Some(&"rspec") => {
+            Some(Family::Ruby)
+        }
+        "phpunit" => Some(Family::Php),
+        // `python -m tox` is tox.
+        program if program.starts_with("python") && !words.contains(&"tox") => Some(Family::Python),
+        _ => None,
+    }
+}
+
+/// The language of `command`: that of the first of its segments that starts a runner of one language (`cd api && pytest -q` is Python).
+/// `None` for a command whose suite the report cannot tell from its program: `make test`, a script, tox.
+fn family(command: &str) -> Option<Family> {
+    first_words(command).iter().find_map(|w| family_of(w))
+}
+
+/// Every language `command` runs a suite of: the language of each of its segments that starts a runner of one language, once each
+/// (`python3 -m pytest -q && npm test` runs the Python suite and the Node suite).
+fn families(command: &str) -> Vec<Family> {
+    let mut all = Vec::new();
+    for words in first_words(command) {
+        if let Some(language) = family_of(&words)
+            && !all.contains(&language)
+        {
+            all.push(language);
+        }
+    }
+    all
+}
+
+/// What the detection gives for one language: its test steps among `detected` and, in front of them, the install steps they need that
+/// `have` does not hold yet.
+fn steps_of_family(
+    detected: &[PlannedStep],
+    language: Family,
+    have: &[PlannedStep],
+) -> Vec<PlannedStep> {
+    let tests: Vec<&PlannedStep> = detected
+        .iter()
+        .filter(|s| s.role == TestStepRole::Test && family(&s.command) == Some(language))
+        .collect();
+    let is_install = |s: &PlannedStep| s.role == TestStepRole::Setup && s.install.is_some();
+    let mut out: Vec<PlannedStep> = detected
+        .iter()
+        .filter(|s| {
+            is_install(s)
+                && tests.iter().any(|t| t.install == s.install)
+                && !have.iter().any(|h| is_install(h) && h.install == s.install)
+        })
+        .cloned()
+        .collect();
+    out.extend(tests.into_iter().cloned());
+    out
+}
+
+/// `rows`, rows of the log with their place in it, as a [`LeftOut`]: the last one run and the number of the others.
+fn left_out_of(rows: &[(usize, &LoggedRow)]) -> Option<LeftOut> {
+    let (_, last) = rows.last()?;
+    Some(LeftOut {
+        command: last.command.clone(),
+        more: rows.len() - 1,
+    })
+}
+
+/// `steps`, the plan of a source, with a step of the layout for each language whose only rows in the lifecycle log name a part of a suite, and
+/// what the plan says of the rows it left out. `rows` are the test commands of the log; `typed_by_the_model` says that the plan was
+/// made from the log or the goal card.
+///
+/// For each language of such rows:
+///
+/// - a whole-suite command of the model's own for that language (a row of the log, a check of the goal card) runs the parts: nothing is
+///   added and nothing is said. A command that chains the suites of two languages covers both ([`families`]);
+/// - else the step the detection gives for the language runs in place of the rows that work at the root, where the detection looks. A plan
+///   that is the detection holds the step already. A plan of the model's own lines gets it, with the install it needs, behind the model's
+///   commands, so that those run first and as they did before;
+/// - pytest rows of a tree where the detection has no Python command get `python3 -m pytest -q` when pytest collects test files from the
+///   root that the detection does not read ([`pytest_from_the_root`]);
+/// - a step stands in place of a Python row only when it runs the file the row names ([`reaches`]): a unittest discovery finds the files of
+///   the folders it starts in, and pytest the files it collects. A row whose file no step runs is left out, and a step that would run none of
+///   the rows is not added;
+/// - no Python step is added at the root when the rows work in or name more than one project folder ([`project_folders`]): the engine ran
+///   each project alone, and one pytest run from the root imports two test files of one name in two folders as one module and stops;
+/// - rows with no such step (no layout the report knows, a row that works in another folder) were left out with nothing in their place;
+/// - a Python step is never added to a tree whose packages are named by a file the report has no install step for
+///   ([`uninstalled_python_manifest`]), whether the tree has pytest settings or not: run without those packages the suite would fail, and the
+///   failure would be the report's own. The rows are left out, and the reason names the file.
+///
+/// A test step whose language the report cannot tell (`make test`, a script, tox) may run any suite, so a plan or a log that holds one is
+/// left as it is, with no note: a second run of a suite the model ran through its own entry point could fail for want of what that entry
+/// point sets up. A runner of one language the detection has no layout for (`dotnet test`, `rspec`, `phpunit`) runs no other suite: beside
+/// it the rows of the other languages get their step or their line.
+fn with_stand_ins(
+    root: &Path,
+    mut steps: Vec<PlannedStep>,
+    typed_by_the_model: bool,
+    rows: &[LoggedRow],
+) -> (Vec<PlannedStep>, PlanNotes) {
+    let mut notes = PlanNotes::default();
+    let is_test = |s: &PlannedStep| s.role == TestStepRole::Test;
+    // The rows that name a part of a suite, by language, each with its place in the log.
+    let mut by_family: Vec<(Family, Vec<(usize, &LoggedRow)>)> = Vec::new();
+    for (at, row) in rows.iter().enumerate().filter(|(_, r)| r.focused) {
+        let Some(language) = family(&row.command) else {
+            continue;
+        };
+        match by_family.iter_mut().find(|(known, _)| *known == language) {
+            Some((_, list)) => list.push((at, row)),
+            None => by_family.push((language, vec![(at, row)])),
+        }
+    }
+    let untold = |command: &str| family(command).is_none();
+    if by_family.is_empty()
+        || steps.iter().any(|s| is_test(s) && untold(&s.command))
+        || rows.iter().any(|r| !r.focused && untold(&r.command))
+    {
+        return (steps, notes);
+    }
+    let detected = if typed_by_the_model {
+        detect(root)
+    } else {
+        Vec::new()
+    };
+    // The steps of the model's own lines; what stands behind them at the end is the report's addition.
+    let own = steps.len();
+    // The rows with nothing in their place, each with its place in the log and the reason.
+    let mut uncovered: Vec<(usize, &LoggedRow, LeftOutWhy)> = Vec::new();
+    for (language, list) in by_family {
+        // A command covers the language when any of its segments starts a runner of it: `pytest -q && npm test` ran the Node suite too.
+        let runs = |command: &str| families(command).contains(&language);
+        let of_language = |s: &PlannedStep| is_test(s) && runs(&s.command);
+        let own = |s: &PlannedStep| of_language(s) && s.source != TestCommandSource::Detected;
+        if steps.iter().any(own) || rows.iter().any(|r| !r.focused && runs(&r.command)) {
+            continue;
+        }
+        // A Python step the report adds would run without the packages of a tree whose packages a file it does not install names. The
+        // detection refuses a plain layout for that reason; pytest settings in the tree change nothing about the missing install.
+        if typed_by_the_model
+            && language == Family::Python
+            && let Some(file) = uninstalled_python_manifest(root)
+        {
+            let why = LeftOutWhy::Packages(Some(file));
+            uncovered.extend(list.iter().map(|(at, row)| (*at, *row, why.clone())));
+            continue;
+        }
+        // The log ran the Python tests of more than one project folder, each alone. A run from the root is not what the engine ran.
+        if typed_by_the_model && language == Family::Python && project_folders(&list).len() > 1 {
+            uncovered.extend(
+                list.iter()
+                    .map(|(at, row)| (*at, *row, LeftOutWhy::Projects)),
+            );
+            continue;
+        }
+        let (at_root, elsewhere): (Vec<_>, Vec<_>) = list
+            .iter()
+            .copied()
+            .partition(|(_, row)| works_at_root(&row.command));
+        uncovered.extend(elsewhere.into_iter().map(no_suite));
+        // The test steps of the language that the plan holds (a plan that is the detection), else the ones the report would add.
+        let held: Vec<usize> = (0..steps.len())
+            .filter(|at| of_language(&steps[*at]))
+            .collect();
+        let mut extra = Vec::new();
+        if held.is_empty() && typed_by_the_model && !at_root.is_empty() {
+            extra = steps_of_family(&detected, language, &steps);
+            if language == Family::Python && !extra.iter().any(is_test) {
+                extra = steps_of_family(&pytest_from_the_root(root, &at_root), language, &steps);
+            }
+            if steps.len() + extra.len() > MAX_REPORT_STEPS {
+                extra.clear();
+            }
+        }
+        // The test commands the report has for the language, each with its place in the plan once the additions stand behind it.
+        let behind = steps.len();
+        let suite: Vec<(usize, String)> = held
+            .iter()
+            .map(|at| (*at, steps[*at].command.clone()))
+            .chain(
+                extra
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| is_test(s))
+                    .map(|(at, s)| (behind + at, s.command.clone())),
+            )
+            .collect();
+        // A step stands in place of the rows it runs. The others have nothing in their place.
+        let why = if suite.is_empty() {
+            LeftOutWhy::NoSuiteCommand
+        } else {
+            LeftOutWhy::NotReached
+        };
+        let mut in_place: Vec<(usize, Vec<(usize, &LoggedRow)>)> = Vec::new();
+        for (at, row) in at_root {
+            match stand_in_for(root, language, &suite, &row.command) {
+                Some(place) => match in_place.iter_mut().find(|(known, _)| *known == place) {
+                    Some((_, rows)) => rows.push((at, row)),
+                    None => in_place.push((place, vec![(at, row)])),
+                },
+                None => uncovered.push((at, row, why.clone())),
+            }
+        }
+        if !in_place.is_empty() {
+            // The additions; none when the plan held the steps already.
+            steps.extend(extra);
+            in_place.sort_by_key(|(place, _)| *place);
+            notes.stand_ins.extend(
+                in_place
+                    .iter()
+                    .filter_map(|(place, rows)| left_out_of(rows).map(|left| (*place, left))),
+            );
+        }
+    }
+    uncovered.sort_by_key(|(at, ..)| *at);
+    notes.left_out = omitted_by_reason(&uncovered);
+    notes.chosen_from = (typed_by_the_model && own > 0 && steps.len() > own).then_some(own);
+    (steps, notes)
+}
+
+/// The place in the plan of the step that stands in place of `row`, a logged command that names a part of a suite. `suite` are
+/// the test commands the report has for `language`, each with its place. `None` when none of them runs what the row names ([`reaches`]).
+/// Else the first command that runs a file the row names, so the note is on the step that ran the logged tests (of two unittest
+/// discoveries, the one that starts where the file is); the first command of the suite for a row that names no file and for a language
+/// other than Python.
+fn stand_in_for(
+    root: &Path,
+    language: Family,
+    suite: &[(usize, String)],
+    row: &str,
+) -> Option<usize> {
+    let commands: Vec<String> = suite.iter().map(|(_, command)| command.clone()).collect();
+    if !reaches(root, language, &commands, row) {
+        return None;
+    }
+    let files = if language == Family::Python {
+        named_python_files(row)
+    } else {
+        Vec::new()
+    };
+    suite
+        .iter()
+        .find(|(_, command)| {
+            files
+                .iter()
+                .any(|file| python_command_runs(root, command, file))
+        })
+        .or(suite.first())
+        .map(|(place, _)| *place)
+}
+
+/// Whether one of `suite`, the test commands the report has for `language`, runs what `row` names, a logged command that names a part of
+/// a suite. `false` for no command. For a language other than Python the command of the whole suite stands for every part. A Python
+/// row is reached when one of the commands runs each file it names ([`python_command_runs`]); a row that names no file (a name filter) is a
+/// part of whatever the suite collects.
+fn reaches(root: &Path, language: Family, suite: &[String], row: &str) -> bool {
+    !suite.is_empty()
+        && (language != Family::Python
+            || named_python_files(row).iter().all(|file| {
+                suite
+                    .iter()
+                    .any(|command| python_command_runs(root, command, file))
+            }))
+}
+
+/// Whether `command`, a Python test command of the report's own choosing, runs `file`, a file a logged command names. The file must
+/// be in the tree, outside hidden folders. A unittest discovery (`-m unittest discover [-s <folder>] -v`) finds the files named `test*.py`
+/// in the folder it starts in and in the packages below it ([`discovery_reaches`]). pytest from the root collects the files named
+/// `test_*.py` and `*_test.py` unless the settings of the tree narrow that ([`pytest_collects`]).
+fn python_command_runs(root: &Path, command: &str, file: &str) -> bool {
+    if !has_file(root, file) || file.split('/').any(|part| part.starts_with('.')) {
+        return false;
+    }
+    let name = base(file);
+    let folder = file.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let words: Vec<&str> = command.split_whitespace().collect();
+    if words.contains(&"unittest") {
+        let start = words
+            .iter()
+            .position(|w| *w == "-s")
+            .and_then(|at| words.get(at + 1))
+            .copied()
+            .unwrap_or_default();
+        return name.starts_with("test")
+            && name.ends_with(".py")
+            && discovery_reaches(root, start, folder);
+    }
+    python_test_name(name) && pytest_collects(root, file)
+}
+
+/// Whether a unittest discovery that starts in `start` (the root for an empty name) reads the files of `folder`: the folder it starts in,
+/// or a folder below it when every folder on the way down is a package.
+fn discovery_reaches(root: &Path, start: &str, folder: &str) -> bool {
+    let below = if start.is_empty() {
+        folder
+    } else if folder == start {
+        ""
+    } else {
+        match folder
+            .strip_prefix(start)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            Some(below) => below,
+            None => return false,
+        }
+    };
+    let mut at = start.to_string();
+    below
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .all(|part| {
+            if !at.is_empty() {
+                at.push('/');
+            }
+            at.push_str(part);
+            has_file(root, &format!("{at}/__init__.py"))
+        })
+}
+
+/// The files at the root of a tree that may hold pytest's settings, in the order pytest looks for them, each with the words that make
+/// it the file pytest reads: `pytest.ini` whatever it holds, the others when they hold pytest's section.
+const PYTEST_SETTINGS: [(&str, &str); 4] = [
+    ("pytest.ini", ""),
+    ("pyproject.toml", "[tool.pytest.ini_options]"),
+    ("tox.ini", "[pytest]"),
+    ("setup.cfg", "[tool:pytest]"),
+];
+
+/// The value of the setting `key` on `line` (`key = value`): the text behind the `=`. `None` for a line of another key.
+fn setting_of<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.trim_start()
+        .strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')
+}
+
+/// Whether pytest, run from the root, collects `file`, a file of the tree with a name it collects by default. The settings of the
+/// tree may narrow that. pytest reads one settings file, the first of [`PYTEST_SETTINGS`] that is its own. With `testpaths` in it pytest
+/// collects only the files and the folders the setting names (the value is read over the lines it runs on), and with a `python_files`
+/// pattern the reading cannot say, so the answer is no. A tree with neither setting collects the file.
+fn pytest_collects(root: &Path, file: &str) -> bool {
+    let Some(text) = PYTEST_SETTINGS
+        .iter()
+        .find_map(|(name, section)| read_source(root, name).filter(|text| text.contains(section)))
+    else {
+        return true;
+    };
+    let mut paths: Vec<String> = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if setting_of(line, "python_files").is_some() {
+            return false;
+        }
+        let Some(first) = setting_of(line, "testpaths") else {
+            continue;
+        };
+        // The value may go on over indented lines (an ini file) or to the end of its brackets (a TOML array).
+        let mut value = first.to_string();
+        while lines.peek().is_some_and(|next| {
+            next.starts_with([' ', '\t']) || (value.contains('[') && !value.contains(']'))
+        }) {
+            value.push(' ');
+            value.push_str(lines.next().unwrap_or_default());
+        }
+        paths.extend(
+            value
+                .split(|c: char| c.is_whitespace() || "[],\"'".contains(c))
+                .filter(|path| !path.is_empty())
+                .map(|path| {
+                    path.trim_start_matches("./")
+                        .trim_end_matches('/')
+                        .to_string()
+                }),
+        );
+    }
+    paths.is_empty()
+        || paths.iter().any(|path| {
+            path == "."
+                || path.is_empty()
+                || file
+                    .strip_prefix(path.as_str())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
+}
+
+/// The project folders that `rows`, logged Python commands that name a part of a suite, work in, once each. A row that changes
+/// the folder works in that folder ([`folder_of`]). A row at the root works in the project of each file it names ([`project_of`]), and in
+/// the root (an empty name) when it names none.
+fn project_folders(rows: &[(usize, &LoggedRow)]) -> Vec<String> {
+    let mut folders: Vec<String> = Vec::new();
+    let mut add = |folder: String| {
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    };
+    for (_, row) in rows {
+        if !works_at_root(&row.command) {
+            add(folder_of(&row.command));
+            continue;
+        }
+        let files = named_python_files(&row.command);
+        if files.is_empty() {
+            add(String::new());
+        }
+        for file in files {
+            add(project_of(&file));
+        }
+    }
+    folders
+}
+
+/// The folder of the project a test file belongs to, as far as its path says: what stands before its `tests` or `test` folder (`api` for
+/// `api/tests/test_models.py`), and the root (an empty name) for a path with no such folder.
+fn project_of(file: &str) -> String {
+    let parts: Vec<&str> = file.split('/').collect();
+    parts
+        .iter()
+        .position(|part| PLAIN_TEST_DIRS.contains(part))
+        .map(|at| parts[..at].join("/"))
+        .unwrap_or_default()
+}
+
+/// The folder a command works in that does not work at the root ([`works_at_root`]): the folder its `cd` or `pushd` names, or the value of
+/// its tool's folder option, without quotes, a leading `./` and a trailing `/`. The command itself when the folder cannot be read, so that
+/// two such commands count as two folders.
+fn folder_of(command: &str) -> String {
+    let clean = |folder: &str| {
+        folder
+            .trim_matches(['\'', '"', ')'])
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string()
+    };
+    for words in first_words(command) {
+        let mut tokens = words
+            .iter()
+            .map(|t| t.trim_start_matches('('))
+            .filter(|t| !t.is_empty());
+        if matches!(tokens.next(), Some("cd" | "pushd"))
+            && let Some(folder) = tokens.next()
+        {
+            return clean(folder);
+        }
+        for (at, word) in words.iter().enumerate() {
+            if matches!(*word, "--prefix" | "-C" | "--cwd" | "--dir")
+                && let Some(folder) = words.get(at + 1)
+            {
+                return clean(folder);
+            }
+            if let Some(folder) = ["--prefix=", "--cwd=", "--dir="]
+                .iter()
+                .find_map(|option| word.strip_prefix(option))
+            {
+                return clean(folder);
+            }
+        }
+    }
+    command.to_string()
+}
+
+/// A row of the log with nothing in its place because the report found no command for the whole suite.
+fn no_suite((at, row): (usize, &LoggedRow)) -> (usize, &LoggedRow, LeftOutWhy) {
+    (at, row, LeftOutWhy::NoSuiteCommand)
+}
+
+/// `uncovered`, rows of the log in the order they were run, each with the reason nothing stands in its place, as one [`Omitted`] for each
+/// reason, in the order of the first row that has it.
+fn omitted_by_reason(uncovered: &[(usize, &LoggedRow, LeftOutWhy)]) -> Vec<Omitted> {
+    let mut reasons: Vec<&LeftOutWhy> = Vec::new();
+    for (_, _, why) in uncovered {
+        if !reasons.contains(&why) {
+            reasons.push(why);
+        }
+    }
+    reasons
+        .into_iter()
+        .filter_map(|why| {
+            let group: Vec<(usize, &LoggedRow)> = uncovered
+                .iter()
+                .filter(|(_, _, w)| w == why)
+                .map(|(at, row, _)| (*at, *row))
+                .collect();
+            let logged = group.last().map(|(_, row)| row.logged).filter(|run| {
+                run.exit_code.is_some_and(|code| code != 0) || run.failed.is_some_and(|n| n > 0)
+            });
+            left_out_of(&group).map(|rows| Omitted {
+                rows,
+                why: why.clone(),
+                logged,
+            })
+        })
+        .collect()
+}
+
+/// `why`, the reason of a tree with no command, with the test commands of the lifecycle log that name a part of a suite: the log had
+/// test runs, and the reason says why they gave no command. The last one run is named, cut as a line about the plan cuts it, and the others
+/// are counted.
+fn with_left_out(why: String, rows: &[LoggedRow]) -> String {
+    let focused: Vec<&LoggedRow> = rows.iter().filter(|r| r.focused).collect();
+    let Some(last) = focused.last() else {
+        return why;
+    };
+    let command: String = last
+        .command
+        .chars()
+        .take(MAX_PLAN_LINE_COMMAND_CHARS)
+        .map(|c| if c == '`' { '\'' } else { c })
+        .collect();
+    match focused.len() - 1 {
+        0 => format!(
+            "{why}; `{command}` of the lifecycle log names a test file, a test or a filter and was left out"
+        ),
+        n => format!(
+            "{why}; `{command}` and {n} more of the lifecycle log name test files, tests or filters and were left out"
+        ),
+    }
+}
+
+/// The plan for the tree at `tree`, and what it says of the test commands of the lifecycle log that it left out.
+pub fn plan_with_notes(tree: &Path) -> (Plan, PlanNotes) {
     let Ok(root) = tree.canonicalize() else {
-        return Plan::NoCommand("the clean checkout cannot be read".into());
+        return (
+            Plan::NoCommand("the clean checkout cannot be read".into()),
+            PlanNotes::default(),
+        );
     };
     let records = Records::read(&root);
+    let has_test = |steps: &[PlannedStep]| steps.iter().any(|s| s.role == TestStepRole::Test);
+    // The project's own statement and its own scripts are run as they are: the log did not make that plan, so none of its rows was left out of it.
+    for steps in [from_command_file(&root), entry_scripts(&root, &records)] {
+        if has_test(&steps) {
+            return (Plan::Steps(steps), PlanNotes::default());
+        }
+    }
+    let rows = logged_rows(&root, &records);
     // Each source with whether its commands are the model's own lines, which carry no install step (the log and the goal card).
     for (steps, typed_by_the_model) in [
-        (from_command_file(&root), false),
-        (entry_scripts(&root, &records), false),
-        (from_log(&root, &records), true),
+        (from_log(&rows), true),
         (from_goal(&root, &records), true),
         (detect(&root), false),
     ] {
-        if steps.iter().any(|s| s.role == TestStepRole::Test) {
-            return Plan::Steps(if typed_by_the_model {
+        if has_test(&steps) {
+            let steps = if typed_by_the_model {
                 with_installs(&root, steps)
             } else {
                 steps
-            });
+            };
+            let (steps, notes) = with_stand_ins(&root, steps, typed_by_the_model, &rows);
+            return (Plan::Steps(steps), notes);
         }
     }
-    Plan::NoCommand(plain_layout_not_run(&root).unwrap_or_else(|| NO_COMMAND_REASON.into()))
+    // No source gave a command. Rows of the log that name a part of a suite may still have a suite the report can run in their place: a
+    // Python project whose only test file sits beside the code has no layout the detection reads.
+    let (steps, notes) = with_stand_ins(&root, Vec::new(), true, &rows);
+    if has_test(&steps) {
+        return (Plan::Steps(steps), notes);
+    }
+    let why = plain_layout_not_run(&root).unwrap_or_else(|| NO_COMMAND_REASON.into());
+    (
+        Plan::NoCommand(with_left_out(why, &rows)),
+        PlanNotes::default(),
+    )
+}
+
+/// The plan for the tree at `tree`.
+pub fn plan(tree: &Path) -> Plan {
+    plan_with_notes(tree).0
 }
 
 // ---- how many members `cargo test` runs at the root -------------------------------------------------------------------------

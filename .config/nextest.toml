@@ -10,3 +10,9 @@ seccomp-children = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'binary(~sandbox_) | binary(=direct_messages_reap_sandboxed) | binary(=b790_loopback)'
 test-group = 'seccomp-children'
+
+# A test that starts one busy thread per processor of the machine takes every test thread of the run: nextest starts it when no other test
+# runs and starts no other test until it has ended.
+[[profile.default.overrides]]
+filter = 'binary(=fake_cline_inproc) & test(=b836_a_thousand_exchanges_beside_busy_threads_are_never_answered_from_the_queue)'
+threads-required = 'num-test-threads'

@@ -340,10 +340,12 @@ async fn b823_a_run_without_a_copy_says_so_in_words_for_its_status() {
     assert!(!err.contains("yet") && !err.contains("agentd"), "{err}");
 }
 
+/// The line names the command for a copy the service answers for (`tests/b843_client.rs` holds the run that saved none).
 #[tokio::test]
 async fn b823_cancelling_a_run_into_cleared_names_the_command_for_its_copy() {
     let fake = Fake::start().await;
     let run = start(&fake, "A run to clear").await;
+    save_copy(&fake, &run, FINAL, 2, false);
     let h = home(&fake, "b823-clear");
     // No live session in the stand-in: a cancel clears the run.
     let (code, out, err) = shell(&h, &["cancel", &run]).await;
@@ -351,7 +353,7 @@ async fn b823_cancelling_a_run_into_cleared_names_the_command_for_its_copy() {
     assert!(out.contains(&format!("run {run} cleared")), "{out}");
     assert!(
         out.contains(&format!(
-            "ham pull {run} --snapshot downloads the latest saved copy of its work."
+            "ham pull {run} --snapshot downloads the copy of its work saved at 2026-11-12 00:47 UTC."
         )),
         "{out}"
     );

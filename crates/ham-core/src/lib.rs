@@ -32,6 +32,7 @@ pub mod head;
 pub mod help;
 pub mod history;
 pub mod input;
+pub mod lost_session;
 pub mod messages;
 pub mod meters;
 pub mod models;

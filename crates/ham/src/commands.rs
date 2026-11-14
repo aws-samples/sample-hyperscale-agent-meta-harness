@@ -12,6 +12,7 @@ use ham_core::input::{InputRequest, check_text, ignored_phrase, outcome_phrase, 
 use ham_core::models;
 use ham_core::render::model_name;
 use ham_core::sanitize::sanitize_line;
+use ham_core::saved_copy::{ClearedCopy, cleared_work};
 use ham_core::state::{RunState, RunView};
 use harness_protocol::api::v1::{InputAccepted, InputAnswer};
 use harness_protocol::direct::{
@@ -38,7 +39,20 @@ fn word<T: serde::Serialize>(t: &T) -> String {
         .unwrap_or_default()
 }
 
-/// `ham cancel <runId>`: on the direct stage Cline is asked to stop and the work is kept.
+/// What the service says about the saved copy of a run that was just cleared: one request to the snapshot route, which writes
+/// nothing. The link in its answer is dropped unread.
+async fn cleared_copy<P: ControlPlane>(api: &Api<P>, run_id: &str) -> ClearedCopy {
+    match api.snapshot_download(run_id).await {
+        Ok(d) => ClearedCopy::Saved { at: d.taken_at },
+        Err(ApiError::Http { status: 404, error }) if error.code == "no-snapshot" => {
+            ClearedCopy::None
+        }
+        Err(_) => ClearedCopy::Unknown,
+    }
+}
+
+/// `ham cancel <runId>`: on the direct stage Cline is asked to stop and the work is kept. The exit code is 0 when the stage accepted the
+/// cancel, whatever the run's status then is: 15 is the code of a start command or a `ham watch` that follows a cleared run.
 pub async fn cmd_cancel<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
@@ -56,12 +70,11 @@ pub async fn cmd_cancel<P: ControlPlane>(
                 sanitize_line(&r.run_id),
                 word(&r.status)
             ));
-            // A cleared run delivers nothing, and clearing it deletes nothing: its saved copy stays.
+            // A cleared run delivers nothing, and clearing it deletes nothing: its saved copy stays. The line names the
+            // snapshot command for a copy the service answers for, and says that there is nothing to download for a run that saved none.
             if r.status == GoalStatus::Cleared {
-                let run = sanitize_line(&r.run_id);
-                out.out_line(format!(
-                    "ham pull {run} --snapshot downloads the latest saved copy of its work."
-                ));
+                let copy = cleared_copy(api, &r.run_id).await;
+                out.out_line(cleared_work(&r.run_id, &copy));
             }
             0
         }

@@ -18,7 +18,9 @@
 //! only; its message tails, tool rows and final message are what the stored conversation replaces (R10), except that the newest tail is
 //! shown as a labelled live line while the store has not caught up with it.
 
-use crate::chat::{Block, BlockKind, ChatModel, GapCause, Origin, Role, Source};
+use crate::chat::{
+    Block, BlockKind, ChatModel, EARLIER_TAIL_WORDS, GapCause, Origin, Role, Source,
+};
 use crate::tables::group_digits;
 use crate::transcript::{
     CompletenessEntry, GapKind, TranscriptGap, TranscriptRecord, TranscriptState,
@@ -145,7 +147,18 @@ impl StoredChat {
                 to: g.to_seq,
                 cause: g.kind.cause(),
                 order: format!("{:?}", g.code),
+                after: None,
             })
+            .collect();
+        // The open tails of earlier sessions that a record already says in place (`gap` records of kind `tail-unknown`).
+        let said: HashSet<u64> = self
+            .records
+            .values()
+            .filter(|r| {
+                r.kind == "gap"
+                    && r.data.get("kind").and_then(Value::as_str) == Some("tail-unknown")
+            })
+            .filter_map(|r| r.data.get("afterSeq").and_then(Value::as_u64))
             .collect();
         for e in &self.completeness {
             if let (Some(from), Some(to)) = (e.from_seq, e.to_seq)
@@ -156,6 +169,20 @@ impl StoredChat {
                     to,
                     cause: e.kind.cause(),
                     order: format!("declared {:?}", e.kind),
+                    after: None,
+                });
+            }
+            // A declared open tail of an earlier session (it names the chunk the tail follows) is said where it happened, once:
+            // by the writer's own record when that is held, else here, before the first record of a later chunk.
+            if let (GapKind::TailUnknown, Some(after)) = (e.kind, e.from_seq)
+                && !said.contains(&after)
+            {
+                holes.push(Hole {
+                    from: after.saturating_add(1),
+                    to: after.saturating_add(1),
+                    cause: GapCause::TailUnknown,
+                    order: "declared tail".to_string(),
+                    after: Some(after),
                 });
             }
         }
@@ -186,6 +213,8 @@ struct Hole {
     cause: GapCause,
     /// Breaks ties between holes of the same range, so the order does not depend on the order the pages arrived in.
     order: String,
+    /// The hole is the open tail of an earlier session after this chunk; nothing of the range itself is missing.
+    after: Option<u64>,
 }
 
 // ---- projection ---------------------------------------------------------------------------------------------------------------
@@ -381,18 +410,29 @@ impl Projector {
     fn hole(&mut self, h: &Hole) {
         self.gap_serial += 1;
         let id = format!("gap:{}:{}:{}", h.from, h.to, self.gap_serial);
-        let b = Block::gap(&id, h.cause, Some(&range_words(h.from, h.to)));
+        let b = match h.after {
+            Some(after) => Block::gap_worded(
+                &id,
+                h.cause,
+                EARLIER_TAIL_WORDS,
+                Some(&format!("after chunk {after}")),
+            ),
+            None => Block::gap(&id, h.cause, Some(&range_words(h.from, h.to))),
+        };
         self.push(None, b);
     }
 
     /// The completeness list the worker declared: a loss with a count and no range is a line at the end;
-    /// what was left out on purpose (thoughts, binary output) says nothing; an abnormal end is the last line.
+    /// what was left out on purpose (thoughts, binary output) says nothing; the open tail of the run's last session is the last line.
     fn declared(&mut self, entries: &[CompletenessEntry]) {
         let mut tail_unknown = false;
         let mut counted: Vec<&CompletenessEntry> = Vec::new();
         for e in entries {
             match e.kind {
                 GapKind::Excluded => {}
+                // An open tail that names its chunk is an earlier session's, said in place (`StoredChat::timed`); only the one
+                // without a chunk is the end of the run's last session.
+                GapKind::TailUnknown if e.from_seq.is_some() => {}
                 GapKind::TailUnknown => tail_unknown = true,
                 // A ranged loss is placed among the chunks (`StoredChat::timed`).
                 _ if e.from_seq.is_some() && e.to_seq.is_some() => {}
@@ -602,7 +642,13 @@ impl Projector {
             parts.push(format!("after chunk {a}"));
         }
         let detail = (!parts.is_empty()).then(|| parts.join(", "));
-        self.push(t, Block::gap(id, kind.cause(), detail.as_deref()));
+        // A writer that found the conversation of the session before it open says so in its first record.
+        let block = if kind == GapKind::TailUnknown && d.get("afterSeq").is_some() {
+            Block::gap_worded(id, kind.cause(), EARLIER_TAIL_WORDS, detail.as_deref())
+        } else {
+            Block::gap(id, kind.cause(), detail.as_deref())
+        };
+        self.push(t, block);
     }
 
     fn agent_message(&mut self, r: &TranscriptRecord, t: Option<i64>, id: &str) {

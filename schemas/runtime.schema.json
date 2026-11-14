@@ -799,7 +799,7 @@
           "description": "What a slice of a run that renews its session needs to know. Absent for a run of one session,\nso an agentd image that predates the member parses what it always parsed. Required from turn 2 on."
         },
         "snapshotEveryS": {
-          "description": "Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off.",
+          "description": "Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off. run-session sends the interval the start request\nnamed or the default, never 0.",
           "format": "uint32",
           "minimum": 0,
           "type": [

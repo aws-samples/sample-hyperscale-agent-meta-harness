@@ -46,9 +46,9 @@ fn request_json(cfg: &Config, extra: &[&str]) -> Value {
 
 #[test]
 fn the_registry_has_one_row_for_it_after_the_review_round_row() {
-    assert_eq!(Key::ALL.len(), 46);
-    assert_eq!(ROWS.len(), 46);
-    assert_eq!(KEYS.len(), 46);
+    assert_eq!(Key::ALL.len(), 47);
+    assert_eq!(ROWS.len(), 47);
+    assert_eq!(KEYS.len(), 47);
     assert_eq!(Key::ALL[23], Key::RunReviewRound);
     assert_eq!(Key::ALL[24], Key::RunCompute);
     let row = Key::RunCompute.row();

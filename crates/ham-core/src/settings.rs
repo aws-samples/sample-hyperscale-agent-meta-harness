@@ -100,11 +100,12 @@ pub enum Key {
     RunContainerSignals,
     DefaultEngine,
     UpdateSource,
+    RunCopyEveryMinutes,
 }
 
 impl Key {
     /// Every key, in registry order.
-    pub const ALL: [Key; 46] = [
+    pub const ALL: [Key; 47] = [
         Key::ApiEndpoint,
         Key::Region,
         Key::AwsProfile,
@@ -151,6 +152,7 @@ impl Key {
         Key::RunContainerSignals,
         Key::DefaultEngine,
         Key::UpdateSource,
+        Key::RunCopyEveryMinutes,
     ];
 
     /// The row of this key.
@@ -313,6 +315,12 @@ impl Key {
             ),
             Key::DefaultEngine => Slot::Text(&mut cfg.default_engine),
             Key::UpdateSource => Slot::Text(&mut cfg.update_source),
+            Key::RunCopyEveryMinutes => Slot::Number(
+                &mut cfg
+                    .run
+                    .get_or_insert_with(RunTable::default)
+                    .copy_every_minutes,
+            ),
             Key::RunProviderSharing => Slot::Bool(
                 &mut cfg
                     .run
@@ -633,7 +641,7 @@ const fn row(
 }
 
 /// The registry, in the order of [`Key`].
-pub static ROWS: [Row; 46] = [
+pub static ROWS: [Row; 47] = [
     Row {
         applies: Applies::Restart,
         security: true,
@@ -1390,6 +1398,25 @@ pub static ROWS: [Row; 46] = [
             Kind::Text,
             "Update source",
             "The git repository ham update reads the newest version from: the head of its main branch, its VERSION file and its CHANGELOG.md. An https:// URL, or a file:/// path to a local mirror. The word off turns ham update off; it then makes no network call.",
+        )
+    },
+    Row {
+        default: DefaultValue::Number(harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S / 60),
+        default_text: "1 minute",
+        wire: Some("snapshotEveryS"),
+        since: 1,
+        group: Group::Limits,
+        ..row(
+            Key::RunCopyEveryMinutes,
+            ("run", "copy_every_minutes"),
+            "run.copy_every_minutes",
+            Kind::Number {
+                min: harness_protocol::direct::MIN_SNAPSHOT_EVERY_S / 60,
+                max: harness_protocol::direct::MAX_SNAPSHOT_EVERY_S / 60,
+                unit: "minutes",
+            },
+            "Copy interval",
+            "The minutes between two looks of the service at the work of a run. A look saves a copy of the work to the stage's bucket when files changed, and ham pull <runId> --snapshot downloads the latest copy. A session that dies loses at most the changes since the last copy, so a longer interval can lose more; it suits a repository whose copies are large. Two copies do not move with this key: the copy after a tool call that changed a file, made while the copies are 8 MiB or smaller, and the copy when the engine stops, which is always made. No value switches the copies off. A run that ham resume or /retry starts keeps the interval of the run it comes from.",
         )
     },
 ];

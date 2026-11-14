@@ -241,6 +241,10 @@ pub struct RunTable {
     /// the default and sends no member; on is carried as `providerSharing: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_sharing: Option<bool>,
+    /// Whole minutes between two looks of the worker at the work tree for a copy of the run's work, 1 to 60. Unset leaves the stage's own
+    /// minute; the request carries it as `snapshotEveryS`, in seconds. No value switches the copies off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_every_minutes: Option<u32>,
 }
 
 /// The keys of `[research]`.
@@ -399,7 +403,7 @@ pub enum ConfigError {
 }
 
 /// The settable keys as `(file name, name `ham config` prints)`. A key of a table is dotted in both columns.
-pub const KEYS: [(&str, &str); 46] = [
+pub const KEYS: [(&str, &str); 47] = [
     ("apiEndpoint", "api_endpoint"),
     ("region", "region"),
     ("awsProfile", "aws_profile"),
@@ -446,6 +450,7 @@ pub const KEYS: [(&str, &str); 46] = [
     ("run.container_signals", "run.container_signals"),
     ("defaultEngine", "default_engine"),
     ("updateSource", "update_source"),
+    ("run.copy_every_minutes", "run.copy_every_minutes"),
 ];
 
 /// The key a name stands for, in either spelling, or the error that lists the choices.

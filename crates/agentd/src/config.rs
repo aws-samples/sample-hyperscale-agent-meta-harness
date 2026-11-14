@@ -28,9 +28,22 @@ pub struct DirectConfig {
     /// `AGENTD_DIRECT_SNAPSHOT_FLOOR_MS`: replaces `snapshot::COPY_FLOOR`, the shortest time between the start of one
     /// copy and the start of a copy that a tool call asked for.
     pub snapshot_floor: Option<Duration>,
+    /// `AGENTD_DIRECT_SNAPSHOT_RETRY_MS`: replaces `snapshot::COPY_RETRY`, the longest time from the start of a look
+    /// that failed to the next tick of the timer.
+    pub snapshot_retry: Option<Duration>,
     /// `AGENTD_DIRECT_FINAL_COPY_BUDGET_MS`: the longest the copy of a session's end may take, the wait for a copy
     /// in flight included. A copy that is not stored by then is given up, so that it never holds back the delivery that follows it.
     pub final_copy_budget: Duration,
+    /// `AGENTD_DIRECT_COPY_LATE_MS`: replaces `snapshot::COPY_LATE_AFTER`, how long a look of the copy task may run before
+    /// the run is told that the copy is late.
+    pub copy_late: Option<Duration>,
+    /// `AGENTD_DIRECT_COPY_GIT_LIMIT_MS`: replaces the longest the git work of one look may take before it is given up.
+    pub copy_git_limit: Option<Duration>,
+    /// `AGENTD_DIRECT_COPY_STORE_LIMIT_MS`: replaces the longest storing one copy may take before it is given up.
+    pub copy_store_limit: Option<Duration>,
+    /// `AGENTD_DIRECT_STOP_COPY_BUDGET_MS`: replaces `snapshot::STOP_COPY_BUDGET`, how long the copy has that agentd saves
+    /// when it is asked to end.
+    pub stop_copy_budget: Option<Duration>,
     /// `AGENTD_DIRECT_PROVIDER_RETRIES` (default 3, at most 6): how many times the prompt is retried on the same engine session
     /// after a provider failure (the first slice of provider failover). 0 switches it off; a bad value is the default.
     pub provider_retries: u32,
@@ -138,6 +151,13 @@ impl DirectConfig {
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .map_or(default, |n| n.min(max))
         };
+        // Milliseconds that only a test sets (more than 0); the product leaves the variable unset and keeps the constant it replaces.
+        let test_ms = |key: &str| {
+            get(key)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .map(Duration::from_millis)
+        };
         // A switch that is on unless it says otherwise.
         let on = |key: &str| {
             !get(key).is_some_and(|v| {
@@ -169,7 +189,15 @@ impl DirectConfig {
             snapshot_floor: get("AGENTD_DIRECT_SNAPSHOT_FLOOR_MS")
                 .and_then(|v| v.parse::<u64>().ok())
                 .map(Duration::from_millis),
+            snapshot_retry: get("AGENTD_DIRECT_SNAPSHOT_RETRY_MS")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .map(Duration::from_millis),
             final_copy_budget: ms("AGENTD_DIRECT_FINAL_COPY_BUDGET_MS", 120_000),
+            copy_late: test_ms("AGENTD_DIRECT_COPY_LATE_MS"),
+            copy_git_limit: test_ms("AGENTD_DIRECT_COPY_GIT_LIMIT_MS"),
+            copy_store_limit: test_ms("AGENTD_DIRECT_COPY_STORE_LIMIT_MS"),
+            stop_copy_budget: test_ms("AGENTD_DIRECT_STOP_COPY_BUDGET_MS"),
             provider_retries: get("AGENTD_DIRECT_PROVIDER_RETRIES")
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .map_or(3, |n| n.min(crate::direct::retry::MAX_CONFIGURED_RETRIES)),

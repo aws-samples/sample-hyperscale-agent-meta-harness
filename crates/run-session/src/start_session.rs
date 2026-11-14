@@ -33,7 +33,8 @@ use harness_protocol::common::{Engine, Transport};
 use harness_protocol::direct::{
     DEFAULT_SNAPSHOT_EVERY_S, DIRECT_AGENT_ID, DIRECT_TASK_ID, DIRECT_TURN,
     DirectInvocationRequest, DirectKind, DirectSlice, InputRef, MAX_DIRECT_BODY_BYTES,
-    MAX_DIRECT_TIMEOUT_S, MAX_SLICES, validate_direct_invocation,
+    MAX_DIRECT_TIMEOUT_S, MAX_SLICES, MAX_SNAPSHOT_EVERY_S, MIN_SNAPSHOT_EVERY_S,
+    snapshot_every_s_ok, validate_direct_invocation,
 };
 use harness_protocol::goal::{GoalPhase, GoalStatus};
 use harness_protocol::runtime::{InvocationAccepted, PackagesToken, RepoSource};
@@ -219,6 +220,17 @@ where
         return Err(invalid(format!("run {run_id} is no longer active")));
     }
     let (request, request_sha256) = read_request(&deps.store, &deps.blobs, run_id).await?;
+    // The copy interval of the run is the request's, or the default. control-api refuses a value no request may name; a request stored by
+    // another version is checked here once more, before anything is minted or invoked. Every session of the run gets the same interval.
+    let snapshot_every_s = match request.snapshot_every_s {
+        None => DEFAULT_SNAPSHOT_EVERY_S,
+        Some(s) if snapshot_every_s_ok(s) => s,
+        Some(s) => {
+            return Err(invalid(format!(
+                "the stored request names snapshotEveryS {s}; it must be {MIN_SNAPSHOT_EVERY_S} to {MAX_SNAPSHOT_EVERY_S}"
+            )));
+        }
+    };
     // The engine of the run is the request's; a request that named none is a Cline run. The pair (engine, model) must have a row with a smoke record.
     let engine = Engine::or_default(request.engine);
     let model = model_spec_for(engine, &request.model)?;
@@ -531,7 +543,7 @@ where
         },
         timeout_s,
         provider_silence_s: cfg.provider_silence_s,
-        snapshot_every_s: Some(DEFAULT_SNAPSHOT_EVERY_S),
+        snapshot_every_s: Some(snapshot_every_s),
         packages_token: None,
         packages_token_expires_at: None,
         // The answer window the client asked for. None, or 0 in a request stored by another version, leaves the member out of the

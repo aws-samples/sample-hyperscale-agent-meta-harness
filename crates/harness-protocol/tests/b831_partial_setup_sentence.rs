@@ -132,7 +132,9 @@ fn b831_a_test_that_failed_before_the_install_failed_leads_the_sentence() {
 }
 
 #[test]
-fn b831_an_install_that_stopped_every_test_keeps_the_sentence_of_before() {
+fn b831_an_install_that_stopped_every_test_names_the_command_too() {
+    // Until this sentence kept the words of before, "so the test command did not run", and the card of a run whose only test command
+    // was stopped did not say which command that was.
     let s = report(vec![
         ran(TestStepRole::Setup, "npm ci", 1, None),
         skipped("npm test", "npm ci"),
@@ -141,6 +143,6 @@ fn b831_an_install_that_stopped_every_test_keeps_the_sentence_of_before() {
     assert!(s.setup_failed);
     assert_eq!(
         s.sentence(),
-        "Setup `npm ci` exited 1 in a clean checkout, so the test command did not run."
+        "Setup `npm ci` exited 1 in a clean checkout, so `npm test` did not run."
     );
 }

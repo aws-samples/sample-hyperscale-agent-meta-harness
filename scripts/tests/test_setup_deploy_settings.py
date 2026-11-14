@@ -1857,10 +1857,13 @@ class LockCase(SettingsBase):
 
     def test_b812_a_matching_token_deploys_under_the_callers_lock_and_leaves_it(self) -> None:
         text = self.seed_lock("b" * 32)
-        self.ok(HAMH_DEPLOY_LOCK_TOKEN="b" * 32)
-        self.assertEqual(self.lock_puts(), [])
+        self.ok(HAMH_DEPLOY_LOCK_TOKEN="b" * 32, DEPLOY_LOCK_SETTLE_S="0")
+        # The one write is the open at the end of the deploy (test_deploy_b843_lock_open.py); the lock is neither created, deleted nor tagged
+        puts = self.lock_puts()
+        self.assertEqual(len(puts), 1)
+        self.assertIn("--overwrite", puts[0])
         self.assertEqual([a for a in self.aws_calls() if a[:2] == ["ssm", "delete-parameter"]], [])
-        self.assertEqual(self.ssm()[LOCK], text, "the holder releases its own lock")
+        self.assertEqual(self.ssm()[LOCK], text + "\ndeploys=no", "the holder releases its own lock; its lines are as they were, and the stage is open")
 
     def test_b812_a_token_that_does_not_match_or_finds_no_lock_refuses(self) -> None:
         text = self.seed_lock("b" * 32)
@@ -1979,17 +1982,18 @@ class LockCase(SettingsBase):
 
     def test_b804_admit_the_build_renews_the_callers_lock_from_a_thread_while_it_deploys_and_leaves_it_at_the_end(self) -> None:
         text = self.seed_lock("b" * 32)
-        proc = self.ok(HAMH_DEPLOY_LOCK_TOKEN="b" * 32, DEPLOY_LOCK_RENEW_S="0.2", FAKE_NODE_SLEEP_S="0.3")
+        proc = self.ok(HAMH_DEPLOY_LOCK_TOKEN="b" * 32, DEPLOY_LOCK_RENEW_S="0.2", FAKE_NODE_SLEEP_S="0.3", DEPLOY_LOCK_SETTLE_S="0")
         puts = self.lock_puts()
-        self.assertGreaterEqual(len(puts), 3, "a renewal per interval while the nine stacks deploy")
+        self.assertGreaterEqual(len(puts), 4, "a renewal per interval while the nine stacks deploy, and the open at the end")
         self.assertTrue(all("--overwrite" in p for p in puts))
-        for p in puts:
+        for p in puts[:-1]:
             lines = p[p.index("--value") + 1].splitlines()
             self.assertEqual(lines[:-1], text.splitlines())
             self.assertTrue(lines[-1].startswith("renewed="), lines[-1])
         self.assertEqual([a for a in self.aws_calls() if a[:2] == ["ssm", "delete-parameter"]], [], "the holder releases its own lock")
         left = self.ssm()[LOCK].splitlines()
         self.assertEqual(left[:-1], text.splitlines(), "the caller's lock is there at the end, with its lines")
+        self.assertEqual(left[-1], "deploys=no", "the deploy has ended, so its last write opens the stage")
         self.assertEqual(self.last(proc)[:11], "DEPLOY-PASS")
         self.assertEqual(self.record()["status"], "deployed", "the deploy's own records are whole: the keeper's writes went beside them")
 

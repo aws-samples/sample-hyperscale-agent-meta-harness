@@ -492,6 +492,44 @@ async fn b823_after_a_copy_that_failed_the_next_look_comes_at_the_next_tick() {
     );
 }
 
+/// Under a timer the user lengthened (`run.copy_every_minutes`), a copy that failed is tried again after the retry time, not at the
+/// next tick of that timer. The timer here is ten minutes and the engine works for about ten seconds. The scenario has two tool calls: the
+/// first asks for the first look, and the second, which ends while that look runs, asks for one more. Both of these looks fail here, so
+/// the third try can only come from the timer. Before, that was the next tick: a failure at minute 60 of an hourly timer left the work
+/// without a copy until minute 120.
+#[tokio::test(flavor = "multi_thread")]
+async fn b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer() {
+    let d = Direct::start(Opts {
+        scenario: "writes_files",
+        engine_env: vec![("FAKE_ACP_SILENCE_S", "10".into())],
+        edit_cfg: Some(Box::new(|c| {
+            c.direct.snapshot_interval = Some(Duration::from_secs(600));
+            c.direct.snapshot_floor = Some(Duration::from_millis(50));
+            // In place of the minute of `snapshot::COPY_RETRY`.
+            c.direct.snapshot_retry = Some(Duration::from_millis(300));
+            c.direct.upload_retry_pause = Duration::from_millis(200);
+        })),
+        ..Opts::default()
+    })
+    .await;
+    // The four tries of a copy's bundle answer 500 (about 1.4 s with the pauses of 0.2, 0.4 and 0.8 s), for the look the first tool call
+    // asked for and for the look the second one asked for; the store takes every PUT after.
+    d.aws.fail_puts("snapshot.bundle", 8);
+    let (_, resp) = d.invoke().await;
+    assert_eq!(resp.outcome, TurnOutcome::Completed, "{resp:?}");
+    assert_eq!(
+        copy_notices(&d),
+        vec!["A copy of the work could not be saved; ham keeps trying.".to_string()],
+        "TRIGGER PRESENT: the copies the tool calls asked for failed, under a timer of ten minutes"
+    );
+    let copies = saved_copies(&d);
+    assert!(
+        copies.iter().any(|c| c.get("final").is_none()),
+        "after the two failed copies no copy was made while the engine worked on for about 7 s: the next try waited for the tick of \
+         the ten-minute timer: {copies:?}"
+    );
+}
+
 /// The time an upload takes is not counted in the spacing: a copy whose bundle took 3 s to go up is followed by the next look at the next
 /// tick. Before, the next look waited nine times the whole look (27 s).
 #[tokio::test(flavor = "multi_thread")]

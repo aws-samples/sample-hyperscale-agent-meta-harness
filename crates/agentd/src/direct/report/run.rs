@@ -18,9 +18,9 @@ use crate::direct::report::plan::{PlannedStep, first_words, pytest_words, uses_c
 use crate::engine::{LaunchSpec, command_argv};
 use harness_core::refusal::redact;
 use harness_protocol::direct::{
-    NEEDS_PREFIX, NOT_AS_WRITTEN, NOT_RUN_MARK, NOT_RUN_PREFIX, PLAN_NOTE_COMMAND,
-    PLAN_NOTE_PREFIX, SKIPPED_FOR_SETUP, STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep,
-    TestStepRole, plan_note_line,
+    IN_PLACE_PREFIX, LEFT_OUT_PREFIX, NEEDS_PREFIX, NOT_AS_WRITTEN, NOT_RUN_MARK, NOT_RUN_PREFIX,
+    PLAN_NOTE_COMMAND, PLAN_NOTE_PREFIX, STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep,
+    TestStepRole, plan_note_line, skipped_for_setup_reason,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -365,6 +365,64 @@ pub fn set_plan_note(step: &mut TestStep, members: Option<u32>, cap: usize) {
     step.output_truncated |= cut || shown.len() < block.len();
 }
 
+/// Whether `line` is one of the two lines about the plan that agentd writes at the head of a step's output.
+fn is_plan_line(line: &str) -> bool {
+    line.starts_with(IN_PLACE_PREFIX) || line.starts_with(LEFT_OUT_PREFIX)
+}
+
+/// Puts `lines`, the lines about the plan that this step carries, at the head of its output: after
+/// the `NOT RUN:` line and the note of a Cargo workspace, in front of the other head lines and of the runtime block, which stay whole. A line
+/// of either form that the repository printed at that place is removed first, also from a step that carries none, so only agentd's lines are
+/// ever read there. The output gives way from its front, so the whole stays within `cap` bytes and the end of the output stays; a line of
+/// either form that the cut brings to the head of what is left goes too, because it would stand right behind agentd's lines. A step with
+/// no such line and none to write is left as it is, byte for byte.
+pub fn set_plan_lines(step: &mut TestStep, lines: &[String], cap: usize) {
+    let mut at = 0;
+    if step.is_not_run() && step.output_tail.starts_with(NOT_RUN_PREFIX) {
+        at += 1;
+    }
+    if step.plan_note_members().is_some() {
+        at += 1;
+    }
+    let tail = std::mem::take(&mut step.output_tail);
+    let mut all: Vec<&str> = tail.lines().collect();
+    let at = at.min(all.len());
+    let before = all.len();
+    while all.get(at).is_some_and(|l| is_plan_line(l)) {
+        all.remove(at);
+    }
+    if lines.is_empty() && all.len() == before {
+        step.output_tail = tail;
+        return;
+    }
+    // The lines that stay whole: agentd's own up to the place, the new ones, then the head lines and the runtime block that follow.
+    let keep = all[at..]
+        .iter()
+        .take_while(|l| is_head_line(l) || l.starts_with(RUNTIME_PREFIX))
+        .count();
+    let fixed: Vec<&str> = all[..at]
+        .iter()
+        .copied()
+        .chain(lines.iter().map(String::as_str))
+        .chain(all[at..at + keep].iter().copied())
+        .collect();
+    let used: usize = fixed.iter().map(|l| l.len() + 1).sum();
+    let (output, cut) = last_bytes(&all[at + keep..].join("\n"), cap.saturating_sub(used));
+    // The cut may end right in front of a line of either form that the repository printed further down: that line would now follow
+    // agentd's own, where the summary reads.
+    let mut output = output.as_str();
+    while output.lines().next().is_some_and(is_plan_line) {
+        output = output.split_once('\n').map_or("", |(_, rest)| rest);
+    }
+    let head = fixed.join("\n");
+    step.output_tail = match (head.is_empty(), output.is_empty()) {
+        (_, true) => head,
+        (true, false) => output.to_string(),
+        (false, false) => format!("{head}\n{output}"),
+    };
+    step.output_truncated |= cut;
+}
+
 /// The first `n` lines of `s`, each with its newline, and the rest.
 fn split_lines(s: &str, n: usize) -> (&str, &str) {
     let end = s.split_inclusive('\n').take(n).map(str::len).sum();
@@ -656,18 +714,8 @@ pub fn setup_stops_the_run(step: &TestStep) -> bool {
 /// setup step `npm ci` failed`, or `could not be read` for a setup whose command was not run at all. The command is the step's own, redacted
 /// when it was recorded, cut to 120 characters, with a backtick of its own as an apostrophe.
 pub fn skipped_for_setup(setup: &TestStep) -> String {
-    let command: String = setup
-        .command
-        .chars()
-        .take(120)
-        .map(|c| if c == '`' { '\'' } else { c })
-        .collect();
-    let how = if setup.is_not_run() {
-        "could not be read"
-    } else {
-        "failed"
-    };
-    format!("{SKIPPED_FOR_SETUP}`{command}` {how}")
+    // The words are the protocol's: the summary reads the setup back out of them.
+    skipped_for_setup_reason(&setup.command, !setup.is_not_run())
 }
 
 /// A step whose command could not be read: marked not run with [`UNREADABLE`] and the detail on the second line. It has no exit code, no counts

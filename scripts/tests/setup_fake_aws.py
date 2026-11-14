@@ -102,6 +102,14 @@ def settings_record_text(fields: dict) -> str:
     return "\n".join(lines)
 
 
+def opened_lock_text(text: str) -> str:
+    """The deploy lock as the deploy of a build writes it when it has finished: every line as it was read, in
+    its order, without a `renewed=` line, and `deploys=no` last. The stand-in build writes the lock with it (`Build.open_lock`), and
+    test_deploy_b843_lock_open.py holds it to the bytes the real deploy writes."""
+    lines = [ln for ln in text.splitlines() if not ln.startswith("renewed=") and ln != "deploys=no"]
+    return "\n".join(lines + ["deploys=no"])
+
+
 def parse_record(text: str) -> dict:
     """`key=value` lines split on the first `=` (the stage record and the deploy lock): a dict, with the `set.` lines under `set`."""
     out: dict = {"set": {}}
@@ -1012,7 +1020,7 @@ class World:
 def _build_cfg(world: World, action: str = "deploy") -> dict:
     """The scenario of a build: `build` for a deploy, `template_build` for the build that prints the bootstrap template."""
     cfg = {"polls_until_done": 2, "final": "SUCCEEDED", "result": "pass", "client": "ok", "admin": "ok", "failed_phase": "deploy",
-           "detail": "DEPLOY-FAIL deploy cdk deploy failed", "phases": None}
+           "detail": "DEPLOY-FAIL deploy cdk deploy failed", "phases": None, "opens_lock": False}
     if action == "bootstrap-template":
         cfg.update({"failed_phase": "template", "detail": "the CDK could not print the bootstrap template"})
         cfg.update(world.scenario.get("template_build") or {})
@@ -1051,12 +1059,29 @@ class Build:
         bucket = w.runner_names()["SetupBucket"]
         w.put(bucket, f"results/{self.bid}/phases.jsonl", self.phase_lines(phases[:shown]).encode())
         rec["log"].append(f"== phase {phases[shown - 1]} ok")
+        self.open_lock(cfg, phases[:shown])
+        rec.setdefault("lock_seen", []).append([phases[shown - 1], "deploys=no" in (w.param(LOCK_PARAM) or "").splitlines()])
         if cfg.get("hang") or rec["polls"] < cfg["polls_until_done"]:
             rec["phase"] = "BUILD"
             return
         rec["phase"] = "COMPLETED"
         rec["status"] = cfg["final"]
         self.finish(cfg, bucket)
+
+    def open_lock(self, cfg: dict, done: list) -> None:
+        """With `"opens_lock": true` in the scenario of the build: the deploy of the real build (open_caller_lock of scripts/lib/deploy.py) writes the line
+        deploys=no into the deploy lock when it has finished, while the build goes on with its later phases. It writes the lock as it reads it, without a `renewed=`
+        line, and only a lock that holds the token the build was started with. Once per build, at the poll that shows the phase deploy as done. The default leaves the
+        lock to setup, as a build whose write failed does."""
+        if not cfg.get("opens_lock") or self.rec.get("lock_opened") or self.action() != "deploy" or self.client_only() or "deploy" not in done:
+            return
+        w = self.world
+        text = w.param(LOCK_PARAM)
+        token = self.env.get("SETUP_DEPLOY_LOCK_TOKEN")
+        if text is None or not token or f"token={token}" not in text.splitlines():
+            return
+        self.rec["lock_opened"] = True
+        w.put_param(LOCK_PARAM, opened_lock_text(text))
 
     def source_problem(self) -> str:
         """Why CodeBuild could not read the source, or "". Only a build started through start-build carries a source; the builds the tests seed do not."""
@@ -1293,6 +1318,7 @@ class Build:
         if not failed_run:
             names = self.phase_names(cfg)
             w.put(bucket, f"results/{self.bid}/phases.jsonl", self.phase_lines(names).encode())
+            self.open_lock(cfg, names)
             self.rec["log"] += [line for line in (f"== phase {n} ok" for n in names) if line not in self.rec["log"]]
         if failed_run:
             phase, detail = cfg["failed_phase"], cfg["detail"]
@@ -1307,8 +1333,11 @@ class Build:
                 # what the failed deploy leaves behind in CloudFormation (a rolled-back update, a first create that rolled back)
                 w.w["stacks"][stack] = {"status": status, "outputs": {}}
             files = self.source_files()
+            if self.action() == "deploy" and not self.client_only() and phase in POST_DEPLOY_PHASES and not refusal:
+                # a phase after the deploy failed: the deploy of this build finished first and opened the lock
+                self.open_lock(cfg, ["deploy"])
             if self.action() == "deploy" and not self.client_only() and phase in POST_DEPLOY_PHASES and not refusal and self.records_settings(files):
-                # a phase after the deploy failed: the deploy of this build finished first, so the stage runs the commit and its record says so
+                # ... so the stage runs the commit and its record says so
                 w.deploy_stage(instances=self.instances_setting() == "on" or w.has_instances_part())
                 self.note_operator()
                 self.write_record(files)

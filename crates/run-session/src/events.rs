@@ -344,3 +344,23 @@ pub fn run_blocked(
         },
     )
 }
+
+/// The service's word that session `slice` of the run was lost and what follows (`run.waiting`, harness authority; the payload is
+/// `ham_core::lost_session::SessionLost`). It changes no status and shows no link, and a client older than the payload accepts the event
+/// and shows nothing for it. The id is made from the time of the decision and the number of the session, so a repeated `next-slice`
+/// writes the same event again.
+pub fn session_lost<T: Serialize>(
+    run_id: &str,
+    decided_at_ms: u64,
+    slice: u32,
+    payload: &T,
+) -> Envelope {
+    harness_event(
+        run_id,
+        decided_at_ms,
+        slice,
+        EventType::RunWaiting,
+        None,
+        payload,
+    )
+}

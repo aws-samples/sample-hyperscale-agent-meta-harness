@@ -11,6 +11,18 @@
 //! - **Tool processes outlive the engine.** A tool runs as its own process (a `sleep N`) in a process group of its own, so a
 //!   kill of the engine's group does not reach it.
 //! - **Faults.** An engine can hang (answer no cancel), die in the middle of a turn, or answer a provider's 503.
+//! - **The order at the two ends of a turn.** A prompt is admitted, and open for its cancel, before the engine reads the next line.
+//!   The end of a turn is one step for the reader: the session is freed (or takes the next text out of the queue), the `prompt-end`
+//!   line is written and the answer leaves, all under the session's lock, and the reader admits no prompt in between. A client that
+//!   sends its next prompt the moment it has read an answer is therefore never queued behind the turn that answered, and a test that
+//!   reads the log after an answer finds the turn's end in it, however busy the machine is.
+//! - **What the queue does not notice.** A prompt is queued when the engine admits it before the end of the open turn has begun. A
+//!   prompt that reaches the engine while that end is on its way out (from the freeing of the session to the write of the answer: two
+//!   lines in the log and one write to the output) waits for the answer and then runs as a prompt of its own, with no `overlap` line.
+//!   The engine cannot tell it from a prompt that a client sent after it had read the answer, and to queue it would queue that
+//!   client's prompt too, which was the fault. A harness that sends its next prompt that late in a turn is not caught by
+//!   `overlap`; one that sends it while the turn still works, or streams, is. While an answer is on its way out the reader waits
+//!   with a prompt of that session, and with every line behind it, so a client has to keep reading the engine's output.
 //!
 //! A prompt's text may hold one `@fake{...}` JSON object that scripts the turn. All members are optional:
 //!
@@ -33,7 +45,7 @@
 //! `cancel ... acted=`), next to every line in and out.
 
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -176,17 +188,60 @@ fn directives(text: &str, generation: u32) -> Directives {
     d
 }
 
+/// What decides whether a prompt runs or waits. It is read and changed only under its lock.
+#[derive(Default)]
+struct Flow {
+    /// A turn is executing, attached to a prompt or drained from the queue.
+    busy: bool,
+    /// The texts of the prompts that wait behind the executing turn.
+    queued: VecDeque<String>,
+}
+
 struct Session {
     id: String,
-    /// A turn is executing, attached to a prompt or drained from the queue.
-    busy: AtomicBool,
+    /// Whether a turn is executing, and what waits behind it. The reader admits a prompt under this lock, and a turn that ends holds it
+    /// from the freeing of the session until its answer has left: by the time a client can read an answer, the session is free or busy
+    /// with its queue, never still busy with the turn that answered, and no prompt is admitted between the two.
+    flow: Mutex<Flow>,
     /// The executing turn answers a prompt (a cancel can reach it).
     open: AtomicBool,
     /// The executing turn ignores a cancel.
     deaf: AtomicBool,
     cancel: AtomicBool,
     queue_used: AtomicBool,
-    queued: Mutex<Vec<String>>,
+}
+
+impl Session {
+    /// The marks of a turn that starts: no cancel is pending, whether the turn hears one, and whether it answers a prompt. The reader
+    /// sets them for a prompt when it admits it, before it reads the next line, so a cancel that follows its prompt at once finds the
+    /// prompt open; a turn drained from the queue sets its own.
+    fn begin(&self, d: &Directives, attached: bool) {
+        self.cancel.store(false, Ordering::SeqCst);
+        self.deaf.store(d.ignore_cancel, Ordering::SeqCst);
+        self.open.store(attached, Ordering::SeqCst);
+        if attached {
+            // a prompt that starts with nothing queued behind it is a plain prompt again: its cancel works
+            self.queue_used.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// The end of a turn, as one step for the reader. No prompt is open after it. The text that runs next is taken out of the queue; with
+    /// nothing queued the session is free for the next prompt. Then `leave` writes the end's line in the log and sends the answer. All
+    /// of it happens under the session's lock, under which the reader admits a prompt: a prompt that comes in meanwhile waits until the
+    /// answer has left and is then a prompt of its own.
+    fn end(&self, leave: impl FnOnce()) -> Option<String> {
+        self.open.store(false, Ordering::SeqCst);
+        let mut f = self.flow.lock().unwrap_or_else(|p| p.into_inner());
+        let next = f.queued.pop_front();
+        f.busy = next.is_some();
+        leave();
+        next
+    }
+
+    /// The text that runs next, taken out of the queue, for a drain that no turn's end starts; with nothing queued the session is free.
+    fn next_or_free(&self) -> Option<String> {
+        self.end(|| {})
+    }
 }
 
 struct Shared {
@@ -382,17 +437,22 @@ fn start_tool(sh: &Shared, t: &Tool) -> Option<std::process::Child> {
     Some(child)
 }
 
-/// One turn. `req` is the id of the prompt it answers; `None` for a turn drained from the queue (no response is ever sent).
-fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) {
+/// One turn. `req` is the id of the prompt it answers; `None` for a turn drained from the queue (no response is ever sent). Returns
+/// the text that runs next, taken out of the queue when this turn ended; `None` when the session is free, or when the engine died.
+///
+/// The end of a turn has one order, on the provider's failure and on a plain answer alike: the session is free for the next prompt
+/// (or holds on to its queue), the end is in the log, and only then the answer leaves ([`Session::end`], one step for the reader). With
+/// the answer first, a client that sent its next prompt the moment it read the answer could find the session still busy; that prompt
+/// was queued behind a turn that had already answered, and came back as an `end_turn` without usage in place of its own answer or its
+/// scripted failure. With the session freed first and the reader left free to admit, a prompt that came in before the answer
+/// had left was opened next to a prompt the client still saw unanswered.
+fn turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) -> Option<String> {
     let d = directives(text, sh.generation);
     let started = Instant::now();
     let drained = req.is_none();
-    s.cancel.store(false, Ordering::SeqCst);
-    s.deaf.store(d.ignore_cancel, Ordering::SeqCst);
-    s.open.store(!drained, Ordering::SeqCst);
-    if !drained {
-        // a prompt that starts with nothing queued behind it is a plain prompt again: its cancel works
-        s.queue_used.store(false, Ordering::SeqCst);
+    if drained {
+        // the marks of a prompt were set when the reader admitted it
+        s.begin(&d, false);
     }
     sh.log(&format!(
         "{} {} {}",
@@ -405,14 +465,6 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
         head(text)
     ));
     let finish = |stop: &str, n: u64, drained_turn: bool, req: &Option<Value>| {
-        if let Some(id) = req {
-            let result = if n == 0 && stop == "end_turn" {
-                json!({"stopReason": stop})
-            } else {
-                json!({"stopReason": stop, "_meta": {"usage": usage(n)}})
-            };
-            sh.respond(id, result);
-        }
         sh.log(&format!(
             "{} {} stop={stop}",
             if drained_turn {
@@ -422,6 +474,14 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
             },
             s.id
         ));
+        if let Some(id) = req {
+            let result = if n == 0 && stop == "end_turn" {
+                json!({"stopReason": stop})
+            } else {
+                json!({"stopReason": stop, "_meta": {"usage": usage(n)}})
+            };
+            sh.respond(id, result);
+        }
     };
 
     // A provider failure comes before any update.
@@ -431,18 +491,17 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
         if *n < d.fail_times {
             *n += 1;
             drop(f);
-            if let Some(id) = &req {
-                sh.error(
-                    id,
-                    -32603,
-                    "Internal error: Service unavailable",
-                    Some(json!({"errorName": "ServiceUnavailableException", "isRetryable": true, "statusCode": 503})),
-                );
-            }
-            sh.log(&format!("prompt-end {} error=503", s.id));
-            s.open.store(false, Ordering::SeqCst);
-            s.busy.store(false, Ordering::SeqCst);
-            return;
+            return s.end(|| {
+                sh.log(&format!("prompt-end {} error=503", s.id));
+                if let Some(id) = &req {
+                    sh.error(
+                        id,
+                        -32603,
+                        "Internal error: Service unavailable",
+                        Some(json!({"errorName": "ServiceUnavailableException", "isRetryable": true, "statusCode": 503})),
+                    );
+                }
+            });
         }
     }
     if let Some((path, body)) = &d.write {
@@ -471,7 +530,7 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
     let mut stop = "end_turn";
     let worked = wait_ms(sh, s, &d, started, d.work_ms);
     if let Waited::Died = worked {
-        return;
+        return None;
     }
     if let Waited::Cancelled = worked {
         cancelled(sh, None, &d);
@@ -487,7 +546,7 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
                     stop = "cancelled";
                     break;
                 }
-                Waited::Died => return,
+                Waited::Died => return None,
                 Waited::Done => sh.chunk(&s.id, &format!("stream-{i}")),
             }
         }
@@ -519,7 +578,7 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
                     stop = "cancelled";
                     break;
                 }
-                Waited::Died => return,
+                Waited::Died => return None,
                 Waited::Done => {}
             }
             if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&dest) {
@@ -554,7 +613,7 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
                     ended_by_cancel = true;
                     break;
                 }
-                Waited::Died => return,
+                Waited::Died => return None,
                 Waited::Done => {}
             }
             if let Some(c) = child.as_mut()
@@ -580,24 +639,14 @@ fn run_turn(sh: &Arc<Shared>, s: &Arc<Session>, req: Option<Value>, text: &str) 
         sh.chunk(&s.id, d.say.as_deref().unwrap_or("OK"));
     }
     let n = u64::from(sh.calls.fetch_add(1, Ordering::SeqCst));
-    finish(stop, n + 1, drained, &req);
-    s.open.store(false, Ordering::SeqCst);
-    // what the queue holds runs next, unattached to any prompt, until it is empty
-    loop {
-        let next = {
-            let mut q = s.queued.lock().unwrap_or_else(|p| p.into_inner());
-            if q.is_empty() {
-                None
-            } else {
-                Some(q.remove(0))
-            }
-        };
-        match next {
-            Some(t) => run_turn(sh, s, None, &t),
-            None => break,
-        }
+    s.end(|| finish(stop, n + 1, drained, &req))
+}
+
+/// Runs what the queue holds, each text as a turn of its own, unattached to any prompt, until the queue is empty.
+fn drain(sh: &Arc<Shared>, s: &Arc<Session>, mut next: Option<String>) {
+    while let Some(t) = next {
+        next = turn(sh, s, None, &t);
     }
-    s.busy.store(false, Ordering::SeqCst);
 }
 
 fn generation(state: &Path) -> u32 {
@@ -699,12 +748,11 @@ pub fn serve(
                     sid.clone(),
                     Arc::new(Session {
                         id: sid.clone(),
-                        busy: AtomicBool::new(false),
+                        flow: Mutex::new(Flow::default()),
                         open: AtomicBool::new(false),
                         deaf: AtomicBool::new(false),
                         cancel: AtomicBool::new(false),
                         queue_used: AtomicBool::new(false),
-                        queued: Mutex::new(Vec::new()),
                     }),
                 );
                 sh.log(&format!("sessions: new-session {sid} generation={}", sh.generation));
@@ -745,16 +793,25 @@ pub fn serve(
                     sh.error(&id, -32602, &format!("unknown session {sid}"), None);
                     continue;
                 };
-                let queued_reply = directives(&text, sh.generation).queued_reply;
-                if s.busy.load(Ordering::SeqCst) || queued_reply {
+                let d = directives(&text, sh.generation);
+                // Admission, under the session's lock: the prompt runs now and is open for its cancel, or it waits behind the turn that
+                // is executing. A turn that ends takes the same lock before its answer leaves.
+                let (queued, start_drain) = {
+                    let mut f = s.flow.lock().unwrap_or_else(|p| p.into_inner());
+                    let was_busy = f.busy;
+                    f.busy = true;
+                    if was_busy || d.queued_reply {
+                        s.queue_used.store(true, Ordering::SeqCst);
+                        f.queued.push_back(text.clone());
+                        (true, !was_busy)
+                    } else {
+                        s.begin(&d, true);
+                        (false, false)
+                    }
+                };
+                if queued {
                     // The pinned engine's internal queue: answered at once, no model work, usage 0; the text runs later, unattached.
                     sh.log(&format!("overlap {sid} {}", head(&text)));
-                    s.queue_used.store(true, Ordering::SeqCst);
-                    let start_drain = !s.busy.load(Ordering::SeqCst);
-                    s.queued
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .push(text);
                     std::thread::sleep(Duration::from_millis(5));
                     sh.respond(
                         &id,
@@ -762,25 +819,19 @@ pub fn serve(
                     );
                     if start_drain {
                         // nothing was running: the queue drains at once (the case a test makes with `queued_reply`)
-                        s.busy.store(true, Ordering::SeqCst);
                         let (sh2, s2) = (sh.clone(), s.clone());
                         std::thread::spawn(move || {
-                            let next = {
-                                let mut q = s2.queued.lock().unwrap_or_else(|p| p.into_inner());
-                                if q.is_empty() { None } else { Some(q.remove(0)) }
-                            };
-                            if let Some(t) = next {
-                                run_turn(&sh2, &s2, None, &t);
-                            } else {
-                                s2.busy.store(false, Ordering::SeqCst);
-                            }
+                            let next = s2.next_or_free();
+                            drain(&sh2, &s2, next);
                         });
                     }
                     continue;
                 }
-                s.busy.store(true, Ordering::SeqCst);
                 let (sh2, s2) = (sh.clone(), s.clone());
-                std::thread::spawn(move || run_turn(&sh2, &s2, Some(id), &text));
+                std::thread::spawn(move || {
+                    let next = turn(&sh2, &s2, Some(id), &text);
+                    drain(&sh2, &s2, next);
+                });
             }
             ("session/cancel", None) => {
                 let sid = req

@@ -410,15 +410,15 @@ class DeploysNothingCase(WaitBase):
         self.assertIn('const DEPLOYS_NOTHING: &str = "deploys=no";', admission)
 
     def test_b804_wait_the_30_minutes_of_a_lock_nobody_renews_are_one_number_in_one_file(self) -> None:
-        number = (REPO / "scripts/lib/deploy-lock-stale-seconds.txt").read_text(encoding="utf-8")
+        number = (REPO / "crates/control-api/deploy-lock-stale-seconds.txt").read_text(encoding="utf-8")
         self.assertEqual(number, "1800\n")
         runner = (REPO / "scripts/setup/runner.sh").read_text(encoding="utf-8")
         line = next(ln for ln in runner.splitlines() if ln.startswith("RN_LOCK_STALE_SECONDS="))
-        self.assertIn("scripts/lib/deploy-lock-stale-seconds.txt", line, "setup reads the file")
+        self.assertIn("crates/control-api/deploy-lock-stale-seconds.txt", line, "setup reads the file")
         self.assertTrue(line.rstrip().endswith(" 1800)"), "and falls back to the same number when a partial copy of the tree lacks it: " + line)
         admission = (REPO / "crates/control-api/src/admission.rs").read_text(encoding="utf-8")
         self.assertIn("include_str!(", admission)
-        self.assertIn('"../../../scripts/lib/deploy-lock-stale-seconds.txt"', admission, "the API service embeds the same file")
+        self.assertIn('include_str!("../deploy-lock-stale-seconds.txt")', admission, "the API service embeds the same file (test_b841_lock_number.py resolves the path)")
         # that the public tree carries the file is held where the export rules are tested: a test that names the rules file is not exported
 
 

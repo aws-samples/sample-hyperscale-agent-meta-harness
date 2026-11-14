@@ -146,6 +146,9 @@ pub struct AwsState {
     head_attempts: Mutex<BTreeMap<String, u32>>,
     /// When set, every HEAD answers this status with no body (a 403 for a key the role may not list, a 500).
     head_status: Mutex<Option<u16>>,
+    /// Substrings of `bucket/key`: a GET of an absent key that contains one answers 403 `AccessDenied`, as S3 does for a role that may
+    /// not list the bucket (it hides whether the key exists).
+    get_absent_403: Mutex<Vec<String>>,
     events: Mutex<Vec<Envelope>>,
     batches: Mutex<Vec<(u32, Option<bool>)>>,
     heartbeats: Mutex<Vec<HeartbeatRequest>>,
@@ -553,8 +556,19 @@ async fn s3_get(
     if let Some(d) = pause {
         tokio::time::sleep(d).await;
     }
+    let hidden = s
+        .get_absent_403
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|sub| full.contains(sub.as_str()));
     match s.objects.lock().unwrap().get(&full) {
         Some(b) => (StatusCode::OK, b.clone()).into_response(),
+        None if hidden => (
+            StatusCode::FORBIDDEN,
+            "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
+        )
+            .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             "<Error><Code>NoSuchKey</Code></Error>",
@@ -838,6 +852,16 @@ impl FakeAws {
             only_unconditional: true,
             overwrite_after_store: None,
         });
+    }
+
+    /// A GET of an absent key whose `bucket/key` contains `sub` answers 403 from now on (the role may not list the bucket, so S3 hides
+    /// a missing key).
+    pub fn absent_gets_answer_403(&self, sub: &str) {
+        self.state
+            .get_absent_403
+            .lock()
+            .unwrap()
+            .push(sub.to_string());
     }
 
     /// Every HEAD answers `status` with no body from now on (403: the role may not list the bucket, so S3 hides a missing key).
@@ -1134,6 +1158,10 @@ pub struct Opts {
     pub mcp: bool,
     /// Environment of the real `agentd serve` process (`Direct::start_process`), added to the harness's own: `AGENTD_TOOLS_MODE` and the like.
     pub agentd_env: Vec<(&'static str, String)>,
+    /// The real `agentd serve` process is the first process (process 1) of a process-id namespace of its own, as in a session's
+    /// microVM, where the kernel gives it no signal it has no handler for. Needs a machine that can make such a namespace
+    /// ([`first_process_possible`]).
+    pub first_process: bool,
     /// `StartDirectRunRequest.review` as the JSON of the request member. `None` leaves the member out of
     /// `request.json`, so the request of every other test is byte for byte what it was.
     pub review: Option<serde_json::Value>,
@@ -1173,6 +1201,7 @@ impl Default for Opts {
             report_step_s: None,
             mcp: false,
             agentd_env: Vec::new(),
+            first_process: false,
             review: None,
             build: None,
             goal: None,
@@ -1182,16 +1211,106 @@ impl Default for Opts {
     }
 }
 
+/// The program that starts a command as the first process of a process-id namespace of its own.
+const UNSHARE: &str = "unshare";
+
+/// The arguments of [`UNSHARE`] before the command: a user namespace that maps the caller to root, a process-id namespace, and the command
+/// as its first process.
+const FIRST_PROCESS_ARGS: [&str; 4] = ["--user", "--map-root-user", "--pid", "--fork"];
+
+/// Whether this machine can start a command as the first process of a process-id namespace of its own: a probe of the same command
+/// line with `true`. A container that refuses `unshare` cannot; a test that needs process 1 says so and does not run there.
+pub fn first_process_possible() -> bool {
+    std::process::Command::new(UNSHARE)
+        .args(FIRST_PROCESS_ARGS)
+        .arg("true")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// The real `agentd serve` binary, killed when the test ends.
 pub struct Process {
     child: std::process::Child,
+    /// The process id of `agentd serve` on this machine when `child` is the program that made its namespace ([`Opts::first_process`]).
+    in_namespace: Option<u32>,
     pub log_file: PathBuf,
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
+        // The first process of a process-id namespace takes every process of the namespace with it; the program that made the namespace
+        // would leave it running.
+        if let Some(pid) = self.in_namespace {
+            let _ = std::process::Command::new("kill")
+                .args(["-s", "KILL", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// The one child of the process `outer`: `agentd serve` under the program that made its namespace.
+fn child_of(outer: u32) -> u32 {
+    let children = format!("/proc/{outer}/task/{outer}/children");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = std::fs::read_to_string(&children)
+            .ok()
+            .and_then(|c| c.split_whitespace().next().and_then(|p| p.parse().ok()));
+        if let Some(pid) = found {
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "agentd under the namespace program {outer}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+impl Process {
+    /// The process id of `agentd serve` on this machine.
+    pub fn pid(&self) -> u32 {
+        self.in_namespace.unwrap_or_else(|| self.child.id())
+    }
+
+    /// The process id `agentd serve` has in its own process-id namespace (the last number of the `NSpid` line of its status).
+    pub fn own_pid(&self) -> Option<u32> {
+        let status = std::fs::read_to_string(format!("/proc/{}/status", self.pid())).ok()?;
+        let line = status.lines().find(|l| l.starts_with("NSpid:"))?;
+        line.split_whitespace().last()?.parse().ok()
+    }
+
+    /// Whether `agentd serve` runs.
+    pub fn alive(&self) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &self.pid().to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// Sends the process `signal` by its name (`TERM`, `INT`) with the `kill` program, as a container runtime or a person would.
+    pub fn signal(&self, signal: &str) {
+        let status = std::process::Command::new("kill")
+            .args(["-s", signal, &self.pid().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "kill -s {signal}: {status}");
+    }
+
+    /// `Some(code)` once the process has ended (`None` inside: a signal ended it); `None` while it runs.
+    pub fn ended(&mut self) -> Option<Option<i32>> {
+        self.child.try_wait().unwrap().map(|s| s.code())
+    }
+
+    /// What the process has written to its log so far.
+    pub fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log_file).unwrap_or_default()
     }
 }
 
@@ -1524,7 +1643,14 @@ impl Direct {
             // The process takes the port the listener held; the in-process server is not started.
             drop(listener);
             let log_file = dir.join("agentd.log");
-            let child = std::process::Command::new(env!("CARGO_BIN_EXE_agentd"))
+            let mut command = if opts.first_process {
+                let mut c = std::process::Command::new(UNSHARE);
+                c.args(FIRST_PROCESS_ARGS).arg(env!("CARGO_BIN_EXE_agentd"));
+                c
+            } else {
+                std::process::Command::new(env!("CARGO_BIN_EXE_agentd"))
+            };
+            let child = command
                 .args(["serve", "--listen", &addr.to_string()])
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin")
@@ -1532,7 +1658,12 @@ impl Direct {
                 .stderr(std::fs::File::create(&log_file).unwrap())
                 .spawn()
                 .unwrap();
-            process = Some(Process { child, log_file });
+            let in_namespace = opts.first_process.then(|| child_of(child.id()));
+            process = Some(Process {
+                child,
+                in_namespace,
+                log_file,
+            });
             let deadline = Instant::now() + Duration::from_secs(10);
             while http("GET", &format!("http://{addr}/ping"), None).await.0 != 200 {
                 assert!(Instant::now() < deadline, "agentd serve did not come up");

@@ -65,10 +65,12 @@
   "events": [
     {
       "payload": {
+        "beatS": "<n>",
         "engine": "cline",
         "model": "us.anthropic.claude-opus-5-5",
         "role": "direct",
         "rulesDigest": "<sha256>",
+        "session": 1,
         "turn": 1
       },
       "type": "turn.started"
@@ -260,7 +262,7 @@
     },
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.59.0"
+      "protocol": "1.60.0"
     }
   },
   "wire": [

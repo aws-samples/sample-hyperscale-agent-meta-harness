@@ -6,6 +6,16 @@
 //! checks both versions afterwards. Its only writes are the clone in the download directory and, when the new client reports another version,
 //! the rename of the earlier client that setup kept beside it (`ham.prev`) back into place, and only when that file has the SHA-256 the running
 //! ham had before setup started.
+//!
+//! The clone stays only when the update goes ahead: the newest commit is read in a folder `.ham-update-<process>-<time>` of the
+//! download directory, which `--check`, an update that is up to date or refused, and an update the person does not confirm remove again
+//! ([`Look`]). An update that goes ahead renames it to `ham-update-<commit>`, the copy setup runs in. A `ham` that is interrupted or
+//! killed while it reads the commit, or at the question, cannot remove the folder; the next look removes the folders of looks whose
+//! process runs no more ([`sweep_looks`]).
+//!
+//! An update that deploys nothing on the stage waits for no run. Whether it deploys is setup's decision, so when a run of the caller
+//! is active ham asks the setup of the fetched commit for its plan (`--dry-run`: the AWS account is read, nothing is written) and reads the
+//! answer with `ham_core::update::plan_deploys_nothing`. Every other answer keeps the wait, and setup decides again when it runs.
 
 use crate::api::{Api, ApiError};
 use crate::http::ControlPlane;
@@ -14,8 +24,8 @@ use ham_core::update::{Change, Plan, Refusal, changes_between, newest_heading, p
 use harness_protocol::api::v1::RunSummary;
 use harness_protocol::goal::GoalStatus;
 use sha2::{Digest, Sha256};
-use std::ffi::OsString;
-use std::io::Read;
+use std::ffi::{OsStr, OsString};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -29,6 +39,9 @@ pub const WAIT_MINUTES: u32 = 60;
 pub const BACKEND_RECHECK: Duration = Duration::from_secs(90);
 /// The backstop of one git call; the real limit is the stall limit (`http.lowSpeedLimit` for `http.lowSpeedTime`).
 pub const GIT_LIMIT: Duration = Duration::from_secs(15 * 60);
+/// How long setup may take to print its plan before `ham update` goes on without it and waits for the caller's runs as before. The
+/// plan reads the AWS account; about 20 seconds were measured.
+pub const PLAN_LIMIT: Duration = Duration::from_secs(180);
 
 /// The exit codes of `ham update` that are its own; any other code of setup is passed through. After setup's 3 or 8 ([`SETUP_DONE_CODES`]) the
 /// versions are checked first, and a failed check gives `CHECK_FAILED`.
@@ -353,6 +366,138 @@ pub fn clone_dir(downloads: &Path, commit: &str) -> PathBuf {
     downloads.join(format!("ham-update-{}", &commit[..12.min(commit.len())]))
 }
 
+/// Where the newest commit is read before an update goes ahead, so that a look leaves nothing in the download directory: `--check`
+/// changes nothing, and neither does an update that is up to date, refused or not confirmed. The folder is the copy of an earlier update of
+/// this commit when something is at its place (it is checked like any copy and left as it is), else a new folder
+/// `.ham-update-<process>-<time>` beside it, which is removed when this value is dropped. A download directory that did not exist (a
+/// setting names one that was never made) is removed again with it, level by level, as long as each is empty. A process that is interrupted
+/// or killed first leaves its folder, and the next look removes it ([`sweep_looks`]).
+struct Look {
+    dir: PathBuf,
+    /// The folder is this look's own and is removed with it.
+    own: bool,
+    /// The download directory and the folders above it that did not exist before this look, innermost first.
+    made: Vec<PathBuf>,
+}
+
+impl Look {
+    fn of(downloads: &Path, copy: &Path) -> Look {
+        sweep_looks(downloads);
+        if std::fs::symlink_metadata(copy).is_ok() {
+            return Look {
+                dir: copy.to_path_buf(),
+                own: false,
+                made: Vec::new(),
+            };
+        }
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = downloads.join(format!("{LOOK_PREFIX}{}-{stamp}", std::process::id()));
+        // A name of this process and this nanosecond: what is at it was made by this look.
+        let own = std::fs::symlink_metadata(&dir).is_err();
+        let made = downloads
+            .ancestors()
+            .take_while(|p| !p.as_os_str().is_empty() && std::fs::symlink_metadata(p).is_err())
+            .map(Path::to_path_buf)
+            .collect();
+        Look { dir, own, made }
+    }
+
+    fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The update goes ahead: the folder the commit was read in becomes the copy of the commit at `copy`, so nothing is fetched twice. A
+    /// folder that cannot be moved there is removed as after a check, and the copy is fetched anew.
+    fn keep_as(mut self, copy: &Path) {
+        if self.own
+            && std::fs::symlink_metadata(copy).is_err()
+            && std::fs::rename(&self.dir, copy).is_ok()
+        {
+            self.own = false;
+        }
+    }
+}
+
+impl Drop for Look {
+    fn drop(&mut self) {
+        if self.own {
+            let _ = std::fs::remove_dir_all(&self.dir);
+            // `remove_dir` takes an empty folder only: a folder that holds anything, or that was there before, stays.
+            for folder in &self.made {
+                if std::fs::remove_dir(folder).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// How the name of the folder a look reads in begins: `.ham-update-<process>-<time>`.
+const LOOK_PREFIX: &str = ".ham-update-";
+
+/// The process whose look made a folder of this name; `None` for every name that is not `.ham-update-<process>-<time>` in digits.
+fn look_process(name: &str) -> Option<u32> {
+    let (process, time) = name.strip_prefix(LOOK_PREFIX)?.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if digits(process) && digits(time) {
+        process.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether a process with this id runs on this machine; `None` when that cannot be told. Linux lists every process as a folder of `/proc`.
+/// Elsewhere `ps` is asked for this process and the other one together, and an answer that does not name this process tells nothing
+/// about the other.
+fn process_runs(pid: u32) -> Option<bool> {
+    let own = std::process::id();
+    if pid == own {
+        return Some(true);
+    }
+    let listed = Path::new("/proc");
+    if listed.join(own.to_string()).is_dir() {
+        return Some(listed.join(pid.to_string()).exists());
+    }
+    process_runs_by(OsStr::new("ps"), own, pid)
+}
+
+/// [`process_runs`] by `<ps> -o pid= -p <own>,<pid>`, which prints the ids of those of the two that run.
+fn process_runs_by(ps: &OsStr, own: u32, pid: u32) -> Option<bool> {
+    let mut command = Command::new(ps);
+    command.args(["-o", "pid=", "-p", &format!("{own},{pid}")]);
+    let ran = run_bounded(command, Duration::from_secs(10)).ok()?;
+    let running: Vec<u32> = ran
+        .stdout
+        .split_whitespace()
+        .filter_map(|id| id.parse().ok())
+        .collect();
+    running.contains(&own).then(|| running.contains(&pid))
+}
+
+/// Removes the folders that earlier looks left in `downloads`. A look removes its own folder when it ends, but a `ham` that is
+/// interrupted or killed first (Ctrl-C while the commit is read, or at the question) cannot, and no later look uses that name again. A
+/// folder goes when its name is a look's, it is a folder and no link, and the process in its name runs no more. A folder whose process
+/// runs stays (another `ham update` in this download directory), and so does one whose process cannot be looked up; a process id that
+/// another program has taken keeps its folder until that program ends. Nothing else in the directory is touched. The processes are
+/// those this machine can see: in a download directory shared with another machine or container, a look that runs there can lose its
+/// folder to a look here; it then stops with git's error and has changed nothing.
+fn sweep_looks(downloads: &Path) {
+    let Ok(entries) = std::fs::read_dir(downloads) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(process) = entry.file_name().to_str().and_then(look_process) else {
+            continue;
+        };
+        // `file_type` does not follow a link, and `remove_dir_all` follows none inside the folder.
+        if entry.file_type().is_ok_and(|t| t.is_dir()) && process_runs(process) == Some(false) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// How the wait goes.
 #[derive(Clone, Debug)]
 pub struct DrainOptions {
@@ -447,6 +592,160 @@ pub async fn drain<P: ControlPlane>(
             _ = tokio::time::sleep(opts.poll.min(left)) => {}
             _ = &mut interrupt => return Ok(DrainEnd::Interrupted),
         }
+    }
+}
+
+/// The line that says why `ham update` did not wait for the caller's active runs: the first five, and how many more.
+fn deploys_nothing_line(own: &[String]) -> String {
+    let shown: Vec<&str> = own.iter().take(5).map(String::as_str).collect();
+    let more = if own.len() > 5 {
+        format!(" and {} more", own.len() - 5)
+    } else {
+        String::new()
+    };
+    let noun = if own.len() == 1 { "run" } else { "runs" };
+    format!(
+        "Setup's plan for this update deploys nothing on the stage, so ham update does not wait for your {} active {noun}: {}{more}. No run is cancelled. Setup decides again when it runs.",
+        own.len(),
+        shown.join(", ")
+    )
+}
+
+/// The line `ham update` prints before it asks setup for its plan, so that the time the plan takes is no silence: why it asks, that
+/// setup changes nothing, about how long the plan takes, and how long `ham update` waits for it at most.
+fn asking_line(limit: Duration) -> String {
+    format!(
+        "Asking setup for its plan because a run of yours is active. Setup reads your AWS account and changes nothing; it takes about 20 seconds. ham update waits at most {} for the plan.",
+        ham_core::render::wait_text(limit)
+    )
+}
+
+/// What a process writes to one of its outputs until it ends. The pipe is this client's own, and the text ends at a mark that the
+/// client writes into the pipe once the process has ended, never at the end of the pipe: a process that setup's calls leave behind (the
+/// agent of a credential helper, for one) keeps the output it was started with open for as long as it lives, and what setup printed is
+/// complete when setup has ended.
+struct Captured {
+    mark: Vec<u8>,
+    writer: std::io::PipeWriter,
+    reader: std::thread::JoinHandle<Vec<u8>>,
+}
+
+impl Captured {
+    /// A pipe with a thread that reads it, and the end of the pipe that the process writes to.
+    fn open(name: &str) -> std::io::Result<(Captured, Stdio)> {
+        let (mut from, writer) = std::io::pipe()?;
+        let theirs = writer.try_clone()?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        // A NUL byte on each side: no line that setup prints holds one.
+        let mark = format!("\0ham-update-{name}-{}-{stamp}\0", std::process::id()).into_bytes();
+        let end = mark.clone();
+        let reader = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match from.read(&mut chunk) {
+                    Ok(0) => return text,
+                    Ok(n) => {
+                        // The mark can lie across two reads: look from where it could begin.
+                        let from_here = text.len().saturating_sub(end.len() - 1);
+                        text.extend_from_slice(&chunk[..n]);
+                        let found = text[from_here..]
+                            .windows(end.len())
+                            .position(|w| w == end.as_slice());
+                        if let Some(at) = found {
+                            text.truncate(from_here + at);
+                            return text;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => return text,
+                }
+            }
+        });
+        Ok((
+            Captured {
+                mark,
+                writer,
+                reader,
+            },
+            Stdio::from(theirs),
+        ))
+    }
+
+    /// What was written until now; called when the process has ended. The mark ends the read, whoever else still holds the pipe.
+    fn text(self) -> String {
+        let Captured {
+            mark,
+            mut writer,
+            reader,
+        } = self;
+        if !reader.is_finished() {
+            let _ = writer.write_all(&mark);
+        }
+        drop(writer);
+        String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned()
+    }
+}
+
+/// The plan of `<dir>/setup.sh --update` for this update, asked with `--dry-run`: setup reads the AWS account, writes nothing and
+/// prints what it would do. It gets the arguments the update itself gives it, and always a wait, so that an active run does not end the plan
+/// before it is printed. `Ok(true)` when the plan says that the update deploys nothing on the stage
+/// (`ham_core::update::plan_deploys_nothing`), `Ok(false)` for every other plan, and `Err` with the reason when setup printed none within
+/// `limit` or ended with an error. The plan is read when setup has ended ([`Captured`]): a process that setup left behind with its output
+/// does not hold the plan back. Nothing of setup's output is shown: the update's own run of setup prints its plan.
+async fn setup_plan(
+    dir: &Path,
+    prefix: &Path,
+    minutes: u64,
+    limit: Duration,
+) -> Result<bool, String> {
+    const ASKED: &str = "setup.sh --update --dry-run";
+    let no_start = |e: std::io::Error| format!("{ASKED} could not start: {e}");
+    let (out, to_out) = Captured::open("out").map_err(no_start)?;
+    let (err, to_err) = Captured::open("err").map_err(no_start)?;
+    let mut command = tokio::process::Command::new(dir.join("setup.sh"));
+    command
+        .arg("--update")
+        .arg("--prefix")
+        .arg(prefix)
+        .arg("--yes")
+        .arg("--wait-for-runs")
+        .arg(minutes.to_string())
+        .arg("--dry-run")
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(to_out)
+        .stderr(to_err)
+        .kill_on_drop(true);
+    let started = command.spawn();
+    // The command holds the ends of the pipes that setup writes to: with it gone, this client holds only the ends it marks.
+    drop(command);
+    let mut setup = started.map_err(no_start)?;
+    let ended = tokio::time::timeout(limit, setup.wait()).await;
+    if ended.is_err() {
+        let _ = setup.kill().await;
+    }
+    // Setup has ended, by itself or by the limit: what it printed is in the pipes.
+    let (plan, complaint) = (out.text(), err.text());
+    match ended {
+        Err(_) => Err(format!(
+            "{ASKED} gave no answer within {}",
+            ham_core::render::wait_text(limit)
+        )),
+        Ok(Err(e)) => Err(format!("{ASKED} could not be followed to its end: {e}")),
+        Ok(Ok(status)) if !status.success() => {
+            let code = status
+                .code()
+                .map_or_else(|| "a signal".to_string(), |c| format!("exit {c}"));
+            let said: String = first_line(&complaint).chars().take(200).collect();
+            Err(format!(
+                "{ASKED} ended with {code}: {}",
+                ham_core::sanitize::sanitize_line(&said)
+            ))
+        }
+        Ok(Ok(_)) => Ok(ham_core::update::plan_deploys_nothing(&plan)),
     }
 }
 
@@ -670,6 +969,17 @@ pub async fn run<P: ControlPlane>(
     ctx: &Context<'_>,
     out: &Output,
 ) -> i32 {
+    run_with(api, req, ctx, out, PLAN_LIMIT).await
+}
+
+/// [`run`] with the time setup may take to print its plan ([`PLAN_LIMIT`]).
+pub async fn run_with<P: ControlPlane>(
+    api: &Api<P>,
+    req: &Request,
+    ctx: &Context<'_>,
+    out: &Output,
+    plan_limit: Duration,
+) -> i32 {
     let client = crate::version::CLIENT;
     // 1. The head of main, and the version and the changes at it.
     let commit = match ctx.git.head_of_main(&ctx.source) {
@@ -680,7 +990,9 @@ pub async fn run<P: ControlPlane>(
         }
     };
     let dir = clone_dir(&ctx.downloads, &commit);
-    let peek = match ctx.git.peek(&ctx.source, &dir, &commit) {
+    // Read in a folder that is removed again unless the update goes ahead, so a look leaves nothing in the download directory.
+    let look = Look::of(&ctx.downloads, &dir);
+    let peek = match ctx.git.peek(&ctx.source, look.dir(), &commit) {
         Ok(p) => p,
         Err(e) => {
             out.err_line(format!("ham update: {e}"));
@@ -756,15 +1068,16 @@ pub async fn run<P: ControlPlane>(
         }
     }
     out.out_line(format!(
-        "  how:     wait until your active runs end, then run the setup.sh --update of this commit from {}: it waits for the runs of everyone on the stage, deploys the backend in the AWS account of your profile, then installs ham in {}/bin.",
+        "  how:     run the setup.sh --update of this commit from {}: it deploys the backend in the AWS account of your profile when this release changes it, then installs ham in {}/bin.",
         dir.display(),
         prefix.display()
     ));
+    // Whether the update deploys is setup's answer, which comes after the question, so the line says what each answer means.
     if req.drain.no_wait {
-        out.out_line("  wait:    none (--no-wait): the update stops when a run is active, yours or anyone's. No run is cancelled.");
+        out.out_line("  wait:    none (--no-wait): an update that deploys stops when a run is active, yours or anyone's. An update that deploys nothing on the stage goes ahead. No run is cancelled.");
     } else {
         out.out_line(format!(
-            "  wait:    at most {} min for both waits together. While setup waits, new runs are refused. No run is cancelled.",
+            "  wait:    an update that deploys waits until your active runs end, and setup then waits for the runs of everyone on the stage: at most {} min for both waits together. While setup waits, new runs are refused. An update that deploys nothing on the stage waits for no run. No run is cancelled.",
             req.drain.limit.as_secs().div_ceil(60)
         ));
     }
@@ -782,7 +1095,8 @@ pub async fn run<P: ControlPlane>(
             return exit::CANCELLED;
         }
     }
-    // 5. The commit itself, checked out and checked.
+    // 5. The commit itself, checked out and checked, in the folder it was read in.
+    look.keep_as(&dir);
     let fetched = match ctx.git.fetch(&ctx.source, &dir, &commit) {
         Ok(f) => f,
         Err(e) => {
@@ -802,38 +1116,72 @@ pub async fn run<P: ControlPlane>(
             "ham update: note: the newest heading of CHANGELOG.md at this commit is not {newest}."
         ));
     }
-    // 6. The wait for the caller's runs.
+    // 6. The wait for the caller's runs. An update that deploys nothing on the stage waits for none: setup itself waits for no run then,
+    // and the stage keeps starting runs. Whether an update deploys is setup's decision (the stage's record, the account file, the settings,
+    // the stacks), so when a run of the caller is active, ham asks the setup of the fetched commit for its plan. Every other answer keeps the
+    // wait. Setup decides again when it runs: if it deploys after all, it waits for the runs of everyone itself, or stops when it was given
+    // no wait.
     let wait_started = Instant::now();
-    match drain(api, &req.drain, out).await {
-        Ok(DrainEnd::Clear) => {}
-        Ok(DrainEnd::Waited { seconds }) => out.err_line(format!(
-            "Your runs have ended (waited {} min).",
-            seconds.div_ceil(60)
-        )),
-        Ok(DrainEnd::TimedOut(ids)) => {
-            out.err_line(format!(
-                "ham update: {} run(s) still active after {} min: {}. No deployment or client change was made. No run was cancelled. Run ham update again later, or give --wait <minutes>.",
-                ids.len(),
-                req.drain.limit.as_secs().div_ceil(60),
-                ids.join(", ")
-            ));
-            return exit::REFUSED;
-        }
-        Ok(DrainEnd::NotWaiting(ids)) => {
-            out.err_line(format!(
-                "ham update: {} run(s) are active: {}. --no-wait stops here. No deployment or client change was made.",
-                ids.len(),
-                ids.join(", ")
-            ));
-            return exit::REFUSED;
-        }
-        Ok(DrainEnd::Interrupted) => {
-            out.err_line("ham update: the wait was stopped. No deployment or client change was made. No run was cancelled.");
-            return exit::CANCELLED;
-        }
+    let own: Vec<String> = match api.list_runs().await {
+        Ok(runs) => active(&runs).iter().map(|r| r.run_id.clone()).collect(),
         Err(e) => {
             out.err_line(format!("ham update: could not read your runs: {e}"));
             return exit::FAILED;
+        }
+    };
+    let mut wait = !own.is_empty();
+    if wait {
+        let asked = minutes_left(req.drain.limit, Duration::ZERO);
+        // The plan is a preflight of the AWS account: the time it takes is said before it is asked, also under `--no-wait`.
+        out.err_line(asking_line(plan_limit));
+        match setup_plan(&fetched.dir, &prefix, asked, plan_limit).await {
+            Ok(true) => {
+                wait = false;
+                out.err_line(deploys_nothing_line(&own));
+            }
+            Ok(false) => {}
+            Err(why) => out.err_line(format!(
+                "ham update: could not read the plan of setup ({why}), so it waits for your runs as before an update that deploys."
+            )),
+        }
+    }
+    if wait {
+        // One limit covers the plan and both waits: the time the plan took is gone from the wait for the caller's runs.
+        let left = DrainOptions {
+            limit: req.drain.limit.saturating_sub(wait_started.elapsed()),
+            ..req.drain.clone()
+        };
+        match drain(api, &left, out).await {
+            Ok(DrainEnd::Clear) => {}
+            Ok(DrainEnd::Waited { seconds }) => out.err_line(format!(
+                "Your runs have ended (waited {} min).",
+                seconds.div_ceil(60)
+            )),
+            Ok(DrainEnd::TimedOut(ids)) => {
+                out.err_line(format!(
+                    "ham update: {} run(s) still active after {} min: {}. No deployment or client change was made. No run was cancelled. Run ham update again later, or give --wait <minutes>.",
+                    ids.len(),
+                    req.drain.limit.as_secs().div_ceil(60),
+                    ids.join(", ")
+                ));
+                return exit::REFUSED;
+            }
+            Ok(DrainEnd::NotWaiting(ids)) => {
+                out.err_line(format!(
+                    "ham update: {} run(s) are active: {}. --no-wait stops here. No deployment or client change was made.",
+                    ids.len(),
+                    ids.join(", ")
+                ));
+                return exit::REFUSED;
+            }
+            Ok(DrainEnd::Interrupted) => {
+                out.err_line("ham update: the wait was stopped. No deployment or client change was made. No run was cancelled.");
+                return exit::CANCELLED;
+            }
+            Err(e) => {
+                out.err_line(format!("ham update: could not read your runs: {e}"));
+                return exit::FAILED;
+            }
         }
     }
     // 7. setup.sh --update of the fetched commit: the backend first, then the client.
@@ -1036,7 +1384,7 @@ fn check_report(
     match the_plan {
         Plan::UpToDate => out.out_line("Up to date."),
         Plan::Update(p) => out.out_line(format!(
-            "Run ham update to install v{newest} ({}): the backend first, then ham, after your active runs end.",
+            "Run ham update to install v{newest} ({}): the backend first, then ham. An update that deploys waits for your active runs to end first.",
             p.words()
         )),
         Plan::Refuse(r) => out.out_line(format!("ham update would stop: {}", refusal_text(r, newest))),
@@ -1108,7 +1456,53 @@ pub fn running_exe() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// Only the name of a look's folder names a process: every other name stays out of a sweep.
+    #[test]
+    fn b843_only_the_name_of_a_look_names_a_process() {
+        assert_eq!(
+            look_process(".ham-update-5262-1794653542885024410"),
+            Some(5262)
+        );
+        for other in [
+            ".ham-update-5262",
+            ".ham-update-5262-",
+            ".ham-update--1",
+            ".ham-update-x-1",
+            ".ham-update-1-x",
+            ".ham-update-1-2-3",
+            ".ham-update-+1-2",
+            ".ham-update-99999999999-1",
+            "ham-update-1-2",
+            ".ham-update-0123456789ab",
+        ] {
+            assert_eq!(look_process(other), None, "{other}");
+        }
+    }
+
+    /// Where `/proc` does not list the processes, `ps` tells a process that runs from one that is gone. A program that names no process,
+    /// or that cannot be started, tells nothing, and nothing is removed on its word.
+    #[test]
+    fn b843_ps_tells_a_process_that_runs_from_one_that_is_gone() {
+        let own = std::process::id();
+        let ps = OsStr::new("ps");
+        let mut ended = Command::new("true").spawn().unwrap();
+        let gone = ended.id();
+        ended.wait().unwrap();
+        let mut stays = Command::new("sleep").arg("60").spawn().unwrap();
+        let runs = process_runs_by(ps, own, stays.id());
+        let _ = stays.kill();
+        let _ = stays.wait();
+        assert_eq!(runs, Some(true));
+        assert_eq!(process_runs_by(ps, own, gone), Some(false));
+        assert_eq!(process_runs_by(OsStr::new("true"), own, gone), None);
+        assert_eq!(process_runs_by(OsStr::new("/no/such/ps"), own, gone), None);
+        // The way this machine is asked.
+        assert_eq!(process_runs(own), Some(true));
+        assert_eq!(process_runs(gone), Some(false));
+    }
 
     /// Setup ends with 6 before any build too (a read or a write of the deploy lock that could not finish), so the sentence does not
     /// say that an update is running, and it names no setup command, which would install into the default folder.

@@ -133,7 +133,15 @@ fn passes_to_git(name: &str) -> bool {
 /// [`passes_to_git`]. The caller adds the author and, for a private repository, `GIT_DIR` and the like.
 fn git_command(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
-    cmd.args(GIT_GUARDS).args(args).env_clear();
+    cmd.args(GIT_GUARDS).args(args);
+    clean_git_env(&mut cmd);
+    cmd.current_dir(dir);
+    cmd
+}
+
+/// The environment of every agentd git call: only the variables of [`passes_to_git`], no system or global configuration, no prompt.
+fn clean_git_env(cmd: &mut Command) {
+    cmd.env_clear();
     for (name, value) in std::env::vars_os() {
         if name.to_str().is_some_and(passes_to_git) {
             cmd.env(name, value);
@@ -142,8 +150,21 @@ fn git_command(dir: &Path, args: &[&str]) -> Command {
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .current_dir(dir);
+        .env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// [`git_command`] for a call that is started outside `dir`: the process starts in `/`, and git itself changes to `dir` (`-C`).
+/// Starting a process in a directory waits until the new process has changed to it, and in a work tree whose file system stopped answering
+/// that wait cannot be ended; a git that hangs in its own change of directory is ended with its process group. A `dir` that is no
+/// absolute path is started in as before.
+fn git_command_outside(dir: &Path, args: &[&str]) -> Command {
+    if !dir.is_absolute() {
+        return git_command(dir, args);
+    }
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir).args(GIT_GUARDS).args(args);
+    clean_git_env(&mut cmd);
+    cmd.current_dir("/");
     cmd
 }
 
@@ -191,7 +212,24 @@ pub(crate) async fn git_with_env(
     args: &[&str],
     envs: &[(&str, &Path)],
 ) -> Result<String, WsError> {
-    let mut cmd = git_command(dir, args);
+    harness_git(git_command(dir, args), args, envs).await
+}
+
+/// [`git_with_env`] started outside `dir` ([`git_command_outside`]): the git calls of the copies of the work that no look of the copy task
+/// bounds (the copy of the end), so a work tree that stopped answering cannot hold the caller in the start of a process.
+pub(crate) async fn git_with_env_outside(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+) -> Result<String, WsError> {
+    harness_git(git_command_outside(dir, args), args, envs).await
+}
+
+async fn harness_git(
+    mut cmd: Command,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+) -> Result<String, WsError> {
     cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
         .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
         .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
@@ -213,6 +251,91 @@ pub(crate) async fn git_with_env(
         )));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// How long a git that was given up has to end once its group was told to ([`git_with_env_until`]).
+pub(crate) const GIT_END_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`git_with_env`] for a caller that may give the call up. git runs in a process group of its own. When
+/// the time to give up comes before git has ended, the group is ended and git is waited for, at most [`GIT_END_LIMIT`], before this returns:
+/// the caller never goes on while a git it started still writes to the repository, and a git that waits on a file system that does not
+/// answer is not waited for without a limit. The process is started outside `dir` ([`git_command_outside`]), so the start itself never
+/// waits on the work tree.
+pub(crate) async fn git_with_env_until(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+    give_up: &crate::direct::snapshot::GiveUp,
+) -> Result<String, WsError> {
+    use tokio::io::AsyncReadExt;
+    let what = args.first().copied().unwrap_or("");
+    let mut cmd = git_command_outside(dir, args);
+    cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
+        .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
+    let group = child
+        .id()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(rustix::process::Pid::from_raw);
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let ended = {
+        let run = async {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let read_out = async {
+                if let Some(pipe) = stdout.as_mut() {
+                    let _ = pipe.read_to_end(&mut out).await;
+                }
+            };
+            let read_err = async {
+                if let Some(pipe) = stderr.as_mut() {
+                    let _ = pipe.read_to_end(&mut err).await;
+                }
+            };
+            let ((), (), status) = tokio::join!(read_out, read_err, child.wait());
+            (status, out, err)
+        };
+        give_up.run(run).await
+    };
+    let Some((status, out, err)) = ended else {
+        // The whole group: git starts helpers of its own.
+        if let Some(group) = group {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+        let _ = child.start_kill();
+        let gone = tokio::time::timeout(GIT_END_LIMIT, child.wait())
+            .await
+            .is_ok();
+        return Err(WsError::Git(format!(
+            "git {what}: given up before it had ended{}",
+            if gone {
+                ""
+            } else {
+                "; the process was still there 2 s after it was ended"
+            }
+        )));
+    };
+    let status = status.map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
+    if !status.success() {
+        return Err(WsError::Git(format!(
+            "git {what}: {}",
+            String::from_utf8_lossy(&err).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// One git call of agentd's own plumbing (the DOX starter commit, `direct::dox`): the guards and the cleaned environment of every agentd git call, the

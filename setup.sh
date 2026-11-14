@@ -57,6 +57,7 @@ KEEP_RUNNER=0
 ACK_COSTS=0
 ACK_TEARDOWN=0
 ALLOW_ACTIVE_RUNS=0
+ALLOW_NEW_RUNS=0
 WAIT_FOR_RUNS=""
 WAIT_FOR_RUNS_SET=0
 FORCE_DEPLOY=0
@@ -307,6 +308,8 @@ Later life of the system (they read or change this deployment only; --profile, -
   --update        build and deploy a revision of this clone (HEAD, or the full commit id of --revision).
                   Active runs stop ./setup.sh --update with exit 7 before anything is installed or built.
                   --allow-active-runs skips that check; the build then refuses only an update that changes the worker runtime.
+                  The stage starts no new runs while an update deploys. --allow-new-runs, with --allow-active-runs, lets the stage keep starting runs while the update deploys;
+                  such an update keeps the worker runtime, and one that would change it stops with exit 7 or 5 and nothing deployed.
                   --wait-for-runs MINUTES (1 to 1440) waits for the active runs to end instead. The stage starts no new runs meanwhile.
                   At the limit the update stops with exit 7, and nothing was deployed or installed. No run is cancelled.
                   An update takes about 20 to 25 minutes when it reuses the Cline binary, and about 21 to 27 minutes more when it rebuilds it.
@@ -433,6 +436,7 @@ while [ $# -gt 0 ]; do
     --acknowledge-costs) ACK_COSTS=1; FULL_ONLY=1; FULL_VIA=${FULL_VIA:-$1} ;;
     --acknowledge-teardown) ACK_TEARDOWN=1 ;;
     --allow-active-runs) ALLOW_ACTIVE_RUNS=1 ;;
+    --allow-new-runs) ALLOW_NEW_RUNS=1 ;;
     --force-deploy) FORCE_DEPLOY=1 ;;
     --change-operator) CHANGE_OPERATOR=1 ;;
     --preflight-only) PREFLIGHT_ONLY=1; FULL_ONLY=1; FULL_VIA=${FULL_VIA:-$1} ;;
@@ -509,6 +513,13 @@ if [ -n "$TEARDOWN_ONLY" ]; then
 fi
 if [ "$ALLOW_ACTIVE_RUNS" = 1 ] && [ "$CMD" != update ]; then
   usage_die "--allow-active-runs goes with --update"
+fi
+# --allow-new-runs: the stage keeps starting runs while this update deploys: the deploy lock of the update carries the line starts=yes (rn_lock_value of
+# scripts/setup/runner.sh), under which the stage's API service starts runs. It goes with --allow-active-runs, because a run that starts during the update is a run
+# that is active under it; --wait-for-runs, which needs a stage that starts no runs to end its wait, cannot be given with --allow-active-runs.
+if [ "$ALLOW_NEW_RUNS" = 1 ]; then
+  [ "$CMD" = update ] || usage_die "--allow-new-runs goes with --update"
+  [ "$ALLOW_ACTIVE_RUNS" = 1 ] || usage_die "--allow-new-runs goes with --allow-active-runs: a run that starts during the update is active under it"
 fi
 # --wait-for-runs MINUTES: an update waits for the runs of every user of the stage to end, up to that many minutes (full_runs_gate of scripts/setup/full.sh).
 if [ "$WAIT_FOR_RUNS_SET" = 1 ]; then
@@ -2045,7 +2056,7 @@ if [ -n "$SSO_PROFILE" ]; then
 fi
 cat <<EOF
   1. Look at your rules, and edit them if you like:   $HAMH_CLIENT_BIN rules show      $HAMH_CLIENT_BIN rules edit
-  2. See the five models and which one a run uses:    $HAMH_CLIENT_BIN models
+  2. See the models and which one a run uses:         $HAMH_CLIENT_BIN models
   3. Start a run (a deployed stage and its endpoint are needed):
        $HAMH_CLIENT_BIN "Build a small command-line todo app in Python with tests" --s3-only --direct
      or, to get a pull request in a CodeCommit repository:

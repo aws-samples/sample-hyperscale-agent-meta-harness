@@ -97,7 +97,9 @@ pub enum GapCause {
     Conflict,
     /// The run ran on an image that stores no transcript.
     Unsupported,
-    /// The run ended abnormally: nothing is known about the tail.
+    /// A session's conversation was not closed (the session was lost, or the run ended without a summary of its conversation): its last
+    /// lines may be missing. [`GapCause::words`] is the line for the run's last session; the open tail of an earlier session of a run that
+    /// went on is worded by [`EARLIER_TAIL_WORDS`].
     TailUnknown,
     /// A chunk could not be read.
     Unreadable,
@@ -114,11 +116,18 @@ impl GapCause {
             Self::Failed => "[storage failed]",
             Self::Conflict => "[conflict: two writers overlapped]",
             Self::Unsupported => "[this run stores no conversation]",
-            Self::TailUnknown => "[the run ended abnormally: the tail is unknown]",
+            Self::TailUnknown => {
+                "[the last session's conversation was not closed: its last lines may be missing]"
+            }
             Self::Unreadable => "[chunk unreadable]",
         }
     }
 }
+
+/// The line for the open tail of an earlier session of a run that went on in a new session: the new session's writer found the
+/// conversation of the one before it unclosed. The chunk it follows comes after these words (`after chunk 3`).
+pub const EARLIER_TAIL_WORDS: &str =
+    "[an earlier session stopped without closing its conversation: its last lines may be missing]";
 
 /// Where a model's blocks came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,9 +272,19 @@ impl Block {
 
     /// A hole in the stored record, named by its cause. `detail` (a range, a count) follows the cause's words.
     pub fn gap(id: &str, cause: GapCause, detail: Option<&str>) -> Block {
+        Block::gap_worded(id, cause, cause.words(), detail)
+    }
+
+    /// [`Block::gap`] with other words than the cause's own (a fixed sentence of this client, never text of a record).
+    pub fn gap_worded(
+        id: &str,
+        cause: GapCause,
+        words: &'static str,
+        detail: Option<&str>,
+    ) -> Block {
         let text = match detail.map(str::trim).filter(|d| !d.is_empty()) {
-            Some(d) => format!("{} {d}", cause.words()),
-            None => cause.words().to_string(),
+            Some(d) => format!("{words} {d}"),
+            None => words.to_string(),
         };
         Block::make(
             id,
@@ -717,6 +736,17 @@ impl Builder {
                 }
             }
             EventType::PermissionRequested => self.notice(e),
+            // The service's word that a session was lost and what the next one starts from.
+            EventType::RunWaiting => {
+                if let Some(lost) = crate::lost_session::SessionLost::parse(e) {
+                    self.close_message();
+                    self.blocks.push(Block::notice(
+                        &format!("n:{}", e.event_id),
+                        NoticeKind::RunStatus,
+                        &lost.sentence(),
+                    ));
+                }
+            }
             EventType::TurnStarted | EventType::TurnEnded => self.close_message(),
             _ => {}
         }

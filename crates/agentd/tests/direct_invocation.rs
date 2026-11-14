@@ -182,7 +182,8 @@ async fn one_prompt_to_the_engine_ends_cline_reported_done_with_everything_deliv
     assert_eq!(events[0].1["rulesDigest"], c.rules_digest.clone().unwrap());
     assert_eq!(
         events[0].1,
-        serde_json::json!({"turn": 1, "engine": "cline", "model": MODEL, "role": "direct", "rulesDigest": c.rules_digest.clone().unwrap()})
+        // The session of the run and the seconds between two beats of a quiet session (a minute, whatever the test's heartbeat interval).
+        serde_json::json!({"turn": 1, "engine": "cline", "model": MODEL, "role": "direct", "rulesDigest": c.rules_digest.clone().unwrap(), "session": 1, "beatS": 60})
     );
     assert_eq!(d.events_of(EventType::TurnStarted).len(), 1);
     let ended = d.events_of(EventType::TurnEnded);

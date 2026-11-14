@@ -88,6 +88,8 @@ pub fn direct_run_request(
         engine: None,
         // Left out here as well: `ResolvedRun::request` lays the user's provider data sharing in, so a bare request is the one of an older client.
         provider_sharing: None,
+        // Left out here too: `ResolvedRun::request` lays the user's copy interval in.
+        snapshot_every_s: None,
     })
 }
 
@@ -264,6 +266,10 @@ pub struct ResolvedRun {
     /// The most seconds this run may take in all: `--max-run-hours` over `run.max_run_hours` of the file, in seconds. Unset sends no member, so the
     /// stage's own 24 hours applies and the request is the one an older client sends.
     pub max_run_s: Option<u32>,
+    /// The seconds between two looks of the worker for a copy of the run's work: `run.copy_every_minutes` of the file, in seconds. Unset sends no
+    /// member, so the stage's own minute applies and the request is the one an older client sends. A key set to the default is `None` too: the default
+    /// is what the stage does by itself, and a stage of an older release refuses a request with a member it does not know.
+    pub snapshot_every_s: Option<u32>,
     /// Provider data sharing for this run: `--provider-sharing` over `run.provider_sharing` of the file, off when neither is set. Only `true` reaches the
     /// request, as `providerSharing`, so the request of a user who never turns it on is the one an older client sends.
     pub provider_sharing: bool,
@@ -313,6 +319,7 @@ impl ResolvedRun {
             .map(|r| with_review_setting(r, self.review_round))
             .map(|r| with_compute_choice(r, self.compute, self.container_signals.as_deref()))
             .map(|r| with_max_run_setting(r, self.max_run_s))
+            .map(|r| with_copy_interval_setting(r, self.snapshot_every_s))
             .map(|r| with_provider_sharing_setting(r, self.provider_sharing))
             .map(|r| with_build_settings(r, &self.build))
             .map(|r| with_limits_setting(r, &self.limits))
@@ -508,6 +515,10 @@ pub fn resolve_run_settings_in(
             run.provider_sharing.is_some(),
         ),
     ));
+    origins.push((
+        Key::RunCopyEveryMinutes,
+        layer(false, run.copy_every_minutes.is_some()),
+    ));
     origins.sort_by_key(|(k, _)| *k);
     Ok(ResolvedRun {
         args: out,
@@ -522,6 +533,10 @@ pub fn resolve_run_settings_in(
         compute,
         container_signals,
         max_run_s: max_run_hours.map(|h| h * 3600),
+        snapshot_every_s: run
+            .copy_every_minutes
+            .map(|m| m * 60)
+            .filter(|s| *s != harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S),
         provider_sharing,
         build: BuildOptions {
             cargo_no_debug_info: run.cargo_no_debug_info.filter(|on| !on),
@@ -664,6 +679,17 @@ pub fn with_max_run_setting(
 ) -> StartDirectRunRequest {
     let mut request = request;
     request.max_run_s = max_run_s;
+    request
+}
+
+/// `request` with the copy interval of the run: seconds in the `snapshotEveryS` member, left out when the file does not set
+/// `run.copy_every_minutes` or sets it to the default, so the request is byte for byte the one an older client sends and the stage's own minute applies.
+pub fn with_copy_interval_setting(
+    request: StartDirectRunRequest,
+    snapshot_every_s: Option<u32>,
+) -> StartDirectRunRequest {
+    let mut request = request;
+    request.snapshot_every_s = snapshot_every_s;
     request
 }
 

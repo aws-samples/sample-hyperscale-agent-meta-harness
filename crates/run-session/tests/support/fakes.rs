@@ -759,6 +759,7 @@ impl Mem {
             limits: None,
             engine: None,
             provider_sharing: None,
+            snapshot_every_s: None,
         };
         let body = serde_json::to_vec(&request).unwrap();
         self.0

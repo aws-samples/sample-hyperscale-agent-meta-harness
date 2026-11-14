@@ -35,7 +35,8 @@ serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# `signal`: the termination signals `agentd serve` answers with a copy of the work. It adds no package: `process` has its parts.
+tokio = { workspace = true, features = ["signal"] }
 
 [dev-dependencies]
 # Paused-clock tests of the flusher's tick timing.

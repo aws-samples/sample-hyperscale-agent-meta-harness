@@ -507,6 +507,9 @@ pub fn outcome_phrase(how: &str) -> String {
         "superseded" => "replaced by a newer question",
         "recovered" => "closed when a model route answered again",
         "ended" => "closed when the run ended",
+        "session-lost" => {
+            "closed when its session was lost; a new session asks again when it needs your answer"
+        }
         other => return format!("closed ({other})"),
     }
     .to_string()

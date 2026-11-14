@@ -62,6 +62,9 @@ pub const MIN_MAX_RUN_S: u32 = SLICE_RESERVE_S + MIN_SLICE_ENGINE_S;
 pub const MAX_MAX_RUN_S: u32 = 30 * 24 * 3600;
 /// Sessions in a row that were lost (no result, no heartbeat, a start that failed) before the run is called stalled.
 pub const MAX_LOST_SLICES: u32 = 3;
+/// The seconds without a heartbeat after which a session is lost: `HeartbeatSeconds` of the `StartSession` task of the run machine
+/// (`statemachines/direct.asl.json`; `run-session` holds its own constant to that file). The worker sends a heartbeat every 60 s.
+pub const SESSION_LOST_AFTER_S: u64 = 600;
 /// Slices in a row that ran to their deadline and left the tree as they found it before the run is called stalled.
 pub const MAX_EMPTY_SLICES: u32 = 3;
 
@@ -77,7 +80,7 @@ pub const DIRECT_ENGINE: &str = "cline";
 pub const MAX_DIRECT_TIMEOUT_S: u32 = 27_900;
 /// How often agentd looks at the work tree for a copy while the prompt runs.
 /// agentd also copies after a tool call that changed the tree, and when the engine
-/// has stopped.
+/// has stopped. It is the default of a run: a start request may name another interval.
 pub const DEFAULT_SNAPSHOT_EVERY_S: u32 = 60;
 /// The longest silence limit an invocation may ask for.
 pub const MAX_PROVIDER_SILENCE_S: u32 = 3_600;
@@ -85,6 +88,13 @@ pub const MAX_PROVIDER_SILENCE_S: u32 = 3_600;
 pub const MIN_SNAPSHOT_EVERY_S: u32 = 60;
 /// The longest snapshot interval.
 pub const MAX_SNAPSHOT_EVERY_S: u32 = 3_600;
+/// Whether `s` is a copy interval a start request may name: [`MIN_SNAPSHOT_EVERY_S`] to [`MAX_SNAPSHOT_EVERY_S`]. The 0 of an invocation
+/// (no copies while the engine works) is no value of a request: a run always has a copy of its work in the bucket while it works. `ham` takes
+/// the bounds of `run.copy_every_minutes` from the two constants, control-api answers 400 outside them, and run-session checks the stored
+/// value again before it writes it into the invocation.
+pub fn snapshot_every_s_ok(s: u32) -> bool {
+    (MIN_SNAPSHOT_EVERY_S..=MAX_SNAPSHOT_EVERY_S).contains(&s)
+}
 /// The largest `InvokeAgentRuntime` body; the prompt, the rules and the nudge are not in it.
 pub const MAX_DIRECT_BODY_BYTES: usize = 64 * 1024;
 /// `DirectSummary.schema_version`.
@@ -194,7 +204,8 @@ pub struct DirectInvocationRequest {
     /// The engine silence limit; agentd's default is 900 s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_silence_s: Option<u32>,
-    /// Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off.
+    /// Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off. run-session sends the interval the start request
+    /// named or the default, never 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_every_s: Option<u32>,
     /// The CodeArtifact token, kept in agentd's memory only; absent on a run without packages.

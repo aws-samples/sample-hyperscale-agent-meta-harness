@@ -9,6 +9,9 @@
 //! * `<n>.json` ([`SlicePlan`]): what slice n restores, how many seconds its engine may run and whether it is the last.
 //! * `<n>-end.json` ([`SliceEnd`]): how slice n ended and what was decided: go on with slice n+1, or deliver and end the run.
 //!
+//! A slice that was lost is also told to the run's events ([`announce_lost`]): one `run.waiting` event of the harness that names
+//! the session, why it was lost and what follows, so a client can say it while the run goes on.
+//!
 //! What the loop guarantees: the service writes the plan of slice n+1 only after it stopped the session of slice n and read how slice n ended;
 //! the Agent item moves to slice n+1 (new session id, new refresh nonce) before the new session is invoked, so the old session can neither refresh
 //! its credentials nor pass worker-api's generation check; work that was in the tree at the deadline is committed and bundled by agentd before it
@@ -19,7 +22,12 @@ use crate::finalize::stop_agent_machine;
 use crate::ops::{Deps, SessionState};
 use crate::ports::{Blobs, PackageTokens, Res, Sessions, Store, Tokens};
 use crate::prepare::read_request;
+use ham_core::lost_session::{
+    CAUSE_NO_HEARTBEAT, CAUSE_NO_RESULT, FROM_COPY, FROM_START, KIND, SessionLost, THEN_END,
+    THEN_RESTART,
+};
 use harness_protocol::api::internal::TurnCompleteRequest;
+use harness_protocol::common::is_utc_timestamp;
 use harness_protocol::direct::{
     DEFAULT_MAX_RUN_S, DIRECT_AGENT_ID, DirectOutcome, DirectSummary, MAX_DIRECT_TIMEOUT_S,
     MAX_EMPTY_SLICES, MAX_LOST_SLICES, MAX_SLICE_BRIEF_BYTES, MAX_SLICES, MIN_SLICE_ENGINE_S,
@@ -170,6 +178,13 @@ pub struct SliceEnd {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
     pub decided_at_ms: u64,
+    /// Why a lost slice was lost (`no-heartbeat` or `no-result`), kept with the decision so that the event that announces it says
+    /// the same however often it is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_cause: Option<String>,
+    /// The last heartbeat worker-api had recorded for a lost slice when the decision was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<String>,
 }
 
 impl SliceEnd {
@@ -518,8 +533,9 @@ where
     P: PackageTokens,
 {
     let n = prev.slice.max(1);
-    // 1. a decision is made once
+    // 1. a decision is made once; its word to the run's events is written again, the same
     if let Some(end) = read_end(&deps.blobs, run_id, n).await? {
+        announce_lost(deps, run_id, &end).await?;
         return Ok(end.state());
     }
     let now = deps.cfg.now_ms();
@@ -542,9 +558,26 @@ where
     let kind = classify(turn.as_ref(), summary.as_ref().map(|s| s.outcome), n);
 
     // 2. the slice's machine is stopped before anything is decided from what it left: nothing of this slice writes after the decision
+    let mut last_heartbeat_at = None;
     if let Some(agent) = deps.store.get_agent(run_id, DIRECT_AGENT_ID).await? {
+        // The last heartbeat of this slice's session, while the Agent item still names it.
+        if kind == EndKind::Lost && agent.session_generation.is_none_or(|g| g == n) {
+            last_heartbeat_at = agent.heartbeat_at.clone().filter(|t| is_utc_timestamp(t));
+        }
         stop_agent_machine(deps, &agent).await?;
     }
+    // Why a lost slice was lost: its heartbeat stopped, or it ended without a result for another reason.
+    let lost_cause = if kind == EndKind::Lost {
+        let age = crate::plan_delivery::session_age_s(deps, run_id, n, now).await?;
+        let cause = if crate::plan_delivery::heartbeat_stopped(session, age) {
+            CAUSE_NO_HEARTBEAT
+        } else {
+            CAUSE_NO_RESULT
+        };
+        Some(cause.to_string())
+    } else {
+        None
+    };
 
     // 3. what the slice left, and whether it moved the work
     let own = best_head(
@@ -601,6 +634,8 @@ where
             end_reason: reason,
             head,
             decided_at_ms: now,
+            lost_cause,
+            last_heartbeat_at,
         },
         Verdict::Next { lost, empty } => {
             // The commit every later slice is told as the run's base: the original base.
@@ -646,6 +681,8 @@ where
                     }),
                     head,
                     decided_at_ms: now,
+                    lost_cause,
+                    last_heartbeat_at,
                 }
             } else {
                 let timing = timing.ok_or_else(|| {
@@ -674,10 +711,106 @@ where
                     end_reason: None,
                     head,
                     decided_at_ms: now,
+                    lost_cause,
+                    last_heartbeat_at,
                 }
             }
         }
     };
     let end = write_once(&deps.blobs, &end_key(run_id, n), end).await?;
+    announce_lost(deps, run_id, &end).await?;
     Ok(end.state())
+}
+
+/// The service's word to the run's events that the session of `end` was lost and what follows: the session that starts and what it
+/// starts from, or the end of the run. It is built from the records of the decision alone (the end record, the plan of the next slice
+/// and the record of the copy that plan restores), so a repeated `next-slice` writes the same event. A slice that ended any other way,
+/// and a run that someone else ended, are not announced.
+async fn announce_lost<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+    end: &SliceEnd,
+) -> Res<()>
+where
+    S: Store,
+    B: Blobs,
+{
+    if end.kind != EndKind::Lost || end.end_reason == Some(EndReason::RunEnded) {
+        return Ok(());
+    }
+    let (from, saved_at) = if end.cont {
+        match read_plan(&deps.blobs, run_id, end.slice + 1).await? {
+            Some(plan) => match plan.restore.kind {
+                RestoreKind::Base => (Some(FROM_START), None),
+                RestoreKind::Bundle => (Some(FROM_COPY), None),
+                RestoreKind::Snapshot => (
+                    Some(FROM_COPY),
+                    copy_time(&deps.blobs, run_id, end.slice, &plan.restore).await?,
+                ),
+            },
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    // What the run delivers when it ends here: the copy this slice saved, else the work it restored. `plan-delivery` takes the same.
+    let delivers = if end.cont {
+        None
+    } else if crate::plan_delivery::snapshot_head(&deps.blobs, run_id, end.slice)
+        .await?
+        .is_some()
+        || crate::plan_delivery::restored_head(&deps.blobs, run_id, end.slice)
+            .await?
+            .is_some()
+    {
+        Some(ham_core::lost_session::DELIVERS_COPY.to_string())
+    } else {
+        Some(ham_core::lost_session::DELIVERS_NOTHING.to_string())
+    };
+    let payload = SessionLost {
+        kind: KIND.to_string(),
+        session: end.slice,
+        decided_at: dispatcher::items::rfc3339(end.decided_at_ms / 1000),
+        last_heartbeat_at: end.last_heartbeat_at.clone(),
+        cause: end
+            .lost_cause
+            .clone()
+            .unwrap_or_else(|| CAUSE_NO_RESULT.to_string()),
+        silence_s: crate::plan_delivery::SESSION_HEARTBEAT_S,
+        lost_in_a_row: end.lost,
+        limit: MAX_LOST_SLICES,
+        then: if end.cont { THEN_RESTART } else { THEN_END }.to_string(),
+        next_session: end.cont.then_some(end.slice + 1),
+        from: from.map(str::to_string),
+        saved_at,
+        delivers,
+    };
+    deps.store
+        .put_event(&crate::events::session_lost(
+            run_id,
+            end.decided_at_ms,
+            end.slice,
+            &payload,
+        ))
+        .await
+}
+
+/// The time the record of the snapshot at `restore.key` names, when the record is that copy's: the session that saved it is the newest
+/// one (`newest` down to 1) whose snapshot key is the restore's. `plan-delivery` asks it too, for the work the last slice restored.
+pub(crate) async fn copy_time<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    newest: u32,
+    restore: &Restore,
+) -> Res<Option<String>> {
+    for k in (1..=newest).rev() {
+        if s3::snapshot_bundle_key_t(run_id, k) == restore.key {
+            return Ok(crate::plan_delivery::snapshot_head(blobs, run_id, k)
+                .await?
+                .filter(|s| Some(s.head_sha.as_str()) == restore.head.as_deref())
+                .and_then(|s| s.at)
+                .filter(|t| is_utc_timestamp(t)));
+        }
+    }
+    Ok(None)
 }

@@ -78,6 +78,39 @@ mv -f "$bin/.ham.setup-new" "$bin/ham"
 exit "${B804_SETUP_EXIT:-0}"
 "#;
 
+/// What every stand-in setup does when it is asked for its plan (`--dry-run`), as the real setup does: it changes nothing, prints its plan and ends with 0. It appends
+/// its arguments to `$B804_RECORD.plan` when the record is named. `B804_PLAN` chooses the plan: unset, an update that deploys; `nothing`, an update that deploys nothing
+/// on the stage; `fails`, setup ends with exit 7 before any plan; `odd`, a plan this client does not know. `B804_PLAN_SLEEP` holds the answer back that many seconds,
+/// and `B804_PLAN_GATE` until the file it names is there.
+const PLAN: &str = r#"for arg in "$@"; do
+  [ "$arg" = --dry-run ] || continue
+  [ -z "${B804_RECORD:-}" ] || printf '%s\n' "$*" >> "$B804_RECORD.plan"
+  [ -z "${B804_PLAN_SLEEP:-}" ] || sleep "${B804_PLAN_SLEEP:-}"
+  [ -z "${B804_PLAN_GATE:-}" ] || while [ ! -e "$B804_PLAN_GATE" ]; do sleep 0.1; done
+  case ${B804_PLAN:-deploys} in
+    nothing)
+      printf '  update:        nothing is deployed; the runner is installed again, builds only the client and is removed afterwards\n'
+      printf '  guard:         this update changes nothing on the stage, so it waits for no run (--wait-for-runs) and the stage keeps starting runs.\n' ;;
+    fails) printf 'setup: the stage is being changed right now\n' >&2; exit 7 ;;
+    odd) printf '  update:        a plan of a later release\n' ;;
+    *)
+      printf '  update:        the stage keeps its resources and gets the new revision; the runner is installed again for the build and removed afterwards\n'
+      printf '  guard:         the update takes the deploy lock of the stage, so the stage starts no new runs, and waits for the active runs to end (--wait-for-runs). No run is cancelled.\n' ;;
+  esac
+  printf 'Nothing was created. Run again without --dry-run to do it.\n'
+  exit 0
+done
+"#;
+
+/// `setup` with [`PLAN`] after its first line, unless it answers a request for its plan itself.
+fn with_plan(setup: &str) -> String {
+    if setup.contains("--dry-run") {
+        return setup.to_string();
+    }
+    let (first, rest) = setup.split_once('\n').unwrap();
+    format!("{first}\n{PLAN}{rest}")
+}
+
 /// A source repository whose main holds VERSION `version`, a changelog with `version` and this build's version, and the stand-in setup.
 fn source_repo(root: &Path, version: &str) -> (PathBuf, String) {
     source_repo_of(
@@ -118,7 +151,7 @@ fn source_repo_of(root: &Path, src: &Source<'_>) -> (PathBuf, String) {
     .unwrap();
     if let Some(text) = src.setup {
         let setup = repo.join("setup.sh");
-        std::fs::write(&setup, text).unwrap();
+        std::fs::write(&setup, with_plan(text)).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&setup, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -1860,13 +1893,16 @@ async fn fix515_the_question_answered_with_yes_waits_for_the_runs_and_updates() 
 }
 
 /// The copy in the download folder changes between the question and the answer: it is not the commit that was shown any more, so nothing of
-/// it runs.
+/// it runs. The copy is the one the plan was read in, which becomes the
+/// copy of the commit after the answer.
 #[tokio::test]
 async fn fix515_a_copy_that_changed_after_the_question_is_not_run() {
     let d = Driven::new("fix515-ask-tamper").await;
-    let planted = d.clone_dir().join("planted.sh");
+    let downloads = d.h.downloads.clone();
     let ask = |_: &str| {
-        std::fs::write(&planted, "#!/bin/sh\n").unwrap();
+        for name in left_in(&downloads) {
+            std::fs::write(downloads.join(name).join("planted.sh"), "#!/bin/sh\n").unwrap();
+        }
         Some("y\n".to_string())
     };
     let before = std::fs::read(&d.bin).unwrap();
@@ -2717,4 +2753,817 @@ async fn b839_a_backend_that_still_reports_the_older_version_after_setup_exit_3_
         assert!(err.contains(&way_out(&d)), "{err}");
         assert!(!err.contains("within a minute"), "{err}");
     }
+}
+
+// ----: a look at the newest commit leaves nothing in the download folder ------------------------------------------------------------------
+
+/// The names of what the folder holds, sorted.
+fn left_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// `ham update --check` is documented as changing nothing: after it the download folder (the current folder by default) holds what it held before, in text
+/// and in JSON, and also when the check stops with an error.
+#[tokio::test]
+async fn b843_check_leaves_nothing_in_the_download_folder() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b843-check-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-check", &url(&repo));
+    for args in [
+        vec!["update", "--check"],
+        vec!["update", "--check", "--json"],
+    ] {
+        let o = run(&h, ham_bin(), &args, &[]).await;
+        let out = text(&o.stdout);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{args:?}: {out}{}",
+            text(&o.stderr)
+        );
+        assert!(
+            out.contains(&sha[..12]),
+            "TRIGGER PRESENT: the check read the commit: {out}"
+        );
+        assert_eq!(
+            left_in(&h.downloads),
+            Vec::<String>::new(),
+            "{args:?} left something in the download folder"
+        );
+    }
+    // A check that stops with an error leaves nothing either: a commit that holds no VERSION file.
+    let root = support::scratch("b843-check-noversion-src");
+    let (repo, _) = source_repo_of(
+        &root,
+        &Source {
+            version: None,
+            heading: "9.99",
+            setup: Some(SETUP),
+            init: &["init", "-q", "-b", "main"],
+        },
+    );
+    let h = home(&fake, "b843-check-noversion", &url(&repo));
+    let o = run(&h, ham_bin(), &CHECK, &[]).await;
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o.stderr));
+    assert_eq!(left_in(&h.downloads), Vec::<String>::new());
+}
+
+/// An update that stops before setup is asked to do anything says that nothing was changed, and the download folder shows it: without a terminal and
+/// without `--yes`, on a stage that is up to date, and when the backend is newer than main.
+#[tokio::test]
+async fn b843_an_update_that_does_not_go_ahead_leaves_nothing_in_the_download_folder() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b843-noterm-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-noterm", &url(&repo));
+    let bin = installed(&h);
+    let o = run(&h, &bin, &["update"], &[]).await;
+    assert_eq!(o.status.code(), Some(4), "{}", text(&o.stderr));
+    assert_eq!(left_in(&h.downloads), Vec::<String>::new(), "no terminal");
+
+    *fake.faults.backend_header.lock().unwrap() =
+        BackendHeader::Value(next(ham::version::CLIENT, 2));
+    let o = run(&h, &bin, &YES, &[]).await;
+    assert_eq!(o.status.code(), Some(7), "{}", text(&o.stderr));
+    assert_eq!(left_in(&h.downloads), Vec::<String>::new(), "refused");
+
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Same;
+    let root = support::scratch("b843-same-src");
+    let (repo, _) = source_repo(&root, ham::version::CLIENT);
+    let h = home(&fake, "b843-same", &url(&repo));
+    let bin = installed(&h);
+    let o = run(&h, &bin, &YES, &[]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert!(text(&o.stdout).contains("up to date"));
+    assert_eq!(left_in(&h.downloads), Vec::<String>::new(), "up to date");
+    assert!(!h.record.exists(), "setup did not run");
+}
+
+/// The question answered with no: "Nothing was changed." is true for the download folder too.
+#[tokio::test]
+async fn b843_the_question_answered_with_no_leaves_nothing_in_the_download_folder() {
+    let d = Driven::new("b843-ask-no").await;
+    let ask = |_: &str| Some("n\n".to_string());
+    let (code, out, err) = d
+        .update(&api(&d.fake), false, Duration::from_secs(5), &ask)
+        .await;
+    assert_eq!(code, ham::update::exit::CANCELLED, "{out}\n{err}");
+    assert!(err.contains("Nothing was changed."), "{err}");
+    assert_eq!(left_in(&d.h.downloads), Vec::<String>::new());
+}
+
+/// An update that goes ahead keeps the one copy of the commit that setup ran in (the messages name it for the commands that follow), and no other
+/// folder; a later check reads that copy and adds nothing.
+#[tokio::test]
+async fn b843_an_update_that_goes_ahead_keeps_the_one_copy_setup_ran_in() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b843-kept-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-kept", &url(&repo));
+    let bin = installed(&h);
+    let o = run(&h, &bin, &YES, &[("B804_INSTALL_VERSION", &newest)]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    let copy = vec![format!("ham-update-{}", &sha[..12])];
+    assert_eq!(left_in(&h.downloads), copy);
+    let o = run(&h, ham_bin(), &CHECK, &[]).await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(
+        left_in(&h.downloads),
+        copy,
+        "the check read the copy that was there"
+    );
+}
+
+// ----: an update that deploys nothing on the stage waits for no run ----------------------------------------------------------------------
+
+/// What the stand-in setup was asked when it was asked for its plan: one line of arguments for each request; empty when it was never asked.
+fn plan_requests(h: &Home) -> Vec<String> {
+    let mut path = h.record.clone().into_os_string();
+    path.push(".plan");
+    std::fs::read_to_string(path)
+        .map(|t| t.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// One of the caller's runs is active and the plan of the fetched setup says that the update deploys nothing on the stage: `ham update` does not wait for
+/// the run. Setup runs at once with the same limit, the run goes on, and the line says why there was no wait.
+#[tokio::test]
+async fn b841_an_update_that_deploys_nothing_does_not_wait_for_the_callers_runs() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b841-nothing-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b841-nothing", &url(&repo));
+    let bin = installed(&h);
+    let id = new_run(&fake, "b841 goes on").await;
+    let started = std::time::Instant::now();
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes", "--wait", "1"],
+        &[("B804_INSTALL_VERSION", &newest), ("B804_PLAN", "nothing")],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    println!(
+        "B841 TRIGGER PRESENT: run {id} is active and the plan deploys nothing; exit {:?} after {} s\n{err}",
+        o.status.code(),
+        started.elapsed().as_secs()
+    );
+    assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+    let prefix = h.root.canonicalize().unwrap();
+    assert_eq!(
+        plan_requests(&h),
+        [format!(
+            "--update --prefix {} --yes --wait-for-runs 1 --dry-run",
+            prefix.display()
+        )],
+        "setup was asked once for its plan, with the arguments of the update"
+    );
+    assert_eq!(
+        setup_arguments(&h),
+        format!(
+            "--update --prefix {} --yes --wait-for-runs 1",
+            prefix.display()
+        ),
+        "setup then ran with the limit ham has left"
+    );
+    assert!(
+        err.contains("deploys nothing on the stage")
+            && err.contains(&id)
+            && err.contains("No run is cancelled"),
+        "{err}"
+    );
+    assert!(!err.contains("Waiting for"), "{err}");
+    assert!(
+        out.contains(&format!("Updated: ham v{newest} | backend v{newest}")),
+        "{out}"
+    );
+    let runs = api(&fake).list_runs().await.unwrap();
+    assert_eq!(
+        runs[0].status,
+        harness_protocol::goal::GoalStatus::Active,
+        "the run goes on"
+    );
+    nothing_cancelled(&fake);
+}
+
+/// `--no-wait` stops an update that deploys while a run of the caller is active; an update that deploys nothing goes ahead, as setup itself would.
+#[tokio::test]
+async fn b841_no_wait_goes_ahead_when_the_update_deploys_nothing() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b841-nowait-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b841-nowait", &url(&repo));
+    let bin = installed(&h);
+    let id = new_run(&fake, "b841 no wait").await;
+    let prefix = h.root.canonicalize().unwrap();
+
+    // The update deploys: the stop of before, after setup said so in its plan.
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes", "--no-wait"],
+        &[("B804_INSTALL_VERSION", &newest)],
+    )
+    .await;
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(7), "{err}");
+    assert!(
+        err.contains("--no-wait stops here") && err.contains(&id),
+        "{err}"
+    );
+    assert!(!h.record.exists(), "setup did not run");
+    assert_eq!(
+        plan_requests(&h),
+        [format!(
+            "--update --prefix {} --yes --wait-for-runs 60 --dry-run",
+            prefix.display()
+        )],
+        "the plan is asked with a wait, so that active runs do not end it"
+    );
+
+    // The update deploys nothing: it goes ahead, and setup gets no wait.
+    let o = run(
+        &h,
+        &bin,
+        &["update", "--yes", "--no-wait"],
+        &[("B804_INSTALL_VERSION", &newest), ("B804_PLAN", "nothing")],
+    )
+    .await;
+    let (out, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}\n{err}");
+    assert_eq!(
+        setup_arguments(&h),
+        format!("--update --prefix {} --yes", prefix.display())
+    );
+    assert!(err.contains("deploys nothing on the stage"), "{err}");
+    nothing_cancelled(&fake);
+}
+
+/// A plan that setup could not give (it ended with an error) or that this client does not know decides nothing: the update waits for the caller's runs as
+/// before. Here `--no-wait` shows it: the update stops for the active run.
+#[tokio::test]
+async fn b841_a_plan_that_cannot_be_read_keeps_the_wait() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b841-unread-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let id = new_run(&fake, "b841 unread").await;
+    for (plan, says) in [("fails", true), ("odd", false)] {
+        let h = home(&fake, &format!("b841-unread-{plan}"), &url(&repo));
+        let bin = installed(&h);
+        let o = run(
+            &h,
+            &bin,
+            &["update", "--yes", "--no-wait"],
+            &[("B804_INSTALL_VERSION", &newest), ("B804_PLAN", plan)],
+        )
+        .await;
+        let err = text(&o.stderr);
+        assert_eq!(o.status.code(), Some(7), "{plan}: {err}");
+        assert!(
+            err.contains("--no-wait stops here") && err.contains(&id),
+            "{plan}: {err}"
+        );
+        assert_eq!(plan_requests(&h).len(), 1, "{plan}: setup was asked once");
+        assert!(!h.record.exists(), "{plan}: setup did not run");
+        assert_eq!(
+            err.contains("could not read the plan of setup"),
+            says,
+            "{plan}: a setup that ended with an error is named, a plan that deploys or is not known is not: {err}"
+        );
+        if says {
+            assert!(err.contains("exit 7"), "{err}");
+        }
+    }
+    nothing_cancelled(&fake);
+}
+
+/// Without an active run of the caller there is nothing to wait for, so setup is not asked for its plan.
+#[tokio::test]
+async fn b841_without_an_active_run_setup_is_not_asked_for_its_plan() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let root = support::scratch("b841-norun-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b841-norun", &url(&repo));
+    let bin = installed(&h);
+    let o = run(
+        &h,
+        &bin,
+        &YES,
+        &[("B804_INSTALL_VERSION", &newest), ("B804_PLAN", "nothing")],
+    )
+    .await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(plan_requests(&h), Vec::<String>::new());
+    assert!(!text(&o.stderr).contains("deploys nothing"));
+}
+
+/// A setup that does not print its plan in time decides nothing: the update goes on as before, here with the stop of `--no-wait`, and the
+/// line says that no plan came. The stand-in never prints its plan while the test runs (ten minutes), so the update can only end because
+/// the limit cut the plan off; the test puts no bound on how long a busy host takes for the rest.
+#[tokio::test]
+async fn b841_a_plan_that_takes_too_long_keeps_the_wait() {
+    let d = Driven::with_setup("b841-slow-plan", |v| {
+        let never = PLAN.replace(
+            "[ -z \"${B804_PLAN_SLEEP:-}\" ] || sleep \"${B804_PLAN_SLEEP:-}\"",
+            "exec sleep 600",
+        );
+        assert!(never.contains("exec sleep 600"), "{never}");
+        setup_installing(v).replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{never}"), 1)
+    })
+    .await;
+    let id = new_run(&d.fake, "b841 slow plan").await;
+    let _cell = backend_cell().await;
+    let ctx = ham::update::Context {
+        source: d.source.clone(),
+        downloads: d.h.downloads.clone(),
+        git: Git::system(),
+        exe: d.bin.canonicalize().unwrap(),
+        terminal: true,
+        ask: &never_asked,
+        backend_recheck: Duration::ZERO,
+    };
+    let req = ham::update::Request {
+        check: false,
+        yes: true,
+        json: false,
+        drain: DrainOptions {
+            poll: Duration::from_millis(50),
+            limit: Duration::from_secs(60),
+            no_wait: true,
+        },
+    };
+    let out = Output::capture();
+    let before = std::fs::read(&d.bin).unwrap();
+    let client = api(&d.fake);
+    let update = ham::update::run_with(&client, &req, &ctx, &out, Duration::from_millis(300));
+    let code = tokio::time::timeout(Duration::from_secs(300), update)
+        .await
+        .expect("the update ended without the plan");
+    let err = out.finish(code).stderr_text();
+    assert_eq!(code, ham::update::exit::REFUSED, "{err}");
+    assert!(
+        err.contains("could not read the plan of setup")
+            && err.contains("gave no answer within 0.3 s"),
+        "{err}"
+    );
+    assert!(
+        err.contains("--no-wait stops here") && err.contains(&id),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&d.bin).unwrap(), before, "setup did not run");
+    nothing_cancelled(&d.fake);
+}
+
+/// A download folder that a setting names and that was never made is not made by a look either: the check reads the commit and leaves no
+/// folder behind, also when the setting names a folder several levels down.
+#[tokio::test]
+async fn b843_check_leaves_no_download_folder_that_was_not_there() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b843-check-nofolder-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-check-nofolder", &url(&repo));
+    let top = h.root.join("not");
+    let under = top.join("yet").join("made");
+    let o = run(
+        &h,
+        ham_bin(),
+        &CHECK,
+        &[("HAMH_DOWNLOAD_DIR", under.to_str().unwrap())],
+    )
+    .await;
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{out}{}", text(&o.stderr));
+    assert!(
+        out.contains(&sha[..12]),
+        "TRIGGER PRESENT: the check read the commit: {out}"
+    );
+    assert!(
+        !top.exists(),
+        "the check made {} and left it",
+        top.display()
+    );
+    // An update that goes ahead makes the folder and keeps its copy there.
+    *fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(newest.clone());
+    let bin = installed(&h);
+    let o = run(
+        &h,
+        &bin,
+        &YES,
+        &[
+            ("B804_INSTALL_VERSION", &newest),
+            ("HAMH_DOWNLOAD_DIR", under.to_str().unwrap()),
+        ],
+    )
+    .await;
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+    assert_eq!(left_in(&under), vec![format!("ham-update-{}", &sha[..12])]);
+}
+
+/// One limit covers the plan and the wait: the time setup takes to print its plan counts against the limit of the wait for the caller's runs.
+/// Here the plan takes longer than the whole limit, so nothing of the limit is left: the update stops for the active run at once, without a
+/// line that says how long it still waits. (A wait that began anew after the plan would print that line.)
+#[tokio::test]
+async fn b841_the_time_of_the_plan_counts_against_the_wait_limit() {
+    let d = Driven::with_setup("b841-plan-budget", |v| {
+        let slow = PLAN.replace("${B804_PLAN_SLEEP:-}", "3");
+        setup_installing(v).replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{slow}"), 1)
+    })
+    .await;
+    let id = new_run(&d.fake, "b841 plan budget").await;
+    let _cell = backend_cell().await;
+    let ctx = ham::update::Context {
+        source: d.source.clone(),
+        downloads: d.h.downloads.clone(),
+        git: Git::system(),
+        exe: d.bin.canonicalize().unwrap(),
+        terminal: true,
+        ask: &never_asked,
+        backend_recheck: Duration::ZERO,
+    };
+    let req = ham::update::Request {
+        check: false,
+        yes: true,
+        json: false,
+        drain: DrainOptions {
+            poll: Duration::from_millis(50),
+            limit: Duration::from_secs(2),
+            no_wait: false,
+        },
+    };
+    let out = Output::capture();
+    let before = std::fs::read(&d.bin).unwrap();
+    let code =
+        ham::update::run_with(&api(&d.fake), &req, &ctx, &out, Duration::from_secs(300)).await;
+    let err = out.finish(code).stderr_text();
+    println!("B841 TRIGGER PRESENT: the plan took 3 s and the limit is 2 s; exit {code}\n{err}");
+    assert_eq!(code, ham::update::exit::REFUSED, "{err}");
+    assert!(
+        !err.contains("could not read the plan of setup"),
+        "the plan was printed, and it deploys: {err}"
+    );
+    assert!(
+        err.contains("1 run(s) still active after 1 min") && err.contains(&id),
+        "{err}"
+    );
+    assert!(
+        !err.contains("Waiting for"),
+        "the wait began anew after the plan had used the limit up: {err}"
+    );
+    assert_eq!(std::fs::read(&d.bin).unwrap(), before, "setup did not run");
+    nothing_cancelled(&d.fake);
+}
+
+// ----: what a look that was interrupted left is removed by the next look ---------------------------------------------------------------
+
+/// The path of `program` on `PATH`.
+fn on_path(program: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(program))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| panic!("{program} is not on PATH"))
+}
+
+/// A `PATH` for `h` whose `git` is git itself and, when `B843_HOLD` names a file, makes that file after a clone and stays (two minutes at
+/// most): the check is then at a known place, with the commit in its folder.
+fn path_with_a_git_that_stays_after_a_clone(h: &Home) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let tools = h.root.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let git = tools.join("git");
+    std::fs::write(
+        &git,
+        format!(
+            "#!/bin/sh\n\"{}\" \"$@\" || exit $?\n[ -n \"${{B843_HOLD:-}}\" ] || exit 0\nfor arg in \"$@\"; do\n  [ \"$arg\" = clone ] || continue\n  : > \"$B843_HOLD\"\n  exec sleep 120\ndone\n",
+            on_path("git").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// Sends `signal` to every process of the group `group`, as the terminal does with Ctrl-C.
+fn signal_group(signal: &str, group: u32) {
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-s", signal, "--", &format!("-{group}")])
+            .status()
+            .unwrap()
+            .success(),
+        "kill -s {signal} of group {group}"
+    );
+}
+
+/// Ctrl-C while `ham update --check` reads the commit ends `ham` by the signal, so it cannot remove the folder it read in, and the name of
+/// that folder is never used again. The next check removes it: after it the download folder is empty.
+#[tokio::test]
+async fn b843_the_folder_an_interrupted_check_left_is_removed_by_the_next_check() {
+    use std::os::unix::process::ExitStatusExt;
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b843-interrupt-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-interrupt", &url(&repo));
+    let path = path_with_a_git_that_stays_after_a_clone(&h);
+    let cloned = h.root.join("the-clone-is-made");
+    // A process group of its own, so that the signal reaches ham and the git it runs, and nothing else.
+    let mut child = command(
+        &h,
+        ham_bin(),
+        &CHECK,
+        &[("PATH", &path), ("B843_HOLD", cloned.to_str().unwrap())],
+    )
+    .process_group(0)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .unwrap();
+    let pid = child.id().unwrap();
+    while !cloned.exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "ham ended before it had the commit"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let reading = left_in(&h.downloads);
+    assert_eq!(reading.len(), 1, "{reading:?}");
+    assert!(
+        reading[0].starts_with(&format!(".ham-update-{pid}-")),
+        "the folder of the look names its process {pid}: {reading:?}"
+    );
+    signal_group("INT", pid);
+    // A host that started the tests with the interrupt signal ignored hands that on to ham: the check is then ended the hard way.
+    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(status) => status.unwrap(),
+        Err(_) => {
+            signal_group("KILL", pid);
+            child.wait().await.unwrap()
+        }
+    };
+    assert!(
+        status.signal().is_some(),
+        "ham was ended by a signal: {status:?}"
+    );
+    assert_eq!(
+        left_in(&h.downloads),
+        reading,
+        "the check that was interrupted left its folder"
+    );
+    println!(
+        "B843 TRIGGER PRESENT: ham update --check (process {pid}) was ended by signal {:?} and left {}",
+        status.signal(),
+        reading[0]
+    );
+    let o = run(&h, ham_bin(), &CHECK, &[]).await;
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{out}{}", text(&o.stderr));
+    assert!(out.contains(&sha[..12]), "{out}");
+    assert_eq!(
+        left_in(&h.downloads),
+        Vec::<String>::new(),
+        "the next check removed the folder of the interrupted one and left none of its own"
+    );
+}
+
+/// A look removes only what a look left whose process runs no more: a folder with the name of a look (`.ham-update-<process>-<time>`). The
+/// folder of a process that runs stays (a second `ham update` in the same download folder), and so does every other name, a file with the
+/// name of a look, and a link with the name of a look together with what it points to.
+#[tokio::test]
+async fn b843_a_look_removes_only_the_folders_of_looks_whose_process_is_gone() {
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b843-sweep-src");
+    let (repo, sha) = source_repo(&root, &newest);
+    let h = home(&fake, "b843-sweep", &url(&repo));
+    // A process that is gone: one that ran and ended. This test is a process that runs.
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let gone = ended.id();
+    ended.wait().unwrap();
+    let here = std::process::id();
+    let dl = &h.downloads;
+    let left = format!(".ham-update-{gone}-1794653542885024410");
+    std::fs::create_dir_all(dl.join(&left).join(".git/objects")).unwrap();
+    std::fs::write(dl.join(&left).join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let running = format!(".ham-update-{here}-1794653542885024411");
+    std::fs::create_dir_all(dl.join(&running).join(".git")).unwrap();
+    for other in [
+        format!(".ham-update-{gone}-notes"),
+        format!(".ham-update-{gone}"),
+        format!("ham-update-{gone}-1"),
+        ".ham-update-mine".to_string(),
+    ] {
+        std::fs::create_dir_all(dl.join(other).join("kept")).unwrap();
+    }
+    std::fs::write(dl.join(format!(".ham-update-{gone}-2")), "a file\n").unwrap();
+    let elsewhere = h.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("kept.txt"), "kept\n").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dl.join(format!(".ham-update-{gone}-3"))).unwrap();
+    let before = left_in(dl);
+    assert_eq!(before.len(), 8, "{before:?}");
+
+    let o = run(&h, ham_bin(), &CHECK, &[]).await;
+    let out = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{out}{}", text(&o.stderr));
+    assert!(out.contains(&sha[..12]), "{out}");
+    let after: Vec<String> = before.iter().filter(|n| **n != left).cloned().collect();
+    assert_eq!(
+        left_in(dl),
+        after,
+        "only the folder of the look whose process {gone} is gone was removed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("kept.txt")).unwrap(),
+        "kept\n",
+        "a link is never followed"
+    );
+}
+
+// ----: the time the plan takes is no silence -----------------------------------------------------------------------------------------
+
+/// Setup's plan is a preflight of the AWS account and takes about 20 seconds. Before `ham update` asks for it, it says so in one line, also
+/// under `--no-wait`, which then answers only after the plan. The stand-in holds its plan back until this test has read that line: without
+/// the line nothing comes on standard error before the plan does.
+#[tokio::test]
+async fn b841_ham_says_that_it_asks_setup_for_its_plan_before_the_plan_comes() {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+    let fake = Fake::start().await;
+    let newest = next(ham::version::CLIENT, 1);
+    let root = support::scratch("b841-says-src");
+    let (repo, _) = source_repo(&root, &newest);
+    let h = home(&fake, "b841-says", &url(&repo));
+    let bin = installed(&h);
+    let id = new_run(&fake, "b841 says").await;
+    let gate = h.root.join("the-plan-may-come");
+    let mut child = command(
+        &h,
+        &bin,
+        &["update", "--yes", "--no-wait"],
+        &[
+            ("B804_INSTALL_VERSION", &newest),
+            ("B804_PLAN_GATE", gate.to_str().unwrap()),
+        ],
+    )
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    let mut err = BufReader::new(child.stderr.take().unwrap());
+    let mut seen = String::new();
+    let said = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let mut line = String::new();
+            if err.read_line(&mut line).await.unwrap() == 0 {
+                return None;
+            }
+            seen.push_str(&line);
+            if line.contains("its plan") {
+                return Some(line);
+            }
+        }
+    })
+    .await;
+    let waits_for_the_plan = child.try_wait().unwrap().is_none() && !gate.exists();
+    // The plan may come now, so the update ends whatever was read.
+    std::fs::write(&gate, "").unwrap();
+    let how = format!("{said:?}");
+    let Ok(Some(line)) = said else {
+        let _ = child.wait().await;
+        panic!(
+            "ham update said nothing about the plan before the plan came ({how}); standard error until then:\n{seen}"
+        );
+    };
+    assert!(
+        waits_for_the_plan,
+        "TRIGGER PRESENT: the plan had not come when the line was read"
+    );
+    println!("B841 TRIGGER PRESENT: read before the plan came: {line}");
+    for part in [
+        "Asking setup for its plan",
+        "a run of yours is active",
+        "reads your AWS account and changes nothing",
+        "about 20 seconds",
+    ] {
+        assert!(line.contains(part), "{part:?} missing from: {line}");
+    }
+    let mut rest = String::new();
+    err.read_to_string(&mut rest).await.unwrap();
+    let status = child.wait().await.unwrap();
+    assert_eq!(status.code(), Some(7), "{seen}{rest}");
+    assert!(
+        rest.contains("--no-wait stops here") && rest.contains(&id),
+        "{rest}"
+    );
+    assert!(!h.record.exists(), "setup did not run");
+    nothing_cancelled(&fake);
+}
+
+// ----: the plan is read when setup has ended, not when its output is closed ------------------------------------------------------------
+
+/// Setup's calls can leave a process behind that keeps the output it was started with (the agent of a credential helper, for one). The plan
+/// is complete when setup has ended, so `ham update` reads it then and does not wait for that process. Here the stand-in starts a process
+/// that stays for five minutes, prints a plan that deploys nothing and ends: the update reads the plan and goes ahead.
+#[tokio::test]
+async fn b841_a_plan_is_read_although_a_process_setup_left_keeps_its_output_open() {
+    let side = support::scratch("b841-held-side");
+    let left = side.join("left.pid");
+    let d = Driven::with_setup("b841-held", |v| {
+        let leaves = PLAN.replace("${B804_PLAN:-deploys}", "nothing").replace(
+            "[ -z \"${B804_PLAN_SLEEP:-}\" ] || sleep \"${B804_PLAN_SLEEP:-}\"",
+            &format!("sleep 300 &\n  echo $! > '{}'", left.display()),
+        );
+        assert!(
+            leaves.contains("sleep 300 &") && leaves.contains("case nothing in"),
+            "{leaves}"
+        );
+        setup_installing(v).replacen("#!/bin/sh\n", &format!("#!/bin/sh\n{leaves}"), 1)
+    })
+    .await;
+    *d.fake.faults.backend_header.lock().unwrap() = BackendHeader::Value(d.newest.clone());
+    let id = new_run(&d.fake, "b841 held output").await;
+    let _cell = backend_cell().await;
+    let ctx = ham::update::Context {
+        source: d.source.clone(),
+        downloads: d.h.downloads.clone(),
+        git: Git::system(),
+        exe: d.bin.canonicalize().unwrap(),
+        terminal: true,
+        ask: &never_asked,
+        backend_recheck: Duration::ZERO,
+    };
+    let req = ham::update::Request {
+        check: false,
+        yes: true,
+        json: false,
+        drain: DrainOptions {
+            poll: Duration::from_millis(50),
+            limit: Duration::from_secs(60),
+            no_wait: true,
+        },
+    };
+    let out = Output::capture();
+    let started = std::time::Instant::now();
+    let code =
+        ham::update::run_with(&api(&d.fake), &req, &ctx, &out, Duration::from_secs(30)).await;
+    let took = started.elapsed().as_secs();
+    let done = out.finish(code);
+    let (stdout, err) = (done.stdout_text(), done.stderr_text());
+    // The process setup left: it must still run now, and this test ends it.
+    let pid = std::fs::read_to_string(&left)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let kill = |signal: &str| {
+        std::process::Command::new("kill")
+            .args([signal, &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let runs = !pid.is_empty() && kill("-0");
+    if runs {
+        kill("-TERM");
+    }
+    println!(
+        "B841 TRIGGER PRESENT: process {pid:?}, which setup started and left with the output of the plan, still ran when the update ended ({runs}); exit {code} after {took} s\n{err}"
+    );
+    assert!(runs, "the process setup left ({pid:?}) was not running");
+    assert_eq!(code, ham::update::exit::DONE, "{stdout}\n{err}");
+    assert!(
+        !err.contains("could not read the plan of setup"),
+        "the plan was printed before setup ended: {err}"
+    );
+    assert!(
+        err.contains("deploys nothing on the stage") && err.contains(&id),
+        "{err}"
+    );
+    assert!(
+        stdout.contains(&format!("Updated: ham v{0} | backend v{0}.", d.newest)),
+        "{stdout}"
+    );
+    nothing_cancelled(&d.fake);
 }

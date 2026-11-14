@@ -327,7 +327,7 @@ full_zone_words() {
 }
 
 full_plan() {
-  local action=$1 how zone_note
+  local action=$1 how zone_note runs
   step "What setup will do"
   say "  account:       $ACCOUNT ($CALLER_ARN)"
   if [ -n "${OP_CHANGE:-}" ]; then
@@ -371,6 +371,13 @@ full_plan() {
     else
       say "  label:         the backend reports v$RN_LABEL_NOW and will report v$RN_LABEL_NEXT (this release changes no file the stage runs, so nothing is deployed and only its version label is written)"
     fi
+  elif [ -n "${RN_LABEL_NEXT:-}" ]; then
+    # A deploy writes the label of the version it deploys with its digests, and lowers a label above that version before its first stack change
+    if [ "${RN_LABEL_LOWER:-0}" = 1 ]; then
+      say "  label:         the backend reports v$RN_LABEL_NOW and will report v$RN_LABEL_NEXT after the deploy (this clone's VERSION is older, and a deploy sets the version label of the stage to the version it deploys)"
+    else
+      say "  label:         the backend reports v$RN_LABEL_NOW and will report v$RN_LABEL_NEXT after the deploy"
+    fi
   fi
   full_settings_lines "$action"
   [ "${INSTANCES_PRESENT:-0}" != 1 ] || say "  Instances part: present, kept (the capacity provider and the second worker runtime stay; the deploy keeps the part from the stage's record or the live stage)"
@@ -380,7 +387,12 @@ full_plan() {
     say "  account file:  generated from your account id, Region, zone ids and the identity of your credentials, kept outside the clone ($ACCT_KEY)"
     say "  client:        compiled on this machine with cargo and installed, with the operator tool beside it"
   elif [ "${FULL_REUSE:-0}" = 1 ]; then
-    say "  build:         none: the stage already runs this commit, and the client of an earlier update of it is kept on this machine"
+    # The line says what the sentence of rn_same_deployment_check said, the commit or, for a record that names another commit, the source tree
+    runs=$(rn_stage_runs_words)
+    case $runs in
+      *"this commit") say "  build:         none: $runs, and the client of an earlier update of it is kept on this machine" ;;
+      *) say "  build:         none: $runs, and the client of an earlier update of this commit is kept on this machine" ;;
+    esac
     say "  client:        the copy downloaded and checked earlier ($ST_DIR/download/verified, sha256 $CL_SHA), checked again and installed; no runner is installed"
   else
     say "  build:         the runner in your AWS account (a CodeBuild project), from the git archive of that commit"
@@ -389,7 +401,9 @@ full_plan() {
   fi
   full_run_names
   case $RN_MODE in
-    attach) say "  note:          a build of this commit is already running ($RN_BUILD_ID); setup attaches to it instead of starting another" ;;
+    attach)
+      say "  note:          a build of this commit is already running ($RN_BUILD_ID); setup attaches to it instead of starting another"
+      full_attached_new_runs ;;
     finish) say "  note:          a build of this commit already succeeded ($RN_BUILD_ID); setup reads its result instead of building again" ;;
     stale) [ -z "${RN_LOCK_STALE:-}" ] || say "  deploy lock:   stale, replaced after the question: $RN_LOCK_STALE" ;;
   esac
@@ -443,6 +457,19 @@ full_plan() {
       if [ "${ACTIVE_RUN_COUNT:-0}" -gt 0 ]; then
         say "  active runs:   $ACTIVE_RUN_COUNT running run(s): $(full_first_runs). They keep running (--allow-active-runs), and the Lambda functions and the run state machine change under them; their worker runtime stays."
       fi
+      # What the stage does with new runs while the update deploys, and the switch of that default. An update that deploys nothing never closes the stage.
+      if [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
+        :
+      elif [ "$RN_MODE" = attach ] || [ "$RN_MODE" = finish ]; then
+        # this run starts no deploy: the lock of the build it follows says what the stage does with new runs (full_attached_new_runs), and a build that has succeeded
+        # deploys nothing more
+        :
+      elif [ "${ALLOW_NEW_RUNS:-0}" = 1 ]; then
+        say "  new runs:      the stage keeps starting runs while this update deploys (--allow-new-runs). A run that starts during the update runs under it like the active runs: the Lambda functions and the run state machine change under it; its worker runtime stays."
+        say "                 If such a run is disturbed, $HAMH_CLIENT_BIN pull <runId> --snapshot downloads the latest saved copy of its work. The build refuses every new worker runtime version, with runs active or not."
+      else
+        say "  new runs:      the stage starts no new runs while this update deploys; --allow-new-runs lets it keep starting them."
+      fi
     elif [ -n "${WAIT_FOR_RUNS:-}" ] && [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
       say "  guard:         this update changes nothing on the stage, so it waits for no run (--wait-for-runs) and the stage keeps starting runs."
     elif [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
@@ -457,6 +484,22 @@ full_plan() {
       say "  guard:         Active runs stop ./setup.sh --update with exit 7 before anything is installed or built."
       say "                 The build also refuses worker runtime changes while runs are active."
     fi
+  fi
+}
+
+# full_attached_new_runs: the plan line `new runs:` of a run that attaches to a build another setup started. The lock of that build says what the stage does with
+# new runs while the build deploys, whatever this run was given (RN_LOCK_STARTS, read by rn_lock_adopt of runner.sh): a lock with the line starts=yes keeps the stage open
+# also for a run that attaches without --allow-new-runs, and a run that attaches with the option never adds the line, because the deploy under a lock without it was
+# started without the refusal of new worker runtime versions. Nothing is said for a lock that does not close the stage anyway (deploys=no, the lease of an earlier
+# release) and for a lock without the line when this run did not ask for new runs.
+# RN_LOCK_OPEN and RN_LOCK_STARTS are no misspelling of other names: runner.sh sets both.
+# shellcheck disable=SC2153
+full_attached_new_runs() {
+  [ "$RN_LOCK_LEGACY" != 1 ] && [ "$RN_LOCK_OPEN" != 1 ] || return 0
+  if [ "$RN_LOCK_STARTS" = yes ]; then
+    say "  new runs:      the stage keeps starting runs while that build deploys: the update that started it was given --allow-new-runs."
+  elif [ "${ALLOW_NEW_RUNS:-0}" = 1 ]; then
+    say "  new runs:      the stage starts no new runs while that build deploys: the update that started it was not given --allow-new-runs, and a run that attaches does not change its lock."
   fi
 }
 
@@ -570,6 +613,8 @@ full_runner_flow() {
       elif [ "$RN_MODE" = attach ]; then
         say_log "Another setup started the same build meanwhile; attaching to $RN_BUILD_ID"
         rn_lock_join
+        # The plan named this run's own option; the lock of the build that is followed decides
+        rn_lock_starts_said
         rn_follow
       else
         # The build has succeeded, so this run's first write of the lock it shares already says deploys=no
@@ -593,7 +638,8 @@ full_runner_flow() {
   esac
   # CodeBuild says the build has succeeded: this run still reads and checks the result, downloads and installs the client and removes the runner, and keeps the lock until
   # then (A4.4). Every step that changes the stage ran inside the build, so from this write on the lock says deploys=no and the stage starts runs again, whatever
-  # becomes of this run: a read that fails after it (rn_read_failed) leaves a lock that no longer closes the stage.
+  # becomes of this run: a read that fails after it (rn_read_failed) leaves a lock that no longer closes the stage. The build's deploy wrote the line already when
+  # it had finished, before the build made the client; this write makes it again, for a build whose write failed or was replaced by a renewal of this run.
   [ "$RN_FINAL" != SUCCEEDED ] || rn_lock_open
   rn_settle
   endpoint=$(rn_res endpoint)
@@ -624,7 +670,7 @@ full_runner_flow() {
     st_set failedPhase client || true
     st_save || true
     err "the client from your bucket was not installed."
-    detail "The backend is deployed ($ENDPOINT). $(rn_runner_now_text) Run  ./setup.sh --update  to build the client again in your account (the stage already runs this commit, so the update builds only the client), or install a client you have with  setup.sh --client-only --from DIR."
+    detail "The backend is deployed ($ENDPOINT). $(rn_runner_now_text) Run  ./setup.sh --update  to build the client again in your account ($(rn_stage_runs_words), so the update builds only the client), or install a client you have with  setup.sh --client-only --from DIR."
     exit 5
   fi
   # the lease of an earlier release lies in the bucket that goes with the runner: it is given back here; the deploy lock is renewed and kept
@@ -661,7 +707,7 @@ full_reuse_flow() {
   st_set state built || true
   st_set endpoint "$ENDPOINT" || true
   st_save || true
-  ok "the stage already runs this commit: $ENDPOINT"
+  ok "$(rn_stage_runs_words): $ENDPOINT"
   ok "client for $CLIENT_PLATFORM: the copy downloaded and checked earlier for this commit, sha256 $CL_SHA"
   # a runner that an earlier setup left behind goes once the client is configured
   if [ "$RN_EXISTS" = 1 ] && [ "${KEEP_RUNNER:-0}" != 1 ]; then FULL_REMOVE_RUNNER=1; fi
@@ -1067,7 +1113,9 @@ full_local_flow() {
   if [ "${SETUP_CLIENT_ONLY:-0}" = 1 ]; then
     # the stage already runs this commit with these settings (rn_same_deployment_check; C7): nothing is deployed, so setup takes no lock, and only the client is built here.
     # scripts/deploy.sh writes the label of this release alone.
-    say_log "scripts/deploy.sh deploys nothing: the stage already runs this commit. It writes the release label, and the client is built on this machine."
+    say_log "scripts/deploy.sh deploys nothing: the stage already runs the source tree of this commit. It writes the release label, and the client is built on this machine."
+    # The exports are for the deploy of this subshell alone; the deploy of the other branch below exports them again in its own.
+    # shellcheck disable=SC2030,SC2031
     (
       cd "$SELF_DIR" || exit 1
       [ -z "$cfg" ] || export AWS_CONFIG_FILE=$cfg
@@ -1104,6 +1152,8 @@ full_local_flow() {
     RN_LOCK_BUSY=1
     FULL_LOCK_AT=$SECONDS
     say_log "Running scripts/deploy.sh on this machine (the account file is $file) ..."
+    # The exports are for the deploy of this subshell alone; the label-only branch above exports them again in its own.
+    # shellcheck disable=SC2030,SC2031
     (
       cd "$SELF_DIR" || exit 1
       [ -z "$cfg" ] || export AWS_CONFIG_FILE=$cfg

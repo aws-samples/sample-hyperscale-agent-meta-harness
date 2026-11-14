@@ -6,6 +6,52 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.20] - 2026-11-14
+
+### Added
+
+- `run.copy_every_minutes` sets the minutes between copies of a run's work while the engine works, from 1 to 60 with a default of 1. Copies after a tool call and when the engine stops stay unchanged. No value turns copies off.
+- A run started by `ham resume` or `/retry` keeps the copy interval of the run it comes from.
+- A stage of an older release refuses a copy interval other than one minute. `ham` names `run.copy_every_minutes` and says to unset the key or update the stage. A value of 1 starts on any stage.
+- `./setup.sh --update --allow-active-runs --allow-new-runs` keeps the stage starting runs while the update deploys. The update keeps the worker runtime and stops with nothing deployed if it would change that runtime. Setup says that the stage kept starting runs.
+- The plan of `./setup.sh --update --allow-active-runs` says whether the stage starts new runs while the update deploys.
+- The worker of a session that receives a termination signal while the engine works saves a copy of the work at once. If that copy fails, the run is told that the session was asked to end, and the worker tries again every 5 seconds while the session's machine lives.
+- The run says when a copy of the work takes long and whether reading the work tree or storing the copy is slow. It says when that copy could not be saved. `ham watch` without a terminal prints each of these sentences once.
+- The run screen and `ham watch` say when a run's session goes silent: since when nothing was heard and what the service does next.
+- When the service starts a new session for a lost one, the run screen, `ham watch` and the card name the lost session, the new session and the copy it started from. `ham watch --json` carries `lostSessions`, and `silentSince` while a session is silent.
+- `ham watch` without a terminal prints a `saved:` line when a copy of the run's work was saved, at most once a minute. Its `--json` view carries the newest copy as `savedCopy`.
+- `ham watch` without a terminal prints the card of a blocked run with its `Saved` and `Tokens` lines.
+
+### Changed
+
+- The stage starts runs again as soon as the deploy of an update has finished, while the build goes on to make the client. `./setup.sh --update` prints `the deploy has finished: the stage starts runs again while the build goes on`. When it stops following the build, it says whether the stage already starts runs again or when it will.
+- The stage opens before the update has filled the Go module store. A run that needs a Go module the release adds finds it once `./setup.sh --update` has ended.
+- The plan of an update that deploys shows `label: the backend reports vA and will report vB after the deploy` when the version changes. It says when the number goes down.
+- An update that deploys nothing says `the stage already runs this source tree`. It names the commit of the stage's record when the stage records another commit with the same source tree.
+- `ham update` does not wait for your active runs before an update that deploys nothing on the stage. With an active run, it prints a line and asks setup for its plan first.
+- `ham watch --json` writes the phase of a delivered run as `delivered`, as its line output does.
+- Every wait for a copy of a run's work has a limit. A copy that does not return is given up, the run is told and the next minute tries again. Reading the work tree for one copy is given up after five minutes, or after ten times the time of the last stored copy when that is longer.
+- A copy that could not be saved is tried again within a minute. The extra wait after a slow copy is at most five minutes, also with a longer copy interval.
+- A copy names the last whole second before its files were read. `ham pull <run id> --snapshot` never names a time later than its contents.
+- The copies of a run are numbered within the run. A run that continues in a new session goes on counting.
+- A new session saves its first copy when a file changes. The copy it started from is saved already.
+- A question that was open when its session was lost is closed. The new session asks again when it needs your answer.
+- The guides state one bound for lost work in every place: one minute of file changes plus the time one copy takes, and when it is more. They promise no copy at once for a session that is stopped from outside.
+
+### Fixed
+
+- The guides say what the service does with a lost session. After 600 seconds without a heartbeat it starts a new session from the last saved copy, and after 3 lost sessions in a row the run ends `stalled` with the last saved copy delivered. Before, the guides said that a missed heartbeat ends the run.
+- The clean-checkout test report gives a result for a language whose only logged test commands name single test files, tests or filters. It runs the detected whole-suite command for that language after the logged commands.
+- The `Tests` line and `EVIDENCE.md` say when the report ran a command in place of logged commands or left a logged command out, and why.
+- The `Tests` line for a failed install names the command that did not run, also when no test command ran. When two installs fail, the report counts each skipped test command with the install that stopped it.
+- `ham pull <run id> --snapshot` keeps a downloaded file that holds another copy. The second file is named `<run id>-snapshot-<n>-<first 12 characters of the commit>.bundle`.
+- The stored conversation of a run that went on after a lost session no longer ends with a notice about an abnormal end. A line where the earlier session stopped says that its last lines may be missing.
+- The detail of a run that ended after lost sessions names the time of the copy it delivers, also when the last session saved no copy of its own.
+- `ham update --check` leaves nothing in the download folder. An update that is up to date, refused or not confirmed leaves nothing either. `ham update` and `ham update --check` remove the hidden folders that an interrupted `ham update` left there.
+- `ham cancel` of a run without a live session says whether the run saved a copy of its work. It names `ham pull <run id> --snapshot` for a run that saved one.
+- A build that deployed nothing and failed in a later step says `Nothing was deployed`.
+- The `Next steps` of `./setup.sh` name `ham models` without a count. The README says six models.
+
 ## [5.19] - 2026-11-13
 
 ### Added

@@ -12,7 +12,7 @@
 //! Reason, `why`, `how` and `trigger` are strings on the wire so a reader survives a word added later; the enums below give the
 //! words their one spelling.
 
-use crate::envelope::{Envelope, EventType, Payload};
+use crate::envelope::{Authority, Envelope, EventType, Payload};
 use crate::goal::GoalStatus;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -674,7 +674,8 @@ pub struct ClosedRequest {
     pub request_id: String,
     pub n: u32,
     pub reason: String,
-    /// `answered:<action>`, `expired`, `cancelled`, `deadline`, `finish`, `superseded`, `recovered` or `ended`.
+    /// `answered:<action>`, `expired`, `cancelled`, `deadline`, `finish`, `superseded`, `recovered`, `ended` or `session-lost`
+    /// ([`CLOSED_SESSION_LOST`]).
     pub how: String,
     /// The `ts` of the event that closed it.
     pub ts: String,
@@ -708,6 +709,11 @@ impl Default for InputFold {
 /// The most closed requests [`InputFold::closed`] keeps.
 pub const MAX_FOLD_CLOSED: usize = 8;
 
+/// The `kind` of the payload of the harness's `run.waiting` event that says a session was lost.
+pub const SESSION_LOST_KIND: &str = "session-lost";
+/// The `how` of a request that was open when its session was lost: no engine knows the request any more.
+pub const CLOSED_SESSION_LOST: &str = "session-lost";
+
 /// The agent id the fold reads (the one agent of a direct run).
 const FOLD_AGENT: &str = crate::direct::DIRECT_AGENT_ID;
 
@@ -736,6 +742,20 @@ fn ends_the_run(e: &Envelope) -> bool {
     }
 }
 
+/// The service's word that a session was lost: a `run.waiting` event of the harness whose payload kind is [`SESSION_LOST_KIND`].
+fn session_lost(e: &Envelope) -> bool {
+    e.event_type == EventType::RunWaiting
+        && e.authority == Authority::Harness
+        && progress_kind(e) == Some(SESSION_LOST_KIND)
+}
+
+/// The start of a session of the `direct` agent (`turn.started`): every session's worker writes one before anything else.
+fn session_started(e: &Envelope) -> bool {
+    e.event_type == EventType::TurnStarted
+        && e.authority == Authority::Agent
+        && e.agent_id.as_deref() == Some(FOLD_AGENT)
+}
+
 fn decode<T: serde::de::DeserializeOwned>(e: &Envelope) -> Option<T> {
     serde_json::from_value(inline_value(e)?.clone()).ok()
 }
@@ -753,6 +773,10 @@ fn decode<T: serde::de::DeserializeOwned>(e: &Envelope) -> Option<T> {
 /// - `input-ignored` changes nothing.
 /// - `new-session` adds a session.
 /// - `run.completed`, `run.aborted` and a terminal `goal.status` of the run close an open request as `ended`.
+/// - The service's word that a session was lost (`run.waiting` of the harness, kind [`SESSION_LOST_KIND`], naming the session that
+///   asked or a later one) and the start of a later session (`turn.started` of the agent with a greater `session` than the one in
+///   progress when the request was opened) close an open request as [`CLOSED_SESSION_LOST`]: the session that asked is gone, and no
+///   engine knows the request id any more. A reader of every shard holds the first, a reader of the agent's own events the second.
 ///
 /// An event that does not decode is skipped.
 pub fn fold_input<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> InputFold {
@@ -760,6 +784,8 @@ pub fn fold_input<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> InputFo
         .into_iter()
         .filter(|e| {
             ends_the_run(e)
+                || session_lost(e)
+                || session_started(e)
                 || (e.event_type == EventType::TurnProgress
                     && e.agent_id.as_deref() == Some(FOLD_AGENT)
                     && matches!(
@@ -781,6 +807,10 @@ pub fn fold_input<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> InputFo
     let mut seen: Vec<String> = Vec::new();
     let mut new_sessions: u32 = 0;
     let mut named_session: u32 = 1;
+    // The worker session in progress, as the agent's `turn.started` events name it (1 until one names another), and the one
+    // that asked the open request.
+    let mut worker_session: u32 = 1;
+    let mut asked_by: u32 = 1;
 
     fn close(fold: &mut InputFold, how: String, ts: &str) {
         if let Some(open) = fold.open.take() {
@@ -802,6 +832,29 @@ pub fn fold_input<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> InputFo
             close(&mut fold, "ended".into(), &e.ts);
             continue;
         }
+        // The session that asked the open request is gone. The service says which session it lost; a later session says its
+        // number at its start. The numbers are compared, so the start of the session that asked, or a word about an earlier
+        // session, closes nothing whatever the order of two ids of one millisecond.
+        let named = inline_value(e)
+            .and_then(|v| v.get("session"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0);
+        if session_lost(e) {
+            if named.is_none_or(|lost| lost >= asked_by) {
+                close(&mut fold, CLOSED_SESSION_LOST.into(), &e.ts);
+            }
+            continue;
+        }
+        if session_started(e) {
+            if let Some(n) = named.filter(|n| *n > worker_session) {
+                worker_session = n;
+                if n > asked_by {
+                    close(&mut fold, CLOSED_SESSION_LOST.into(), &e.ts);
+                }
+            }
+            continue;
+        }
         match progress_kind(e) {
             Some(PROGRESS_NEEDS_INPUT) => {
                 let Some(p) = decode::<NeedsInputPayload>(e) else {
@@ -812,6 +865,7 @@ pub fn fold_input<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> InputFo
                 }
                 close(&mut fold, "superseded".into(), &e.ts);
                 seen.push(p.request_id.clone());
+                asked_by = worker_session;
                 fold.open = Some(OpenRequest {
                     request_id: p.request_id.clone(),
                     opened_ts: e.ts.clone(),

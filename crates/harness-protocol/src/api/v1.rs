@@ -140,6 +140,14 @@ pub struct StartDirectRunRequest {
     /// out of the stored request. A model whose row has `requiresProviderSharing` is refused (400 `provider-sharing-required`) without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_sharing: Option<bool>,
+    /// Protocol 1.60.0: the seconds between two looks of the worker at the work tree for a copy of the run's work, from the user's
+    /// `run.copy_every_minutes`. Absent (the default, and what every client without the setting sends) means
+    /// [`crate::direct::DEFAULT_SNAPSHOT_EVERY_S`], one minute, and is left out of the stored request. [`crate::direct::snapshot_every_s_ok`] is the one
+    /// check: [`crate::direct::MIN_SNAPSHOT_EVERY_S`] to [`crate::direct::MAX_SNAPSHOT_EVERY_S`]; control-api answers 400 outside it, for 0 too, because
+    /// a request cannot switch the copies off. run-session checks the stored value again and writes it into the invocation of every session of the
+    /// run. The copy after a tool call that changed the tree and the copy when the engine has stopped do not move with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_every_s: Option<u32>,
 }
 
 /// `GET /v1/direct/models` (protocol 1.31.0; served only by the `direct` stage) and `ham models --json`: every

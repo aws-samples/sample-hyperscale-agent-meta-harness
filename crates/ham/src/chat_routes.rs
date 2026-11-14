@@ -22,7 +22,9 @@ use ham_core::events_view::{EventsQuery, EventsView, UserAnswer};
 use ham_core::head::{DeliveredHead, path as head_path};
 use ham_core::run_index::{BackfillReport, RunFilter, RunRow, RunRowsPage, percent_encode};
 use ham_core::runsearch::{SearchQuery, SearchResponse};
-use ham_core::snapshot::{HEADER_BYTES, SnapshotDownload, SnapshotError, verify_object};
+use ham_core::snapshot::{
+    HEADER_BYTES, SnapshotDownload, SnapshotError, bundle_head, verify_object,
+};
 use ham_core::transcript::{TranscriptPage, TranscriptQuery};
 use harness_protocol::envelope::{Envelope, EventType};
 use serde::Deserialize;
@@ -419,7 +421,8 @@ fn sane(d: &SnapshotDownload) -> Result<(), SnapshotFetchError> {
 }
 
 /// Downloads the run's latest snapshot bundle into `dir` as `<runId>-snapshot-<count>.bundle` and checks it against the route's answer
-/// (size and commit). See [`fetch_snapshot_with`].
+/// (size and commit). The count is the number of the copy within the run; when a file of that name already holds another commit,
+/// the name carries the commit too: `<runId>-snapshot-<count>-<first 12 of the commit>.bundle`. See [`fetch_snapshot_with`].
 pub async fn fetch_snapshot<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
@@ -445,7 +448,16 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
     let mut d = download_when_settled(api, run_id).await?;
     sane(&d)?;
     let name = match d.count {
-        Some(n) => format!("{run_id}-snapshot-{n}.bundle"),
+        Some(n) => {
+            let plain = format!("{run_id}-snapshot-{n}.bundle");
+            // A number names one copy of a run. A worker older than that rule numbers the copies of every session from 1, so a
+            // file of this name can hold another copy of the run: it is kept, and this copy is named with its commit as well.
+            if holds_another_copy(&dir.join(&plain), &d.head_sha) {
+                format!("{run_id}-snapshot-{n}-{}.bundle", &d.head_sha[..12])
+            } else {
+                plain
+            }
+        }
         None => format!("{run_id}-snapshot-{}.bundle", &d.head_sha[..12]),
     };
     let dest = dir.join(&name);
@@ -517,6 +529,20 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
         final_copy: d.final_copy,
         engine: d.engine.clone(),
     })
+}
+
+/// Whether `path` is a file that is not the bundle of the commit `head`: a bundle of another commit, or a file that is no
+/// bundle. A path that holds nothing, and a bundle of `head` itself (the same copy, downloaded before), is not.
+fn holds_another_copy(path: &Path, head: &str) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut prefix = Vec::new();
+    if file.take(HEADER_BYTES).read_to_end(&mut prefix).is_err() {
+        return true;
+    }
+    bundle_head(&prefix).map_or(true, |held| held != head)
 }
 
 /// A download in progress on disk: removed when dropped, unless it was renamed into place.

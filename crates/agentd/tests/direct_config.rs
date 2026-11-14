@@ -44,6 +44,7 @@ fn milliseconds_are_read_and_a_bad_value_is_the_default() {
         ("AGENTD_DIRECT_HEARTBEAT_EVERY_MS", "0"),
         ("AGENTD_DIRECT_UPLOAD_PAUSE_MS", "soon"),
         ("AGENTD_DIRECT_SNAPSHOT_EVERY_MS", "500"),
+        ("AGENTD_DIRECT_SNAPSHOT_RETRY_MS", "300"),
     ]);
     assert_eq!(d.events_every, Duration::from_millis(100));
     assert_eq!(
@@ -53,6 +54,13 @@ fn milliseconds_are_read_and_a_bad_value_is_the_default() {
     );
     assert_eq!(d.upload_retry_pause, Duration::from_secs(2));
     assert_eq!(d.snapshot_interval, Some(Duration::from_millis(500)));
+    assert_eq!(d.snapshot_retry, Some(Duration::from_millis(300)));
+    assert_eq!(
+        from(&[("AGENTD_DIRECT_SNAPSHOT_RETRY_MS", "0")]).snapshot_retry,
+        None,
+        "zero would make every failed look spin: the minute of the code stays"
+    );
+    assert_eq!(from(&[]).snapshot_retry, None);
 }
 
 #[test]

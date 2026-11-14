@@ -791,13 +791,19 @@ pf_image_plan() {
 }
 
 # pf_image_refuse: with --allow-active-runs and a run active, an update that needs a new worker image would be refused by the build's own guard after the long build of the Lambda
-# functions; it is refused here instead, before anything is created.
+# functions; it is refused here instead, before anything is created. With --allow-new-runs a run can start at any moment of the update, so the count of this look decides
+# nothing: the update is refused with no run active too, as the deploy's guard refuses every new worker runtime version under a lock that lets runs start.
 pf_image_refuse() {
-  [ "${ALLOW_ACTIVE_RUNS:-0}" = 1 ] && [ "$ACTIVE_RUN_COUNT" -gt 0 ] || return 0
+  [ "${ALLOW_ACTIVE_RUNS:-0}" = 1 ] || return 0
   case $IMG_PLAN in
     image|fork) ;;
     *) return 0 ;;
   esac
+  [ "${ALLOW_NEW_RUNS:-0}" != 1 ] ||
+    setup_exit 7 "the update needs $IMG_TEXT, and --allow-new-runs lets runs start while it deploys" \
+      "A new worker image changes the worker runtime, which a run that starts during the update would be pinned to, so the build's guard would refuse it after the build of the Lambda functions. --allow-new-runs lets through only an update that keeps the worker runtime." \
+      "Run ./setup.sh --update --wait-for-runs MINUTES instead: the stage then starts no new runs, and the update waits for the active ones." "Nothing was changed."
+  [ "$ACTIVE_RUN_COUNT" -gt 0 ] || return 0
   setup_exit 7 "the update needs $IMG_TEXT, and $ACTIVE_RUN_COUNT run(s) are running on hamh-$STAGE-run: $ACTIVE_RUNS" \
     "A new worker image changes the worker runtime under those runs, so the build's guard would refuse it after the build of the Lambda functions. --allow-active-runs lets through only an update that keeps the worker runtime." \
     "You cancel runs with $HAMH_CLIENT_BIN cancel <runId> or wait until they end, then run ./setup.sh --update again." "Nothing was changed."

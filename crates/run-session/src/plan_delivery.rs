@@ -45,7 +45,7 @@ fn sha_ok(s: &str) -> bool {
 /// `tests/session_lost.rs` holds it to the file.
 pub const SESSION_TASK_TIMEOUT_S: u64 = 28_500;
 /// `HeartbeatSeconds` of the same task: agentd's flusher sends one every 60 s, and a session silent this long is gone.
-pub const SESSION_HEARTBEAT_S: u64 = 600;
+pub const SESSION_HEARTBEAT_S: u64 = harness_protocol::direct::SESSION_LOST_AFTER_S;
 /// The clock between the task's entry and the Turn item's start time, and between the limit and the plan: a `States.Timeout` this
 /// close to [`SESSION_TASK_TIMEOUT_S`] is the limit.
 const TIMEOUT_SLACK_S: u64 = 60;
@@ -474,7 +474,11 @@ pub(crate) async fn bundle_says<B: Blobs>(blobs: &B, run_id: &str, slice: u32) -
     )
 }
 
-async fn snapshot_head<B: Blobs>(blobs: &B, run_id: &str, slice: u32) -> Res<Option<Snapshot>> {
+pub(crate) async fn snapshot_head<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    slice: u32,
+) -> Res<Option<Snapshot>> {
     let record = match blobs.get(&s3::snapshot_json_key_t(run_id, slice)).await? {
         Some(bytes) => serde_json::from_slice::<SnapshotJson>(&bytes)
             .ok()
@@ -533,8 +537,21 @@ pub(crate) async fn newest_snapshot<B: Blobs>(
     Ok(None)
 }
 
+/// Whether a session that ended with no result ended because its heartbeat stopped, read as [`outcome_without_summary`] reads it:
+/// `States.HeartbeatTimeout`, or `States.Timeout` well before the limit of the task. Every other end without a result (a start that
+/// failed, a state that failed) is no silence.
+pub(crate) fn heartbeat_stopped(session: &SessionState, session_age_s: Option<u64>) -> bool {
+    match session.failure.as_ref().and_then(|f| f.error.as_deref()) {
+        Some("States.HeartbeatTimeout") => true,
+        Some("States.Timeout") => {
+            session_age_s.is_some_and(|a| a + TIMEOUT_SLACK_S < SESSION_TASK_TIMEOUT_S)
+        }
+        _ => false,
+    }
+}
+
 /// Seconds from the start of the session task (the Turn item `start-session` wrote) to `now_ms`; `None` when no Turn or no start time exists.
-async fn session_age_s<S, T, M, R, B, P>(
+pub(crate) async fn session_age_s<S, T, M, R, B, P>(
     deps: &Deps<S, T, M, R, B, P>,
     run_id: &str,
     slice: u32,
@@ -735,7 +752,18 @@ where
                     None => match snapshot_head(&deps.blobs, run_id, slice).await? {
                         Some(s) => (Some(s.head_sha), Some(HeadSource::Snapshot), s.at, None),
                         None => match restored_head(&deps.blobs, run_id, slice).await? {
-                            Some(r) => (r.head, Some(HeadSource::Snapshot), None, Some(r.key)),
+                            Some(r) => {
+                                // When the restored work is the snapshot of an earlier session, its record names the time,
+                                // and the detail says it as for a snapshot of the last session.
+                                let at = slices::copy_time(
+                                    &deps.blobs,
+                                    run_id,
+                                    slice.saturating_sub(1),
+                                    &r,
+                                )
+                                .await?;
+                                (r.head, Some(HeadSource::Snapshot), at, Some(r.key))
+                            }
                             None => (None, None, None, None),
                         },
                     },
@@ -1110,7 +1138,7 @@ async fn source_base<B: Blobs>(blobs: &B, source: &str) -> Res<Option<String>> {
 
 /// The work slice `slice` restored, when that is all there is to deliver: the bundle or snapshot of an earlier slice that its plan names, if it
 /// still exists. The staged base is no work.
-async fn restored_head<B: Blobs>(
+pub(crate) async fn restored_head<B: Blobs>(
     blobs: &B,
     run_id: &str,
     slice: u32,

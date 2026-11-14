@@ -2,6 +2,12 @@
 //! as a child process, which the coverage run does not measure; these tests drive every directive and every request kind of it through
 //! `serve`, so its lines are measured and its promises are asserted where they are made: a second prompt while one is open is queued with
 //! usage 0, a cancel of a single open prompt kills the shell tool, an orphan survives, a cancel after the queue was used does nothing.
+//!
+//! The `b836_` tests hold the order at the two ends of a turn: a session is free for the next prompt, and the turn's end is in
+//! the log, before the answer leaves; a prompt is open for its cancel before the engine reads the next line. A client that sends its next
+//! prompt the moment it has read an answer is then never queued behind a turn that already answered, however busy the machine is.
+//! The end of a turn is one step for the engine's reader: two more tests send a prompt while the answer before it is still inside the
+//! engine, and that prompt is not opened until the answer has left.
 #![allow(clippy::unwrap_used)]
 
 use ham_e2e::fake_cline::{Config, serve};
@@ -9,7 +15,7 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, PipeWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -72,21 +78,32 @@ struct Engine {
 
 impl Engine {
     fn start(label: &str, model: Option<&str>) -> Self {
+        Self::start_with(label, model, |pipe, _| Box::new(pipe))
+    }
+
+    /// As [`Engine::start`], with the engine's output going through what `out` makes of the pipe; `out` also gets the path of the engine's log.
+    fn start_with(
+        label: &str,
+        model: Option<&str>,
+        out: impl FnOnce(PipeWriter, &Path) -> Box<dyn Write + Send>,
+    ) -> Self {
         let ws = scratch(label);
         let (req_r, req_w) = std::io::pipe().unwrap();
         let (res_r, res_w) = std::io::pipe().unwrap();
         let died = Arc::new(AtomicBool::new(false));
         let flag = died.clone();
+        let log = ws.join("logs/fake.log");
+        let out = out(res_w, &log);
         let cfg = Config {
             workspace: ws.clone(),
-            log: Some(ws.join("logs/fake.log")),
+            log: Some(log),
             model: model.map(String::from),
         };
         let handle = std::thread::spawn(move || {
             serve(
                 cfg,
                 BufReader::new(req_r),
-                Box::new(res_w),
+                out,
                 Box::new(move || flag.store(true, Ordering::SeqCst)),
             )
         });
@@ -111,6 +128,18 @@ impl Engine {
     fn raw(&mut self, line: &str) {
         let w = self.input.as_mut().unwrap();
         writeln!(w, "{line}").unwrap();
+        w.flush().unwrap();
+    }
+
+    /// Several lines in one write, so the engine finds the second as soon as it has dealt with the first.
+    fn raw_together(&mut self, lines: &[String]) {
+        let mut bytes = Vec::new();
+        for l in lines {
+            bytes.extend_from_slice(l.as_bytes());
+            bytes.push(b'\n');
+        }
+        let w = self.input.as_mut().unwrap();
+        w.write_all(&bytes).unwrap();
         w.flush().unwrap();
     }
 
@@ -511,4 +540,491 @@ fn a_file_edit_in_parts_completes_or_stops_at_the_cancel_leaving_the_parts_writt
         "no write after the answer"
     );
     e.finish();
+}
+
+// ---- the order at the two ends of a turn ---------------------------------------------------------------------------------
+
+/// What the order tests count: how many answers are still to be held, and how many holds ended with the next prompt read by the engine.
+#[derive(Default)]
+struct Hold {
+    left: AtomicUsize,
+    met: AtomicUsize,
+}
+
+/// The engine's output for the order tests. Every line goes on to the pipe at once. After an answer to a prompt, the write does not
+/// return until the engine's log shows that the engine has read the client's next prompt (one more `in` line of a `session/prompt`).
+/// The thread that writes an answer is the turn's own, so the client's next prompt is inside the engine while the turn that answered has
+/// not left its end: the gap that a loaded machine opens by chance is open here every time. The end of a turn is one step for the
+/// engine's reader, so the engine judges that prompt when the write has returned, and it has to judge it a prompt of its own.
+struct HeldAnswers {
+    pipe: PipeWriter,
+    line: Vec<u8>,
+    log: PathBuf,
+    hold: Arc<Hold>,
+}
+
+/// The prompts the engine has read, admitted or not: the `in` lines of its log that hold a `session/prompt`.
+fn prompts_read(log: &Path) -> usize {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.starts_with("in ") && l.contains(r#""method":"session/prompt""#))
+        .count()
+}
+
+fn lines_starting(log: &str, prefix: &str) -> usize {
+    log.lines().filter(|l| l.starts_with(prefix)).count()
+}
+
+/// As [`lines_starting`], for the log file as it is now.
+fn lines_in(log: &Path, prefix: &str) -> usize {
+    lines_starting(&std::fs::read_to_string(log).unwrap_or_default(), prefix)
+}
+
+impl Write for HeldAnswers {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.line.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let line = std::mem::take(&mut self.line);
+        let answer = serde_json::from_slice::<Value>(&line)
+            .is_ok_and(|v| v.get("id").is_some() && v.get("method").is_none());
+        let hold = answer
+            && self
+                .hold
+                .left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+        // read before the answer leaves: the client cannot have sent its next prompt yet
+        let want = prompts_read(&self.log) + 1;
+        self.pipe.write_all(&line)?;
+        self.pipe.flush()?;
+        if hold {
+            let end = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < end {
+                if prompts_read(&self.log) >= want {
+                    self.hold.met.fetch_add(1, Ordering::SeqCst);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An engine whose answers are held as [`HeldAnswers`] holds them, with a session; `prompts` is how many prompts the test will send.
+fn held_engine(label: &str, prompts: usize) -> (Engine, String, Arc<Hold>) {
+    let hold = Arc::new(Hold::default());
+    let h = hold.clone();
+    let mut e = Engine::start_with(label, None, move |pipe, log| {
+        Box::new(HeldAnswers {
+            pipe,
+            line: Vec::new(),
+            log: log.to_path_buf(),
+            hold: h,
+        })
+    });
+    let sid = e.session();
+    // nothing follows the last answer
+    hold.left.store(prompts - 1, Ordering::SeqCst);
+    (e, sid, hold)
+}
+
+const B836_FAILS: &str = r#"flaky @fake{"fail_times": 1000000}"#;
+const B836_PLAIN: &str = r#"plain @fake{"work_ms": 0}"#;
+
+fn usage_total(r: &Value) -> u64 {
+    r["result"]["_meta"]["usage"]["totalTokens"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+#[test]
+fn b836_a_prompt_sent_the_moment_a_provider_failure_is_read_is_a_prompt_of_its_own() {
+    const PROMPTS: usize = 20;
+    let (mut e, sid, hold) = held_engine("b836-fail", PROMPTS);
+    for k in 1..=PROMPTS {
+        let id = e.prompt(&sid, B836_FAILS);
+        let (r, _) = e.response(id, 20).unwrap();
+        assert_eq!(
+            r["error"]["code"],
+            -32603,
+            "prompt {k} went behind a turn that had already answered: {r}\n{}",
+            e.log()
+        );
+    }
+    // TRIGGER PRESENT: every answer but the last was still being written when the engine read the next prompt
+    assert_eq!(hold.met.load(Ordering::SeqCst), PROMPTS - 1, "{}", e.log());
+    assert_eq!(lines_starting(&e.log(), "overlap "), 0, "{}", e.log());
+    e.finish();
+}
+
+#[test]
+fn b836_a_prompt_sent_the_moment_an_answer_is_read_is_a_prompt_of_its_own() {
+    const PROMPTS: usize = 20;
+    let (mut e, sid, hold) = held_engine("b836-plain", PROMPTS);
+    for k in 1..=PROMPTS {
+        let id = e.prompt(&sid, B836_PLAIN);
+        let (r, notes) = e.response(id, 20).unwrap();
+        assert_eq!(stop_of(&r), "end_turn", "prompt {k}: {r}");
+        assert!(
+            usage_total(&r) > 0,
+            "prompt {k} went behind a turn that had already answered: {r}\n{}",
+            e.log()
+        );
+        assert_eq!(text_chunks(&notes), ["working", "OK"], "prompt {k}");
+    }
+    // TRIGGER PRESENT: every answer but the last was still being written when the engine read the next prompt
+    assert_eq!(hold.met.load(Ordering::SeqCst), PROMPTS - 1, "{}", e.log());
+    assert_eq!(lines_starting(&e.log(), "overlap "), 0, "{}", e.log());
+    e.finish();
+}
+
+#[test]
+fn b836_the_end_of_a_turn_is_in_the_log_before_its_answer_leaves() {
+    const PROMPTS: usize = 10;
+    let (mut e, sid, hold) = held_engine("b836-log", PROMPTS);
+    for k in 1..=PROMPTS {
+        // odd prompts end with the provider's failure, even ones with a plain answer
+        let id = e.prompt(&sid, if k % 2 == 1 { B836_FAILS } else { B836_PLAIN });
+        e.response(id, 20).unwrap();
+        // the turn's own thread is still inside the write of this answer (the hold), so the line is there only if it was written first
+        let log = e.log();
+        assert_eq!(
+            lines_starting(&log, "prompt-end "),
+            k,
+            "the answer of prompt {k} left before its prompt-end line:\n{log}"
+        );
+    }
+    assert_eq!(hold.met.load(Ordering::SeqCst), PROMPTS - 1, "{}", e.log());
+    // every prompt opened after the one before it had ended
+    let mut open = false;
+    for l in e.log().lines() {
+        if l.starts_with("prompt-open ") {
+            assert!(
+                !open,
+                "a prompt opened while another was open:\n{}",
+                e.log()
+            );
+            open = true;
+        } else if l.starts_with("prompt-end ") {
+            open = false;
+        }
+    }
+    e.finish();
+}
+
+#[test]
+fn b836_a_cancel_that_follows_its_prompt_at_once_reaches_that_prompt() {
+    const PROMPTS: usize = 20;
+    let mut e = Engine::start("b836-cancel", None);
+    let sid = e.session();
+    for k in 1..=PROMPTS {
+        e.next_id += 1;
+        let id = e.next_id;
+        let prompt = json!({"jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": {"sessionId": sid,
+            "prompt": [{"type": "text", "text": r#"long @fake{"work_ms": 4000, "cancel_reply_ms": 1}"#}]}});
+        let cancel =
+            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid}});
+        e.raw_together(&[prompt.to_string(), cancel.to_string()]);
+        let (r, _) = e.response(id, 20).unwrap();
+        assert_eq!(
+            stop_of(&r),
+            "cancelled",
+            "the cancel of prompt {k} found no open prompt: {r}\n{}",
+            e.log()
+        );
+    }
+    assert_eq!(
+        lines_starting(&e.log(), &format!("cancel {sid} acted=true")),
+        PROMPTS,
+        "{}",
+        e.log()
+    );
+    e.finish();
+}
+
+/// How long an answer stays kept back after the engine has read the prompt that came too early, when the engine leaves that prompt alone.
+const KEPT_BACK: Duration = Duration::from_millis(300);
+
+/// What the tests of a prompt that comes too early count.
+#[derive(Default)]
+struct Kept {
+    /// How many answers are still to be kept back.
+    left: AtomicUsize,
+    /// An answer is being kept back now.
+    now: AtomicBool,
+    /// The engine read the client's next prompt while an answer was kept back.
+    read: AtomicUsize,
+    /// The engine opened that prompt, as a prompt of its own, while the answer was still kept back.
+    opened: AtomicUsize,
+    /// The engine queued that prompt while the answer was still kept back.
+    queued: AtomicUsize,
+}
+
+/// The engine's output for the tests of a prompt that comes too early. An answer to a prompt is kept back: nothing of it is in the pipe,
+/// so the client cannot have read it. It goes on to the pipe when the engine has dealt with the client's next prompt (one more
+/// `prompt-open` or `overlap` line in its log), or [`KEPT_BACK`] after the engine has read that prompt and left it alone.
+struct AnswersKeptBack {
+    pipe: PipeWriter,
+    line: Vec<u8>,
+    log: PathBuf,
+    kept: Arc<Kept>,
+}
+
+impl Write for AnswersKeptBack {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.line.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let line = std::mem::take(&mut self.line);
+        let answer = serde_json::from_slice::<Value>(&line)
+            .is_ok_and(|v| v.get("id").is_some() && v.get("method").is_none());
+        let keep = answer
+            && self
+                .kept
+                .left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+        if keep {
+            let read = prompts_read(&self.log);
+            let opened = lines_in(&self.log, "prompt-open ");
+            let queued = lines_in(&self.log, "overlap ");
+            self.kept.now.store(true, Ordering::SeqCst);
+            let end = Instant::now() + Duration::from_secs(10);
+            let mut read_at = None;
+            while Instant::now() < end {
+                if read_at.is_none() && prompts_read(&self.log) > read {
+                    self.kept.read.fetch_add(1, Ordering::SeqCst);
+                    read_at = Some(Instant::now());
+                }
+                if lines_in(&self.log, "prompt-open ") > opened {
+                    self.kept.opened.fetch_add(1, Ordering::SeqCst);
+                    break;
+                }
+                if lines_in(&self.log, "overlap ") > queued {
+                    self.kept.queued.fetch_add(1, Ordering::SeqCst);
+                    break;
+                }
+                if read_at.is_some_and(|t| t.elapsed() >= KEPT_BACK) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.kept.now.store(false, Ordering::SeqCst);
+        }
+        self.pipe.write_all(&line)?;
+        self.pipe.flush()
+    }
+}
+
+/// What a prompt that came too early met.
+struct Early {
+    kept: Arc<Kept>,
+    first: Value,
+    second: Value,
+    log: String,
+    /// The two prompts in the engine's log, in its order: `open` and `end` of a prompt, `answer` for the line that sends one of the two answers.
+    marks: Vec<&'static str>,
+}
+
+/// A client that sends its next prompt while the answer of the prompt before it is still inside the engine: `text`, twice.
+fn a_prompt_sent_before_the_answer_has_left(label: &str, text: &str) -> Early {
+    let kept = Arc::new(Kept::default());
+    let k = kept.clone();
+    let mut e = Engine::start_with(label, None, move |pipe, log| {
+        Box::new(AnswersKeptBack {
+            pipe,
+            line: Vec::new(),
+            log: log.to_path_buf(),
+            kept: k,
+        })
+    });
+    let sid = e.session();
+    kept.left.store(1, Ordering::SeqCst);
+    let first = e.prompt(&sid, text);
+    wait_until(10, "the first answer to be on its way out", || {
+        kept.now.load(Ordering::SeqCst)
+    });
+    // TRIGGER PRESENT: the client does not have the first answer when it sends its second prompt
+    let early: Vec<Value> = e
+        .lines
+        .try_iter()
+        .map(|l| serde_json::from_str(&l).unwrap())
+        .collect();
+    assert!(
+        early.iter().all(|v| v.get("id") != Some(&json!(first))),
+        "the first answer reached the client while it was kept back: {early:?}"
+    );
+    let second = e.prompt(&sid, text);
+    let (r1, _) = e.response(first, 20).unwrap();
+    let (r2, _) = e.response(second, 20).unwrap();
+    let log = e.log();
+    e.finish();
+    let marks = log
+        .lines()
+        .filter_map(|l| {
+            if l.starts_with("prompt-open ") {
+                Some("open")
+            } else if l.starts_with("prompt-end ") {
+                Some("end")
+            } else if l.starts_with("overlap ") {
+                Some("overlap")
+            } else {
+                let sent: Value = serde_json::from_str(l.strip_prefix("out ")?).ok()?;
+                let id = sent.get("id")?;
+                (id == &json!(first) || id == &json!(second)).then_some("answer")
+            }
+        })
+        .collect();
+    Early {
+        kept,
+        first: r1,
+        second: r2,
+        log,
+        marks,
+    }
+}
+
+/// What both tests of a prompt that came too early ask of the engine. The first answer was still inside the engine when the engine read
+/// the second prompt, and the engine did not open that prompt before the answer had left.
+///
+/// The engine does not queue the prompt either. The answer was on its way out when the prompt came in, and the engine cannot tell this
+/// prompt from one that a client sent after it had read the answer; to queue it would queue that client's prompt too.
+/// So the prompt waits for the answer and then runs as a prompt of its own. The header of `fake_cline.rs` states this limit.
+fn assert_not_opened_before_the_answer_left(early: &Early) {
+    let log = &early.log;
+    // TRIGGER PRESENT: the engine read the second prompt while the first answer had not left
+    assert_eq!(early.kept.read.load(Ordering::SeqCst), 1, "{log}");
+    assert_eq!(
+        early.kept.opened.load(Ordering::SeqCst),
+        0,
+        "the engine opened the second prompt, as a prompt of its own, while the answer of the first had not left:\n{log}"
+    );
+    assert_eq!(early.kept.queued.load(Ordering::SeqCst), 0, "{log}");
+    assert_eq!(
+        early.marks,
+        ["open", "end", "answer", "open", "end", "answer"],
+        "{log}"
+    );
+}
+
+#[test]
+fn b836_a_prompt_read_while_an_answer_is_on_its_way_out_is_not_opened_before_the_answer_has_left() {
+    let early = a_prompt_sent_before_the_answer_has_left("b836-early-plain", B836_PLAIN);
+    assert_not_opened_before_the_answer_left(&early);
+    for (k, r) in [&early.first, &early.second].into_iter().enumerate() {
+        assert_eq!(stop_of(r), "end_turn", "answer {}: {r}", k + 1);
+        assert!(usage_total(r) > 0, "answer {}: {r}\n{}", k + 1, early.log);
+    }
+}
+
+#[test]
+fn b836_a_prompt_read_while_a_provider_failure_is_on_its_way_out_is_not_opened_before_it_has_left()
+{
+    let early = a_prompt_sent_before_the_answer_has_left("b836-early-fail", B836_FAILS);
+    assert_not_opened_before_the_answer_left(&early);
+    for (k, r) in [&early.first, &early.second].into_iter().enumerate() {
+        assert_eq!(
+            r["error"]["code"],
+            -32603,
+            "answer {}: {r}\n{}",
+            k + 1,
+            early.log
+        );
+    }
+}
+
+/// Threads that do nothing but use a processor each, one per processor of the machine, until the value is dropped: with them every
+/// thread of the engine and of the test competes for its turn on a processor, as on a loaded build host.
+struct BusyThreads {
+    stop: Arc<AtomicBool>,
+    threads: Vec<JoinHandle<()>>,
+}
+
+impl BusyThreads {
+    fn start() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let n = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+        let threads = (0..n)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        Self { stop, threads }
+    }
+}
+
+impl Drop for BusyThreads {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
+#[test]
+fn b836_a_thousand_exchanges_beside_busy_threads_are_never_answered_from_the_queue() {
+    // Eight clients, each with an engine of its own, so the thousand exchanges of each kind take seconds beside the busy threads: a
+    // thread that is woken there waits for its turn on a processor at every step of an exchange.
+    const CLIENTS: usize = 8;
+    const EACH: usize = 125;
+    const _: () = assert!(CLIENTS * EACH == 1000);
+    let busy = BusyThreads::start();
+    let started = Instant::now();
+    let clients: Vec<JoinHandle<(Vec<String>, usize)>> = (0..CLIENTS)
+        .map(|c| {
+            std::thread::spawn(move || {
+                let mut e = Engine::start(&format!("b836-stress-{c}"), None);
+                let sid = e.session();
+                let mut from_the_queue = Vec::new();
+                // a provider failure, and the next prompt the moment the failure is read
+                for k in 1..=EACH {
+                    let id = e.prompt(&sid, B836_FAILS);
+                    let (r, _) = e.response(id, 60).unwrap();
+                    if r["error"]["code"] != -32603 {
+                        from_the_queue.push(format!("client {c} failure {k}"));
+                    }
+                }
+                // a plain answer, and the next prompt the moment the answer is read
+                for k in 1..=EACH {
+                    let id = e.prompt(&sid, B836_PLAIN);
+                    let (r, _) = e.response(id, 60).unwrap();
+                    if usage_total(&r) == 0 {
+                        from_the_queue.push(format!("client {c} plain {k}"));
+                    }
+                }
+                let overlaps = lines_starting(&e.log(), "overlap ");
+                e.finish();
+                (from_the_queue, overlaps)
+            })
+        })
+        .collect();
+    let mut from_the_queue = Vec::new();
+    let mut overlaps = 0;
+    for c in clients {
+        let (q, o) = c.join().unwrap();
+        from_the_queue.extend(q);
+        overlaps += o;
+    }
+    let took = started.elapsed();
+    drop(busy);
+    assert!(
+        from_the_queue.is_empty() && overlaps == 0,
+        "{} of {} prompts were answered from the engine's queue ({overlaps} overlaps in the engines' logs, {took:?}); the first: {:?}",
+        from_the_queue.len(),
+        2 * CLIENTS * EACH,
+        &from_the_queue[..from_the_queue.len().min(8)]
+    );
 }

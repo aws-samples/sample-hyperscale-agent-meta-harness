@@ -110,7 +110,7 @@ pub fn phase_shown(status: Option<GoalStatus>, phase: Option<GoalPhase>) -> Opti
 /// phase, except that a `complete` run whose last stored phase is `delivering` reads `delivered`. The service writes `delivering` once
 /// and moves the status to `complete` without writing a phase again, so the stored word kept saying a delivery was going on hours after the zip
 /// was in the bucket. Every other pair is written as stored (a `blocked` run still says where it stopped), and the JSON of the API and of
-/// `ham runs --json` keep the stored value.
+/// `ham runs --json` keep the stored value. The `--json` view of `ham watch` is built by the client and writes the word its line writes.
 pub fn phase_listed(status: Option<GoalStatus>, phase: Option<GoalPhase>) -> String {
     match (status, phase) {
         (Some(GoalStatus::Complete), Some(GoalPhase::Delivering)) => "delivered".to_string(),
@@ -424,6 +424,11 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
     }
     if let Some(n) = card.session.filter(|n| *n > 1) {
         lines.push(format!("Session   {}", session_text(n)));
+    }
+    // The sessions the run lost (the newest three) and what each new session started from.
+    let first = v.lost.len().saturating_sub(3);
+    for lost in &v.lost[first..] {
+        lines.push(lost.card_row());
     }
     lines.push(format!("PR        {}", v.pr_url.clone().unwrap_or_else(na)));
     lines.push(format!("Zip       {zip}"));

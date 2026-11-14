@@ -10,7 +10,7 @@ use agentd::nofile::{KernelLimits, apply};
 use agentd::sandbox::{
     ENV_VAR, Mode, Setting, main_sandbox_exec, note_process_mode, set_non_dumpable,
 };
-use agentd::server::{App, serve};
+use agentd::server::{App, end_on_signals, serve};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -106,7 +106,10 @@ fn serve_cmd(args: &[String]) -> ExitCode {
             }
         };
         eprintln!("agentd: listening on {}", cfg.listen);
-        match serve(App::new(cfg, Arc::new(StderrLog)), listener).await {
+        let app = App::new(cfg, Arc::new(StderrLog));
+        // A signal that asks agentd to end is answered with a copy of the work first.
+        tokio::spawn(end_on_signals(app.clone()));
+        match serve(app, listener).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("agentd: {e}");

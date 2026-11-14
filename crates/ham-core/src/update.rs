@@ -1,6 +1,7 @@
 //! The rules of `ham update` that need no process, file or network: where the newest version comes from (`update_source`, with the
 //! word `off` as the off switch), versions compared as numbers, the plan (up to date, which parts change, what is refused) and the changelog
-//! sections between two versions. The command itself lives in `ham::update`.
+//! sections between two versions, and how the plan of `setup.sh --update --dry-run` is read for an update that deploys nothing on the stage.
+//! The command itself lives in `ham::update`.
 
 use crate::push::check_git_url;
 
@@ -186,4 +187,41 @@ pub fn changes_between(changelog: &str, above: &str, upto: &str) -> Vec<Change> 
 /// The version of the newest dated heading, which should equal the `VERSION` file of the same commit.
 pub fn newest_heading(changelog: &str) -> Option<String> {
     sections(changelog).into_iter().next().map(|c| c.version)
+}
+
+/// How the `update:` line of setup's plan begins when the update deploys nothing on the stage (`scripts/setup/full.sh`, `full_plan`).
+pub const PLAN_UPDATE_NOTHING: [&str; 2] =
+    ["nothing is deployed;", "nothing on the stage changes;"];
+
+/// How the `guard:` line of setup's plan begins when the update deploys nothing: the first with `--wait-for-runs`, the second without it.
+pub const PLAN_GUARD_NOTHING: [&str; 2] = [
+    "this update changes nothing on the stage,",
+    "this update deploys nothing,",
+];
+
+/// The texts of the plan lines named `field` (`update`, `guard`): a line that begins with the field name and a colon after its indent.
+fn plan_lines<'a>(plan: &'a str, field: &str) -> Vec<&'a str> {
+    plan.lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix(field)?
+                .strip_prefix(':')
+                .map(str::trim)
+        })
+        .collect()
+}
+
+/// Whether the plan that `setup.sh --update --dry-run` printed says that the update deploys nothing on the stage: it has exactly one
+/// `update:` line, which begins with one of [`PLAN_UPDATE_NOTHING`], and exactly one `guard:` line, which begins with one of
+/// [`PLAN_GUARD_NOTHING`]. Setup decides whether an update deploys (the stage's record, the account file, the settings, the stacks); this
+/// reads its decision and makes none. Any other text is `false`: a plan that deploys, a plan of a later release in other words, two plans,
+/// one of the lines without the other. `false` only keeps the wait `ham update` always had, so a plan this client does not know costs time
+/// and never skips a wait.
+pub fn plan_deploys_nothing(plan: &str) -> bool {
+    let begins = |lines: Vec<&str>, with: &[&str]| match lines.as_slice() {
+        [one] => with.iter().any(|w| one.starts_with(w)),
+        _ => false,
+    };
+    begins(plan_lines(plan, "update"), &PLAN_UPDATE_NOTHING)
+        && begins(plan_lines(plan, "guard"), &PLAN_GUARD_NOTHING)
 }

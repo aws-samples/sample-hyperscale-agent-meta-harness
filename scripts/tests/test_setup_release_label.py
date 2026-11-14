@@ -586,7 +586,7 @@ class RunnerRoutePlanCase(ur.RunnerUpdateBase):
         p = self.run_full(*self.UPDATE)
         self.assertEqual(p.returncode, 0, self.out(p))
         said = self.said(p)
-        self.assertIn("the stage already runs this commit", said)
+        self.assertIn("the stage already runs this source tree", said, "the record names another commit with the same source tree")
         self.assertRegex(said, r"label: the backend reports v9\.98 and will report v9\.99")
         self.assertIn("nothing is deployed", said)
         self.assertIn("only the release label of the backend is written", said, "the sentence of the build says what is written")
@@ -687,7 +687,8 @@ class RunnerRoutePlanCase(ur.RunnerUpdateBase):
         self.git("commit", "-q", "-m", "a change the stage deploys")
         p = self.run_full(*self.UPDATE)
         self.assertEqual(p.returncode, 0, self.out(p))
-        self.assertNotIn("label:", self.said(p), "the deploy writes the label itself")
+        self.assertIn("label: the backend reports v9.98 and will report v9.99 after the deploy", self.said(p), "the deploy writes the label itself, and the plan names it")
+        self.assertNotIn("only its version label is written", self.said(p), "that is the sentence of an update that deploys nothing")
         self.assertNotEqual(self.deploy_starts()[-1].get("SETUP_CLIENT_ONLY"), "1")
 
 
@@ -725,7 +726,8 @@ class LocalRouteCase(integration.IntBase):
         p = self.run_local()
         self.assertEqual(p.returncode, 0, self.out(p))
         said = " ".join(self.out(p).split())
-        self.assertIn("the stage already runs this commit", said)
+        self.assertIn("the stage already runs this source tree", said, "the record names another commit with the same source tree")
+        self.assertIn("scripts/deploy.sh deploys nothing: the stage already runs the source tree of this commit.", said)
         self.assertRegex(said, r"label: the backend reports v9\.98 and will report v9\.99")
         calls = self.deploy_calls()[before:]
         self.assertEqual(len(calls), 1, calls)

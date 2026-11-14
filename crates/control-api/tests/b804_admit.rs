@@ -493,8 +493,8 @@ async fn b804_admit_the_other_routes_answer_while_the_stage_is_closed() {
 
 #[test]
 fn b804_admit_the_stale_number_is_the_one_line_of_the_file_setup_reads() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../scripts/lib/deploy-lock-stale-seconds.txt");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy-lock-stale-seconds.txt");
     let text = std::fs::read_to_string(&path).unwrap();
     assert_eq!(text, "1800\n", "one integer line");
     assert_eq!(STALE_AFTER_S, 1800);

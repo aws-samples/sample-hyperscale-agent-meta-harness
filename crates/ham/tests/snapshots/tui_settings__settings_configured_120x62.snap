@@ -2,12 +2,12 @@
 source: crates/ham/tests/tui_settings.rs
 expression: "screen_text(&app, cols, rows)"
 ---
-ham · Settings · config.toml (no file yet)
+ham · Settings · config.toml
  Run
  ▶ Model                Claude Sonnet 5.5                                                        default  next run
    Answer wait          30 (terminal), 0 (script)                                                default  next run
    Test report          on                                                                       default  next run
-   Goal loop            stage default (on)                                                       default  next run
+   Goal loop            off                                                                      file     next run
    Rules                on                                                                       default  next run
    Skills               on                                                                       default  next run
    Web research         stage default                                                            default  next run
@@ -24,7 +24,7 @@ ham · Settings · config.toml (no file yet)
  Interface
    Mouse                on                                                                       default  restart
    Notifications        off                                                                      default  now
-   Bell                 on                                                                       default  now
+   Bell                 off                                                                      file     now
    Mascot               auto                                                                     default  now
    Old-name notices     on                                                                       default  restart
    Mascot motion        on                                                                       default  now
@@ -53,13 +53,14 @@ ham · Settings · config.toml (no file yet)
    Research repo size   200 MiB                                                                  default  next run
    Research total size  300 MiB                                                                  default  next run
    Container signals    default                                                                  default  next run
+   Copy interval        1 minute                                                                 default  next run
  Connection
-   Service address      none                                                                     default  restart
-   Region               AWS chain                                                                default  restart
-   AWS profile          AWS chain                                                                default  restart
+   Service address      https://abc.execute-api.us-east-1.amazonaws.com/direct/v1                file     restart
+   Region               us-east-1                                                                file     restart
+   AWS profile          ham-test                                                                 file     restart
    Default backend      none                                                                     default  restart
    Customer content     no                                                                       default  restart
    Update source        https://github.com/aws-samples/sample-hyperscale-agent-meta-harness.git  default  now
    Locked by the harness  credentials · provider · telemetry · processes · approvals · network · owned elsewhere
- no config.toml yet: every setting is at its default; a change makes the file
+
 Enter change · u use the default · e edit the file · Esc back · q quit

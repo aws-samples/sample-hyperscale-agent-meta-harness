@@ -118,7 +118,7 @@ fn the_first_new_key_opens_the_door_once_and_unset_returns_the_original_bytes() 
 
 #[test]
 fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
-    let values: [(&str, &str); 46] = [
+    let values: [(&str, &str); 47] = [
         (
             "api_endpoint",
             "https://x.execute-api.us-east-1.amazonaws.com/direct",
@@ -168,6 +168,7 @@ fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
         ("run.container_signals", "none"),
         ("default_engine", "opencode"),
         ("update_source", "https://example.com/me/fork.git"),
+        ("run.copy_every_minutes", "10"),
     ];
     assert_eq!(values.len(), KEYS.len());
     // Each key alone, on a commented file.
@@ -343,7 +344,7 @@ fn a_bad_key_a_bad_value_and_a_hostile_value_change_nothing() {
         panic!("an unknown key");
     };
     assert_eq!(key, "nokey");
-    assert!(known.contains(&"run.goal".to_string()) && known.len() == 46);
+    assert!(known.contains(&"run.goal".to_string()) && known.len() == 47);
     assert!(matches!(
         plan_unset(OWNER, "nokey"),
         Err(PlanError::Config(ConfigError::UnknownKey { .. }))

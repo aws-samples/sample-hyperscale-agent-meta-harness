@@ -1,10 +1,17 @@
 //! `ham watch` in line mode: the run is rehydrated from the API alone,
-//! by polling the event shards into `ham_core::state::RunState`. A line is
+//! by polling the event shards into `ham_core::state::RunState`. A session that has gone silent and a session the service lost are told in
+//! a line each. A line is
 //! printed when the view changes: the status line (plain) or the view as one JSON object
 //! (`--json`), which carries only sanitized text. The watch ends on `run.completed`, `cleared`, or
 //! a delivered completion; then the zip is downloaded and the final card printed. A run that is complete with its zip announced but
 //! has no `run.completed` yet is read on for [`COMPLETED_SETTLE`] first, so the card carries the outcome label the harness writes
 //! right after the zip. Transient read failures are reported on stderr and retried with backoff up to 30 s.
+//!
+//! Line mode has no status block: while the run works it says when a newer copy of the work was saved, at most once a minute
+//! (`ham_core::saved_copy::WatchMemo`), the JSON view carries the newest copy as `savedCopy`, and the card is printed for every run that
+//! ended with something to say where its work is: a delivery, a pull request, a blocked run, or an ended run with a saved copy. It also
+//! prints, once each, what the run says about a copy that is late or could not be saved since its newest stored copy:
+//! the run screen shows those sentences in the conversation, which line mode does not have.
 
 use crate::api::{Api, ApiError};
 use crate::commands::now_unix;
@@ -85,7 +92,19 @@ fn enum_str<T: serde::Serialize>(t: &T) -> Value {
     serde_json::to_value(t).unwrap_or(Value::Null)
 }
 
-/// The view as JSON. Every string in it is harness data or text `RunState` already sanitized.
+/// The run has ended and line mode has a card for it: the run is complete, a pull request or a zip exists, the run is blocked (it
+/// delivered nothing, and the card says where its work is and what it used), or it ended in any other way with a saved copy of its work.
+pub fn card_due(v: &RunView) -> bool {
+    v.status == Some(GoalStatus::Complete)
+        || v.pr_url.is_some()
+        || v.zip.is_some()
+        || v.status == Some(GoalStatus::Blocked)
+        || (v.saved.is_some() && v.has_ended())
+}
+
+/// The view as JSON. Every string in it is harness data or text `RunState` already sanitized. The phase is written as the line writes it:
+/// a `complete` run whose stored phase is `delivering` reads `delivered`, every other phase as
+/// stored. `ham runs --json` prints the service's own list and keeps the stored word.
 pub fn view_json(v: &RunView) -> Value {
     let agents: Vec<Value> = v
         .agents
@@ -103,7 +122,7 @@ pub fn view_json(v: &RunView) -> Value {
     let mut out = json!({
         "runId": v.run_id,
         "status": v.status.as_ref().map(enum_str),
-        "phase": v.phase.as_ref().map(enum_str),
+        "phase": v.phase.map(|p| ham_core::render::phase_listed(v.status, Some(p))),
         "prUrl": v.pr_url,
         "zip": v.zip.as_ref().map(|z| json!({"artifactId": z.artifact_id, "sha256": z.sha256, "sizeBytes": z.size_bytes})),
         "agents": agents,
@@ -118,6 +137,16 @@ pub fn view_json(v: &RunView) -> Value {
     // Only a run that asked a question or restarted carries them, so every other view is unchanged.
     if let Some(o) = out.as_object_mut() {
         insert_input(o, v);
+    }
+    // Only a run that lost a session, or whose session is silent at the view's clock, carries them: the service's own records of
+    // the lost sessions, and the time of the newest event of a session that has missed two beats.
+    if let Some(o) = out.as_object_mut() {
+        if !v.lost.is_empty() {
+            o.insert("lostSessions".into(), json!(v.lost));
+        }
+        if let Some(quiet) = v.silence() {
+            o.insert("silentSince".into(), json!(quiet.since));
+        }
     }
     // Only a run that ended early carries it, so every other view is unchanged.
     if let (Some(a), Some(o)) = (&v.aborted, out.as_object_mut()) {
@@ -151,6 +180,14 @@ pub fn view_json(v: &RunView) -> Value {
         o.insert(
             "engineConfig".into(),
             json!({"engine": c.engine, "sha256": c.sha256, "keys": c.keys, "settings": rows}),
+        );
+    }
+    // Only a run that saved a copy of its work carries it: when the newest copy was stored, which one it is, and whether it is the
+    // copy of the end.
+    if let (Some(c), Some(o)) = (&v.saved, out.as_object_mut()) {
+        o.insert(
+            "savedCopy".into(),
+            json!({"at": c.at, "count": c.count, "headSha": c.head_sha, "session": c.session, "final": c.final_copy}),
         );
     }
     // Each model's effective window, only while a session reports one.
@@ -246,6 +283,8 @@ pub struct InputMemo {
     shown: std::collections::BTreeSet<String>,
     closed: std::collections::BTreeSet<String>,
     sessions: u32,
+    /// The silence this watch has told (the time nothing was heard since).
+    silent: Option<i64>,
 }
 
 impl InputMemo {
@@ -257,7 +296,7 @@ impl InputMemo {
     }
 
     /// The lines to print now for what is new in `v`: a question that opened (its card and the commands that answer it), a question
-    /// this watch saw open that has ended, and a fresh session.
+    /// this watch saw open that has ended, a fresh session, a notice of the run about a copy of its work, a lost session and a silence.
     pub fn lines(&mut self, v: &RunView) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(q) = &v.input.open
@@ -323,6 +362,38 @@ impl InputMemo {
                 out.push(r.watch_line());
             }
         }
+        // With: what the run says about a copy of its work (a copy that is late, a copy that could not be saved) is told
+        // once, in the worker's own sentence. The run screen shows it in the conversation; line mode has none, and the lines below
+        // name the last saved copy as what a new session starts from. The view keeps what the run said since its newest stored copy,
+        // so a watch that starts later is not told of trouble that is over.
+        for n in &v.copy_notices {
+            if self.shown.insert(format!("copy:{}", n.event_id)) {
+                out.push(n.text.clone());
+            }
+        }
+        // A session the service lost is told once, with the session that starts and the copy it starts from.
+        for lost in &v.lost {
+            if self
+                .shown
+                .insert(format!("lost:{}:{}", lost.session, lost.decided_at))
+            {
+                out.push(lost.sentence());
+            }
+        }
+        // A session that has gone silent is told once per silence: since when, and what the service does when that lasts. A
+        // session that is heard again after it is told too.
+        match v.silence() {
+            Some(quiet) if self.silent != Some(quiet.since_unix) => {
+                self.silent = Some(quiet.since_unix);
+                out.push(quiet.sentence());
+            }
+            Some(_) => {}
+            None => {
+                if self.silent.take().is_some() && v.session_open && !v.has_ended() {
+                    out.push("The run's session answers again.".to_string());
+                }
+            }
+        }
         out
     }
 }
@@ -365,6 +436,7 @@ pub async fn watch_settled<P: ControlPlane, O: Write, E: Write>(
     let mut last: Option<String> = None;
     let mut last_blocked: Option<String> = None;
     let mut input_memo = InputMemo::new();
+    let mut saved_memo = ham_core::saved_copy::WatchMemo::default();
     let mut aborted_shown = false;
     let mut failures: u32 = 0;
     // Adaptive polling (client polish B2): every shard on the first cycle, then the shards that matter, and a longer wait while
@@ -438,6 +510,13 @@ pub async fn watch_settled<P: ControlPlane, O: Write, E: Write>(
                 writeln!(out, "{}", l).map_err(out_err)?;
             }
         }
+        // A newer copy of the work, at most once a minute; the copy of the end is on the card.
+        if !opts.json
+            && let Some(l) =
+                saved_memo.line(view.saved.as_ref(), &view.run_id, began.elapsed().as_secs())
+        {
+            writeln!(out, "{l}").map_err(out_err)?;
+        }
         if !opts.json
             && !aborted_shown
             && let Some(a) = &view.aborted
@@ -486,10 +565,7 @@ pub async fn watch_settled<P: ControlPlane, O: Write, E: Write>(
             o.insert("usd".into(), json!(u.usd));
         }
         writeln!(out, "{last}").map_err(out_err)?;
-    } else if view.status == Some(GoalStatus::Complete)
-        || view.pr_url.is_some()
-        || view.zip.is_some()
-    {
+    } else if card_due(&view) {
         writeln!(out, "{}", final_card(&view, &c)).map_err(out_err)?;
     }
     Ok(WatchOutcome {

@@ -435,7 +435,7 @@ pub const ENTRIES: &[Entry] = &[
     sub(
         "update",
         "[--check] [--yes] [--no-wait] [--wait <minutes>]",
-        "Update the backend and ham to the newest version, after your runs end",
+        "Update the backend and ham to the newest version; a deploy comes after your runs",
         Fx::REMOTE_MUTATION
             .union(Fx::LOCAL_WRITE)
             .union(Fx::TERMINAL_HANDOFF),

@@ -181,6 +181,22 @@ fn engine_stop(v: &Value) -> String {
     format!("The engine stopped its own prompt ({words}): {next}.")
 }
 
+/// The most notices about copies the run view keeps ([`is_copy_notice`]): the newest ones since the newest stored copy.
+pub const MAX_COPY_NOTICES: usize = 32;
+
+/// Whether `e` is the worker's word about a copy of the run's work: a `turn.progress` event of kind `notify` with the reason
+/// `copy_not_saved` (a copy that is late, one that could not be saved, the copy of a stop or of the end that failed, a session that
+/// saves none). The run view keeps the ones since the newest stored copy apart (`RunView::copy_notices`) for a surface that has no
+/// conversation to show them in.
+pub fn is_copy_notice(e: &Envelope) -> bool {
+    e.event_type == EventType::TurnProgress
+        && matches!(
+            &e.payload,
+            Payload::Inline { value }
+                if string(value, "kind") == Some("notify") && string(value, "reason") == Some("copy_not_saved")
+        )
+}
+
 fn notify(v: &Value) -> String {
     match string(v, "reason").unwrap_or("") {
         "outage" => match number(v, "outageMinutes") {

@@ -462,7 +462,7 @@ class RecordCommitCase(IntBase):
         deploys = self.deploys()
         p = self.run_full(*self.UPDATE)
         self.assertEqual(p.returncode, 0, self.out(p))
-        self.assertIn("the stage already runs this commit", p.stdout + p.stderr)
+        self.assertIn("the stage already runs this source tree", " ".join((p.stdout + p.stderr).split()), "the record names another commit")
         self.assertEqual(self.deploy_starts()[-1].get("SETUP_CLIENT_ONLY"), "1")
         self.assertEqual(self.deploys(), deploys)
         # another source tree: git cannot place the recorded commit and this clone has no VERSION to compare, so the update stops before anything is created and names a new clone and --revision

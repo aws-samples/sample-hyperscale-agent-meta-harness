@@ -21,7 +21,7 @@ use ratatui::backend::TestBackend;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const SIZES: [(u16, u16); 3] = [(80, 24), (120, 40), (200, 60)];
 const RUN: &str = "01K6A0000000000000000000R1";
@@ -219,20 +219,200 @@ fn five_hundred_agents_are_grouped_and_scroll() {
     assert_eq!(screen_text(&app, 120, 40), bottom);
 }
 
+/// The two times the kernel keeps for this thread: on a processor, and ready to run and waiting for one. They are the first two numbers
+/// of `/proc/thread-self/schedstat`, in nanoseconds (Linux). `None` where the machine has no such file.
+fn thread_times() -> Option<(Duration, Duration)> {
+    let text = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    let mut numbers = text
+        .split_whitespace()
+        .map(|n| n.parse().ok().map(Duration::from_nanos));
+    Some((numbers.next()??, numbers.next()??))
+}
+
+/// The clock of the draw bound: the wall clock less the time the drawing thread waited for a processor, where the machine reports that
+/// wait, and the wall clock elsewhere. A draw is the work of one thread. On a build host where every processor is taken the thread also
+/// waits for its turn on one, which says nothing about the draw. Everything else between the two readings counts: the work of
+/// the draw, and a wait of the draw's own (a sleep, a lock, a read that blocks).
+struct DrawClock {
+    wall: Instant,
+    waited: Option<Duration>,
+}
+
+impl DrawClock {
+    fn start() -> Self {
+        // The wall clock first and the wait second here, the other way round in `elapsed`: a wait for a processor that falls between
+        // the two readings is then counted, at either end.
+        let wall = Instant::now();
+        Self {
+            wall,
+            waited: thread_times().map(|t| t.1),
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        let waited = thread_times().map(|t| t.1);
+        let wall = self.wall.elapsed();
+        match (self.waited, waited) {
+            (Some(start), Some(now)) => wall.saturating_sub(now.saturating_sub(start)),
+            _ => wall,
+        }
+    }
+
+    /// What the clock reads, for a failure message.
+    fn what(&self) -> &'static str {
+        if self.waited.is_some() {
+            "wall clock less the drawing thread's wait for a processor"
+        } else {
+            "wall clock"
+        }
+    }
+}
+
 #[test]
 fn five_thousand_agents_draw_in_bounded_time() {
     let app = dashboard(agents(5000));
-    let t = Instant::now();
+    let t = DrawClock::start();
     snapshot_sizes(&app, "dash_5000_agents");
     for _ in 0..10 {
         screen_text(&app, 200, 60);
     }
     let per_draw = t.elapsed().as_secs_f64() / 13.0;
+    let on_the_wall = t.wall.elapsed().as_secs_f64() / 13.0;
     assert!(
         per_draw < 0.5,
-        "a draw of 5,000 agents took {per_draw:.3} s"
+        "a draw of 5,000 agents took {per_draw:.3} s ({}; {on_the_wall:.3} s on the wall clock)",
+        t.what()
     );
     assert!(screen_text(&app, 200, 60).contains("agents 5000"));
+}
+
+#[test]
+fn b836_the_draw_clock_counts_a_wait_inside_the_draw() {
+    // a draw that sleeps, waits for a lock or reads a slow disk is a slow draw: the clock of the bound has to show it
+    let t = DrawClock::start();
+    std::thread::sleep(Duration::from_millis(300));
+    let read = t.elapsed();
+    assert!(
+        read >= Duration::from_millis(290),
+        "a wait of 300 ms inside a draw counted as {read:?} ({})",
+        t.what()
+    );
+}
+
+#[test]
+fn b836_the_draw_clock_counts_the_work_of_its_thread() {
+    // the clock goes on while the thread computes, and never faster than the wall clock
+    let wall = Instant::now();
+    let t = DrawClock::start();
+    let mut n = 0u64;
+    while t.elapsed() < Duration::from_millis(100) {
+        assert!(
+            wall.elapsed() < Duration::from_secs(60),
+            "the clock stood still for a minute of work"
+        );
+        n = std::hint::black_box(n.wrapping_mul(31).wrapping_add(7));
+    }
+    let (worked, passed) = (t.elapsed(), wall.elapsed());
+    assert!(worked <= passed, "{worked:?} of work in {passed:?}");
+}
+
+/// Puts this thread, and the threads it starts from now on, on the one processor it runs on (`taskset` of util-linux). `false` where
+/// that cannot be done.
+fn stay_on_one_processor() -> bool {
+    let thread = std::fs::read_link("/proc/thread-self")
+        .ok()
+        .and_then(|p| p.file_name()?.to_str()?.parse::<u32>().ok());
+    // the 39th field of `stat` is the processor the thread ran on last; the fields after the name in brackets start with the 3rd
+    let processor = std::fs::read_to_string("/proc/thread-self/stat")
+        .ok()
+        .and_then(|s| {
+            s.rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(36)?
+                .parse::<u32>()
+                .ok()
+        });
+    let (Some(thread), Some(processor)) = (thread, processor) else {
+        return false;
+    };
+    let processor = processor.to_string();
+    let set = std::process::Command::new("taskset")
+        .args(["-p", "-c", &processor, &thread.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    set && std::fs::read_to_string("/proc/thread-self/status").is_ok_and(|s| {
+        s.lines().any(|l| {
+            l.strip_prefix("Cpus_allowed_list:").map(str::trim) == Some(processor.as_str())
+        })
+    })
+}
+
+#[test]
+fn b836_the_draw_clock_leaves_out_the_wait_for_a_processor() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if thread_times().is_none() {
+        eprintln!(
+            "NOT RUN: this machine reports no scheduling times of a thread; the draw bound reads the wall clock here"
+        );
+        return;
+    }
+    if !stay_on_one_processor() {
+        eprintln!(
+            "NOT RUN: this thread could not be put on one processor with `taskset`, so no wait for a processor can be made here"
+        );
+        return;
+    }
+    // a second thread on the same processor that does nothing but use it: this thread now waits for its turn about half of the time
+    let (stop, running) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let busy = {
+        let (stop, running) = (stop.clone(), running.clone());
+        std::thread::spawn(move || {
+            running.store(true, Ordering::SeqCst);
+            while !stop.load(Ordering::Relaxed) {
+                std::hint::spin_loop();
+            }
+        })
+    };
+    while !running.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    let wall = Instant::now();
+    let t = DrawClock::start();
+    let before = thread_times().unwrap();
+    let mut n = 0u64;
+    while wall.elapsed() < Duration::from_millis(400) {
+        n = std::hint::black_box(n.wrapping_mul(31).wrapping_add(7));
+    }
+    let read = t.elapsed();
+    let passed = wall.elapsed();
+    let after = thread_times().unwrap();
+    stop.store(true, Ordering::Relaxed);
+    busy.join().unwrap();
+    if after.0.is_zero() {
+        eprintln!(
+            "NOT RUN: the kernel keeps no scheduling times of a thread here; the draw bound reads the wall clock"
+        );
+        return;
+    }
+    let (worked, waited) = (after.0 - before.0, after.1 - before.1);
+    // TRIGGER PRESENT: the thread did wait for its processor
+    assert!(
+        waited >= Duration::from_millis(100),
+        "the thread shared one processor with a busy thread for {passed:?} and waited only {waited:?} for it"
+    );
+    // The wait is left out: what the clock read is the work of the thread, as the kernel counted it (the kernel adds a running
+    // thread's work at its timer tick, up to 10 ms late).
+    assert!(
+        read.abs_diff(worked) <= Duration::from_millis(30),
+        "the clock read {read:?} for {worked:?} of work in {passed:?}, {waited:?} of them spent waiting for the processor"
+    );
 }
 
 #[test]

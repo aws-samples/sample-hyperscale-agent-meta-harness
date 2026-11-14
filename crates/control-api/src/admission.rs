@@ -8,9 +8,14 @@
 //!
 //! 1. exists,
 //! 2. has no line that is exactly `deploys=no` (setup writes it for a hold that changes nothing on the stage: a client-only update, the removal of
-//!    a runner that was left, and the time after its build has succeeded), and
+//!    a runner that was left, and the time after its build has succeeded),
 //! 3. was written by SSM at most [`STALE_AFTER_S`] seconds ago: the deploy's own rule for a lock nobody renews. The time is the parameter's
-//!    `LastModifiedDate`, which SSM sets, and not a time inside the value, which comes from the clock of the holder's machine.
+//!    `LastModifiedDate`, which SSM sets, and not a time inside the value, which comes from the clock of the holder's machine, and
+//! 4. has no line that is exactly `starts=yes`. The refusal is the default of an update and its way off is a switch of that update:
+//!    `./setup.sh --update --allow-active-runs --allow-new-runs` writes the line into the lock it holds, for an operator who updates while people
+//!    work. The stage then keeps starting runs, and each start under such a lock logs one line, because the run begins while a deploy may change
+//!    the functions and the state machine under it. A deploy under a lock with the line never makes a new worker runtime version
+//!    (`scripts/lib/deploy.py`, the deploy guard), so the runtime such a run pins stays.
 //!
 //! The answer is then 409 [`STAGE_UPDATING`] with [`MESSAGE`] and `Retry-After: `[`RETRY_AFTER_S`], and one line in the log. Every other route
 //! stays open, so running work can end by itself.
@@ -34,14 +39,17 @@ pub const MESSAGE: &str =
 /// The seconds of the refusal's `Retry-After` header: a polite pause before the next try, not the length of the update.
 pub const RETRY_AFTER_S: u32 = 120;
 
-/// How long after its last write a lock still closes the stage: the one integer line of `scripts/lib/deploy-lock-stale-seconds.txt`, the file
-/// setup reads for its own rule (`RN_LOCK_STALE_SECONDS`), so the two cannot differ. A text that is no positive integer fails the build.
-pub const STALE_AFTER_S: u64 = seconds(include_str!(
-    "../../../scripts/lib/deploy-lock-stale-seconds.txt"
-));
+/// How long after its last write a lock still closes the stage: the one integer line of `crates/control-api/deploy-lock-stale-seconds.txt`, the file
+/// setup reads for its own rule (`RN_LOCK_STALE_SECONDS`), so the two cannot differ. A text that is no positive integer fails the build. The file
+/// lies in this crate, inside the paths the source tree of a stage covers (`scripts/lib/digests.py`, `DEPLOYABLE_PATHS`), so a release that
+/// changes the number alone deploys it.
+pub const STALE_AFTER_S: u64 = seconds(include_str!("../deploy-lock-stale-seconds.txt"));
 
 /// The line of a lock whose holder changes nothing on the stage.
 const DEPLOYS_NOTHING: &str = "deploys=no";
+
+/// The line of a lock whose holder deploys and lets the stage start runs meanwhile.
+const STARTS_ALLOWED: &str = "starts=yes";
 
 const fn seconds(text: &str) -> u64 {
     let b = text.as_bytes();
@@ -76,6 +84,8 @@ pub enum Verdict {
     DeploysNothing,
     /// Nobody wrote it for more than [`STALE_AFTER_S`] seconds (`None`: SSM named no time): its holder is taken for gone and the stage is open.
     NotRenewed { age_s: Option<u64> },
+    /// A deploy holds the stage and its update lets runs start: it was written `age_s` seconds ago. The stage is open.
+    StartsAllowed { age_s: u64 },
     /// A deploy holds the stage: it was written `age_s` seconds ago.
     Closed { age_s: u64 },
 }
@@ -92,6 +102,8 @@ pub fn judge(lock: &DeployLock, now_epoch_s: i64) -> Verdict {
     let age_s = u64::try_from(now_epoch_s.saturating_sub(written)).unwrap_or(0);
     if age_s > STALE_AFTER_S {
         Verdict::NotRenewed { age_s: Some(age_s) }
+    } else if lock.value.lines().any(|line| line == STARTS_ALLOWED) {
+        Verdict::StartsAllowed { age_s }
     } else {
         Verdict::Closed { age_s }
     }
@@ -142,6 +154,9 @@ pub(crate) async fn admit<E: Execution>(execution: &E, retry: &str) -> Result<Ve
                     "the deploy lock of the stage was last written {age} (the limit is {STALE_AFTER_S} s): nobody renews it, so the run starts"
                 )])
             }
+            Verdict::StartsAllowed { age_s } => Ok(vec![format!(
+                "the deploy lock of the stage was written {age_s} s ago and says {STARTS_ALLOWED}: its update lets new runs start, so the run starts while a deploy holds the stage"
+            )]),
             Verdict::Closed { age_s } => Err(refusal(age_s)),
         },
         Err(e @ StoreError::NotSetUp(_)) => Ok(vec![format!(

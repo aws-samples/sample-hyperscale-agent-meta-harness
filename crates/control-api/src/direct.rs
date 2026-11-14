@@ -19,10 +19,10 @@ use crate::ids::{new_ulid, now_rfc3339, sha256_hex};
 use harness_protocol::api::v1::{StartDirectRunRequest, StartRunResponse};
 use harness_protocol::common::Engine;
 use harness_protocol::direct::{
-    ComputeMode, ContinueFrom, DEFAULT_MAX_RUN_S, EngineConfigProblem, MAX_INPUT_WAIT_S,
-    MAX_MAX_RUN_S, MAX_REPORT_STEP_S, MIN_MAX_RUN_S, check_attachments, check_continue_from,
-    check_engine_config, check_goal, check_limits, check_review, check_skills, max_run_s_ok,
-    report_step_s_ok,
+    ComputeMode, ContinueFrom, DEFAULT_MAX_RUN_S, DEFAULT_SNAPSHOT_EVERY_S, EngineConfigProblem,
+    MAX_INPUT_WAIT_S, MAX_MAX_RUN_S, MAX_REPORT_STEP_S, MAX_SNAPSHOT_EVERY_S, MIN_MAX_RUN_S,
+    MIN_SNAPSHOT_EVERY_S, check_attachments, check_continue_from, check_engine_config, check_goal,
+    check_limits, check_review, check_skills, max_run_s_ok, report_step_s_ok, snapshot_every_s_ok,
 };
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload, SCHEMA_VERSION};
 use harness_protocol::goal::{GoalPhase, GoalStatus};
@@ -188,6 +188,18 @@ fn refusal_with(catalog: &direct_models::Catalog, r: &StartDirectRunRequest) -> 
             &format!(
                 "maxRunS is {s} seconds; it must be {} to {} (leaving it out means {})",
                 MIN_MAX_RUN_S, MAX_MAX_RUN_S, DEFAULT_MAX_RUN_S
+            ),
+        ));
+    }
+    // The seconds between two looks of the worker for a copy of the run's work: the one check run-session calls again.
+    if let Some(s) = r.snapshot_every_s
+        && !snapshot_every_s_ok(s)
+    {
+        return Some(error(
+            400,
+            "bad-request",
+            &format!(
+                "snapshotEveryS is {s} seconds; it must be {MIN_SNAPSHOT_EVERY_S} to {MAX_SNAPSHOT_EVERY_S} (leaving it out means {DEFAULT_SNAPSHOT_EVERY_S}). The copies of a run's work cannot be switched off"
             ),
         ));
     }

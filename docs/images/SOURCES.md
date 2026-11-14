@@ -68,7 +68,7 @@ The facts come from these files: `infra/lib/stacks/{network,security,data,packag
 
 | File | Bytes | sha256 |
 | --- | --- | --- |
-| `architecture.svg` (1100 x 864 viewBox, `<title>` and `<desc>` inside) | 95139 | `bb7e812049e685acf9e0e0edf985c0ae7351b8cd087317bf0a79b9e3113b0124` |
-| `architecture.png` (1600 x 1257) | 387618 | `59c12eb1644d00119deac98ee57e7b70b9197bc5a539899a7446d34596a823e0` |
+| `architecture.svg` (1100 x 864 viewBox, `<title>` and `<desc>` inside) | 95138 | `1ad7b6de1e5efde72bd5ae7a0a4dd2338c6212e1bd6b936e7f1af4df7b8b7f9c` |
+| `architecture.png` (1600 x 1257) | 387778 | `c596b7a34a0a9855dfcbbd340690de66cbc2c45b6df8b83f5ab4aa1d99d1b7ed` |
 
 The SVG uses only plain shapes, text, `<image>` data URIs and markers, with no external file. The PNG is the fallback for viewers that do not draw the SVG.

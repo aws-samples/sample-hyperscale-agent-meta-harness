@@ -504,9 +504,10 @@ async fn b825_an_install_that_fails_is_named_and_the_tests_behind_it_are_not_run
     // No test is counted: not as passed and not as failed.
     assert_eq!(s.counts, None, "{s:?}");
     assert_eq!(s.claim(), None);
+    // The sentence names the first command the install stopped and counts the other; each has its line in the details.
     assert_eq!(
         s.sentence(),
-        "Setup `npm ci` exited 1 in a clean checkout, so the test command did not run."
+        "Setup `npm ci` exited 1 in a clean checkout, so `npm test` and 1 more did not run."
     );
     assert!(
         s.details.contains(

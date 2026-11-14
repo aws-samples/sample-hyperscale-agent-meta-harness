@@ -523,6 +523,7 @@ image key (`scripts/image-key-guard.sh`).
   - A new event that can mean "the terminal lost part of its picture" calls `App::request_repaint`; a draw that clears the screen by itself goes through `clear_screen`, never `Terminal::clear` (ratatui 0.30 asks the terminal for its cursor first).
   - New behaviour goes in a module with its own tests; a change to `app.rs`, `ui.rs` or `mod.rs` only connects modules, except where this
     file says a seam lives there.
+- The status block of the run screen (`ui.rs` `header_lines`) takes a `note` after the `Saved` line: the sentence about a session that was silent at the last read that succeeded (`read_at`), else about the newest session the service lost while the run goes on (`RunView::lost_note`: present tense until the next session has started, past tense for five minutes after, then nothing). The card wraps it; a run that has ended shows the `Lost` rows of its delivery card instead.
 
 ## Work Guidance
 

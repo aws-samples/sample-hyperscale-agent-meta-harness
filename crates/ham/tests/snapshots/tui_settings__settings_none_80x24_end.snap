@@ -3,7 +3,6 @@ source: crates/ham/tests/tui_settings.rs
 expression: "screen_text(&app, 80, 24)"
 ---
 ham · Settings · config.toml (no file yet)
-   Stall: new calls     100 calls                         default  next run
    No debug info        on                                default  next run
    No incremental       on                                default  next run
    Exclude target/      on                                default  next run
@@ -16,6 +15,7 @@ ham · Settings · config.toml (no file yet)
    Research repo size   200 MiB                           default  next run
    Research total size  300 MiB                           default  next run
    Container signals    default                           default  next run
+   Copy interval        1 minute                          default  next run
  Connection
    Service address      none                              default  restart
    Region               AWS chain                         default  restart

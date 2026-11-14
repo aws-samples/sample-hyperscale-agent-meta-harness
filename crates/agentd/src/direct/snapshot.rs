@@ -2,13 +2,22 @@
 //! `snapshot_every_s` seconds and after a tool call ([`Cadence`]), so that a microVM that dies still delivers the work so far. When the
 //! engine has stopped it saves the end state once more ([`Snapshotter::final_copy`]), before anything can refuse a delivery.
 //!
+//! No look of the copy task is waited for without a limit. A session that was stopped from outside lived on for a minute and stored
+//! no copy, because one look never returned and the task waited for it. Every git call of a look and every file call it makes on the work
+//! tree ends when the look is given up ([`GiveUp`], [`ScratchRepo::on_tree`]); the copy task asks whether the file system of the work
+//! tree answers before a look and while its git works ([`TreeAlive`]), and gives the look up when it does not; the git work of a look has a
+//! limit that follows the last stored copy ([`git_limit`]); storing a copy has its own limit ([`store_limit`]); and the time a copy names
+//! is from before its tree was read ([`cut_unix`]).
+//!
 //! The snapshot never touches the engine's repository: no index, no HEAD, no ref and no object file is written there (a
 //! root-owned object directory would stop the engine's own `git commit`). It lives in a bare repository of its own,
 //! `<agent_data>/snapshot.git` (root, mode 0700), whose `objects/info/alternates` names the repository's object store
 //! ([`ScratchRepo`]). Each snapshot is `git add -A` into that repository's own index (seeded with the base tree, so a file
 //! tracked at the base that an ignore rule now matches is not read as a deletion), `write-tree`, `commit-tree` on top of the
 //! repository's HEAD, `update-ref refs/heads/snapshot` and a bundle of that ref. The tree is compared with the last
-//! snapshot's (the base's for the first), so an idle run makes none. When the engine removed or replaced `.git`, its HEAD is not read and
+//! snapshot's,
+//! so an idle session makes none. The copies are numbered within the run: a later session goes on counting ([`Snapshotter::count_from`]).
+//! When the engine removed or replaced `.git`, its HEAD is not read and
 //! neither its commits nor the base can be read through the alternate: the copy is then a commit with no parent of the tree hashed into a
 //! new index ([`ScratchRepo::whole_tree`]), which holds the whole tree itself.
 //!
@@ -22,10 +31,15 @@
 use crate::BoxFuture;
 use crate::direct::classify::scrub_detail;
 use crate::direct::input::{ChangedFiles, DigestSources, TreeSource};
-use crate::workspace::{WsError, git_dir_problem, git_with_env};
+use crate::time::now_unix;
+use crate::workspace::{
+    WsError, git_dir_problem, git_with_env, git_with_env_outside, git_with_env_until,
+};
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// The most bytes read from an engine-controlled file.
@@ -40,12 +54,289 @@ pub struct SnapshotMade {
     pub commit: String,
     pub base: String,
     pub bundle: PathBuf,
-    /// 1 for the first snapshot of the run.
+    /// The number of the copy within the run: 1 for the first copy of the run, and a later session goes on counting.
     pub count: u32,
     /// The copy of the session's end ([`Snapshotter::final_copy`]); `snapshot.json` then carries `"final": true`.
     pub final_copy: bool,
     /// The size of the bundle in bytes.
     pub bundle_bytes: u64,
+    /// The wall-clock second in which the look began to read the tree. The time the copy names is the second before it
+    /// ([`cut_unix`]).
+    pub read_unix: i64,
+}
+
+/// A look that has run this long without storing its copy is said to the run, once per streak of trouble ([`late_after`]).
+pub const COPY_LATE_AFTER: Duration = Duration::from_secs(20);
+/// A look is late only when it has also run this many times as long as the last look that stored a copy, so a repository whose
+/// copies always take long is told once, not after every copy.
+pub const COPY_LATE_FACTOR: u32 = 3;
+/// The git work of one look is given up after this long at least, whatever the file system of the work tree answers ([`git_limit`]).
+/// A storage can go on answering the question [`TreeAlive`] asks while a file read of git hangs: such a look ends here.
+pub const COPY_GIT_FLOOR: Duration = Duration::from_secs(300);
+/// The git work of a look has this many times what the git work of the last look that stored a copy took, when that is longer than
+/// [`COPY_GIT_FLOOR`]: a repository whose copies take minutes keeps its copies.
+pub const COPY_GIT_FACTOR: u32 = 10;
+/// The git work of one look never has longer than this. A look that its own limit gave up has twice the time at the next try, up to
+/// this ([`git_limit`]).
+pub const COPY_GIT_LIMIT: Duration = Duration::from_secs(3_600);
+/// While the git of a look works, the file system of the work tree is asked this often whether it still answers ([`TreeAlive`]).
+pub const TREE_ASK_EVERY: Duration = Duration::from_secs(20);
+/// Storing one copy (the credentials, both uploads and their tries) has this long, and one second more for each
+/// [`COPY_STORE_BYTES_PER_S`] bytes of its bundle ([`store_limit`]).
+pub const COPY_STORE_LIMIT: Duration = Duration::from_secs(30);
+/// The slowest upload a copy is given time for (1 MiB a second).
+pub const COPY_STORE_BYTES_PER_S: u64 = 1024 * 1024;
+/// How long the file system of the work tree has to answer when the copy task asks it ([`TreeAlive::answers`]).
+pub const TREE_ANSWER_LIMIT: Duration = Duration::from_secs(5);
+/// When agentd is asked to end, who asked waits this long for the copy of the work as it is. In a process that ends after the copy,
+/// a look in flight and the look that follows it end within it; the first process of its machine runs on, and its looks keep their own
+/// limits.
+pub const STOP_COPY_BUDGET: Duration = Duration::from_secs(30);
+/// When the copy that a request to end asked for could not be saved and the process runs on, the copy task looks again this long
+/// after the look that failed, until a copy is stored ([`CopyTimer::try_again`]).
+pub const STOP_COPY_RETRY: Duration = Duration::from_secs(5);
+
+/// How long a look may run before the run is told that its copy is late: `base` ([`COPY_LATE_AFTER`]), or [`COPY_LATE_FACTOR`]
+/// times what the last look that stored a copy took (`last`), when that is longer.
+pub fn late_after(base: Duration, last: Option<Duration>) -> Duration {
+    last.map_or(base, |took| base.max(took * COPY_LATE_FACTOR))
+}
+
+/// How long the git work of a look has before it is given up: [`COPY_GIT_FLOOR`], or [`COPY_GIT_FACTOR`] times what the git work of
+/// the last look that stored a copy took (`last`) when that is longer; twice that for each look in a row that this limit gave up
+/// (`given_up`), so a copy that needs longer than its limit is made at a later try; never longer than [`COPY_GIT_LIMIT`].
+pub fn git_limit(last: Option<Duration>, given_up: u32) -> Duration {
+    let base = last.map_or(COPY_GIT_FLOOR, |took| {
+        COPY_GIT_FLOOR.max(took.saturating_mul(COPY_GIT_FACTOR))
+    });
+    base.saturating_mul(1_u32.checked_shl(given_up).unwrap_or(u32::MAX))
+        .min(COPY_GIT_LIMIT)
+}
+
+/// What the copy task keeps for [`git_limit`]: what the git work of the last look that stored a copy took, and how many looks in a
+/// row their own git limit gave up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GitBudget {
+    last: Option<Duration>,
+    given_up: u32,
+}
+
+impl GitBudget {
+    /// How long the git work of the next look has.
+    pub fn limit(&self) -> Duration {
+        git_limit(self.last, self.given_up)
+    }
+
+    /// A look stored a copy whose git work took `git_took`.
+    pub fn stored(&mut self, git_took: Duration) {
+        self.last = Some(git_took);
+        self.given_up = 0;
+    }
+
+    /// The git work of a look ended within its limit, and no copy was stored (the tree had not changed, or the copy could not be stored).
+    pub fn ended(&mut self) {
+        self.given_up = 0;
+    }
+
+    /// The git work of a look was given up at its own limit.
+    pub fn gave_up(&mut self) {
+        self.given_up = self.given_up.saturating_add(1);
+    }
+}
+
+/// The timer of the copy task. It counts from the start of one look to the start of the next. A look that a request to end asked
+/// for leaves the tick that was due where it is, so the copy of a stop never moves the next copy back; and after a copy of a stop that
+/// could not be saved, a process that runs on looks again soon ([`STOP_COPY_RETRY`]). After any look that failed the next one is due
+/// [`COPY_RETRY`] after that look started at the latest, whatever the timer.
+#[derive(Clone, Copy, Debug)]
+pub struct CopyTimer {
+    every: Option<Duration>,
+    next: Option<tokio::time::Instant>,
+}
+
+impl CopyTimer {
+    /// A timer of `every` that starts at `now`; `None` when the invocation switched the copies off: no tick comes.
+    pub fn new(every: Option<Duration>, now: tokio::time::Instant) -> Self {
+        Self {
+            every,
+            next: every.map(|every| now + every),
+        }
+    }
+
+    /// When the next look is due; `None`: none is.
+    pub fn next(&self) -> Option<tokio::time::Instant> {
+        self.next
+    }
+
+    /// A look starts at `now`: the timer is armed again. When a request to end asked for the look (`asked_to_end`), a tick that is still
+    /// to come stays where it is.
+    pub fn look_starts(&mut self, now: tokio::time::Instant, asked_to_end: bool) {
+        if !asked_to_end || self.next.is_none_or(|next| next <= now) {
+            self.next = self.every.map(|every| now + every);
+        }
+    }
+
+    /// The next look is due `retry` after `from`, or at the tick of the timer when that comes sooner. `from` is the moment a copy of a
+    /// stop failed ([`STOP_COPY_RETRY`]), or the start of a look that failed.
+    pub fn try_again(&mut self, from: tokio::time::Instant, retry: Duration) {
+        let at = from + retry;
+        self.next = Some(self.next.map_or(at, |next| next.min(at)));
+    }
+}
+
+/// What [`TreeAlive`] asks a work tree: `Ok` when the file system answered, else why not.
+pub type TreeQuestion = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+
+/// The question [`TreeAlive`] asks. One `statvfs`, which asks the server of a network mount each time (file attributes can come from
+/// a cache; this does not), and one read of a file every copy needs, the repository's `.git/HEAD`: a storage can answer the first while a
+/// file read hangs. A file that is not there, or that is no regular file, is an answer too (the engine may have removed `.git`).
+pub fn ask_tree(repo: &Path) -> Result<(), String> {
+    rustix::fs::statvfs(repo)
+        .map(|_| ())
+        .map_err(|e| e.to_string())?;
+    let _ = read_regular_nofollow(&repo.join(".git/HEAD"));
+    Ok(())
+}
+
+/// Asks the file system of a work tree whether it answers ([`ask_tree`]). The question is asked on a thread of its own and waited for
+/// at most the limit: on a mount whose server stopped answering it never returns and cannot be ended. While one such question has not
+/// returned, the tree counts as silent and no further one is asked, so a tree that stays silent costs one thread.
+///
+/// A tree that answers can still stop answering in the next moment, and a server can answer this question while another call of it hangs:
+/// the limits of the look hold then ([`git_limit`], [`store_limit`]).
+#[derive(Clone)]
+pub struct TreeAlive {
+    repo: PathBuf,
+    asking: Arc<AtomicBool>,
+    question: TreeQuestion,
+}
+
+impl std::fmt::Debug for TreeAlive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TreeAlive")
+            .field("repo", &self.repo)
+            .field("asking", &self.asking)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TreeAlive {
+    pub fn new(repo: &Path) -> Self {
+        Self::with_question(repo, Arc::new(ask_tree))
+    }
+
+    /// [`Self::new`] with another question (tests: a file system that does not answer).
+    pub fn with_question(repo: &Path, question: TreeQuestion) -> Self {
+        Self {
+            repo: repo.to_path_buf(),
+            asking: Arc::new(AtomicBool::new(false)),
+            question,
+        }
+    }
+
+    /// `Ok` when the file system of the tree answered within `limit`; else why not, in words for the log.
+    pub async fn answers(&self, limit: Duration) -> Result<(), String> {
+        if self.asking.swap(true, Ordering::SeqCst) {
+            return Err("the work tree has not answered an earlier question".to_string());
+        }
+        let repo = self.repo.clone();
+        let asking = self.asking.clone();
+        let question = self.question.clone();
+        let asked = tokio::task::spawn_blocking(move || {
+            let answer = question(&repo);
+            asking.store(false, Ordering::SeqCst);
+            answer
+        });
+        match tokio::time::timeout(limit, asked).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(format!("the work tree: {e}")),
+            Ok(Err(e)) => {
+                // The question ended in a panic: it is not outstanding.
+                self.asking.store(false, Ordering::SeqCst);
+                Err(format!("the work tree: {e}"))
+            }
+            Err(_) => Err(format!(
+                "the work tree did not answer within {} s",
+                limit.as_secs_f32()
+            )),
+        }
+    }
+}
+
+/// The longest storing a copy whose bundle has `bundle_bytes` bytes may take.
+pub fn store_limit(bundle_bytes: u64) -> Duration {
+    COPY_STORE_LIMIT + Duration::from_secs(bundle_bytes / COPY_STORE_BYTES_PER_S)
+}
+
+/// The time a copy names, for a look that began to read the tree in the second `read_unix`: the second before it. Every change made
+/// up to and including the named second is in the copy, because the reading began after that second had ended. A change made in the second
+/// of the reading itself may be in the copy or not, so the copy does not name that second: the client says "changes after <time> are not in
+/// it", and a file written in the named second must never be missing. (Before, the copy named the second in which its upload had ended.)
+pub fn cut_unix(read_unix: i64) -> i64 {
+    read_unix - 1
+}
+
+/// When a look of the copy task gives up. The task sets the time before the look starts and may bring it forward while the look runs
+/// (agentd was asked to end). Every git call of the look and every file call it makes on the work tree ends when that time comes, so a work
+/// tree that stops answering cannot hold the copy task for good.
+#[derive(Clone, Debug)]
+pub struct GiveUp {
+    at: Arc<tokio::sync::watch::Sender<Option<tokio::time::Instant>>>,
+}
+
+impl GiveUp {
+    /// Gives up at `at`; `None` never does, until [`Self::no_later_than`] names a time.
+    pub fn at(at: Option<tokio::time::Instant>) -> Self {
+        Self {
+            at: Arc::new(tokio::sync::watch::Sender::new(at)),
+        }
+    }
+
+    /// Brings the time forward to `at`, when it is later than that or when there is none.
+    pub fn no_later_than(&self, at: tokio::time::Instant) {
+        self.at.send_if_modified(|now| match now {
+            Some(t) if *t <= at => false,
+            _ => {
+                *now = Some(at);
+                true
+            }
+        });
+    }
+
+    /// Returns when the time to give up has come; never while there is none.
+    pub async fn reached(&self) {
+        let mut seen = self.at.subscribe();
+        loop {
+            let at = *seen.borrow_and_update();
+            match at {
+                Some(at) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(at) => return,
+                        changed = seen.changed() => {
+                            if changed.is_err() {
+                                tokio::time::sleep_until(at).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if seen.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The answer of `work`, or `None` when the time to give up came first.
+    pub async fn run<F: std::future::Future>(&self, work: F) -> Option<F::Output> {
+        tokio::select! {
+            biased;
+            out = work => Some(out),
+            () = self.reached() => None,
+        }
+    }
 }
 
 /// A copy that a tool call asked for starts no sooner than this after the last look at the tree started.
@@ -54,8 +345,16 @@ pub const COPY_FLOOR: Duration = Duration::from_secs(15);
 /// copies takes at most a tenth of the session's time whatever the repository. The uploads are not counted ([`CopyClock::looked`]).
 pub const COPY_SPACING: u32 = 9;
 /// The spacing never holds a look back longer than this many timer periods (five minutes at the default timer), so that one slow
-/// copy cannot leave the work without a copy for long.
+/// copy cannot leave the work without a copy for long. A timer the user lengthened does not lengthen it: [`COPY_SPACING_MAX`].
 pub const COPY_SPACING_CAP: u32 = 5;
+/// The most the spacing holds a look back whatever the timer of the run: five minutes, [`COPY_SPACING_CAP`] periods of the default
+/// timer. A user lengthens the timer (`run.copy_every_minutes`) to store fewer copies, and the timer alone does that; five periods of an
+/// hourly timer would leave the work without a look for five hours after one slow copy.
+pub const COPY_SPACING_MAX: Duration = Duration::from_secs(300);
+/// A look that failed is tried again this long after it started at the latest, whatever the timer of the run: the default timer
+/// (`harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S`). The run was told "ham keeps trying", and a longer timer saves nothing on a copy
+/// that was not stored.
+pub const COPY_RETRY: Duration = Duration::from_secs(60);
 /// A tool call wakes the copy task only while the last bundle was at most this many bytes. A repository with a long history (its
 /// bundle holds the whole history each time) stays on the timer.
 pub const WAKE_MAX_BUNDLE_BYTES: u64 = 8 * 1024 * 1024;
@@ -81,7 +380,8 @@ impl CopyClock {
     }
 
     /// The look that started at `started` could not make or store its copy. Nothing is spaced after it: the next look is the next tick
-    /// of the timer, or a tool call after the floor, so the task keeps trying as the run is told. The size of the bundle before is kept.
+    /// of the timer, which comes after [`COPY_RETRY`] at the latest ([`Cadence::period`]), or a tool call after the floor, so the task
+    /// keeps trying as the run is told. The size of the bundle before is kept.
     pub fn failed(&mut self, started: Instant) {
         self.last = Some((started, started));
     }
@@ -89,14 +389,17 @@ impl CopyClock {
 
 /// When the copy task looks at the tree while the engine works. On the timer (`every`, counted from the start of one look to the
 /// start of the next), and after a tool call ended ([`Cadence::wakes`]); a look that a tool call asked for waits for [`COPY_FLOOR`], and
-/// every look waits for [`COPY_SPACING`] times the time git took for the look before it, at most [`COPY_SPACING_CAP`] timer periods. A
-/// look that failed is not spaced ([`CopyClock::failed`]). A look copies only when the tree changed.
+/// every look waits for [`COPY_SPACING`] times the time git took for the look before it, at most [`COPY_SPACING_CAP`] timer periods and at
+/// most [`COPY_SPACING_MAX`]. A look that failed is not spaced ([`CopyClock::failed`]) and is tried again after [`COPY_RETRY`] at the latest
+/// ([`Cadence::period`]). A look copies only when the tree changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cadence {
     /// The timer; `None` when the invocation switched the copies off (`snapshotEveryS` 0): no look while the engine works.
     pub every: Option<Duration>,
     /// [`COPY_FLOOR`], or what a test set.
     pub floor: Duration,
+    /// [`COPY_RETRY`], or what a test set.
+    pub retry: Duration,
 }
 
 impl Cadence {
@@ -104,6 +407,7 @@ impl Cadence {
         Self {
             every,
             floor: COPY_FLOOR,
+            retry: COPY_RETRY,
         }
     }
 
@@ -111,6 +415,20 @@ impl Cadence {
     pub fn with_floor(mut self, floor: Duration) -> Self {
         self.floor = floor;
         self
+    }
+
+    /// [`Cadence::new`] with another retry time (tests).
+    pub fn with_retry(mut self, retry: Duration) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// The time from the start of a look to the next tick of the timer; `None` when the looks are off. It is the timer of the run after a
+    /// look that stored a copy or found the tree unchanged. After a look that `failed` it is the retry time when that is shorter:
+    /// the timer the user lengthened does not put off the next try of a copy that was not stored.
+    pub fn period(&self, failed: bool) -> Option<Duration> {
+        self.every
+            .map(|every| if failed { every.min(self.retry) } else { every })
     }
 
     /// Whether a tool call that ended wakes the task: the copies are on and the last bundle was small ([`WAKE_MAX_BUNDLE_BYTES`]).
@@ -127,9 +445,10 @@ impl Cadence {
             return Duration::ZERO;
         };
         let space = ended.saturating_duration_since(started) * COPY_SPACING;
-        let space = self
-            .every
-            .map_or(space, |every| space.min(every * COPY_SPACING_CAP));
+        // Five periods of the timer, and never more than five minutes whatever the timer.
+        let space = self.every.map_or(space, |every| {
+            space.min((every * COPY_SPACING_CAP).min(COPY_SPACING_MAX))
+        });
         let spaced = ended + space;
         let floored = if wake { started + self.floor } else { started };
         spaced.max(floored).saturating_duration_since(now)
@@ -325,6 +644,11 @@ impl TreeSource for GitSource {
 pub struct ScratchRepo {
     git_dir: PathBuf,
     repo: PathBuf,
+    /// When the look that uses this repository now gives up; `None` outside a look of the copy task (the facts, the copy of the end,
+    /// whose callers set their own limits).
+    give_up: Option<GiveUp>,
+    /// A file call on the work tree has not returned ([`Self::on_tree`]); the thread that makes the call clears it.
+    busy: Arc<AtomicBool>,
 }
 
 impl ScratchRepo {
@@ -365,7 +689,61 @@ impl ScratchRepo {
         Ok(Self {
             git_dir,
             repo: repo.to_path_buf(),
+            give_up: None,
+            busy: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// A git call of this repository: one that ends when the look in progress is given up ([`git_with_env_until`]), or the plain call
+    /// outside a look. Either is started outside `dir` and changes to it itself (`git -C`): starting a process in a directory waits until
+    /// the new process is there, and in a work tree that stopped answering that wait cannot be ended.
+    async fn git(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        envs: &[(&str, &Path)],
+    ) -> Result<String, WsError> {
+        match &self.give_up {
+            Some(give_up) => git_with_env_until(dir, args, envs, give_up).await,
+            None => git_with_env_outside(dir, args, envs).await,
+        }
+    }
+
+    /// Runs `call`, a file call on the work tree, on a thread of its own and waits for it until the look in progress is given up.
+    /// On a network mount whose server stops answering such a call never returns and cannot be ended: made on a thread of the runtime it
+    /// held that thread, and the task that made it, for good. One such call is outstanding at most: while it has not returned, the next
+    /// one is refused at once, so a tree that stays silent costs one thread, whatever the number of looks.
+    async fn on_tree<T: Send + 'static>(
+        &self,
+        what: &'static str,
+        call: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, String> {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return Err(format!(
+                "snapshot: the work tree has not answered an earlier call; {what} was not read"
+            ));
+        }
+        let busy = self.busy.clone();
+        let made = tokio::task::spawn_blocking(move || {
+            let out = call();
+            busy.store(false, Ordering::SeqCst);
+            out
+        });
+        let waited = match &self.give_up {
+            Some(give_up) => give_up.run(made).await,
+            None => Some(made.await),
+        };
+        match waited {
+            Some(Ok(out)) => Ok(out),
+            Some(Err(e)) => {
+                // The call ended in a panic: it is not outstanding.
+                self.busy.store(false, Ordering::SeqCst);
+                Err(format!("snapshot: {what}: {e}"))
+            }
+            None => Err(format!(
+                "snapshot: the work tree did not answer; {what} was not read"
+            )),
+        }
     }
 
     fn envs<'a>(&'a self, index: &'a Path) -> [(&'static str, &'a Path); 3] {
@@ -398,7 +776,7 @@ impl ScratchRepo {
     /// A read-only git call on this repository alone: `GIT_DIR` set, run from agentd's own directory (never from the engine's).
     async fn read(&self, args: &[&str]) -> Result<String, String> {
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
-        git_with_env(cwd, args, &[("GIT_DIR", &self.git_dir)])
+        self.git(cwd, args, &[("GIT_DIR", &self.git_dir)])
             .await
             .map_err(ws)
     }
@@ -558,11 +936,16 @@ impl ScratchRepo {
         f
     }
 
-    /// The repository's ignore rules, as they are now, read as a regular file or not at all, as this repository's own.
-    fn copy_exclude(&self) -> Result<(), String> {
+    /// The repository's ignore rules, as they are now, read as a regular file or not at all, as this repository's own. The file is on the
+    /// work tree's file system: it is read off the runtime's threads ([`Self::on_tree`]).
+    async fn copy_exclude(&self) -> Result<(), String> {
         std::fs::create_dir_all(self.git_dir.join("info")).map_err(io)?;
-        let exclude =
-            read_regular_nofollow(&self.repo.join(".git/info/exclude")).unwrap_or_default();
+        let path = self.repo.join(".git/info/exclude");
+        let exclude = self
+            .on_tree("its ignore rules", move || {
+                read_regular_nofollow(&path).unwrap_or_default()
+            })
+            .await?;
         std::fs::write(self.git_dir.join("info/exclude"), exclude).map_err(io)
     }
 
@@ -586,12 +969,12 @@ impl ScratchRepo {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io(e)),
         }
-        self.copy_exclude()?;
+        self.copy_exclude().await?;
         let envs = self.envs(&index);
-        git_with_env(&self.repo, &["add", "-A"], &envs)
+        self.git(&self.repo, &["add", "-A"], &envs)
             .await
             .map_err(ws)?;
-        git_with_env(&self.repo, &["write-tree"], &envs)
+        self.git(&self.repo, &["write-tree"], &envs)
             .await
             .map_err(ws)
     }
@@ -600,12 +983,12 @@ impl ScratchRepo {
     /// again hashes differently, which `git status` does not show.
     pub async fn tree(&self) -> Result<String, String> {
         let index = self.git_dir.join("index");
-        self.copy_exclude()?;
+        self.copy_exclude().await?;
         let envs = self.envs(&index);
-        git_with_env(&self.repo, &["add", "-A"], &envs)
+        self.git(&self.repo, &["add", "-A"], &envs)
             .await
             .map_err(ws)?;
-        git_with_env(&self.repo, &["write-tree"], &envs)
+        self.git(&self.repo, &["write-tree"], &envs)
             .await
             .map_err(ws)
     }
@@ -625,6 +1008,9 @@ pub struct Snapshotter {
     tidy_error: Option<String>,
     /// A look hashed a changed tree since the last clean-up: the next look, or the copy of the end, starts with one.
     tidy_due: bool,
+    /// The last look of the copy task ended in an error, so a git of it may have been ended in the middle: the next one clears the
+    /// lock files first ([`Self::snapshot_until`]).
+    gave_up: bool,
 }
 
 /// The lock files a git that was killed in the middle can leave in the private repository: the index's, the ref's, the bundle's
@@ -665,16 +1051,22 @@ impl Snapshotter {
         let base_tree = git_with_env(repo, &["rev-parse", &format!("{base}^{{tree}}")], &[])
             .await
             .map_err(ws)?;
+        // The tree the session starts on is the tree of the commit the repository stands at: the base in a first session, the
+        // commit an earlier session saved in a later one. That work is saved already, so the session makes no copy until a file changes.
+        let start_tree = git_with_env(repo, &["rev-parse", "HEAD^{tree}"], &[])
+            .await
+            .unwrap_or(base_tree);
         Ok(Self {
             scratch,
             git_dir,
             repo: repo.to_path_buf(),
             base: base.to_string(),
-            last_tree: base_tree,
+            last_tree: start_tree,
             last_parent: None,
             count: 0,
             tidy_error: None,
             tidy_due: false,
+            gave_up: false,
         })
     }
 
@@ -690,16 +1082,22 @@ impl Snapshotter {
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let mut failed = Vec::new();
-        if let Err(e) = git_with_env(cwd, &["prune", "--expire=now"], &[("GIT_DIR", gd)]).await {
+        if let Err(e) = self
+            .scratch
+            .git(cwd, &["prune", "--expire=now"], &[("GIT_DIR", gd)])
+            .await
+        {
             failed.push(ws(e));
         }
         if has_pack(&self.git_dir.join("objects/pack"))
-            && let Err(e) = git_with_env(
-                cwd,
-                &["repack", "-a", "-d", "-l", "-q", "--window=0"],
-                &[("GIT_DIR", gd)],
-            )
-            .await
+            && let Err(e) = self
+                .scratch
+                .git(
+                    cwd,
+                    &["repack", "-a", "-d", "-l", "-q", "--window=0"],
+                    &[("GIT_DIR", gd)],
+                )
+                .await
         {
             failed.push(ws(e));
         }
@@ -716,6 +1114,12 @@ impl Snapshotter {
     /// What the last clean-up of the repository could not do ([`Self::drop_old_versions`]), once.
     pub fn take_tidy_error(&mut self) -> Option<String> {
         self.tidy_error.take()
+    }
+
+    /// The copies of this session go on counting after `before`, the number of the newest copy the run saved before the session.
+    /// Called once, before the first copy.
+    pub fn count_from(&mut self, before: u32) {
+        self.count = before;
     }
 
     /// The copy just made could not be stored: the next look copies the tree again, whether it changed or not, so a tree whose
@@ -744,10 +1148,20 @@ impl Snapshotter {
     /// The engine's `HEAD`, while `.git` is the repository's own directory ([`git_dir_problem`]) and this repository can read that commit.
     /// `None` when the engine removed or replaced `.git`: agentd then runs no git in the engine's repository.
     async fn engine_head(&self) -> Option<String> {
-        if git_dir_problem(&self.repo).is_some() {
+        let repo = self.repo.clone();
+        let own = self
+            .scratch
+            .on_tree("its git directory", move || {
+                git_dir_problem(&repo).is_none()
+            })
+            .await
+            .ok()?;
+        if !own {
             return None;
         }
-        let head = git_with_env(&self.repo, &["rev-parse", "HEAD"], &[])
+        let head = self
+            .scratch
+            .git(&self.repo, &["rev-parse", "HEAD"], &[])
             .await
             .ok()?;
         self.scratch.has_commit(&head).await.then_some(head)
@@ -768,23 +1182,27 @@ impl Snapshotter {
         if let Some(parent) = parent
             && self.scratch.has_commit(parent).await
         {
-            let commit = git_with_env(
+            let commit = self
+                .scratch
+                .git(
+                    cwd,
+                    &["commit-tree", &tree, "-p", parent, "-m", &message],
+                    &[("GIT_DIR", gd)],
+                )
+                .await
+                .map_err(ws)?;
+            return Ok((commit, tree));
+        }
+        let whole = self.scratch.whole_tree().await?;
+        let commit = self
+            .scratch
+            .git(
                 cwd,
-                &["commit-tree", &tree, "-p", parent, "-m", &message],
+                &["commit-tree", &whole, "-m", &message],
                 &[("GIT_DIR", gd)],
             )
             .await
             .map_err(ws)?;
-            return Ok((commit, tree));
-        }
-        let whole = self.scratch.whole_tree().await?;
-        let commit = git_with_env(
-            cwd,
-            &["commit-tree", &whole, "-m", &message],
-            &[("GIT_DIR", gd)],
-        )
-        .await
-        .map_err(ws)?;
         Ok((commit, whole))
     }
 
@@ -794,19 +1212,20 @@ impl Snapshotter {
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let bundle = self.git_dir.join("snapshot.bundle");
         let _ = std::fs::remove_file(&bundle);
-        git_with_env(
-            cwd,
-            &[
-                "bundle",
-                "create",
-                "-q",
-                bundle.to_str().unwrap_or_default(),
-                "refs/heads/snapshot",
-            ],
-            &[("GIT_DIR", gd)],
-        )
-        .await
-        .map_err(ws)?;
+        self.scratch
+            .git(
+                cwd,
+                &[
+                    "bundle",
+                    "create",
+                    "-q",
+                    bundle.to_str().unwrap_or_default(),
+                    "refs/heads/snapshot",
+                ],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map_err(ws)?;
         let bytes = std::fs::metadata(&bundle).map_err(io)?.len();
         Ok((bundle, bytes))
     }
@@ -820,6 +1239,8 @@ impl Snapshotter {
     ///
     /// It starts with the clean-up a look left due ([`Self::drop_old_versions`]), after the lock files are cleared.
     pub async fn final_copy(&mut self, head: Option<&str>) -> Result<SnapshotMade, String> {
+        // The copy of the end has its caller's budget; a look that was aborted in the middle must not leave its own limit behind.
+        self.scratch.give_up = None;
         self.clear_stale_locks();
         self.tidy_if_due().await;
         let made = self.final_copy_kept(head).await;
@@ -831,6 +1252,7 @@ impl Snapshotter {
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let n = self.count + 1;
+        let read_unix = now_unix();
         let (commit, tree) = match head {
             Some(head) => {
                 let tree = self.scratch.tree_of(head).await?;
@@ -845,13 +1267,14 @@ impl Snapshotter {
                 self.commit_copy(tree, Some(&parent), n).await?
             }
         };
-        git_with_env(
-            cwd,
-            &["update-ref", "refs/heads/snapshot", &commit],
-            &[("GIT_DIR", gd)],
-        )
-        .await
-        .map_err(ws)?;
+        self.scratch
+            .git(
+                cwd,
+                &["update-ref", "refs/heads/snapshot", &commit],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map_err(ws)?;
         let (bundle, bundle_bytes) = self.write_bundle().await?;
         self.last_tree = tree;
         self.count = n;
@@ -862,6 +1285,7 @@ impl Snapshotter {
             count: n,
             final_copy: true,
             bundle_bytes,
+            read_unix,
         })
     }
 
@@ -872,6 +1296,30 @@ impl Snapshotter {
     /// It starts with [`Self::drop_old_versions`] when the look before it hashed a changed tree, also when a later step of that look failed,
     /// so the objects of earlier copies never pile up; after a look at an unchanged tree, which wrote nothing, there is none.
     pub async fn snapshot(&mut self) -> Result<Option<SnapshotMade>, String> {
+        self.scratch.give_up = None;
+        self.look().await
+    }
+
+    /// [`Self::snapshot`] for a look of the copy task: every git call and every file call on the work tree ends when `give_up`
+    /// says so, with an error that names the call. Lock files that a git which was ended in an earlier look left are removed first.
+    pub async fn snapshot_until(
+        &mut self,
+        give_up: &GiveUp,
+    ) -> Result<Option<SnapshotMade>, String> {
+        self.scratch.give_up = Some(give_up.clone());
+        if std::mem::take(&mut self.gave_up) {
+            self.clear_stale_locks();
+        }
+        let made = self.look().await;
+        self.scratch.give_up = None;
+        if made.is_err() {
+            // A git of this look may have been ended in the middle: the next look starts from a repository without its lock files.
+            self.gave_up = true;
+        }
+        made
+    }
+
+    async fn look(&mut self) -> Result<Option<SnapshotMade>, String> {
         self.tidy_if_due().await;
         let made = self.snapshot_kept().await;
         if !matches!(made, Ok(None)) {
@@ -881,6 +1329,7 @@ impl Snapshotter {
     }
 
     async fn snapshot_kept(&mut self) -> Result<Option<SnapshotMade>, String> {
+        let read_unix = now_unix();
         let tree = self.current_tree().await?;
         if tree == self.last_tree {
             return Ok(None);
@@ -893,13 +1342,14 @@ impl Snapshotter {
             .unwrap_or_else(|| self.base.clone());
         let n = self.count + 1;
         let (commit, tree) = self.commit_copy(tree, Some(&parent), n).await?;
-        git_with_env(
-            self.git_dir.parent().unwrap_or(Path::new("/")),
-            &["update-ref", "refs/heads/snapshot", &commit],
-            &[("GIT_DIR", gd)],
-        )
-        .await
-        .map_err(ws)?;
+        self.scratch
+            .git(
+                self.git_dir.parent().unwrap_or(Path::new("/")),
+                &["update-ref", "refs/heads/snapshot", &commit],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map_err(ws)?;
         let (bundle, bundle_bytes) = self.write_bundle().await?;
         self.last_tree = tree;
         if head.is_some() {
@@ -913,6 +1363,7 @@ impl Snapshotter {
             count: n,
             final_copy: false,
             bundle_bytes,
+            read_unix,
         }))
     }
 }

@@ -5,6 +5,10 @@
 needs only `--yes`; an update with a running run stops with exit 7 before anything is installed or built; the client is installed through a new
 file in the install folder and one rename, after the new client was tried there, and the client it replaces is kept beside it as `ham.prev`
 (ham renames that file back when the new client reports another version); and exit 6 means an operation is still running and safe to resume.
+Since it also asks setup for its plan (`--dry-run`) when a run of the caller is active, and reads from it whether the update deploys nothing on the
+stage: the option exists, the dry run prints the plan and ends before the question, and the plan follows setup's own decision. The words of the plan lines are
+held by `crates/ham-core/tests/b843_core.rs`. Setup did all of that, so the test of the plan is a regression test: it passed when it was written,
+against the setup of the release before, and holds what the client relies on from then on.
 These are static checks of the script text: the behaviour itself is tested by the setup suites (test_setup_*.py).
 """
 
@@ -47,6 +51,19 @@ class SetupUpdateInterface(unittest.TestCase):
         self.assertLess(tried, kept)
         self.assertLess(kept, renamed)
         self.assertIn("TMPBIN=$BINDIR/.$HAMH_CLIENT_BIN.setup-new", setup)
+
+    def test_b841_a_dry_run_prints_the_plan_ham_update_reads_and_ends_before_the_question(self) -> None:
+        setup = read("setup.sh")
+        self.assertRegex(setup, r"\n\s*--dry-run\) DRY=1 ;;")
+        self.assertRegex(setup, r"\n\s*--wait-for-runs\) WAIT_FOR_RUNS=\$2; WAIT_FOR_RUNS_SET=1 ;;")
+        full = read("scripts/setup/full.sh")
+        decided = full.index("        rn_same_deployment_check\n")
+        plan = full.index('  full_plan "$action"\n  if [ "$DRY" = 1 ]; then\n')
+        ends = full.index("    exit 0\n", plan)
+        asks = full.index('full_confirm "Update stage $STAGE to commit $SRC_COMMIT? [y/N] " yes', plan)
+        self.assertLess(decided, plan, "setup decides whether the update builds only the client before it prints the plan")
+        self.assertLess(ends, asks, "a dry run ends after the plan and before the question")
+        self.assertIn('say "  update:        $how"', full)
 
     def test_b804_exit_codes_ham_update_names(self) -> None:
         setup = read("setup.sh")

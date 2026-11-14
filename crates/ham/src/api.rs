@@ -144,6 +144,41 @@ fn names_engine_member(error: &WireError) -> bool {
     error.code == "bad-request" && error.message.contains("unknown field `engine`")
 }
 
+/// The fixed phrase of a stage for a body with a member its strict request type does not know (control-api `body`): the message is the request
+/// type, this phrase and the place, `(line L, column C)`. The phrase names no member, on purpose: nothing the caller wrote is in the answer.
+const UNKNOWN_MEMBER_PHRASE: &str = "the body has a member this API does not know (line 1, column ";
+
+/// True for the answer of a stage that does not know the `snapshotEveryS` member of the start `body` this client sent: a stage of a release
+/// before the copy interval of a run. Such a stage answers `400 bad-request` in one of two ways. A stage before the fixed phrases wraps serde's own
+/// words, which name the member. A stage with them names the place only: the column counts the bytes of the line up to the end of the name of the
+/// member the type does not know, so the bytes of the body before that column end with the member's name in quotes. `ham` sends the body on one
+/// line. A place that points anywhere else is another member, or another problem, and is not this.
+fn names_copy_interval_member(error: &WireError, body: &[u8]) -> bool {
+    const MEMBER: &[u8] = b"\"snapshotEveryS\"";
+    if error.code != "bad-request" {
+        return false;
+    }
+    if error.message.contains("unknown field `snapshotEveryS`") {
+        return true;
+    }
+    error
+        .message
+        .split_once(UNKNOWN_MEMBER_PHRASE)
+        .and_then(|(_, place)| place.strip_suffix(')'))
+        .and_then(|column| column.parse::<usize>().ok())
+        .and_then(|column| body.get(..column))
+        .is_some_and(|sent| sent.ends_with(MEMBER))
+}
+
+/// What `ham` says when the stage predates the copy interval of a run: the key that put the member into the request, with its value, and
+/// the two ways out.
+pub fn predates_copy_interval_words(snapshot_every_s: u32) -> String {
+    format!(
+        "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {}; run `ham config unset run.copy_every_minutes` or update the stage",
+        snapshot_every_s / 60
+    )
+}
+
 /// What `ham` says when the stage predates the choice of an engine.
 pub fn predates_engine_choice_words(engine: &str) -> String {
     format!(
@@ -354,6 +389,9 @@ impl<P: ControlPlane> Api<P> {
     /// A stage that was deployed before the `engineConfig` member existed refuses the request with `400 bad-request` ("unknown field"); that one
     /// answer, for a request that carries the member, becomes the code `stage-predates-engine-settings` and the words of [`predates_words`]. The
     /// request is not sent again without the member: a setting the run did not get must not look as if it did.
+    ///
+    /// The same holds for the copy interval of a run: the answer of a stage that
+    /// does not know that member becomes the code `stage-predates-copy-interval` and the words of [`predates_copy_interval_words`].
     pub async fn start_direct_run(
         &self,
         req: &StartDirectRunRequest,
@@ -384,6 +422,21 @@ impl<P: ControlPlane> Api<P> {
                 &body,
             )
             .await;
+        let result = match (result, req.snapshot_every_s) {
+            (Err(ApiError::Http { status: 400, error }), Some(snapshot_every_s))
+                if names_copy_interval_member(&error, &body) =>
+            {
+                return Err(ApiError::Http {
+                    status: 400,
+                    error: WireError {
+                        code: "stage-predates-copy-interval".into(),
+                        message: predates_copy_interval_words(snapshot_every_s),
+                        request_id: error.request_id,
+                    },
+                });
+            }
+            (other, _) => other,
+        };
         match (result, &req.engine_config, req.engine) {
             (Err(ApiError::Http { status: 400, error }), _, Some(engine))
                 if names_engine_member(&error) =>

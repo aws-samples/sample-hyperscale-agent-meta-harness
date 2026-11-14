@@ -924,6 +924,10 @@ pub struct App {
     rung: Rung,
     /// The wall clock in Unix seconds, set by the event loop; `None` (tests, before the first tick) shows no minutes left.
     pub(crate) now: Option<i64>,
+    /// The wall clock (Unix seconds) of the last read of the run's events that succeeded; `None` before the first. The run screen
+    /// measures a session's silence up to it: while the client itself reads nothing (the laptop slept, the network or the sign-in is
+    /// gone) the newest event it holds grows old, and that says nothing about the session.
+    pub(crate) read_at: Option<i64>,
     /// When the link made by `o` stops working (RFC 3339); it replaces the expiry of the link the download used, which is older.
     pub(crate) link_expires: Option<String>,
     /// `HAMH_OPEN_COMMAND`: the program `o` runs with the link as its one argument; empty or unset means the platform's opener.
@@ -1075,6 +1079,7 @@ impl App {
             open_id: None,
             rung: Rung::default(),
             now: None,
+            read_at: None,
             link_expires: None,
             open_command: None,
             time_text: ham_core::render::utc_clock,
@@ -1360,6 +1365,8 @@ impl App {
         let changed = self.focused_run() != Some(run_id);
         if changed {
             self.run = Some(RunState::new(run_id));
+            // No read of this run has succeeded yet.
+            self.read_at = None;
             self.download = DownloadState::None;
             self.tests = None;
             self.flow = None;
@@ -4658,6 +4665,7 @@ impl App {
                         self.next_poll_at = self.clock + self.plan.interval();
                         self.dashboard_error = None;
                         self.link.on_ok(self.now_ms());
+                        self.read_at = self.now;
                         if let Some(state) = &mut self.run {
                             for (shard, page) in pages {
                                 if page.events.iter().all(|e| e.run_id == state.run_id()) {
@@ -5172,6 +5180,9 @@ fn outcome_words(how: &str) -> Option<&'static str> {
         "deadline" => "the run reached its time limit",
         "superseded" => "the question was replaced by a newer one",
         "recovered" => "model routes answer again",
+        "session-lost" => {
+            "its session was lost: a new session asks again when it needs your answer"
+        }
         _ => return None,
     })
 }

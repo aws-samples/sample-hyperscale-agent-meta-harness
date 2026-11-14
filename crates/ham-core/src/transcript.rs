@@ -491,7 +491,7 @@ pub enum GapKind {
     Conflict,
     /// An older image stores no transcript.
     Unsupported,
-    /// The run ended abnormally.
+    /// A session's conversation was not closed (the session was lost, or the run ended without a summary of it): its last lines may be missing.
     TailUnknown,
     /// A chunk could not be read (the reader's word).
     Unreadable,

@@ -489,16 +489,16 @@ async fn list_and_json_shapes_and_exit_codes_are_unchanged_except_for_the_new_li
     assert_eq!(
         out(&o),
         format!(
-            "api_endpoint = https://abc.execute-api.us-east-1.amazonaws.com/direct/v1\nregion = us-east-1\naws_profile = ham-test\ndefault_repo = (not set)\ndownload_dir = (not set)\ndefault_model = {OPUS}\ninput_wait_minutes = (not set)\nmouse = (not set)\nreport_tests = (not set)\nrun.goal = (not set)\nrun.rules = (not set)\nrun.skills = (not set)\nresearch.enabled = (not set)\nui.notify = (not set)\nui.bell = (not set)\nui.mascot = (not set)\nrun.report_command_minutes = (not set)\nrun.stall_calls = (not set)\nrun.stall_window_minutes = (not set)\nrun.stall_min_calls = (not set)\nrun.command_grace_minutes = (not set)\nrun.final_message = (not set)\nrun.lifecycle_flow = (not set)\nrun.review_round = (not set)\nrun.compute = (not set)\nrun.stall_new_calls = (not set)\nrun.cargo_no_debug_info = (not set)\nrun.cargo_no_incremental = (not set)\nrun.exclude_target_dir = (not set)\nrun.outside_checkout_note = (not set)\nui.deprecation_notices = (not set)\nui.mascot_motion = (not set)\nrun.max_run_hours = (not set)\nrun.provider_sharing = (not set)\ndefault_backend = (not set)\ncustomer_content = (not set)\nui.copy_limit_kib = (not set)\nrun.max_interrupts = (not set)\nrun.max_questions = (not set)\nrun.max_fresh_sessions = (not set)\nresearch.max_file_mib = (not set)\nresearch.max_unpacked_mib = (not set)\nresearch.max_run_mib = (not set)\nrun.container_signals = (not set)\ndefault_engine = (not set)\nupdate_source = (not set)\n"
+            "api_endpoint = https://abc.execute-api.us-east-1.amazonaws.com/direct/v1\nregion = us-east-1\naws_profile = ham-test\ndefault_repo = (not set)\ndownload_dir = (not set)\ndefault_model = {OPUS}\ninput_wait_minutes = (not set)\nmouse = (not set)\nreport_tests = (not set)\nrun.goal = (not set)\nrun.rules = (not set)\nrun.skills = (not set)\nresearch.enabled = (not set)\nui.notify = (not set)\nui.bell = (not set)\nui.mascot = (not set)\nrun.report_command_minutes = (not set)\nrun.stall_calls = (not set)\nrun.stall_window_minutes = (not set)\nrun.stall_min_calls = (not set)\nrun.command_grace_minutes = (not set)\nrun.final_message = (not set)\nrun.lifecycle_flow = (not set)\nrun.review_round = (not set)\nrun.compute = (not set)\nrun.stall_new_calls = (not set)\nrun.cargo_no_debug_info = (not set)\nrun.cargo_no_incremental = (not set)\nrun.exclude_target_dir = (not set)\nrun.outside_checkout_note = (not set)\nui.deprecation_notices = (not set)\nui.mascot_motion = (not set)\nrun.max_run_hours = (not set)\nrun.provider_sharing = (not set)\ndefault_backend = (not set)\ncustomer_content = (not set)\nui.copy_limit_kib = (not set)\nrun.max_interrupts = (not set)\nrun.max_questions = (not set)\nrun.max_fresh_sessions = (not set)\nresearch.max_file_mib = (not set)\nresearch.max_unpacked_mib = (not set)\nresearch.max_run_mib = (not set)\nrun.container_signals = (not set)\ndefault_engine = (not set)\nupdate_source = (not set)\nrun.copy_every_minutes = (not set)\n"
         )
     );
     let o = ham(&h, &["config", "get"]).await;
-    assert_eq!(out(&o).lines().count(), 46);
-    // The JSON object: the forty-six names in snake case with the value or null, and `path`.
+    assert_eq!(out(&o).lines().count(), 47);
+    // The JSON object: the forty-seven names in snake case with the value or null, and `path`.
     let o = ham(&h, &["config", "--json"]).await;
     let v: Value = serde_json::from_str(out(&o).trim()).unwrap();
     let obj = v.as_object().unwrap();
-    assert_eq!(obj.len(), 47);
+    assert_eq!(obj.len(), 48);
     assert_eq!(v["region"], "us-east-1");
     assert!(v["run.goal"].is_null() && v["default_repo"].is_null());
     assert_eq!(v["default_model"], OPUS);
@@ -637,7 +637,7 @@ async fn show_prints_origin_and_applies_for_every_key_then_the_locked_rows() {
     let o = ham_env(&h, &["config", "show", "--json"], &env).await;
     let v: Value = serde_json::from_str(out(&o).trim()).unwrap();
     let keys = v["settings"].as_array().unwrap();
-    assert_eq!(keys.len(), 46);
+    assert_eq!(keys.len(), 47);
     assert_eq!(keys[0]["key"], "api_endpoint");
     assert_eq!(keys[5]["key"], "default_model");
     assert_eq!(keys[5]["origin"], "env HAMH_MODEL");
@@ -744,8 +744,8 @@ async fn docs_prints_the_reference_table_of_the_registry() {
     assert_eq!(out(&o), ham_core::settings::reference_markdown());
     assert_eq!(
         out(&o).lines().count(),
-        48,
-        "a header, a rule and forty-six rows"
+        49,
+        "a header, a rule and forty-seven rows"
     );
     assert!(!path(&h).exists());
 }

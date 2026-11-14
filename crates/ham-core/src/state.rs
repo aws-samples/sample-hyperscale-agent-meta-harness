@@ -15,8 +15,9 @@
 //! {toolCallId?, title, kind?, status?}; a tool call's update, a `turn.progress` with {toolCallId,
 //! status} and no `kind`; `turn.progress` {text | summary}, whose `kind` `provider-retry`, `provider-switch`, `engine-stop`, `notify`,
 //! `provider-wait` and `provider-outage` (and `permission.requested`) are the harness notices of [`crate::notice`];
-//! `turn.ended` {text | summary}. The direct line writes no other event type that the client reads: an event of any
-//! other type is accepted and changes nothing.
+//! `turn.ended` {text | summary}; `run.waiting` of kind `session-lost`: the service's word that a session
+//! was lost and what follows, which changes no status. `turn.started` may carry `session` and `beatS`. The direct line
+//! writes no other event type that the client reads: an event of any other type is accepted and changes nothing.
 
 use crate::input::{InputView, RestartNote};
 use crate::notice::{Notice, NoticeKind, notice_of_for};
@@ -334,6 +335,11 @@ pub struct RunView {
     pub tools: Vec<ToolRow>,
     /// The provider and engine notices in event order; the question and answer events are `input`.
     pub notices: Vec<Notice>,
+    /// What the run says about the copies of its work since the newest stored copy (a copy that is late, a copy that could not
+    /// be saved), in event order: the newest `notice::MAX_COPY_NOTICES`. A stored copy empties the list, because the worker says these
+    /// once for each streak and a stored copy ends the streak. They are in `notices` too. The run screen shows them in the
+    /// conversation; a surface without one (`ham watch` in line mode) prints these, each once by its event.
+    pub copy_notices: Vec<Notice>,
     /// The route in use and a retry or wait in progress.
     pub route: RouteStatus,
     /// The card of a goal-loop brake: which stopping rule ended the run, how far the loop got and the follow-up command.
@@ -358,9 +364,100 @@ pub struct RunView {
     /// When the engine last started a session (`session.started`, Unix seconds). A copy of an end from before it is the end of an
     /// earlier session of a run that renewed its session, so the view does not call it the end.
     pub engine_started_unix: Option<i64>,
+    /// The sessions the service said were lost (its `run.waiting` events of kind `session-lost`), oldest first, at most the
+    /// newest [`crate::lost_session::MAX_KEPT`].
+    pub lost: Vec<crate::lost_session::SessionLost>,
+    /// The time of the newest event of the run that was read (RFC 3339 UTC, as the event wrote it).
+    pub heard_at: Option<String>,
+    /// The seconds between two events the session in progress promised at its start (`beatS` of `turn.started`); `None` for a
+    /// worker that writes no beat.
+    pub beat_s: Option<u64>,
+    /// The number of the session in progress, when its `turn.started` named it.
+    pub session_now: Option<u32>,
+    /// A session has started and neither ended nor been called lost.
+    pub session_open: bool,
+    /// The sessions in a row that were lost or could not start, as the run's events tell them: the service's count in its
+    /// last word about a lost session, one more for each later session that ended as `stopped_setup_failed` (the service counts a
+    /// session that could not restore the work among the lost ones and writes no word of its own), and none once a session ended
+    /// with a result of its own.
+    pub lost_in_a_row: u32,
+    /// When the newest session started (the time of the newest `turn.started`, Unix seconds).
+    pub session_started_unix: Option<i64>,
+    /// The session in progress has been silent for two beats or more at the clock the view was built with ([`RunView::silence`]).
+    pub silent: Option<crate::lost_session::Silence>,
 }
 
 impl RunView {
+    /// The session in progress says it writes an event at least every `beatS` seconds, and nothing of the run has been read for
+    /// two beats or more: since when, and what the service does when that lasts. `None` for a view built without a clock, for a run that
+    /// has ended or is delivering, between two sessions, for a session of a worker that writes no beat, and while the run waits for the
+    /// user's answer to a question (a waiting session writes no beat).
+    pub fn silence(&self) -> Option<&crate::lost_session::Silence> {
+        self.silent.as_ref()
+    }
+
+    /// What the status block of a run that goes on says about the newest session the service lost, at the clock `now`.
+    /// Until the session that follows it has started: the service's word ([`crate::lost_session::SessionLost::sentence`]). Once it
+    /// has started: the same in the past tense, while that session is the one in progress and for
+    /// [`crate::lost_session::TOLD_AFTER_START_S`] seconds after its start. Nothing after that, nothing once another session has
+    /// started since or the session has ended, and nothing for a run that has ended: the conversation and the card keep the lost
+    /// session.
+    pub fn lost_note(&self, now: Option<i64>) -> Option<String> {
+        use crate::lost_session::TOLD_AFTER_START_S;
+        if self.has_ended() {
+            return None;
+        }
+        let lost = self.lost.last()?;
+        let Some(next) = lost.restart() else {
+            return Some(lost.sentence());
+        };
+        let decided = harness_protocol::common::parse_utc_unix(&lost.decided_at)?;
+        // The session the service started then has written its start: the newest `turn.started` names it, or, from a worker that
+        // names no session, is newer than the service's word.
+        let started = match (self.session_now, self.session_started_unix) {
+            (Some(s), _) if s > next => return None,
+            (Some(s), Some(at)) if s == next => Some(at),
+            (None, Some(at)) if at >= decided => Some(at),
+            _ => None,
+        };
+        match started {
+            None => Some(lost.sentence()),
+            Some(at) => {
+                let told = now.is_some_and(|now| now.saturating_sub(at) < TOLD_AFTER_START_S);
+                (self.session_open && told).then(|| lost.sentence_started())
+            }
+        }
+    }
+
+    /// [`RunView::silence`] at the clock `now` (Unix seconds), for a surface that holds its own clock (the run screen).
+    pub fn silence_at(&self, now: i64) -> Option<crate::lost_session::Silence> {
+        use crate::lost_session::{MAX_LOST_SLICES, Silence, notice_after_s};
+        if self.has_ended()
+            || self.status != Some(GoalStatus::Active)
+            || self.phase == Some(GoalPhase::Delivering)
+            || !self.session_open
+            || self.input.waiting().is_some()
+        {
+            return None;
+        }
+        let beat_s = self.beat_s?;
+        let since = self.heard_at.as_deref()?;
+        let since_unix = harness_protocol::common::parse_utc_unix(since)?;
+        let secs = now.saturating_sub(since_unix);
+        if secs < i64::try_from(notice_after_s(beat_s)).unwrap_or(i64::MAX) {
+            return None;
+        }
+        // The lost sessions in a row before this one, as the run's events tell them.
+        let would = self.lost_in_a_row.saturating_add(1);
+        Some(Silence {
+            since_unix,
+            since: since.to_string(),
+            secs,
+            saved_at: self.saved.as_ref().map(|c| c.at.clone()),
+            would_end: (would >= MAX_LOST_SLICES).then_some(would),
+        })
+    }
+
     /// The clean-checkout test report is going on now: its newest event says it began or a command runs, the run is not over, the stored status
     /// is `active` and delivery has not begun. A lost end event cannot hold the words past delivery or the end of the run.
     pub fn report_running(&self) -> bool {
@@ -615,6 +712,7 @@ impl RunState {
             restarted: None,
             tools: Vec::new(),
             notices: Vec::new(),
+            copy_notices: Vec::new(),
             route: RouteStatus::default(),
             goal_brake: None,
             harness_prompts: 0,
@@ -623,6 +721,14 @@ impl RunState {
             report: None,
             saved: None,
             engine_started_unix: None,
+            lost: Vec::new(),
+            heard_at: None,
+            beat_s: None,
+            session_now: None,
+            session_open: false,
+            lost_in_a_row: 0,
+            session_started_unix: None,
+            silent: None,
         };
         let mut tools = ToolTracker::default();
         for e in self.events.values() {
@@ -641,6 +747,7 @@ impl RunState {
         v.goal_brake = crate::goal_card::from_events(self.events.values());
         v.skills = crate::skills_card::from_events(self.events.values());
         v.engine_config = crate::engine_config_card::from_events(self.events.values());
+        v.silent = now.and_then(|now| v.silence_at(now));
         v
     }
 }
@@ -798,6 +905,12 @@ fn fold_progress(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         _ => {}
     }
     if n.kind.is_run_notice() {
+        if crate::notice::is_copy_notice(e) {
+            if v.copy_notices.len() >= crate::notice::MAX_COPY_NOTICES {
+                v.copy_notices.remove(0);
+            }
+            v.copy_notices.push(n.clone());
+        }
         v.notices.push(n);
     }
 }
@@ -808,7 +921,28 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         return;
     }
     let agent_id = e.agent_id.clone();
+    // The newest time anything of the run was heard. The events are folded by id; the times of two writers need not follow it.
+    if let Some(t) = harness_protocol::common::parse_utc_unix(&e.ts) {
+        let newer = v
+            .heard_at
+            .as_deref()
+            .and_then(harness_protocol::common::parse_utc_unix)
+            .is_none_or(|held| t > held);
+        if newer {
+            v.heard_at = Some(sanitize_line(&e.ts));
+        }
+    }
     match e.event_type {
+        // The service's word that a session was lost and what follows. It changes no status; the session it names is over.
+        EventType::RunWaiting => {
+            if let Some(lost) = crate::lost_session::SessionLost::parse(e) {
+                v.session_open = false;
+                v.lost_in_a_row = lost.lost_in_a_row;
+                v.lost.push(lost);
+                let excess = v.lost.len().saturating_sub(crate::lost_session::MAX_KEPT);
+                v.lost.drain(..excess);
+            }
+        }
         EventType::RunCreated => {
             if v.status.is_none() {
                 v.status = Some(GoalStatus::Active);
@@ -831,6 +965,13 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             // the first only).
             engine_started(v, e);
             v.route.working_again();
+            // A session is in progress; a worker that writes beats says how often, and names the session.
+            v.session_open = true;
+            if let Some(t) = harness_protocol::common::parse_utc_unix(&e.ts) {
+                v.session_started_unix = Some(v.session_started_unix.map_or(t, |held| held.max(t)));
+            }
+            v.beat_s = typed::<u64>(e, "beatS").filter(|s| *s > 0);
+            v.session_now = typed::<u32>(e, "session").filter(|s| *s > 0);
             if let Some(id) = agent_id {
                 agent(v, &id).turns += 1;
             }
@@ -848,6 +989,9 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         EventType::TurnProgress | EventType::TurnEnded => {
             // A stored copy of the work. The event carries nothing else, and only a newer copy replaces the one the view holds.
             if let Some(mut copy) = crate::saved_copy::parse(e) {
+                // A copy is stored again: what the run said about a copy that was late or could not be saved is over (the worker says it
+                // once for each streak, and a stored copy ends the streak).
+                v.copy_notices.clear();
                 if v.saved.as_ref().is_none_or(|held| copy.newer_than(held)) {
                     // The events of two sessions can arrive in either order.
                     copy.final_copy =
@@ -858,6 +1002,17 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             }
             if e.event_type == EventType::TurnProgress {
                 fold_progress(v, e, tools);
+            } else {
+                // The session ended by itself; the service works on the run now. A session that could not start counts among
+                // the lost ones in a row, as in the service's loop; any other end starts that count again.
+                v.session_open = false;
+                let could_not_start = str_field(e, "directOutcome").as_deref()
+                    == Some(harness_protocol::direct::DirectOutcome::StoppedSetupFailed.as_str());
+                v.lost_in_a_row = if could_not_start {
+                    v.lost_in_a_row.saturating_add(1)
+                } else {
+                    0
+                };
             }
             if let (Some(id), Some(text)) = (
                 agent_id,

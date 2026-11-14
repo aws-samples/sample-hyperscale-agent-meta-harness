@@ -24,9 +24,9 @@ fn with(mode: &str) -> Config {
 
 #[test]
 fn the_registry_has_one_row_for_it_next_to_the_bell() {
-    assert_eq!(Key::ALL.len(), 46);
-    assert_eq!(ROWS.len(), 46);
-    assert_eq!(KEYS.len(), 46);
+    assert_eq!(Key::ALL.len(), 47);
+    assert_eq!(ROWS.len(), 47);
+    assert_eq!(KEYS.len(), 47);
     assert_eq!(Key::ALL[14], Key::UiBell);
     assert_eq!(Key::ALL[15], Key::UiMascot);
     let row = Key::UiMascot.row();

@@ -201,9 +201,9 @@ class WaitReadsCase(LeftBase):
         # The stage's API service takes a lock that was not written for 30 minutes for one nobody renews and starts runs again, so what the looks found no longer
         # holds. The stand-in checkout carries the number file with 2 seconds in the place of the 30 minutes.
         self.deployed()
-        lib = self.repo / "scripts" / "lib"
-        lib.mkdir(parents=True, exist_ok=True)
-        (lib / "deploy-lock-stale-seconds.txt").write_text("2\n")
+        crate = self.repo / "crates" / "control-api"
+        crate.mkdir(parents=True, exist_ok=True)
+        (crate / "deploy-lock-stale-seconds.txt").write_text("2\n")
         self.commit_more()
         # the create answers, no write after it does
         self.set_scenario(executions={MACHINE: RUNS},
@@ -362,7 +362,8 @@ class StoppedFollowingCase(LeftBase):
     """A run that stops following its build says what the stage does with new runs."""
 
     WORDS = ("The stage starts no new runs while this build deploys: the build renews the deploy lock by itself.",
-             "The stage starts runs again when that run sees the build end, or 30 minutes after the build's last write of the lock.")
+             "The stage starts runs again when the deploy of this build has finished: the build then writes that into the lock. If that write fails, the stage starts runs "
+             "again when that run sees the build end, or 30 minutes after the build's last write of the lock.")
 
     def test_b804_admit_ctrl_c_while_following_says_what_the_stage_does_with_new_runs(self) -> None:
         self.deployed()

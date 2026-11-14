@@ -7,7 +7,11 @@
 //! `ham pull <runId> --snapshot` asks the service.
 //!
 //! This module also holds the sentences that say where the work of a run without a zip is ([`no_zip`], [`no_delivery`]): they name the
-//! snapshot command and say what it does, never that a copy exists.
+//! snapshot command and say what it does, never that a copy exists. [`cleared_work`] is the sentence of `ham cancel` for a run it cleared: it
+//! names the command only for a copy the service answered for.
+//!
+//! Line mode (`ham watch` without a terminal, a start command through a pipe) has no status block, so it says when a newer copy was saved in a
+//! line of its own, at most once a minute ([`WatchMemo`], [`watch_line`]); the copy of the end is on the card.
 
 use crate::engines::Engine;
 use crate::sanitize::sanitize_line;
@@ -22,7 +26,8 @@ pub struct SavedCopy {
     pub at: String,
     /// [`SavedCopy::at`] in Unix seconds.
     pub at_unix: i64,
-    /// The number of the copy within its session.
+    /// The number of the copy within the run; within its session for a worker of an earlier
+    /// release.
     pub count: u32,
     /// The commit the copy holds (hexadecimal digits only).
     pub head_sha: String,
@@ -111,7 +116,7 @@ pub fn screen_line(
 }
 
 /// `2026-11-12 00:47 UTC` for the RFC 3339 UTC time of a copy: seconds add nothing to a line a person reads.
-fn utc_minute(at: &str) -> String {
+pub(crate) fn utc_minute(at: &str) -> String {
     let time = at.replace('T', " ");
     time.strip_suffix('Z').map_or(time.clone(), |t| {
         format!("{} UTC", t.get(..16).unwrap_or(t))
@@ -126,6 +131,84 @@ pub fn card_line(c: &SavedCopy, engine: &Engine, over: bool, run_id: &str) -> St
         "Saved     {time}{w}; ham pull {} --snapshot downloads it",
         sanitize_line(run_id)
     )
+}
+
+/// How often at most line mode says that a newer copy of the work was saved, in seconds.
+pub const WATCH_LINE_EVERY_S: u64 = 60;
+
+/// The line of line mode for a copy the run saved while it works: when it was stored (UTC, to the minute) and the command that downloads it.
+pub fn watch_line(c: &SavedCopy, run_id: &str) -> String {
+    format!(
+        "saved: a copy of the work at {}; ham pull {} --snapshot downloads it",
+        utc_minute(&c.at),
+        sanitize_line(run_id)
+    )
+}
+
+/// What line mode has said about the copies of one run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchMemo {
+    /// The session and the number of the copy the last line named.
+    said: Option<(u32, u32)>,
+    /// When that line was printed, on the clock of [`WatchMemo::line`].
+    said_at_s: Option<u64>,
+}
+
+impl WatchMemo {
+    /// The line to print now for the newest copy of the run, or `None`: no copy, a copy that was said already or an older one, a newer copy
+    /// less than [`WATCH_LINE_EVERY_S`] after the last line (it is said once that time has passed, unless a still newer one came), and the
+    /// copy of the end, which the card carries. `elapsed_s` is the caller's own clock in seconds; it only has to go forward.
+    pub fn line(
+        &mut self,
+        copy: Option<&SavedCopy>,
+        run_id: &str,
+        elapsed_s: u64,
+    ) -> Option<String> {
+        let c = copy?;
+        let key = (c.session, c.count);
+        if c.final_copy || self.said.is_some_and(|said| key <= said) {
+            return None;
+        }
+        if self
+            .said_at_s
+            .is_some_and(|at| elapsed_s < at.saturating_add(WATCH_LINE_EVERY_S))
+        {
+            return None;
+        }
+        self.said = Some(key);
+        self.said_at_s = Some(elapsed_s);
+        Some(watch_line(c, run_id))
+    }
+}
+
+/// What the service answered when `ham cancel` asked it for the saved copy of a run it had just cleared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClearedCopy {
+    /// The run has a copy, stored at this RFC 3339 UTC time.
+    Saved { at: String },
+    /// The service says the run saved none.
+    None,
+    /// The service could not be asked, or answered something else.
+    Unknown,
+}
+
+/// The second line of `ham cancel` for a run it cleared. A cleared run delivers nothing, and clearing it deletes nothing. The line
+/// names the snapshot command for a copy the service answered for, says that there is nothing to download when the service says the run
+/// saved none (a run that never started), and promises no copy when the service could not be asked.
+pub fn cleared_work(run_id: &str, copy: &ClearedCopy) -> String {
+    let run = sanitize_line(run_id);
+    match copy {
+        ClearedCopy::Saved { at } => format!(
+            "ham pull {run} --snapshot downloads the copy of its work saved at {}.",
+            utc_minute(&sanitize_line(at))
+        ),
+        ClearedCopy::None => {
+            "The run saved no copy of its work, so there is nothing to download.".to_string()
+        }
+        ClearedCopy::Unknown => {
+            format!("If the run saved a copy of its work, ham pull {run} --snapshot downloads it.")
+        }
+    }
 }
 
 fn status_word(s: GoalStatus) -> String {

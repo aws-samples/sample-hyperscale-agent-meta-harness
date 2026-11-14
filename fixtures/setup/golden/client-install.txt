@@ -48,7 +48,7 @@ ok    ham doctor found no failing check
 
 == Next steps
   1. Look at your rules, and edit them if you like:   ham rules show      ham rules edit
-  2. See the five models and which one a run uses:    ham models
+  2. See the models and which one a run uses:         ham models
   3. Start a run (a deployed stage and its endpoint are needed):
        ham "Build a small command-line todo app in Python with tests" --s3-only --direct
      or, to get a pull request in a CodeCommit repository:

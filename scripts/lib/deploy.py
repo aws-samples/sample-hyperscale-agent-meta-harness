@@ -140,6 +140,11 @@ endpoint serves, a tools mode other than the live runtime's, an isolation word t
 changed Instances machine configuration, which replaces the capacity provider: its name ends in a hash of the configuration, compared after the synth) first lists the RUNNING executions of hamh-<stage>-run; any is
 a refusal, `DEPLOY-REFUSED reason=guard wait=yes stage=unchanged:: <n> running run(s) on hamh-<stage>-run pin the worker runtime: <ids>. Wait until
 they end, then deploy again.` (exit 3), before a build or a deploy (a bump is checked before the Lambda build).
+Under a caller's lock with the line `starts=yes` the guard
+makes no look: a run can start at any moment of such a deploy, so every new worker runtime version is refused, with runs active or not, `DEPLOY-REFUSED reason=new-runs
+wait=no`. A deploy that keeps the worker runtime runs under such a lock, and its renewals keep the line, as they keep every line of the caller's lock. So does
+the write that opens the lock when the deploy has finished: the lock then carries `starts=yes` and `deploys=no`, and the deploy says that the stage kept
+starting runs under it.
 The mode `--check-guard` checks the account and the guard only and keeps its own two answers: `DEPLOY-GUARD PASS stage=<s> running=0` (exit 0), or `DEPLOY-FAIL guard <the same sentence>` (exit 1).
 
 Previous names: the previous spellings of the variables this program reads (the earlier prefix and the same suffix) work
@@ -233,6 +238,15 @@ write drops it). It writes only while the lock still holds the caller's token an
 the deploy writes nothing and stops renewing, so deleting the parameter stays the operator's way to open the stage. The renewals stop when the deploy ends;
 the lock stays where it is. SSM has no conditional write: a write of setup between this read and this write is replaced by the older text, which setup's
 next write (at least every 10 minutes, and its read-back when it shares the lock) puts right.
+The caller's lock is opened when the deploy has finished: right after the settings record says `deployed`, the deploy writes the caller's lock once more,
+every line as it read it, without the `renewed=` line and with one last line `deploys=no` (`open_caller_lock`). Nothing changes the stage after that point, so the
+stage starts runs again while the caller still holds the lock for what follows the deploy (the build of setup's runner makes the client, and setup installs it and
+removes the runner). The renewals have stopped by then: a renewal and the open take turns (`lock_cycle`), and a renewal that waited for its turn writes nothing.
+After LOCK_SETTLE_S seconds the lock is read back, and the line is written once more when a write of the caller, made from a read before the open, replaced it. A
+lock that is gone or holds another token is left alone, and a call that fails is said in one line and never fails the deploy: the caller writes the line itself
+when it sees its build end. That line names the call that failed: the write that opens the lock (`could not be written`: nothing was written), the read-back
+(`could not be read back after that write`: the line was written) or the write that puts the line back (`could not be written again`). A deploy that fails or is
+refused never opens the lock.
 Renewal and release (Addendum 4, A4.3): setup and teardown take a lock that records no build for abandoned once its `started` is 30 minutes old, and a
 deploy that builds the worker image or the Cline fork runs longer. So a daemon thread (`keep_lock`) writes a new `started` into the deploy's own lock
 every LOCK_RENEW_S seconds (300: at least every 10 minutes, with room for a slow call), through the long waits in cdk, cargo and CodeBuild too. It writes
@@ -242,7 +256,7 @@ holds by then is left alone, and a `deploy:` line says so.
 
 Refusals: a Fail of a step in REFUSALS raised before the first stack change prints exactly one line, `DEPLOY-REFUSED reason=<step> wait=<yes|no>
 stage=unchanged :: <detail and action>`, and exits 3: guard and lock (wait=yes), instances-off, owner, caller, account, azs, vpc-cidr, bootstrap,
-fork-pointer, settings-read, record-downgrade, consent (wait=no). Every other failure, and any failure after the first stack change, keeps
+fork-pointer, settings-read, record-downgrade, consent, new-runs (wait=no). Every other failure, and any failure after the first stack change, keeps
 `DEPLOY-FAIL <step> <detail>` and exit 1; a failure before the first stack change prints `DEPLOY-STAGE unchanged` on the line before its DEPLOY-FAIL line.
 
 `--print-settings` runs the settings resolution alone and writes nothing (`print_settings` names its read calls): the DEPLOY-SETTING lines and exit 0,
@@ -252,7 +266,8 @@ scripts/lib/bootstrap-min-version.txt.
 Test hooks: DEPLOY_ROOT, DEPLOY_AWS_BIN, DEPLOY_CARGO_BIN, DEPLOY_CARGO_SLOT (empty: no slot),
 DEPLOY_NODE_BIN, DEPLOY_CODEBUILD_BIN, HAMH_ACCOUNTS_FILE, DEPLOY_RECORD_DIR, DEPLOY_CRITERIA, DEPLOY_ENDPOINT_POLL_S
 (default 5) and DEPLOY_ENDPOINT_TIMEOUT_S (default 600), the wait for a new version endpoint. DEPLOY_LOCK_RENEW_S shortens the interval of the
-lock renewal (seconds; a value above LOCK_RENEW_S or no number is ignored). DEPLOY_AWS_CALL_LOG names a file that gets one
+lock renewal (seconds; a value above LOCK_RENEW_S or no number is ignored), and DEPLOY_LOCK_SETTLE_S the pause before the read-back of the
+caller's lock that the deploy opened (seconds, 0 for none; a value above LOCK_SETTLE_S or no number is ignored). DEPLOY_AWS_CALL_LOG names a file that gets one
 JSON line {argv, profile} for every call this program makes to the aws CLI (not the calls of codebuild-run.sh or cdk); the fresh-account
 dry run reads it to show that no call named a bucket of another account.
 """
@@ -453,12 +468,20 @@ LOCK_FIELDS = ("token", "holder", "identity", "route", "started", "commit", "inp
 # The line a deploy under the caller's lock adds when it writes that lock again (`renew_caller_lock`). No reader decides anything by it.
 LOCK_RENEWED_KEY = "renewed"
 # Addendum 4 (A4.3): how often the deploy writes a new `started` into the lock it took. Setup and teardown take a lock that records no build for abandoned when
-# its `started` is older than 30 minutes (scripts/lib/deploy-lock-stale-seconds.txt, read by scripts/setup/runner.sh as RN_LOCK_STALE_SECONDS and embedded by the
+# its `started` is older than 30 minutes (crates/control-api/deploy-lock-stale-seconds.txt, read by scripts/setup/runner.sh as RN_LOCK_STALE_SECONDS and embedded by the
 # stage's API service, which starts no new runs while the lock was written within that time), so this stays at or below 10 minutes; 5 leaves room for a slow call.
 LOCK_RENEW_S = 300
 LOCK_RENEW_VARIABLE = "DEPLOY_LOCK_RENEW_S"
 # How long `release_lock` waits for a renewal that is under way before it reads the lock.
 LOCK_JOIN_S = 120
+# How long `open_caller_lock` waits after it wrote `deploys=no` into the caller's lock before it reads the lock back. SSM has no conditional write: a
+# renewal of the caller that read the lock before that write and wrote after it has replaced the line by then, and it is written once more.
+LOCK_SETTLE_S = 5
+LOCK_SETTLE_VARIABLE = "DEPLOY_LOCK_SETTLE_S"
+# The line of a lock whose holder changes nothing on the stage; the stage's API service starts runs under a lock that has it (crates/control-api/src/admission.rs).
+LOCK_OPEN_LINE = "deploys=no"
+# The line of a caller's lock under which the stage's API service starts runs while the deploy runs (`./setup.sh --update --allow-new-runs`).
+LOCK_STARTS_LINE = "starts=yes"
 # Addendum 4 (A4.1): the commit the user asked to deploy, for a deploy whose tree is no clone of it. The setup runner sets it; 40 hex digits, else it is ignored.
 SOURCE_COMMIT_VARIABLE = "HAMH_SOURCE_COMMIT"
 HEX40 = re.compile(r"[0-9a-fA-F]{40}")
@@ -511,7 +534,7 @@ TAVILY_PROVIDERS = ("tavily", "auto")
 # The steps whose failure before the first stack change is a refusal (DEPLOY-REFUSED, exit 3), with whether waiting cures it.
 # Waiting cures the first two (wait=yes); the others need an action (wait=no).
 REFUSAL_STEPS = ("guard", "lock", "instances-off", "owner", "caller", "account", "azs", "vpc-cidr", "bootstrap", "fork-pointer", "settings-read",
-                 "record-downgrade", "consent", "not-deployed")
+                 "record-downgrade", "consent", "not-deployed", "new-runs")
 WAIT_CURES = ("guard", "lock")
 REFUSALS = {step: "yes" if step in WAIT_CURES else "no" for step in REFUSAL_STEPS}
 
@@ -688,12 +711,17 @@ class Deployer:
         self.lock_caller = ""
         # With: True while the lock this process took itself is a hold that changes nothing the stage runs (the release label alone); it then carries `deploys=no`.
         self.lock_idle = False
+        # True while this deploy runs under a caller's lock that lets the stage start runs (the line `starts=yes` of `./setup.sh --update --allow-new-runs`).
+        self.lock_starts = False
         self.lock_fields: dict[str, str] = {}
         self.lock_stop = threading.Event()
         self.lock_thread: threading.Thread | None = None
         # The environment of the keeper's aws calls: a copy made when the thread starts, so the thread never reads `self.env` while the deploy changes it.
         self.lock_env: dict | None = None
         self.lock_renew_s = self.renew_interval()
+        # A renewal and the open of the caller's lock take turns, so a renewal that is under way never writes over the line that opens the stage.
+        self.lock_cycle = threading.Lock()
+        self.lock_settle_s = self.settle_interval()
         # The deploy's clock, for the times of the lock; a test moves it by hand.
         self.clock = utc_now
         self.caller_arn = ""
@@ -1840,7 +1868,12 @@ class Deployer:
         return sorted(e["name"] for e in (doc or {}).get("executions", []))
 
     def guard(self) -> None:
-        """Every run pins the worker runtime version it started on; a new version waits."""
+        """Every run pins the worker runtime version it started on; a new version waits.: under a caller's lock that lets the stage start runs (the line
+        `starts=yes`) a run can start at any moment of the deploy, so a look that finds no run decides nothing: the new version is refused (`new-runs`, wait=no)."""
+        if self.lock_starts:
+            raise Fail("new-runs", "this deploy would make a new worker runtime version, and the update lets the stage start runs while it deploys (the deploy lock says "
+                       "starts=yes): a run that starts during the deploy would be pinned to a runtime version that goes.",
+                       action="Run ./setup.sh --update --wait-for-runs MINUTES instead: the stage then starts no new runs, and the update waits for the active ones.")
         runs = self.running_runs()
         if runs:
             shown = " ".join(runs[:20]) + (f" (+{len(runs) - 20} more)" if len(runs) > 20 else "")
@@ -2506,6 +2539,15 @@ class Deployer:
             return LOCK_RENEW_S
         return given if 0 < given <= LOCK_RENEW_S else LOCK_RENEW_S
 
+    @staticmethod
+    def settle_interval() -> float:
+        """LOCK_SETTLE_S, or the shorter pause DEPLOY_LOCK_SETTLE_S names (a test hook: it can shorten the pause, never lengthen it; 0 is no pause)."""
+        try:
+            given = float(os.environ.get(LOCK_SETTLE_VARIABLE) or LOCK_SETTLE_S)
+        except ValueError:
+            return LOCK_SETTLE_S
+        return given if 0 <= given <= LOCK_SETTLE_S else LOCK_SETTLE_S
+
     def lock_time(self) -> str:
         return self.clock().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -2513,7 +2555,7 @@ class Deployer:
         lines = [f"{k}={self.lock_fields[k]}" for k in LOCK_FIELDS]
         if self.lock_idle:
             # The stage's API service starts runs under a lock with this line; the release label alone changes nothing the stage runs
-            lines.append("deploys=no")
+            lines.append(LOCK_OPEN_LINE)
         return "\n".join(lines)
 
     def start_lock_keeper(self) -> None:
@@ -2529,8 +2571,12 @@ class Deployer:
         """Renews the lock every time `wait(<seconds>)` ends without the stop signal (`wait` returns True when the deploy ends), until a renewal finds
         that the lock is no longer this deploy's."""
         while not wait(self.lock_renew_s):
-            if not self.renew_lock():
-                return
+            with self.lock_cycle:
+                # The deploy opened the caller's lock, or ended, while this renewal waited for its turn: nothing is written any more
+                if self.lock_stop.is_set():
+                    return
+                if not self.renew_lock():
+                    return
 
     def renew_lock(self) -> bool:
         """One renewal of the lock this deploy took: a new `started`, written over the lock only while the lock still holds this deploy's token. A lock
@@ -2588,6 +2634,66 @@ class Deployer:
             say(f"the deploy lock {name} could not be renewed ({getattr(e, 'detail', '') or e}); the next try is in {self.lock_renew_s:g} s")
         return True
 
+    def open_caller_lock(self) -> None:
+        """The deploy has finished and the settings record says so, so nothing changes the stage any more. The lock the caller holds (HAMH_DEPLOY_LOCK_TOKEN) is
+        written once more with the line `deploys=no`: the stage's API service starts runs again, while the caller keeps the lock for what follows the deploy (setup's
+        build makes the client, and setup installs it and removes the runner under the lock). The renewals stop first, and the open waits for a renewal that is under
+        way (`lock_cycle`); when that takes longer than LOCK_JOIN_S nothing is written. The lock is written as it is read, every line in its order, without the
+        `renewed=` line and with `deploys=no` last, and only while it still holds the caller's token. SSM has no conditional write, so a renewal of the caller that
+        read the lock before this write and wrote after it replaces the line: after `lock_settle_s` seconds the lock is read back and written once more when the line
+        is gone. A lock that is gone or belongs to another deploy is left alone. A call that fails is said and never fails the deploy: the caller writes the line
+        itself when it sees its build end. Under a lock with the line `starts=yes` the stage started runs all the time: the line stays in the lock like
+        every other, and the deploy says that the stage kept starting runs. The line names the call that failed: the write that opens the lock (nothing was written), the read-back (the line
+        was written), or the write that puts the line back (the caller's write had replaced it). A lock this deploy took itself is not opened: `release_lock`
+        deletes it a moment later."""
+        if not self.lock_caller:
+            return
+        name = self.lock_name()
+        self.lock_stop.set()
+        if not self.lock_cycle.acquire(timeout=LOCK_JOIN_S):
+            say(f"the deploy lock {name} is not written to say that the deploy has ended: a renewal of it is still under way. The caller writes that when it sees its build end")
+            return
+        wrote, reading = False, True
+        try:
+            for attempt in (1, 2):
+                reading = True
+                text = self.read_lock_text()
+                reading = False
+                if text is None:
+                    say(f"the deploy lock {name} is gone at the end of this deploy; it was the caller's lock, and nothing is written")
+                    return
+                held = self.lock_lines(text)
+                if held.get("token") != self.lock_caller:
+                    say(f"the deploy lock {name} now belongs to another deploy ({self.describe_lock(held)}); it is left alone")
+                    return
+                if LOCK_OPEN_LINE in text.splitlines():
+                    return
+                lines = [ln for ln in text.splitlines() if not ln.startswith(LOCK_RENEWED_KEY + "=")]
+                lines.append(LOCK_OPEN_LINE)
+                self.aws("ssm", "put-parameter", "--name", name, "--value", "\n".join(lines), "--type", "String", "--overwrite")
+                if attempt == 2:
+                    say(f"deploy lock {name}: a write of the caller at the same moment had replaced the line {LOCK_OPEN_LINE}; it is written again")
+                    return
+                wrote = True
+                # The line starts=yes is kept like every other line, and under it the stage started runs all the time, so nothing starts "again"
+                runs = ("; the stage kept starting runs under this lock (starts=yes)" if LOCK_STARTS_LINE in lines else " and the stage starts runs again")
+                say(f"deploy lock {name}: the deploy has ended and its record is written, so the lock now says {LOCK_OPEN_LINE}{runs}; the caller keeps the lock")
+                if self.lock_settle_s > 0:
+                    time.sleep(self.lock_settle_s)
+        except (Fail, OSError, ValueError, RuntimeError) as e:
+            why = getattr(e, "detail", "") or e
+            if not wrote:
+                say(f"the deploy lock {name} could not be written to say that the deploy has ended ({why}). The caller writes that when it sees its build end")
+            elif reading:
+                # the write went through one line earlier; only the look for a write of the caller that replaced the line did not
+                say(f"the deploy lock {name} could not be read back after that write ({why}): the line {LOCK_OPEN_LINE} was written, and a write of the caller at "
+                    "the same moment may have replaced it. The caller writes it again when it sees its build end")
+            else:
+                say(f"deploy lock {name}: a write of the caller at the same moment had replaced the line {LOCK_OPEN_LINE}, and it could not be written again "
+                    f"({why}). The caller writes it when it sees its build end")
+        finally:
+            self.lock_cycle.release()
+
     def take_lock(self, deploys: bool = True) -> None:
         """C6, the deploy side. With HAMH_DEPLOY_LOCK_TOKEN the caller (setup) holds the lock: the deploy checks the token, takes and deletes nothing, and
         writes the caller's lock again while it runs. Without it the deploy takes the lock itself, create-only (a lock that
@@ -2615,7 +2721,10 @@ class Deployer:
                 # The stage's API service starts runs under a lock with this line, so a deploy must never run under one.
                 raise Fail("lock", f"the deploy lock {name} says that its holder deploys nothing (deploys=no), so this deploy does not run under it.",
                            action="Run the update again; it takes a lock of its own for the deploy.")
-            say(f"deploy lock {name} held by the caller ({self.describe_lock(held)})")
+            # The stage's API service starts runs under a lock with this line, so the guard of this deploy refuses every new worker runtime version.
+            self.lock_starts = held.get("starts") == "yes"
+            say(f"deploy lock {name} held by the caller ({self.describe_lock(held)})"
+                + ("; it says starts=yes, so the stage keeps starting runs and this deploy makes no new worker runtime version" if self.lock_starts else ""))
             self.lock_caller = token
             self.start_lock_keeper()
             return
@@ -2868,6 +2977,8 @@ class Deployer:
                 "runIds": [], "notes": "",
             })
             self.write_settings_record("deployed")
+            # The deploy is done and recorded, so the stage starts runs again while the caller still holds its lock (the build of setup's runner makes the client)
+            self.open_caller_lock()
             say(f"endpoint V1ApiUrl ready stage={self.stage} region={self.region}. Read it from stack {self.prefix}-control.")
             return f"DEPLOY-PASS stage={self.stage} digest={digest[:12]} sourceTree={tree[:12]}"
 

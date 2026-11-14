@@ -1,5 +1,6 @@
 //! What the spacing of the copy task counts. It counts the time git took to make a copy, never the
-//! uploads; it never holds a look back longer than five timer periods; and nothing is spaced after a look that failed. Before, one
+//! uploads; it never holds a look back longer than five timer periods;
+//! and nothing is spaced after a look that failed. Before, one
 //! request to the bucket that hung made the task wait nine times as long with no look at the tree, while the run was told
 //! "ham keeps trying". The whole-turn tests of the same rules are in `b823_copies_run.rs` (`b823_a_slow_upload_does_not_space_the_next_copy`,
 //! `b823_after_a_copy_that_failed_the_next_look_comes_at_the_next_tick`).
@@ -44,10 +45,14 @@ fn b823_the_spacing_is_capped_at_five_timer_periods() {
     // Under the cap nothing changes: 20 s of git is followed by 180 s without a look.
     clock.looked(t0, t0 + s(20), Some(900_000_000));
     assert_eq!(c.delay(&clock, false, t0 + s(20)), s(180));
-    // The cap follows the timer of the session.
+    // A timer the user lengthened does not lengthen the cap: five minutes at the most (before, five periods of this timer, 900 s
+    // here as nine times the 100 s of git).
     let slow = Cadence::new(Some(s(600)));
     clock.looked(t0, t0 + s(100), Some(900_000_000));
-    assert_eq!(slow.delay(&clock, false, t0 + s(100)), s(900));
+    assert_eq!(slow.delay(&clock, false, t0 + s(100)), s(300));
+    // A timer shorter than a minute keeps five of its own periods.
+    let quick = Cadence::new(Some(s(10)));
+    assert_eq!(quick.delay(&clock, false, t0 + s(100)), s(50));
 }
 
 #[test]

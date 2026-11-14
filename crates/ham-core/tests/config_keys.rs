@@ -70,6 +70,7 @@ fn non_defaults() -> Vec<(&'static str, &'static str, String)> {
             "https://example.com/me/fork.git",
             "https://example.com/me/fork.git".into(),
         ),
+        ("run.copy_every_minutes", "10", "10".into()),
     ]
 }
 
@@ -84,8 +85,8 @@ fn all_set() -> Config {
 #[test]
 fn unset_of_each_new_key_leaves_the_other_sixteen_alone() {
     let full = all_set();
-    assert_eq!(non_defaults().len(), 46);
-    assert_eq!(KEYS.len(), 46);
+    assert_eq!(non_defaults().len(), 47);
+    assert_eq!(KEYS.len(), 47);
     for (key, _, printed) in non_defaults() {
         assert_eq!(
             get_key(&full, key).unwrap().as_deref(),

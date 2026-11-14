@@ -109,6 +109,151 @@ pub const NOT_RUN_PREFIX: &str = "NOT RUN: ";
 pub const NOT_AS_WRITTEN: &str = "could not run as written";
 /// How the reason of a step starts when the install step it needs failed and it was not started: `skipped: the setup step `npm ci` failed`.
 pub const SKIPPED_FOR_SETUP: &str = "skipped: the setup step ";
+/// The most characters of a setup command that the reason of a step it stopped carries.
+pub const MAX_SETUP_REASON_COMMAND_CHARS: usize = 120;
+/// The most characters of such a reason that the summary keeps: the whole of it, so the setup it names can be read back.
+const MAX_SETUP_REASON_CHARS: usize = 170;
+
+/// The reason of a step that was not started because the setup step `command` did not give it what it needs: `skipped:
+/// the setup step `npm ci` failed`, or `... could not be read` for a setup whose command was not run at all (`failed` is false). The
+/// command is cut to [`MAX_SETUP_REASON_COMMAND_CHARS`] characters, with a backtick of its own as an apostrophe.
+pub fn skipped_for_setup_reason(command: &str, failed: bool) -> String {
+    let how = if failed {
+        "failed"
+    } else {
+        "could not be read"
+    };
+    format!("{SKIPPED_FOR_SETUP}`{}` {how}", setup_in_reason(command))
+}
+
+/// A setup command as the reason of a step it stopped carries it.
+fn setup_in_reason(command: &str) -> String {
+    command
+        .chars()
+        .take(MAX_SETUP_REASON_COMMAND_CHARS)
+        .map(|c| if c == '`' { '\'' } else { c })
+        .collect()
+}
+
+/// The setup command that a reason [`skipped_for_setup_reason`] wrote names. `None` for any other reason, and for one that was cut.
+fn setup_named(reason: &str) -> Option<&str> {
+    let rest = reason.strip_prefix(SKIPPED_FOR_SETUP)?.strip_prefix('`')?;
+    let (command, how) = rest.rsplit_once('`')?;
+    matches!(how, " failed" | " could not be read").then_some(command)
+}
+
+/// How the reason of a step starts when the report stopped it at its time limit and lists it as not run: `stopped at its time
+/// limit of 300 s`. Only a step the report added behind the model's own commands, in place of logged commands that name a part of a
+/// suite, gets it. The commands of the model have run by then, so their result stands, the report stays `ran`, and the sentence names
+/// the stopped command behind them.
+pub const STOPPED_CHOICE: &str = "stopped at its time limit";
+/// The reason of such a step that was never started because the report's time had ended.
+pub const NO_TIME_FOR_CHOICE: &str = "the report's time ended before it started";
+/// The start of the head line agentd writes on a test step it chose from the layout of the tree to run in place of test commands of the
+/// lifecycle log that it left out: ``PLAN NOTE: in place of `<command>` ``, with `` and N more`` for more such commands.
+/// [`in_place_line`] is the whole line and [`TestStep::in_place_of`] reads it. It starts like the plan note ([`PLAN_NOTE_PREFIX`]), so a
+/// reader that predates it passes over it.
+pub const IN_PLACE_PREFIX: &str = "PLAN NOTE: in place of ";
+/// The start of the head lines agentd writes on the first step of a report whose plan left test commands of the lifecycle log out with
+/// nothing in their place: ``PLAN NOTE: left out `<command>` ``, with `` and N more`` and, after `; `, the reason when it is not
+/// that the report found no command for the whole suite ([`LeftOutWhy`]). One line for each reason. [`left_out_line_of`] is the whole line
+/// and [`TestStep::left_out_notes`] reads the lines.
+pub const LEFT_OUT_PREFIX: &str = "PLAN NOTE: left out ";
+/// The most characters of the file name that a line of [`LEFT_OUT_PREFIX`] carries.
+pub const MAX_PLAN_LINE_FILE_CHARS: usize = 60;
+/// The most characters of the command that a line of [`IN_PLACE_PREFIX`] or [`LEFT_OUT_PREFIX`] quotes.
+pub const MAX_PLAN_LINE_COMMAND_CHARS: usize = 80;
+
+/// The line agentd writes for a step that runs in place of `command` and `more` other commands of the lifecycle log.
+pub fn in_place_line(command: &str, more: usize) -> String {
+    plan_line(IN_PLACE_PREFIX, command, more)
+}
+
+/// The line agentd writes for `command` and `more` other commands of the lifecycle log that the plan left out with nothing in their place
+/// because the report found no command for the whole suite.
+pub fn left_out_line(command: &str, more: usize) -> String {
+    left_out_line_of(command, more, &LeftOutWhy::NoSuiteCommand, None)
+}
+
+/// Why the plan left test commands of the lifecycle log out with nothing in their place. Each such command names a part of a suite,
+/// so it is no command of the plan; this says why no command of the report's own choosing stands in its place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeftOutWhy {
+    /// The report found no command for the whole suite: the tree has no layout it knows, or the command works in another folder.
+    NoSuiteCommand,
+    /// A file of the tree names packages that the report does not install, so the suite would fail for want of a step that is the report's
+    /// own. The line carries the name of the file when it is plain ([`plain_file_name`]).
+    Packages(Option<String>),
+    /// The report has a command for the whole suite of the language, and that command does not run the file the logged command names: a
+    /// unittest discovery starts in other folders, or pytest does not collect the file.
+    NotReached,
+    /// The logged commands of the language work in more than one project folder, so one command at the root is not what the log ran.
+    Projects,
+}
+
+/// What a line of [`LEFT_OUT_PREFIX`] says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeftOutNote<'a> {
+    /// The last of the commands that was run.
+    pub command: &'a str,
+    /// The number of the other commands.
+    pub more: usize,
+    pub why: LeftOutWhy,
+    /// What the lifecycle log said of the last run of `command`, when that run did not pass: the exit code and the number of failed
+    /// tests, as far as the log gave them. The command was not run in the clean checkout, so this is the log's word alone.
+    pub logged: Option<LoggedRun>,
+}
+
+/// Whether `name` is a file name a line about the plan may carry: at most [`MAX_PLAN_LINE_FILE_CHARS`] characters, each a letter, a digit
+/// or one of `._-/`. The name of a file is the repository's own text, and the line is read back word for word.
+pub fn plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= MAX_PLAN_LINE_FILE_CHARS
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+}
+
+/// The line agentd writes for `command` and `more` other commands of the lifecycle log that the plan left out with nothing in their place,
+/// with the reason: [`left_out_line`] for [`LeftOutWhy::NoSuiteCommand`], ``...; packages in <file>`` (or ``...; packages`` for a
+/// file whose name is not plain) for [`LeftOutWhy::Packages`], ``...; not reached`` for [`LeftOutWhy::NotReached`] and
+/// ``...; more than one project`` for [`LeftOutWhy::Projects`]. `logged` is what the lifecycle log said of the last run of `command`: when
+/// that run did not pass, the line ends ``; logged exit <code>, <n> failed`` ([`logged_words`]), so the detail line can say that the
+/// command the report left out was one the log recorded as failed.
+pub fn left_out_line_of(
+    command: &str,
+    more: usize,
+    why: &LeftOutWhy,
+    logged: Option<&LoggedRun>,
+) -> String {
+    let mut line = plan_line(LEFT_OUT_PREFIX, command, more);
+    match why {
+        LeftOutWhy::NoSuiteCommand => {}
+        LeftOutWhy::Packages(Some(file)) if plain_file_name(file) => {
+            line.push_str(&format!("; packages in {file}"));
+        }
+        LeftOutWhy::Packages(_) => line.push_str("; packages"),
+        LeftOutWhy::NotReached => line.push_str("; not reached"),
+        LeftOutWhy::Projects => line.push_str("; more than one project"),
+    }
+    if let Some(words) = logged.and_then(logged_words) {
+        line.push_str(&format!("; logged {words}"));
+    }
+    line
+}
+
+/// What the lifecycle log said of a run that did not pass, in the words a line about the plan and its detail line carry: `exit <code>,
+/// <n> failed`; `exit <code>` for a code other than 0 with no failed tests counted; `<n> failed` when the log gave no exit code as a
+/// number. `None` for a run that passed, and for one the log said nothing of.
+fn logged_words(run: &LoggedRun) -> Option<String> {
+    let failed = run.failed.filter(|n| *n > 0);
+    match (run.exit_code, failed) {
+        (Some(code), Some(failed)) => Some(format!("exit {code}, {failed} failed")),
+        (Some(code), None) if code != 0 => Some(format!("exit {code}")),
+        (None, Some(failed)) => Some(format!("{failed} failed")),
+        _ => None,
+    }
+}
 
 /// How the report ended. `off` is never written by the worker: run-session puts it in a summary when the user switched the report off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -279,6 +424,51 @@ impl TestStep {
         }
         self.head_lines()
             .find_map(|l| l.strip_prefix(STAND_IN_PREFIX))
+    }
+
+    /// The lines of the output from the place where agentd writes its lines about the plan: after the `NOT RUN:` line of a step it
+    /// marked as not run and after the note of a Cargo workspace ([`TestStep::plan_note_members`]).
+    fn plan_lines(&self) -> impl Iterator<Item = &str> {
+        let mut lines = self.output_tail.lines().peekable();
+        if self.is_not_run() && lines.peek().is_some_and(|l| l.starts_with(NOT_RUN_PREFIX)) {
+            lines.next();
+        }
+        if self.plan_note_members().is_some() {
+            lines.next();
+        }
+        lines
+    }
+
+    /// The commands of the lifecycle log this step ran in place of, as the last one run and the number of the others: the line
+    /// [`in_place_line`] at the head of the output of a test step the harness chose from the layout of the tree (source `Detected`). agentd writes
+    /// the line at that place and removes a line of that form that the repository printed there, and no other step and no other place is read,
+    /// so the output of a command cannot say what a step stands for. A line that is not in the form agentd writes gives `None`.
+    pub fn in_place_of(&self) -> Option<(&str, usize)> {
+        if self.role != TestStepRole::Test || self.source != TestCommandSource::Detected {
+            return None;
+        }
+        plan_line_parts(self.plan_lines().next()?, IN_PLACE_PREFIX)
+    }
+
+    /// The commands of the lifecycle log the plan left out with nothing in their place, one note for each reason: the lines
+    /// [`left_out_line_of`] at the head of the output, after the line of [`TestStep::in_place_of`] when the step has one. agentd writes them
+    /// on the first step of a report and removes a line of that form that the repository printed at that place of any step. The reading
+    /// ends at the first line that is not wholly in the form agentd writes. A service step, whose output is the report's own helper's,
+    /// has none.
+    pub fn left_out_notes(&self) -> Vec<LeftOutNote<'_>> {
+        if self.command.starts_with(SERVICE_COMMAND_PREFIX) {
+            return Vec::new();
+        }
+        let mut lines = self.plan_lines().peekable();
+        if lines.peek().is_some_and(|l| l.starts_with(IN_PLACE_PREFIX)) {
+            lines.next();
+        }
+        lines.map_while(left_out_parts).collect()
+    }
+
+    /// The first of [`TestStep::left_out_notes`], as the last command run and the number of the others.
+    pub fn left_out(&self) -> Option<(&str, usize)> {
+        self.left_out_notes().first().map(|n| (n.command, n.more))
     }
 
     /// A step that was not run: no exit code, no counts, and `NOT RUN: <reason>` in the output.
@@ -616,28 +806,71 @@ impl TestReport {
                         .is_some_and(|r| r.starts_with(NOT_AS_WRITTEN))
                 });
             let group = if others.is_empty() { written } else { others };
-            let first = group.first()?;
-            let why = cut_chars(
-                first.not_run_reason().unwrap_or("a service is missing"),
-                120,
-            );
-            let more = match group.len() {
-                1 => String::new(),
-                n => format!(", and {} more", n - 1),
+            fn why_of(s: &TestStep) -> &str {
+                s.not_run_reason().unwrap_or("a service is missing")
+            }
+            // The setup that failed first leads the sentence, so the commands it stopped are named first when the report lists any.
+            let stopped_by_first = first_failing
+                .filter(|s| s.role == TestStepRole::Setup)
+                .and_then(|setup| {
+                    let text = setup_in_reason(&setup.command);
+                    group
+                        .iter()
+                        .copied()
+                        .find(|s| setup_named(why_of(s)) == Some(text.as_str()))
+                });
+            let first = stopped_by_first.or_else(|| group.first().copied())?;
+            // Commands a setup stopped are counted with that setup alone, and a second setup that stopped commands of its own is named
+            // behind them with its own count. Any other reason counts every command that was left out, as before.
+            let by_setup = setup_named(why_of(first)).is_some();
+            let more_of_the_reason =
+                |s: &TestStep| match group.iter().filter(|o| why_of(o) == why_of(s)).count() {
+                    0 | 1 => String::new(),
+                    n => format!(", and {} more", n - 1),
+                };
+            let named_with_reason = |s: &TestStep, chars: usize| {
+                format!(
+                    "`{}` ({})",
+                    quoted(&cut_chars(&s.command, MAX_REPORT_COMMAND_CHARS)),
+                    cut_chars(why_of(s), chars)
+                )
             };
+            if !by_setup {
+                let more = match group.len() {
+                    1 => String::new(),
+                    n => format!(", and {} more", n - 1),
+                };
+                return Some(format!(
+                    "{NOT_RUN_PREFIX}{}{more}",
+                    named_with_reason(first, 120)
+                ));
+            }
+            let also = group
+                .iter()
+                .copied()
+                .find(|s| why_of(s) != why_of(first) && setup_named(why_of(s)).is_some())
+                .map(|s| {
+                    format!(
+                        "{ALSO_STOPPED}{}{}",
+                        named_with_reason(s, MAX_SETUP_REASON_CHARS),
+                        more_of_the_reason(s)
+                    )
+                })
+                .unwrap_or_default();
             Some(format!(
-                "{NOT_RUN_PREFIX}`{}` ({why}){more}",
-                quoted(&cut_chars(&first.command, MAX_REPORT_COMMAND_CHARS))
+                "{NOT_RUN_PREFIX}{}{}{also}",
+                named_with_reason(first, MAX_SETUP_REASON_CHARS),
+                more_of_the_reason(first)
             ))
         });
         // The plan note is the second line of the reason: the first line stays the report's own reason or the not-run reason, so a note never
         // hides either.
-        let reason = match self.steps.iter().find_map(TestStep::plan_note_members) {
-            Some(n) => Some(format!(
-                "{}\n{}",
-                reason.unwrap_or_default(),
-                plan_note_text(n)
-            )),
+        let note = self.steps.iter().find_map(|s| {
+            s.plan_note_members()
+                .map(|members| plan_note_text(members, s.in_place_of().is_some()))
+        });
+        let reason = match note {
+            Some(note) => Some(format!("{}\n{note}", reason.unwrap_or_default())),
             None => reason,
         };
         let timed_out = ran.iter().find(|s| s.timed_out).map(|s| TimedOutCommand {
@@ -680,12 +913,21 @@ impl TestReport {
     }
 
     /// One plain line for each service step and each test step: what it did, with its exit code and counts as the runner gave them, and what it
-    /// ran without. Setup steps other than service steps have no line.
+    /// ran without. Setup steps other than service steps have no line. A test step the harness chose from the layout of the tree in
+    /// place of commands of the lifecycle log says which ([`TestStep::in_place_of`]), and the commands of the log that the plan left out with
+    /// nothing in their place have a line for each reason behind the step that carries them, the first of the report
+    /// ([`TestStep::left_out_notes`]), so the lines are among those kept.
+    ///
+    /// The details hold at most [`MAX_SUMMARY_DETAILS`] lines. A line about the plan (the line of a step that stands in place of logged
+    /// commands, a line of commands left out) is kept whatever its place, because [`TestReportSummary::sentence`] reads those lines; the
+    /// other lines fill the rest in their order.
     fn step_details(&self) -> Vec<String> {
-        let mut out = Vec::new();
+        // Each line with whether it is about the plan.
+        let mut lines: Vec<(String, bool)> = Vec::new();
         for s in &self.steps {
+            let left_out: Vec<String> = s.left_out_notes().iter().map(left_out_detail).collect();
             let line = if let Some(sentence) = s.stand_in() {
-                match (s.is_not_run(), s.exit_code) {
+                Some(match (s.is_not_run(), s.exit_code) {
                     (false, Some(0)) => sentence.to_string(),
                     (true, _) => format!(
                         "`{}` was not run ({}). {sentence}",
@@ -697,12 +939,36 @@ impl TestReport {
                         quoted(&s.command),
                         code.map_or_else(|| "with no code".to_string(), |c| c.to_string())
                     ),
-                }
+                })
             } else if s.role == TestStepRole::Test {
+                // What the line says of the logged commands the step stands in place of. A step that was not run, or was stopped
+                // at its limit, did not run in their place: it stands there.
+                let in_place_of = s.in_place_of().map(|(command, more)| {
+                    let words = if s.is_not_run() || s.timed_out {
+                        STANDS_IN_PLACE_OF
+                    } else {
+                        RAN_IN_PLACE_OF
+                    };
+                    format!(
+                        "{words}{}{OF_THE_LOG}, which {}",
+                        named(command, more),
+                        names_a_part(more)
+                    )
+                });
+                // Those words close the line, and the sentence of the card reads them: the reason of a step that was not run gives way
+                // to them, so the line ends whole inside its limit.
+                let reason_room = in_place_of.as_ref().map_or(120, |words| {
+                    let fixed = quoted(&s.command).chars().count()
+                        + "``: not run ().".len()
+                        + words.chars().count();
+                    MAX_SUMMARY_DETAIL_CHARS
+                        .saturating_sub(fixed)
+                        .clamp(24, 120)
+                });
                 let result = if s.is_not_run() {
                     format!(
                         "not run ({})",
-                        cut_chars(s.not_run_reason().unwrap_or("it was not run"), 120)
+                        cut_chars(s.not_run_reason().unwrap_or("it was not run"), reason_room)
                     )
                 } else if s.timed_out {
                     format!("timed out after {} s", s.limit_s.unwrap_or(0).max(1))
@@ -715,29 +981,43 @@ impl TestReport {
                         None => format!("{code}, counts not read"),
                     }
                 };
+                let mut line = format!("`{}`: {result}", quoted(&s.command));
                 let ran_without = s.needs();
-                if ran_without.is_empty() {
-                    format!("`{}`: {result}.", quoted(&s.command))
-                } else {
+                if !ran_without.is_empty() {
                     let list: Vec<String> = ran_without
                         .iter()
                         .map(|(n, why)| format!("{n} ({})", cut_chars(why, 100)))
                         .collect();
-                    format!(
-                        "`{}`: {result}; it ran without {}.",
-                        quoted(&s.command),
-                        list.join(", ")
-                    )
+                    line.push_str(&format!("; it ran without {}", list.join(", ")));
                 }
+                if let Some(words) = in_place_of {
+                    // A line that is still too long (a long command of the step's own) gives way from its end, in front of the words.
+                    let room = MAX_SUMMARY_DETAIL_CHARS.saturating_sub(words.chars().count() + 1);
+                    line = cut_chars(&line, room);
+                    line.push_str(&words);
+                }
+                line.push('.');
+                Some(line)
             } else {
-                continue;
+                None
             };
-            out.push(cut_chars(&plain(&line), MAX_SUMMARY_DETAIL_CHARS));
-            if out.len() == MAX_SUMMARY_DETAILS {
-                break;
-            }
+            let in_place = s.role == TestStepRole::Test && s.in_place_of().is_some();
+            lines.extend(line.map(|l| (l, in_place)));
+            lines.extend(left_out.into_iter().map(|l| (l, true)));
         }
-        out
+        let about_plan = lines.iter().filter(|(_, plan)| *plan).count();
+        let mut plan_room = MAX_SUMMARY_DETAILS;
+        let mut room = MAX_SUMMARY_DETAILS.saturating_sub(about_plan);
+        lines
+            .into_iter()
+            .filter(|(_, plan)| {
+                let left = if *plan { &mut plan_room } else { &mut room };
+                let keep = *left > 0;
+                *left = left.saturating_sub(1);
+                keep
+            })
+            .map(|(line, _)| cut_chars(&plain(&line), MAX_SUMMARY_DETAIL_CHARS))
+            .collect()
     }
 
     /// Whether this report is about `run_id` at `head_sha` and within every bound; the error names the first rule broken.
@@ -823,7 +1103,9 @@ impl TestReport {
     /// The report cut to its bounds: strings shortened at a character boundary, control characters other than newline and tab removed,
     /// extra steps dropped and, when the serialized report is still over [`MAX_REPORT_BYTES`] (output that JSON writes in two bytes a
     /// character, such as newlines, quotes and backslashes), the longest output tail halved again and again until it fits, each cut tail
-    /// marked `outputTruncated`. The end of every output is the part kept. `validate` passes on the result for the same run and head.
+    /// marked `outputTruncated`. The end of every output is the part kept. A cut takes agentd's head lines with the front, so a line of the
+    /// forms [`IN_PLACE_PREFIX`] and [`LEFT_OUT_PREFIX`] that then leads the output is the repository's and is removed.
+    /// `validate` passes on the result for the same run and head.
     pub fn bounded(mut self) -> Self {
         self.steps.truncate(MAX_REPORT_STEPS);
         for s in &mut self.steps {
@@ -838,7 +1120,7 @@ impl TestReport {
                 .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
                 .collect();
             let (tail, cut) = tail_bytes(&cleaned, MAX_REPORT_TAIL_BYTES);
-            s.output_tail = tail;
+            s.output_tail = if cut { without_plan_lines(tail) } else { tail };
             s.output_truncated |= cut;
         }
         self.reason = self
@@ -868,7 +1150,8 @@ impl TestReport {
             let size = |s: &TestStep| serde_json::to_vec(s).map_or(0, |b| b.len());
             let before = size(&self.steps[i]);
             let half = self.steps[i].output_tail.len() / 2;
-            self.steps[i].output_tail = tail_bytes(&self.steps[i].output_tail, half).0;
+            self.steps[i].output_tail =
+                without_plan_lines(tail_bytes(&self.steps[i].output_tail, half).0);
             self.steps[i].output_truncated = true;
             total = total.saturating_sub(before) + size(&self.steps[i]);
         }
@@ -930,10 +1213,32 @@ fn tail_bytes(s: &str, max: usize) -> (String, bool) {
     (s[start..].to_string(), true)
 }
 
-/// The note for a `cargo test` the harness chose from the manifest of a workspace of `members` members.
-fn plan_note_text(members: u32) -> String {
+/// `tail`, the end of an output whose front was cut off, without the lines of the forms [`IN_PLACE_PREFIX`] and [`LEFT_OUT_PREFIX`] at
+/// its head. agentd writes those lines at the head of the whole output, so a line of that form that leads what a cut left is one
+/// the repository printed, and nothing may read it as agentd's.
+fn without_plan_lines(tail: String) -> String {
+    let mut rest = tail.as_str();
+    while rest.starts_with(IN_PLACE_PREFIX) || rest.starts_with(LEFT_OUT_PREFIX) {
+        rest = rest.split_once('\n').map_or("", |(_, after)| after);
+    }
+    if rest.len() == tail.len() {
+        tail
+    } else {
+        rest.to_string()
+    }
+}
+
+/// The note for a `cargo test` the harness chose from the manifest of a workspace of `members` members. It opens with why the
+/// harness chose the command: the repository names no test command, or, for a step that stands in place of logged commands,
+/// the lifecycle log names only a part of the Rust tests; such a step may stand beside commands the log does name.
+fn plan_note_text(members: u32, in_place: bool) -> String {
+    let why = if in_place {
+        "The lifecycle log names only a part of the Rust tests"
+    } else {
+        "The repository names no test command"
+    };
     format!(
-        "The repository names no test command, so the harness chose `{PLAN_NOTE_COMMAND}` from the manifest (Cargo.toml). It runs the tests of the whole workspace, {members} members. A `.ham/test-command` file in the repository names a narrower command."
+        "{why}, so the harness chose `{PLAN_NOTE_COMMAND}` from the manifest (Cargo.toml). It runs the tests of the whole workspace, {members} members. A `.ham/test-command` file in the repository names a narrower command."
     )
 }
 
@@ -942,17 +1247,47 @@ fn quoted(command: &str) -> String {
     plain(command).replace('`', "'")
 }
 
+/// The words between the commands the first failed setup stopped and the commands a second one stopped, in the line
+/// [`TestReport::summary`] writes in `reason`.
+const ALSO_STOPPED: &str = "; also ";
+
 /// The parts of the line [`TestReport::summary`] writes in `reason` for the first command that was not run, ``NOT RUN: `<command>` (<why>)``
-/// with `, and N more` for more such commands: the command, the why and N. `None` for any other line.
+/// with `, and N more` for more such commands: the command, the why and N. `None` for any other line. What the line says of a second
+/// setup ([`also_stopped`]) is no part of them.
 fn not_run_parts(line: &str) -> Option<(&str, &str, usize)> {
-    let rest = line.strip_prefix(NOT_RUN_PREFIX)?.strip_prefix('`')?;
+    let line = match also_stopped(line) {
+        Some(_) => line
+            .rsplit_once(ALSO_STOPPED)
+            .map_or(line, |(head, _)| head),
+        None => line,
+    };
+    group_parts(line.strip_prefix(NOT_RUN_PREFIX)?)
+}
+
+/// The parts of one group of commands that were not run, `` `<command>` (<why>)`` with `, and N more`: the command, the why and N.
+fn group_parts(group: &str) -> Option<(&str, &str, usize)> {
+    let rest = group.strip_prefix('`')?;
     let (command, rest) = rest.split_once('`')?;
     let rest = rest.strip_prefix(" (")?;
-    let (why, more) = match rest.rsplit_once("), and ") {
-        Some((why, n)) => (why, n.strip_suffix(" more")?.parse().ok()?),
+    // The count is the end of the group. Words of a command inside the why that look like its start (`), and `) are no count.
+    let counted = rest.rsplit_once("), and ").and_then(|(why, n)| {
+        let more = n.strip_suffix(" more")?.parse::<usize>().ok()?;
+        Some((why, more))
+    });
+    let (why, more) = match counted {
+        Some(parts) => parts,
         None => (rest.strip_suffix(')')?, 0),
     };
     Some((command, why, more))
+}
+
+/// What the line [`TestReport::summary`] writes in `reason` says of a second setup that failed and stopped commands of its own:
+/// the first of those commands, the setup and the number of the other commands. The words are read only in the form the summary writes,
+/// ``; also `<command>` (skipped: the setup step `<setup>` failed)`` at the end of the line. `None` for a line without them.
+fn also_stopped(line: &str) -> Option<(&str, &str, usize)> {
+    let (_, group) = line.rsplit_once(ALSO_STOPPED)?;
+    let (command, why, more) = group_parts(group)?;
+    Some((command, setup_named(why)?, more))
 }
 
 /// `` `<command>` `` or `` `<command>` and N more ``.
@@ -960,6 +1295,209 @@ fn named(command: &str, more: usize) -> String {
     match more {
         0 => format!("`{command}`"),
         n => format!("`{command}` and {n} more"),
+    }
+}
+
+/// A head line about the plan: the prefix, then the command in backticks, cut to [`MAX_PLAN_LINE_COMMAND_CHARS`] characters, and the
+/// number of the other commands.
+fn plan_line(prefix: &str, command: &str, more: usize) -> String {
+    let command = cut_chars(&quoted(command), MAX_PLAN_LINE_COMMAND_CHARS);
+    format!("{prefix}{}", named(&command, more))
+}
+
+/// The command and the number of the other commands of a line [`plan_line`] wrote with `prefix`. The whole line must be in that form: a
+/// command in backticks that is not empty, then nothing or `` and N more`` with an N of at least 1. `None` for any other line, so words written
+/// after the command are never read.
+fn plan_line_parts<'a>(line: &'a str, prefix: &str) -> Option<(&'a str, usize)> {
+    let rest = line.strip_prefix(prefix)?.strip_prefix('`')?;
+    let (command, rest) = rest.split_once('`')?;
+    if command.is_empty() {
+        return None;
+    }
+    Some((command, more_of(rest)?))
+}
+
+/// The largest number of other commands a plan line may count. A lifecycle log is read up to 1 MiB, so it holds far fewer rows; a larger
+/// number is not agentd's, and the counts of the lines can be added without care for overflow.
+const MAX_PLAN_LINE_MORE: usize = 1_000_000;
+
+/// The number a plan line gives after its command: 0 for nothing, N for `` and N more`` with an N of 1 to [`MAX_PLAN_LINE_MORE`]. `None`
+/// for anything else.
+fn more_of(counted: &str) -> Option<usize> {
+    if counted.is_empty() {
+        return Some(0);
+    }
+    let digits = counted.strip_prefix(" and ")?.strip_suffix(" more")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=MAX_PLAN_LINE_MORE).contains(n))
+}
+
+/// The reason a line of [`LEFT_OUT_PREFIX`] gives after `; `, in the words [`left_out_line_of`] writes. `None` for any other words.
+fn left_out_why(field: &str) -> Option<LeftOutWhy> {
+    match field {
+        "packages" => return Some(LeftOutWhy::Packages(None)),
+        "not reached" => return Some(LeftOutWhy::NotReached),
+        "more than one project" => return Some(LeftOutWhy::Projects),
+        _ => {}
+    }
+    let file = field.strip_prefix("packages in ")?;
+    plain_file_name(file).then(|| LeftOutWhy::Packages(Some(file.to_string())))
+}
+
+/// `text` as a number written the way a number is printed: digits, with `-` in front of a negative one, and no leading zero.
+fn printed_number<T: std::str::FromStr + ToString>(text: &str) -> Option<T> {
+    text.parse::<T>().ok().filter(|n| n.to_string() == text)
+}
+
+/// What a line of [`LEFT_OUT_PREFIX`] says of the last logged run of its command behind `; `: the words `logged` and [`logged_words`].
+/// `None` for any other words, also for words of a run that passed, which agentd does not write.
+fn logged_failure(field: &str) -> Option<LoggedRun> {
+    let words = field.strip_prefix("logged ")?;
+    let (code, failed) = match words.strip_prefix("exit ") {
+        None => (None, Some(words)),
+        Some(rest) => match rest.split_once(", ") {
+            Some((code, failed)) => (Some(code), Some(failed)),
+            None => (Some(rest), None),
+        },
+    };
+    let exit_code = match code {
+        Some(text) => Some(printed_number::<i32>(text)?),
+        None => None,
+    };
+    let failed = match failed {
+        Some(text) => Some(printed_number::<u32>(text.strip_suffix(" failed")?)?),
+        None => None,
+    };
+    let run = LoggedRun {
+        exit_code,
+        passed: None,
+        failed,
+    };
+    (logged_words(&run).as_deref() == Some(words)).then_some(run)
+}
+
+/// What a line [`left_out_line_of`] wrote says. The whole line must be in that form: the command in backticks, the number of the others,
+/// then, each behind `; ` and in agentd's own words, the reason when there is one and what the log recorded when the last run did not
+/// pass. `None` for any other line, so words a repository wrote after a line of this form are never read.
+fn left_out_parts(line: &str) -> Option<LeftOutNote<'_>> {
+    let rest = line.strip_prefix(LEFT_OUT_PREFIX)?.strip_prefix('`')?;
+    let (command, rest) = rest.split_once('`')?;
+    if command.is_empty() {
+        return None;
+    }
+    let mut fields = rest.split("; ");
+    let more = more_of(fields.next()?)?;
+    let mut why = LeftOutWhy::NoSuiteCommand;
+    let mut field = fields.next();
+    if let Some(known) = field.and_then(left_out_why) {
+        why = known;
+        field = fields.next();
+    }
+    let mut logged = None;
+    if let Some(words) = field {
+        logged = Some(logged_failure(words)?);
+        field = fields.next();
+    }
+    if field.is_some() {
+        return None;
+    }
+    Some(LeftOutNote {
+        command,
+        more,
+        why,
+        logged,
+    })
+}
+
+/// The words of a detail line between the result of a step and the commands of the lifecycle log it ran in place of.
+const RAN_IN_PLACE_OF: &str = "; it ran in place of ";
+/// The same for a step that was not run or was stopped at its limit: it did not run in place of the commands, it stands there.
+const STANDS_IN_PLACE_OF: &str = "; it stands in place of ";
+/// The words of a detail line behind the commands of the lifecycle log it names.
+const OF_THE_LOG: &str = " of the lifecycle log";
+
+/// The number of commands of the lifecycle log that a detail line says its step stands in place of: the words
+/// [`TestReport::summary`] writes behind the result of such a step. `None` for a line without them. A command inside backticks holds no
+/// backtick of its own ([`quoted`]), so the words of a command are never taken for them.
+fn in_place_count(line: &str) -> Option<usize> {
+    [RAN_IN_PLACE_OF, STANDS_IN_PLACE_OF]
+        .iter()
+        .flat_map(|words| line.match_indices(words))
+        .find_map(|(at, words)| {
+            let rest = line[at + words.len()..].strip_prefix('`')?;
+            let (_, rest) = rest.split_once('`')?;
+            let (counted, rest) = rest.split_once(OF_THE_LOG)?;
+            rest.starts_with(", which name")
+                .then(|| more_of(counted))
+                .flatten()
+                .map(|more| more + 1)
+        })
+}
+
+/// The number of commands of the lifecycle log that a detail line says were left out with nothing in their place: a line
+/// [`left_out_detail`] wrote. `None` for any other line.
+fn left_out_count(line: &str) -> Option<usize> {
+    let rest = line.strip_prefix('`')?;
+    let (_, rest) = rest.split_once('`')?;
+    let (counted, rest) = rest.split_once(OF_THE_LOG)?;
+    (rest.starts_with(" was left out: ") || rest.starts_with(" were left out: "))
+        .then(|| more_of(counted))
+        .flatten()
+        .map(|more| more + 1)
+}
+
+/// The detail line of commands of the lifecycle log that the plan left out with nothing in their place: which, that each names a
+/// part of a suite, why no command of the report stands in their place, and what the log recorded for the command named when its last
+/// run did not pass.
+fn left_out_detail(note: &LeftOutNote<'_>) -> String {
+    let (verb, they) = if note.more == 0 {
+        ("was", "it")
+    } else {
+        ("were", "they")
+    };
+    let why = match &note.why {
+        LeftOutWhy::NoSuiteCommand => "the report found no command for the whole suite".to_string(),
+        LeftOutWhy::Packages(Some(file)) => {
+            format!("{file} names packages that the report does not install")
+        }
+        LeftOutWhy::Packages(None) => {
+            "a file of the repository names packages that the report does not install".to_string()
+        }
+        LeftOutWhy::NotReached if note.more == 0 => {
+            "the report found no command for the whole suite that runs the file it names"
+                .to_string()
+        }
+        LeftOutWhy::NotReached => {
+            "the report found no command for the whole suite that runs the files they name"
+                .to_string()
+        }
+        LeftOutWhy::Projects => {
+            "the log runs these tests in more than one project folder, so the report added no command at the root"
+                .to_string()
+        }
+    };
+    let recorded = match note.logged.as_ref().and_then(logged_words) {
+        None => String::new(),
+        Some(words) if note.more == 0 => format!("; the log recorded {words} for it"),
+        Some(words) => format!("; the log recorded {words} for `{}`", note.command),
+    };
+    format!(
+        "{}{OF_THE_LOG} {verb} left out: {they} {}, and {why}{recorded}.",
+        named(note.command, note.more),
+        names_a_part(note.more)
+    )
+}
+
+/// What the commands of a plan line have in common, as the words after `which` or `it`: each names a part of a suite.
+fn names_a_part(more: usize) -> &'static str {
+    match more {
+        0 => "names a test file, a test or a filter",
+        _ => "name test files, tests or filters",
     }
 }
 
@@ -992,6 +1530,34 @@ impl TestReportSummary {
             None => written,
             Some(_) => format!(
                 "The test commands that ran exited 0 in a clean checkout; {}. {written}",
+                self.counts_words()
+            ),
+        })
+    }
+
+    /// The sentence of a report whose first command left out is one the report added behind the model's own commands and then stopped at
+    /// its time limit ([`STOPPED_CHOICE`]) or never started for want of time ([`NO_TIME_FOR_CHOICE`]): the commands that ran come
+    /// first, as for a command that could not run as written, then the command and what happened to it. `None` when `line` is about
+    /// another reason.
+    fn choice_not_run_sentence(&self, line: &str) -> Option<String> {
+        let (command, why, more) = not_run_parts(line)?;
+        let what = if let Some(limit) = why.strip_prefix(STOPPED_CHOICE) {
+            format!("`{command}` was stopped at its time limit{limit}")
+        } else if why == NO_TIME_FOR_CHOICE {
+            format!("`{command}` did not run: {NO_TIME_FOR_CHOICE}")
+        } else {
+            return None;
+        };
+        let others = match more {
+            0 => String::new(),
+            1 => ", and 1 more command did not run".to_string(),
+            n => format!(", and {n} more commands did not run"),
+        };
+        let chosen = format!("{what}{others}.");
+        Some(match self.command {
+            None => chosen,
+            Some(_) => format!(
+                "The test commands that ran exited 0 in a clean checkout; {}. {chosen}",
                 self.counts_words()
             ),
         })
@@ -1075,8 +1641,58 @@ impl TestReportSummary {
         })
     }
 
-    /// One plain sentence for EVIDENCE.md, the pull request and `ham pull`: the claim when it is allowed, else what happened.
+    /// The words for EVIDENCE.md, the pull request and `ham pull`: one plain sentence about the commands of the report, the claim when it
+    /// is allowed, else what happened ([`TestReportSummary::steps_sentence`]). For a report whose plan chose a command in place of test
+    /// commands of the lifecycle log, or left some out, a second sentence says so and where the details are.
+    /// The claim keeps its words.
     pub fn sentence(&self) -> String {
+        let sentence = self.steps_sentence();
+        match self.plan_sentence() {
+            Some(plan) => format!("{sentence} {plan}"),
+            None => sentence,
+        }
+    }
+
+    /// What the plan did with test commands of the lifecycle log that name a part of a suite, as a sentence for the card: the report
+    /// chose a command for the whole suite in place of some, left some out with nothing in their place, or both, with the number of
+    /// commands. The numbers are read from the detail lines [`TestReport::summary`] wrote ([`in_place_count`], [`left_out_count`]), so the
+    /// summary has no member for them and every reader of a summary gives the same words. `None` for a report whose plan left nothing out.
+    fn plan_sentence(&self) -> Option<String> {
+        let (mut chosen, mut replaced, mut left_out) = (0usize, 0usize, 0usize);
+        for line in &self.details {
+            if let Some(commands) = in_place_count(line) {
+                chosen += 1;
+                replaced = replaced.saturating_add(commands);
+            }
+            left_out = left_out.saturating_add(left_out_count(line).unwrap_or(0));
+        }
+        let commands = |n: usize| match n {
+            1 => "1 command of the lifecycle log that names part of a suite".to_string(),
+            n => format!("{n} commands of the lifecycle log that name parts of a suite"),
+        };
+        let chose = match chosen {
+            1 => "a whole-suite command",
+            _ => "whole-suite commands",
+        };
+        match (replaced, left_out) {
+            (0, 0) => None,
+            (0, n) => Some(format!(
+                "The report left out {}; details are in EVIDENCE.md.",
+                commands(n)
+            )),
+            (n, 0) => Some(format!(
+                "The report chose {chose} in place of {}; details are in EVIDENCE.md.",
+                commands(n)
+            )),
+            (n, more) => Some(format!(
+                "The report chose {chose} in place of {} and left out {more} more; details are in EVIDENCE.md.",
+                commands(n)
+            )),
+        }
+    }
+
+    /// One plain sentence about the commands of the report: the claim when it is allowed, else what happened.
+    fn steps_sentence(&self) -> String {
         match self.status {
             TestReportStatus::Off => {
                 return "The clean-checkout test report was switched off for this run.".into();
@@ -1127,6 +1743,7 @@ impl TestReportSummary {
         {
             return self
                 .as_written_sentence(r)
+                .or_else(|| self.choice_not_run_sentence(r))
                 .unwrap_or_else(|| format!("{r}."));
         }
         if self.status == TestReportStatus::TimedOut {
@@ -1162,25 +1779,57 @@ impl TestReportSummary {
             .exit_code
             .map_or_else(|| "no code".to_string(), |c| c.to_string());
         if self.setup_failed {
+            let head = format!("Setup `{failed}` exited {code} in a clean checkout");
+            // The commands that a setup stopped, as the report lists them: those of the setup that failed first, and those of a
+            // second setup that failed too. A command is counted with the setup its reason names; a reason that was cut names none and
+            // counts for the first, as before.
+            let first_setup = setup_in_reason(&failed);
+            let parts = self.why().and_then(not_run_parts);
+            let (stopped, by_another) = match parts {
+                Some((command, why, more)) if why.starts_with(SKIPPED_FOR_SETUP) => {
+                    match setup_named(why).filter(|setup| *setup != first_setup) {
+                        Some(setup) => (None, Some((command, setup, more))),
+                        None => (
+                            Some(named(command, more)),
+                            self.why().and_then(also_stopped),
+                        ),
+                    }
+                }
+                _ => (None, None),
+            };
+            let too = by_another
+                .map(|(command, setup, more)| {
+                    format!(
+                        "; setup `{setup}` failed too, so {} did not run",
+                        named(command, more)
+                    )
+                })
+                .unwrap_or_default();
             if self.command.is_none() {
-                return format!(
-                    "Setup `{failed}` exited {code} in a clean checkout, so the test command did not run."
-                );
+                // No test command ran. The sentence names the command the setup kept from running when the report lists one, as it
+                // does below when other commands ran; a report that lists none keeps the words of before.
+                return match (stopped, too.is_empty()) {
+                    (Some(stopped), _) => format!("{head}, so {stopped} did not run{too}."),
+                    (None, false) => format!("{head}{too}."),
+                    (None, true) => format!("{head}, so the test command did not run."),
+                };
             }
             // Test commands ran beside the install that failed: the sentence names the command it kept from running, or says that the
             // commands ran without it, and what the runner reported for those that ran.
-            let head = format!("Setup `{failed}` exited {code} in a clean checkout");
-            return match self.why().and_then(not_run_parts) {
-                Some((command, why, more)) if why.starts_with(SKIPPED_FOR_SETUP) => format!(
-                    "{head}, so {} did not run; for the test commands that ran, {}.",
-                    named(command, more),
+            return match (stopped, too.is_empty(), parts) {
+                (Some(stopped), ..) => format!(
+                    "{head}, so {stopped} did not run{too}; for the test commands that ran, {}.",
                     self.counts_words()
                 ),
-                Some(_) => format!(
+                (None, false, _) => format!(
+                    "{head}, so the test commands ran without it{too}; {}.",
+                    self.counts_words()
+                ),
+                (None, true, Some(_)) => format!(
                     "{head}; for the test commands that ran, {}.",
                     self.counts_words()
                 ),
-                None => format!(
+                (None, true, None) => format!(
                     "{head}, so the test commands ran without it; {}.",
                     self.counts_words()
                 ),

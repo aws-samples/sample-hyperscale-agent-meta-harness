@@ -99,7 +99,14 @@ Owned by `scripts/AGENTS.md`, which documents each wrapper's user-facing contrac
   writes that lock again every `LOCK_RENEW_S` seconds (`renew_caller_lock`): the text as it read it and one last line `renewed=<UTC time>`, only while
   the lock holds the caller's token and has no `deploys=no` line. The stage's API service therefore keeps the stage closed to new runs while the deploy
   runs, also when the setup that holds the lock has stopped following its build. A lock that is gone is never written again, and the deploy never deletes
-  the caller's lock. A Fail of a step
+  the caller's lock. When the deploy has finished, right after the settings record says `deployed`, `open_caller_lock` writes the caller's lock once more:
+  every line as it read it, without `renewed=`, and `deploys=no` last, so the stage starts runs again while the caller keeps the lock for what follows the deploy.
+  The renewals stop first; a renewal and the open take turns (`lock_cycle`), and an open that waits longer than `LOCK_JOIN_S` for its turn writes nothing. After
+  `LOCK_SETTLE_S` seconds (test hook `DEPLOY_LOCK_SETTLE_S`, which can only shorten it) the lock is read back and the line written once more when a write of
+  the caller replaced it. A lock that is gone or holds another token is left alone, a call that fails is said and never fails the deploy (the line names the call: `could not be written`
+  when nothing was written, `could not be read back after that write` when the line was written and only the read-back failed, `could not be written again` when the
+  write that puts the line back failed), a deploy that fails
+  or is refused never opens the lock, and a lock the deploy took itself is deleted, not opened (`scripts/tests/test_deploy_b843_lock_open.py`). A Fail of a step
   in `REFUSALS` before the first stack change prints `DEPLOY-REFUSED reason=<step> wait=<yes|no> stage=unchanged :: <action>` and exits 3; any other failure
   before it prints `DEPLOY-STAGE unchanged` on the line before its `DEPLOY-FAIL`. `--print-settings` runs the resolution alone and writes nothing.
   Tests: `scripts/tests/test_setup_deploy_settings.py`.
@@ -114,11 +121,14 @@ Owned by `scripts/AGENTS.md`, which documents each wrapper's user-facing contrac
   comes from the catalog, the Region or the role). A changed default changes this file and `infra/lib/config.ts` together (the tests pin them).
 - `bootstrap-min-version.txt`: one positive integer line, the CDK bootstrap version a deploy needs when the synthesized assembly names none.
   `deploy.py` reads it (`MIN_BOOTSTRAP`, `read_min_bootstrap`), and setup's preflight compares the account's bootstrap with it.
-- `deploy-lock-stale-seconds.txt`: one positive integer line (1800), the seconds after its last write for which a deploy lock still counts as renewed.
+- A caller's lock with the line `starts=yes`: setup writes the line for `--update --allow-new-runs`, and the API service starts runs under such a lock. A run can then start at any moment of the deploy, so the deploy guard makes no look and refuses every new worker runtime version, with runs active or not: `DEPLOY-REFUSED reason=new-runs wait=no` (`REFUSAL_STEPS`). A deploy that keeps the worker runtime runs under the lock, and `renew_caller_lock` keeps the line as it keeps every line. `open_caller_lock` keeps it too: the lock of such a deploy ends with `starts=yes` and, last, `deploys=no`, and the deploy's line says that the stage kept starting runs under the lock, not that it starts runs again. A lock the deploy takes itself (route `manual`) never has the line.
+- The seconds after its last write for which a deploy lock still counts as renewed are no file of this directory: the one integer line of
+  `crates/control-api/deploy-lock-stale-seconds.txt` holds them, inside the paths of `DEPLOYABLE_PATHS`, so a release that changes the number alone deploys it.
   `scripts/setup/runner.sh` reads it (`RN_LOCK_STALE_SECONDS`; its fallback is the same number), and the stage's API service embeds it at build time
-  (`crates/control-api/src/admission.rs`, `STALE_AFTER_S`): a lock written within that time closes the stage to new runs. `scripts/tests/test_setup_b804_wait.py` and
-  `crates/control-api/tests/b804_admit.rs` hold the readers to it. With `HAMH_DEPLOY_LOCK_TOKEN`, `deploy.py` also refuses (`lock`) under a caller's lock that has the
-  line `deploys=no`: setup writes that line for a hold that changes nothing on the stage, and the API service starts runs under such a lock.
+  (`crates/control-api/src/admission.rs`, `STALE_AFTER_S`): a lock written within that time closes the stage to new runs. `LOCK_RENEW_S` of `deploy.py` stays below it.
+  `scripts/tests/test_b841_lock_number.py`, `scripts/tests/test_setup_b804_wait.py` and `crates/control-api/tests/b804_admit.rs` hold the readers to it.
+  With `HAMH_DEPLOY_LOCK_TOKEN`, `deploy.py` also refuses (`lock`) under a caller's lock that has the line `deploys=no`: setup writes that line for a hold that changes
+  nothing on the stage, and the API service starts runs under such a lock.
 - `teardown.py`: implementation of `scripts/teardown.sh` (the selected entry of the tree's `accounts.json`;
   it restores the invocation logging deploy.sh recorded before enabling it); flow, ownership rules, the
   record (`write_record`) and test hooks `TEARDOWN_*` in its

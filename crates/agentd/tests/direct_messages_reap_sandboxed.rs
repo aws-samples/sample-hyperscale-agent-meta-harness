@@ -203,6 +203,8 @@ mod real_processes {
     /// Set for the run inside the private namespace.
     const PRIVATE: &str = "HAMH_REAP_SANDBOXED_PRIVATE";
     const TEST: &str = "real_processes::a_tool_that_scrubs_its_environment_and_is_left_to_init_is_gone_after_the_reap";
+    /// The same scenario with a tool whose pid is known while it still has its environment.
+    const LATE_SCRUB_TEST: &str = "real_processes::b836_a_tool_whose_pid_is_known_before_it_scrubs_its_environment_is_waited_for";
     /// The processes in a private namespace are the test, the stand-in engine, its tool and their shells; a number past this means the
     /// machine's `/proc` is showing.
     const PRIVATE_PROC_LIMIT: usize = 20;
@@ -283,11 +285,19 @@ mod real_processes {
 
     /// A stand-in tool script: a background program that runs with an empty environment, started from a subshell so that its parent ends and
     /// it is left to init. `$1` is the file that receives its pid. The script is a file, so no command line carries more than its path.
-    fn tool_script(dir: &Path) -> PathBuf {
+    ///
+    /// The shell writes the pid as soon as it has forked: the tool is then still the shell's copy, and after that `env`, both with the full
+    /// environment, and it has scrubbed its environment only once it runs `sleep`. With `late_scrub` the tool stays the shell's copy until
+    /// the file `$1.go` exists, so a test can read its pid at the moment a loaded machine shows by chance: known, and not scrubbed yet.
+    fn tool_script(dir: &Path, late_scrub: bool) -> PathBuf {
         let p = dir.join("tool.sh");
         std::fs::write(
             &p,
-            "#!/bin/sh\n( env -i /bin/sleep 600 & echo $! > \"$1\" )\nexit 0\n",
+            if late_scrub {
+                "#!/bin/sh\n( ( while [ ! -e \"$1.go\" ]; do /bin/sleep 0.05; done; exec env -i /bin/sleep 600 ) & echo $! > \"$1\" )\nexit 0\n"
+            } else {
+                "#!/bin/sh\n( env -i /bin/sleep 600 & echo $! > \"$1\" )\nexit 0\n"
+            },
         )
         .unwrap();
         let mut perm = std::fs::metadata(&p).unwrap().permissions();
@@ -298,6 +308,19 @@ mod real_processes {
 
     #[test]
     fn a_tool_that_scrubs_its_environment_and_is_left_to_init_is_gone_after_the_reap() {
+        scenario(TEST, false);
+    }
+
+    /// The pid of the tool is in its file before the tool has scrubbed its environment. On a build host at load 40 to 50 the test read
+    /// the environment in that gap once and failed with "the tool's environment is empty". Here the gap is held open until the
+    /// test has seen it, and the scenario must still end as the first test's does.
+    #[test]
+    fn b836_a_tool_whose_pid_is_known_before_it_scrubs_its_environment_is_waited_for() {
+        scenario(LATE_SCRUB_TEST, true);
+    }
+
+    /// The scenario of both tests; `test` is the name the test runs again under (as the stand-in engine, and inside the private namespace).
+    fn scenario(test: &str, late_scrub: bool) {
         if std::env::var(CHILD).is_ok() {
             // The stand-in engine: it installs the launcher's filter, starts the tool and stays alive until it is killed.
             ipc::install().unwrap();
@@ -315,7 +338,7 @@ mod real_processes {
         }
         if std::env::var(PRIVATE).is_err() {
             // The reap reads the machine's /proc: run where the test's own processes are the only ones in view.
-            if let Some(out) = rerun_in_private_namespace("unshare", TEST) {
+            if let Some(out) = rerun_in_private_namespace("unshare", test) {
                 assert!(
                     out.status.success(),
                     "the run in the private namespace failed:\n{}\n{}",
@@ -341,11 +364,11 @@ mod real_processes {
             );
         }
         let dir = common::scratch("reap-sbx");
-        let script = tool_script(&dir);
+        let script = tool_script(&dir, late_scrub);
         let pidfile = dir.join("tool.pid");
         let tag = Reaper::new_tag();
         let mut engine = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST, "--nocapture"])
+            .args(["--exact", test, "--nocapture"])
             .env(CHILD, "1")
             .env(TAG_ENV, &tag)
             .env("HAMH_REAP_SANDBOXED_SCRIPT", &script)
@@ -372,7 +395,25 @@ mod real_processes {
         };
         // TRIGGER PRESENT: the tool runs, carries no tag, and has another parent than the engine.
         assert!(alive(tool), "the tool is running");
-        let environ = std::fs::read(format!("/proc/{tool}/environ")).unwrap();
+        if late_scrub {
+            // TRIGGER PRESENT: the pid is known and the tool still has the environment it was started with; now it may scrub it.
+            let early = std::fs::read(format!("/proc/{tool}/environ")).unwrap();
+            assert!(
+                !early.is_empty(),
+                "the tool scrubbed its environment before it was told to"
+            );
+            std::fs::write(format!("{}.go", pidfile.display()), b"").unwrap();
+        }
+        // The pid is in its file as soon as the shell has forked; the tool has an empty environment two execs later (`env`, then
+        // `sleep`). A loaded machine takes longer for them than the test takes to read the pid, so the test waits for the scrub, inside
+        // the 20 s the tool has to start in.
+        let environ = loop {
+            let environ = std::fs::read(format!("/proc/{tool}/environ")).unwrap();
+            if environ.is_empty() || Instant::now() >= end {
+                break environ;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
         assert!(environ.is_empty(), "the tool's environment is empty");
         let stat = std::fs::read_to_string(format!("/proc/{tool}/stat")).unwrap();
         let ppid: u32 = stat

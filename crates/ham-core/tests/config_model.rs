@@ -29,7 +29,7 @@ fn the_config_holds_fifteen_documented_keys_and_default_model_round_trips() {
     let text = render_config(&cfg);
     assert_eq!(parse_config(&text).unwrap(), cfg);
     assert!(text.contains("defaultModel"), "{text}");
-    assert_eq!(KEYS.len(), 46);
+    assert_eq!(KEYS.len(), 47);
     // The owner's spelling is read too.
     let owner = parse_config("default_model = \"us.openai.gpt-6.1-sol\"\n").unwrap();
     assert_eq!(

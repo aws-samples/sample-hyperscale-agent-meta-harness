@@ -22,6 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Events of the direct agent the run list reads to find an open question. A question that is open leaves the agent waiting, so
 /// few events follow it; the tail only has to reach back over the quiet wait.
 pub(crate) const TAIL_EVENTS: usize = 200;
+/// Events of the harness shard that are read for a run whose agent shows an open question: the service's word that the
+/// question's session was lost is among the newest of them. A run writes about ten harness events.
+pub(crate) const HARNESS_TAIL_EVENTS: usize = 50;
 /// A control agentd took this long ago without an acknowledgement is queued again by a resend of the same answer.
 pub(crate) const REARM_AFTER_S: i64 = 12;
 /// Events after the request the resend path reads to look for an acknowledgement.
@@ -224,9 +227,12 @@ pub(crate) fn acknowledged(events: &[Envelope], request_id: &str) -> bool {
 
 /// The open blocking question in these events (oldest first), as the run list shows it. A non-blocking notice is not a question.
 pub(crate) fn brief_of(events: &[Envelope]) -> Option<NeedsInputBrief> {
+    // The agent's own events, and the harness's: the fold reads the end of the run and the loss of a session from the second.
     let direct: Vec<&Envelope> = events
         .iter()
-        .filter(|e| e.agent_id.as_deref() == Some(DIRECT_AGENT_ID))
+        .filter(|e| {
+            e.agent_id.as_deref() == Some(DIRECT_AGENT_ID) || e.authority == Authority::Harness
+        })
         .collect();
     let open = fold_input(direct).open?;
     open.payload.blocking.then_some(NeedsInputBrief {
@@ -243,11 +249,26 @@ pub(crate) async fn active_tail<S: Store>(
     store: &S,
     run_id: &str,
 ) -> Result<(Option<NeedsInputBrief>, Option<String>), StoreError> {
-    let events = store
+    let mut events = store
         .latest_events(run_id, direct_shard(), TAIL_EVENTS)
         .await?;
     let newest = events.last().map(|e| e.ts.clone());
-    Ok((brief_of(&events), newest))
+    let mut brief = brief_of(&events);
+    // A question whose session the service has marked lost is over, and no engine knows its request id. The start of the next
+    // session is among the agent's events and closes it in the fold; until that session starts, only the service's word says so, and
+    // that is on the harness shard. It is read for a run that shows an open question only, so a run without one costs one read as before.
+    if brief.is_some() {
+        let harness = store
+            .latest_events(
+                run_id,
+                event_shard(Authority::Harness, None),
+                HARNESS_TAIL_EVENTS,
+            )
+            .await?;
+        events.extend(harness);
+        brief = brief_of(&events);
+    }
+    Ok((brief, newest))
 }
 
 #[cfg(test)]

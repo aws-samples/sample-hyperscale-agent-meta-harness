@@ -10,10 +10,14 @@ use harness_protocol::api::internal::{
     EventsBatchRequest, EventsBatchResponse, HeartbeatRequest, PendingControl, TurnCompleteRequest,
 };
 use harness_protocol::direct::{InstructAction, InstructOrigin};
+use harness_protocol::direct_input::{
+    PROGRESS_INPUT_CLOSED, PROGRESS_INPUT_RECEIVED, PROGRESS_NEEDS_INPUT,
+};
 use harness_protocol::envelope::{
     Authority, Envelope, EventType, MAX_INLINE_PAYLOAD_BYTES, Payload, SCHEMA_VERSION,
 };
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
@@ -133,6 +137,15 @@ pub struct EventRecorder {
     mint: fn() -> String,
     /// Woken by [`EventRecorder::record_urgent`]: the flusher posts without waiting for its tick.
     nudge: Notify,
+    /// When this recorder was made; the time of its newest event is counted from it.
+    born: tokio::time::Instant,
+    /// The milliseconds from `born` to the newest event this recorder took (0 until the first).
+    last_event_ms: AtomicU64,
+    /// The session waits for the user's answer: a blocking `needs-input` was recorded, and neither its `input-received` or
+    /// `input-closed` nor the end of the turn has followed. No beat is written meanwhile ([`EventRecorder::waits_for_answer`]).
+    question_open: AtomicBool,
+    /// The milliseconds between two beats of a quiet session ([`EventRecorder::beat_when_quiet`]); 0 while the recorder writes none.
+    beat_ms: AtomicU64,
 }
 
 impl EventRecorder {
@@ -148,7 +161,61 @@ impl EventRecorder {
             buf: Mutex::new(Buffer::default()),
             mint,
             nudge: Notify::new(),
+            born: tokio::time::Instant::now(),
+            last_event_ms: AtomicU64::new(0),
+            question_open: AtomicBool::new(false),
+            beat_ms: AtomicU64::new(0),
         })
+    }
+
+    /// A flusher started after this call records a beat when this recorder's newest event is `every` old: a `turn.progress` with
+    /// the member `alive` and no `kind`, which a client that does not know the member shows nothing for. Two events of a live session
+    /// are then never further apart than `every` (and the flusher's tick), so a reader of the events can tell a session that stopped
+    /// answering from one that runs a long command. `turn.started` names the interval in whole seconds (`beatS`, rounded up).
+    pub fn beat_when_quiet(&self, every: Duration) {
+        let ms = u64::try_from(every.as_millis()).unwrap_or(u64::MAX).max(1);
+        self.beat_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// The seconds between two beats of a quiet session, as `turn.started` names them; `None` for a recorder that writes none.
+    pub fn beat_s(&self) -> Option<u64> {
+        self.beat_every().map(|every| {
+            u64::try_from(every.as_millis().div_ceil(1000))
+                .unwrap_or(u64::MAX)
+                .max(1)
+        })
+    }
+
+    /// The time between two beats of a quiet session; `None` for a recorder that writes none.
+    pub fn beat_every(&self) -> Option<Duration> {
+        Some(self.beat_ms.load(Ordering::SeqCst))
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis)
+    }
+
+    /// The milliseconds since this recorder was made.
+    fn age_ms(&self) -> u64 {
+        u64::try_from(self.born.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// When the next beat is due: one beat interval after the newest event this recorder took (after its making, until the
+    /// first). `None` for a recorder that writes no beat.
+    fn beat_due(&self) -> Option<tokio::time::Instant> {
+        let every = self.beat_every()?;
+        let last = Duration::from_millis(self.last_event_ms.load(Ordering::SeqCst));
+        Some(self.born + last + every)
+    }
+
+    /// The session waits for the user's answer to a blocking question. It writes no beat then: the run list finds an open
+    /// question in the newest events of the agent (`control-api`, the tail read of `needsInput`), the wait may last 30 days, and a beat
+    /// a minute would push the question out of that tail after a few hours. The client calls no waiting session silent.
+    fn waits_for_answer(&self) -> bool {
+        self.question_open.load(Ordering::SeqCst)
+    }
+
+    /// Starts the time to the next beat again without an event (a beat that was due while a question is open).
+    fn rest(&self) {
+        self.last_event_ms.store(self.age_ms(), Ordering::SeqCst);
     }
 
     /// Records an event under an id made inside the append: the ids of one recorder grow in the order of the appends, so the order
@@ -188,6 +255,18 @@ impl EventRecorder {
             buf.minted_tail.clone_from(&event_id);
         }
         let value = build(&event_id);
+        // A blocking question opens the wait for the user's answer; its acknowledgement, its closing and the end of the turn
+        // end it (`waits_for_answer`).
+        match (event_type, value.get("kind").and_then(Value::as_str)) {
+            (EventType::TurnProgress, Some(PROGRESS_NEEDS_INPUT))
+                if value.get("blocking").and_then(Value::as_bool) == Some(true) =>
+            {
+                self.question_open.store(true, Ordering::SeqCst);
+            }
+            (EventType::TurnProgress, Some(PROGRESS_INPUT_RECEIVED | PROGRESS_INPUT_CLOSED))
+            | (EventType::TurnEnded, _) => self.question_open.store(false, Ordering::SeqCst),
+            _ => {}
+        }
         let bytes = serde_json::to_vec(&value).map_or(0, |v| v.len());
         let value = if bytes > MAX_INLINE_PAYLOAD_BYTES {
             json!({ "truncated": true, "bytes": bytes })
@@ -208,6 +287,7 @@ impl EventRecorder {
             payload: Payload::Inline { value },
         };
         buf.events.push(e);
+        self.last_event_ms.store(self.age_ms(), Ordering::SeqCst);
         let excess = buf.events.len().saturating_sub(MAX_BUFFERED);
         buf.events.drain(..excess);
         event_id
@@ -494,6 +574,15 @@ pub fn spawn_flusher_with(
         let mut tick = tokio::time::interval(every);
         let mut beat = tokio::time::interval(heartbeat_every);
         loop {
+            // The beat of a quiet session is due one beat interval after the recorder's newest event. The time is read at each
+            // pass of the loop (the tick makes one every `every` at least), so an event taken in between moves it. A recorder that
+            // writes no beat never wakes this.
+            let quiet = async {
+                match rec.beat_due() {
+                    Some(due) => tokio::time::sleep_until(due).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 _ = &mut stopped => {
                     flush(&rec, sink.as_ref(), log.as_ref(), &mut pending, true, &controls).await;
@@ -505,6 +594,21 @@ pub fn spawn_flusher_with(
                     let req = HeartbeatRequest { run_id: rec.run_id.clone(), agent_id: rec.agent_id.clone(), turn };
                     if let Err(e) = sink.heartbeat(req).await {
                         log.line(&format!("heartbeat failed: {e}"));
+                    }
+                }
+                // The newest event is one beat interval old: a beat (`beat_when_quiet`). The time is read again, because an
+                // event may have been taken while this pass waited.
+                () = quiet => {
+                    if rec.beat_due().is_some_and(|due| due <= tokio::time::Instant::now()) {
+                        if rec.waits_for_answer() {
+                            // No beat behind an open question; the time to the next one starts again.
+                            rec.rest();
+                        } else {
+                            rec.record(
+                                EventType::TurnProgress,
+                                json!({"turn": harness_protocol::direct::DIRECT_TURN, "alive": {"session": turn}}),
+                            );
+                        }
                     }
                 }
             }

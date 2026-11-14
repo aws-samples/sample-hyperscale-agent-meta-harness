@@ -1104,3 +1104,65 @@ async fn a_store_that_does_not_implement_the_new_reads_reports_itself_unavailabl
         Err(StoreError::Unavailable(_))
     ));
 }
+
+// ----: the question of a lost session ----
+
+/// The service's word that session 1 was lost, on the harness shard.
+fn session_lost(event_id: &str) -> Envelope {
+    Envelope {
+        schema_version: SCHEMA_VERSION,
+        event_id: event_id.into(),
+        run_id: RUN.into(),
+        task_id: None,
+        agent_id: None,
+        seq: 1,
+        ts: at(0),
+        event_type: EventType::RunWaiting,
+        authority: Authority::Harness,
+        payload: Payload::Inline {
+            value: json!({"kind": "session-lost", "session": 1, "decidedAt": at(0), "cause": "no-heartbeat", "silenceS": 600,
+                          "lostInARow": 1, "limit": 3, "then": "restart", "nextSession": 2, "from": "start"}),
+        },
+    }
+}
+
+#[tokio::test]
+async fn b842_a_question_whose_session_the_service_marked_lost_is_not_listed_as_waiting() {
+    let f = Fake::open(1800);
+    f.events
+        .lock()
+        .unwrap()
+        .push(session_lost("01M5A2R7K3C9XJ4D8E6FQ0WT2A"));
+    let (status, v) = list(&f).await;
+    assert_eq!(status, 200, "{v}");
+    assert!(
+        v["runs"][0].get("needsInput").is_none(),
+        "the run list still marks the question of a lost session: {v}"
+    );
+    // A session lost before the question was asked: the question is the new session's, and the mark stays.
+    let f = Fake::open(1800);
+    f.events
+        .lock()
+        .unwrap()
+        .push(session_lost("01M5A2R7K3C9XJ4D8E6FQ0WT0A"));
+    let (_, v) = list(&f).await;
+    assert_eq!(v["runs"][0]["needsInput"]["requestId"], REQ, "{v}");
+}
+
+#[tokio::test]
+async fn b842_a_question_is_not_listed_once_a_later_session_of_the_run_has_started() {
+    let f = Fake::open(1800);
+    let mut started = progress(
+        "01M5A2R7K3C9XJ4D8E6FQ0WT2B",
+        RUN,
+        "direct",
+        json!({"turn": 1, "engine": "cline", "model": OPUS, "role": "direct", "session": 2, "beatS": 60}),
+    );
+    started.event_type = EventType::TurnStarted;
+    f.events.lock().unwrap().push(started);
+    let (_, v) = list(&f).await;
+    assert!(
+        v["runs"][0].get("needsInput").is_none(),
+        "the run list still marks the question of the session before: {v}"
+    );
+}

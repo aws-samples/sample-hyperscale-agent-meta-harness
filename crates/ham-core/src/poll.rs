@@ -159,7 +159,8 @@ impl PollPlan {
                 }
                 fresh
             } else {
-                true
+                // A beat says that the session lives, not that the run is busy: a page of beats alone keeps the long wait.
+                page.events.iter().any(|e| !crate::lost_session::is_beat(e))
             };
             if fresh {
                 any = true;

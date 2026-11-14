@@ -1230,6 +1230,21 @@ impl App {
         ))
     }
 
+    /// What the status block says about the sessions of a run that goes on: a session that has been silent for two beats (since
+    /// when, and what the service does when that lasts), else the newest session the service lost (`RunView::lost_note`: which session
+    /// starts and from which copy; once that session has started the same in the past tense, for five minutes, and nothing once
+    /// another session has started since). `None` for a run that has ended: its card names the lost sessions.
+    ///
+    /// The silence is measured up to the last read that succeeded (`read_at`), not up to the screen's clock: after ten minutes offline,
+    /// or a night with the lid closed, the newest event the client holds is old because the client read nothing, and the banner of the
+    /// failed reads says that the last state read is shown.
+    pub(crate) fn session_note(&self, v: &RunView) -> Option<String> {
+        if let Some(quiet) = self.read_at.and_then(|read| v.silence_at(read)) {
+            return Some(quiet.sentence());
+        }
+        v.lost_note(self.now)
+    }
+
     /// The cards at the end of the conversation, in order: the status, the agents (folded), the blocked panel, the question and the
     /// delivery card. `width` is the columns a card line gets before it wraps.
     fn chat_cards(&self, v: &RunView, width: usize) -> Vec<Card> {
@@ -1245,6 +1260,7 @@ impl App {
                 width,
                 self.model_fallback(&v.run_id),
                 self.saved_line(v).as_deref(),
+                self.session_note(v).as_deref(),
             )
             .iter()
             .map(line_text)
@@ -2343,12 +2359,14 @@ fn blocked_lines(v: &RunView) -> Vec<Line<'static>> {
     vec![Line::from(format!("reason: {}", s(&b.reason)))]
 }
 
-/// The status block of a run. `saved` is the line that says when the last copy of the work was saved, when the run has one.
+/// The status block of a run. `saved` is the line that says when the last copy of the work was saved, when the run has one;
+/// `note` is the sentence about a session that is silent or was lost, which the card wraps.
 fn header_lines(
     v: &RunView,
     width: usize,
     fallback: Option<&str>,
     saved: Option<&str>,
+    note: Option<&str>,
 ) -> Vec<Line<'static>> {
     // A direct run has no gates, tests or verdicts: its status block names the harness's label.
     let status = v
@@ -2402,6 +2420,9 @@ fn header_lines(
     )));
     if let Some(saved) = saved {
         lines.push(Line::from(cut(&s(saved), width)));
+    }
+    if let Some(note) = note {
+        lines.push(Line::from(s(note)));
     }
     let windows = v.windows();
     if !windows.is_empty() {

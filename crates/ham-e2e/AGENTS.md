@@ -17,6 +17,9 @@ Owned by `crates/AGENTS.md`. The transcripts it replays are the data of `fixture
   second prompt is queued inside the engine and a later cancel does nothing, a cancel kills the shell tool and leaves its orphans, an engine can hang, die or answer a provider's 503.
   A prompt scripts its turn with one `@fake{...}` JSON object; the table of directives is the header of `src/fake_cline.rs`. Its shell tools are plain `sleep` processes started without a
   shell. `tests/fake_cline_inproc.rs` serves the same engine in process so a coverage run sees its lines.
+  The engine opens a prompt for its cancel before it reads the next line. The end of a turn is one step for its reader: the session is freed, the `prompt-end` line is written and the
+  answer leaves, and no prompt is admitted in between. A client that sends its next prompt the moment it has read an answer is never queued behind the turn that answered. A prompt that
+  reaches the engine while an answer is on its way out waits for that answer and then runs as a prompt of its own, with no `overlap` line.
 - `goal_sim` plays the goal plugin of the engine and the observer of the harness: a scenario folder with a `goal.json` makes the engine claim the goal that agentd wrote to the state
   file, go on with the scripted rounds by itself, write the rounds log, ignore `session/cancel`, and refuse the completion call before a verification round.
 - `fake_mcp` is the engine's MCP client for the tests of agentd's tool hook: it reads tool servers from a settings file and calls them as a transcript says.

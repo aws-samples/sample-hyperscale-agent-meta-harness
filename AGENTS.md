@@ -163,8 +163,10 @@ The documentation set is `README.md` and `docs/` (`docs/AGENTS.md`). `setup.sh` 
    while a run works, agentd saves a copy of the work tree to the stage's bucket when it changed (every `DEFAULT_SNAPSHOT_EVERY_S` seconds
    and after a tool call); when the engine has stopped, it saves the end state before the session's bundle and before anything can refuse
    a delivery; no check that refuses or fails a delivery removes or hides that copy; and however a run ends, `ham pull <runId> --snapshot`
-   downloads the latest copy and every text about the run says so. A session that dies while the engine works loses at most one minute of
-   file changes, or more for a repository whose copies take long. `docs/user-guide.md` ("Your work is kept") states the guarantee, the most that can be lost and how long copies are kept.
+   downloads the latest copy and every text about the run says so. A session that dies while the engine works can lose up to
+   one minute of file changes plus the time one copy takes, or more for a repository whose copies take long or while the run says that a copy is late or could not be saved. The minute is the default of the timer: a user may lengthen it for their runs
+   (`run.copy_every_minutes`, 1 to 60, the request's `snapshotEveryS`), and that bound moves with it. No setting and no request switches the
+   copies off, and the copy after a tool call and the copy of the end do not move. `docs/user-guide.md` ("Your work is kept") states the guarantee, the most that can be lost and how long copies are kept.
 
 ## Custom rules
 

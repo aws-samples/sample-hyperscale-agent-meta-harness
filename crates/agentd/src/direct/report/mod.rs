@@ -40,12 +40,13 @@ use crate::time::{format_rfc3339, now_unix};
 use harness_core::refusal::redact;
 use harness_protocol::direct::{
     DEFAULT_REPORT_STEP_S, DEFAULT_REPORT_TAIL_BYTES, DirectOutcome, MAX_REPORT_BYTES,
-    MAX_REPORT_STEP_S, MAX_REPORT_TAIL_BYTES, NEEDS_PREFIX, REPORT_SKIPPED_NO_TIME, TestReport,
-    TestReportStatus, TestStep, TestStepRole, report_step_s_ok, s3,
+    MAX_REPORT_STEP_S, MAX_REPORT_TAIL_BYTES, NEEDS_PREFIX, NO_TIME_FOR_CHOICE,
+    REPORT_SKIPPED_NO_TIME, STOPPED_CHOICE, TestReport, TestReportStatus, TestStep, TestStepRole,
+    in_place_line, left_out_line_of, report_step_s_ok, s3,
 };
 use harness_protocol::envelope::EventType;
 use harness_protocol::output_pins::OutputPin;
-use plan::{Install, Plan, PlannedStep};
+use plan::{Install, Plan, PlanNotes, PlannedStep};
 use progress::Progress;
 use run::{RunEnv, SKIPPED_FOR_DISK, checkout, ran_out_of_disk, run_step_scanned};
 use std::collections::BTreeMap;
@@ -331,7 +332,8 @@ async fn make_report(
         // The test user owns the checkout it runs in; the report directory itself stays root's.
         crate::engine::chown_tree(&[&checkout_dir], owner).await;
     }
-    let steps = match plan::plan(&checkout_dir) {
+    let (planned, notes) = plan::plan_with_notes(&checkout_dir);
+    let steps = match planned {
         Plan::Steps(s) => s,
         Plan::NoCommand(why) => {
             let mut r =
@@ -375,9 +377,10 @@ async fn make_report(
     for step in &mut service_steps {
         services::scrub(step, &secrets);
     }
-    let (mut done, status, reason) = run_steps(
+    let (mut done, status, reason) = run_planned(
         &env,
         &steps,
+        &notes,
         &checkout_dir,
         settings,
         started,
@@ -457,14 +460,52 @@ pub async fn run_steps(
     live: &[services::Live],
     secrets: &[String],
 ) -> (Vec<TestStep>, TestReportStatus, Option<String>) {
+    let all = steps.len();
+    run_steps_from(
+        env, steps, all, cwd, settings, started, progress, live, secrets,
+    )
+    .await
+}
+
+/// [`run_steps`] for a plan whose steps from the place `chosen_from` on are ones the report added behind the model's own commands, in
+/// place of logged commands that name a part of a suite. Such a step never makes the
+/// report read as timed out: the model's own commands have run by then, and their result stands. One that is stopped at its limit is
+/// listed as not run with [`STOPPED_CHOICE`] and the limit, one that the report's time leaves no room for with [`NO_TIME_FOR_CHOICE`],
+/// and the report stays `ran`. An install among them that is stopped leaves the steps that need it not run, like one that failed.
+#[allow(clippy::too_many_arguments)]
+async fn run_steps_from(
+    env: &RunEnv,
+    steps: &[PlannedStep],
+    chosen_from: usize,
+    cwd: &Path,
+    settings: &Settings,
+    started: Instant,
+    progress: &Progress,
+    live: &[services::Live],
+    secrets: &[String],
+) -> (Vec<TestStep>, TestReportStatus, Option<String>) {
     let mut done: Vec<TestStep> = Vec::new();
     // A `cargo test` the harness chose from the manifest of a workspace carries a line that says so and how many members it runs.
     let members = plan::detected_workspace_members(steps, cwd);
     // The installs of the report that failed, with the reason each gives the steps that need it.
     let mut failed_installs: Vec<(Install, String)> = Vec::new();
     for (i, planned) in steps.iter().enumerate() {
+        let chosen = i >= chosen_from;
         let left = settings.budget.saturating_sub(started.elapsed());
         if left.is_zero() {
+            if chosen {
+                // Every step from here on is the report's own addition: none is started.
+                done.extend(steps[i..].iter().map(|later| {
+                    TestStep::not_run(
+                        later.role,
+                        later.source,
+                        &redact(&later.command),
+                        NO_TIME_FOR_CHOICE,
+                        later.logged,
+                    )
+                }));
+                break;
+            }
             return (
                 done,
                 TestReportStatus::TimedOut,
@@ -522,6 +563,24 @@ pub async fn run_steps(
         let failed_setup = run::setup_stops_the_run(&step).then(|| run::skipped_for_setup(&step));
         let disk_full = ran_out_of_disk(&step);
         done.push(step);
+        if timed_out && chosen {
+            // The command was the report's own choice and the model's commands have run: it is listed as not run with the reason, and an
+            // install among the additions leaves the steps that need it not run.
+            if let Some(stopped) = done.last_mut() {
+                stopped.timed_out = false;
+                run::mark_not_run(
+                    stopped,
+                    &format!("{STOPPED_CHOICE} of {limit_s} s"),
+                    settings.tail,
+                );
+            }
+            if let (TestStepRole::Setup, Some(install), Some(why)) =
+                (planned.role, planned.install, failed_setup)
+            {
+                failed_installs.push((install, why));
+            }
+            continue;
+        }
         if timed_out {
             return (
                 done,
@@ -563,6 +622,68 @@ pub async fn run_steps(
         }
     }
     (done, TestReportStatus::Ran, None)
+}
+
+/// [`run_steps`] for the steps of a plan, with what the plan says of the commands of the lifecycle log it left out written on the steps
+/// that carry it. A step the report added behind the model's own commands ([`PlanNotes::chosen_from`]) that
+/// runs out of time is listed as not run and leaves the report `ran`.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_planned(
+    env: &RunEnv,
+    steps: &[PlannedStep],
+    notes: &PlanNotes,
+    cwd: &Path,
+    settings: &Settings,
+    started: Instant,
+    progress: &Progress,
+    live: &[services::Live],
+    secrets: &[String],
+) -> (Vec<TestStep>, TestReportStatus, Option<String>) {
+    let chosen_from = notes.chosen_from.unwrap_or(steps.len());
+    let (mut done, status, reason) = run_steps_from(
+        env,
+        steps,
+        chosen_from,
+        cwd,
+        settings,
+        started,
+        progress,
+        live,
+        secrets,
+    )
+    .await;
+    note_left_out(&mut done, notes, settings.tail);
+    // The lines quote commands of the log: what is hidden in a step's output is hidden in them.
+    for step in &mut done {
+        services::scrub(step, secrets);
+    }
+    (done, status, reason)
+}
+
+/// Writes what the plan says of the commands of the lifecycle log it left out at the head of the output of the steps that carry it:
+/// on a step the harness chose from the layout, the line that names the commands it ran in place of ([`PlanNotes::stand_ins`]); on the first
+/// step, one line for each reason that names the commands left out with nothing in their place ([`PlanNotes::left_out`]). `done` are the results of the
+/// steps of the plan in the order of the plan, so a result has the place of its step; a step that was never reached carries nothing. Every
+/// step loses a line of either form that the repository printed where agentd writes ([`run::set_plan_lines`]). The lines ride in a member
+/// every reader has: the summary reads them back (`TestStep::in_place_of`, `TestStep::left_out`) and a reader that predates them passes over them.
+pub fn note_left_out(done: &mut [TestStep], notes: &PlanNotes, cap: usize) {
+    for (i, step) in done.iter_mut().enumerate() {
+        let mut lines = Vec::new();
+        if let Some((_, left)) = notes.stand_ins.iter().find(|(at, _)| *at == i) {
+            lines.push(in_place_line(&redact(&left.command), left.more));
+        }
+        if i == 0 {
+            lines.extend(notes.left_out.iter().map(|left| {
+                left_out_line_of(
+                    &redact(&left.rows.command),
+                    left.rows.more,
+                    &left.why,
+                    left.logged.as_ref(),
+                )
+            }));
+        }
+        run::set_plan_lines(step, &lines, cap);
+    }
 }
 
 /// Checks the report, writes it under the run's data directory and uploads it. Ordinary failures are log lines. A refused create-only

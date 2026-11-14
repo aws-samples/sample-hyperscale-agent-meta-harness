@@ -62,7 +62,7 @@ fn cfg(settings: Value) -> EngineConfig {
 
 #[test]
 fn the_protocol_is_1_46_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.59.0");
+    assert_eq!(PROTOCOL_VERSION, "1.60.0");
 }
 
 // ---- the user's key ---------------------------------------------------------------------------------------------------------

@@ -1386,3 +1386,85 @@ async fn b773_a_sixty_second_session_lost_before_any_snapshot_restarts_from_the_
         json!(head_of(5))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b842_a_run_that_ends_on_the_work_it_restored_names_the_time_that_copy_was_saved() {
+    // Session 1 saved a copy and was lost. Sessions 2 and 3 restored it and were lost before any file changed, so neither left a copy
+    // of its own: the run delivers the copy of session 1, and the detail names when it was saved, as for a copy of the last session.
+    let a = sha('a');
+    let mem = seeded(8_000);
+    let mut w = SliceWorld::new(
+        &mem,
+        vec![
+            Ends::Lost(Some(a.clone())),
+            Ends::Lost(None),
+            Ends::Lost(None),
+        ],
+    );
+    let out = walk(&direct_definition(), input(), &mut w);
+    assert!(out.failed.is_none(), "{:?}", out.failed);
+    assert_eq!(mem.run().status, GoalStatus::Stalled);
+    assert_eq!(w.called("bundle-validator")[0]["headSha"], json!(a));
+    let completed = mem.events().pop().unwrap().1;
+    let detail = completed["detail"].as_str().unwrap_or_default();
+    // The detail goes on with the number of sessions the run used.
+    assert!(
+        detail.contains("The work is the last saved snapshot, taken at 2026-10-13 18:50 UTC."),
+        "{detail}"
+    );
+}
+
+/// With: the session the service starts for a lost one copies as often as the run's request says. The interval is read
+/// from the stored request for every session, so the restart of a lost session, which no user asked for, does not fall back to the
+/// minute; and the event that says the session was lost is written once beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn b842_b841_the_session_that_starts_for_a_lost_one_keeps_the_copy_interval_of_the_run() {
+    let (a, b) = (sha('a'), sha('b'));
+    let mem = Mem::default();
+    mem.set_now_ms(T0);
+    mem.set_slice_deadline(SLICE_S);
+    mem.seed_with_members(
+        RunTarget::S3Only,
+        "Add percent_change(a, b) with tests",
+        MODEL,
+        json!({"maxRunS": 4_500, "snapshotEveryS": 900}),
+    );
+    let mut w = SliceWorld::new(
+        &mem,
+        vec![Ends::Lost(Some(a.clone())), Ends::Done(b.clone())],
+    );
+    let out = walk(&direct_definition(), input(), &mut w);
+    assert!(out.failed.is_none(), "{:?}", out.failed);
+    let bodies = mem.invocations();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "TRIGGER PRESENT: the service started a second session for the lost one"
+    );
+    assert_eq!(bodies[1]["turn"], json!(2));
+    assert_eq!(
+        bodies[1]["repo"]["uri"],
+        json!(format!(
+            "s3://{BUCKET}/{}",
+            s3::snapshot_bundle_key_t(RUN, 1)
+        )),
+        "session 2 restores the last copy session 1 saved"
+    );
+    assert_eq!(bodies[0]["snapshotEveryS"], json!(900));
+    assert_eq!(
+        bodies[1]["snapshotEveryS"],
+        json!(900),
+        "the session that starts for a lost one copies as often as the run's request says"
+    );
+    let lost: Vec<_> = mem
+        .envelopes()
+        .into_iter()
+        .filter(|e| e.event_type == harness_protocol::envelope::EventType::RunWaiting)
+        .collect();
+    assert_eq!(
+        lost.len(),
+        1,
+        "one event says that session 1 was lost: {lost:?}"
+    );
+    assert_eq!(mem.run().status, GoalStatus::Complete);
+}

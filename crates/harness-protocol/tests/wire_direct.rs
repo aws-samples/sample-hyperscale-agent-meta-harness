@@ -84,6 +84,7 @@ fn the_direct_request_round_trips_with_rules_nudge_and_base_ref() {
         limits: None,
         engine: None,
         provider_sharing: None,
+        snapshot_every_s: None,
     };
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["baseRef"], "main");
