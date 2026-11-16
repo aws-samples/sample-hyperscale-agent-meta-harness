@@ -2275,7 +2275,7 @@ expression: value
             "type": "array"
           },
           "snapshotEveryS": {
-            "description": "Protocol 1.60.0: the seconds between two looks of the worker at the work tree for a copy of the run's work, from the user's\n`run.copy_every_minutes`. Absent (the default, and what every client without the setting sends) means\n[`crate::direct::DEFAULT_SNAPSHOT_EVERY_S`], one minute, and is left out of the stored request. [`crate::direct::snapshot_every_s_ok`] is the one\ncheck: [`crate::direct::MIN_SNAPSHOT_EVERY_S`] to [`crate::direct::MAX_SNAPSHOT_EVERY_S`]; control-api answers 400 outside it, for 0 too, because\na request cannot switch the copies off. run-session checks the stored value again and writes it into the invocation of every session of the\nrun. The copy after a tool call that changed the tree and the copy when the engine has stopped do not move with it.",
+            "description": "Protocol 1.60.0: the seconds between two looks of the worker at the work tree for a copy of the run's work, from the user's\n`run.copy_every_seconds` or `run.copy_every_minutes`. Absent (the default, and what every client without the setting sends) means\n[`crate::direct::DEFAULT_SNAPSHOT_EVERY_S`], 15 seconds since protocol 1.61.0,\nand is left out of the stored request. [`crate::direct::snapshot_every_s_ok`] is the one\ncheck: [`crate::direct::MIN_SNAPSHOT_EVERY_S`] to [`crate::direct::MAX_SNAPSHOT_EVERY_S`]; control-api answers 400 outside it, for 0 too, because\na request cannot switch the copies off. run-session checks the stored value again and writes it into the invocation of every session of the\nrun. The copy after a tool call that changed the tree and the copy when the engine has stopped do not move with it.",
             "format": "uint32",
             "minimum": 0,
             "type": [
@@ -2457,7 +2457,7 @@ expression: value
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness public API",
-    "version": "1.60.0"
+    "version": "1.61.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

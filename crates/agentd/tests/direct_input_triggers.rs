@@ -352,6 +352,7 @@ fn start(s: Setup) -> Live {
     };
     let dir = common::scratch("input-driver");
     let wiring = InputWiring {
+        delivery: None,
         policy: s.policy,
         instructions: rx,
         cancel: cancel_rx,

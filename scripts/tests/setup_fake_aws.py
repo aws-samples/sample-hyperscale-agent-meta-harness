@@ -618,7 +618,11 @@ class World:
                                                          "resources": []})
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.w))
+        # A test reads this file while the stand-in, a process of its own, saves it: the new state is written beside the file and renamed over
+        # it, so a reader finds the old state or the new one and never an empty or half-written file.
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(self.w))
+        os.replace(tmp, self.path)
 
     # -- SSM parameters: params (name to value), param_tags (name to tags), param_versions (name to the version of the value)
     def put_param(self, name: str, value: str, tags: dict | None = None) -> int:

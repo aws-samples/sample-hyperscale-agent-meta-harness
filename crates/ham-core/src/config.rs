@@ -245,6 +245,11 @@ pub struct RunTable {
     /// minute; the request carries it as `snapshotEveryS`, in seconds. No value switches the copies off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_every_minutes: Option<u32>,
+    /// Whole seconds between two looks of the worker at the work tree for a copy of the run's work, 15 to 3,600. Unset leaves the stage's
+    /// own 15 seconds; the request carries it as `snapshotEveryS`. No value switches the copies off. It cannot be set beside
+    /// `copy_every_minutes` ([`COPY_INTERVAL_KEYS_CLASH`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_every_seconds: Option<u32>,
 }
 
 /// The keys of `[research]`.
@@ -403,7 +408,7 @@ pub enum ConfigError {
 }
 
 /// The settable keys as `(file name, name `ham config` prints)`. A key of a table is dotted in both columns.
-pub const KEYS: [(&str, &str); 47] = [
+pub const KEYS: [(&str, &str); 48] = [
     ("apiEndpoint", "api_endpoint"),
     ("region", "region"),
     ("awsProfile", "aws_profile"),
@@ -451,7 +456,19 @@ pub const KEYS: [(&str, &str); 47] = [
     ("defaultEngine", "default_engine"),
     ("updateSource", "update_source"),
     ("run.copy_every_minutes", "run.copy_every_minutes"),
+    ("run.copy_every_seconds", "run.copy_every_seconds"),
 ];
+
+/// What `ham` says of a config that sets both keys of the copy interval, when it reads the file and when `ham config set` would
+/// make it so. Both keys set the one interval of a run, and `ham` does not choose between them.
+pub const COPY_INTERVAL_KEYS_CLASH: &str = "run.copy_every_seconds and run.copy_every_minutes cannot both be set, because both set the copy interval of a run; unset one of them with `ham config unset`";
+
+/// Whether `cfg` sets both keys of the copy interval.
+fn copy_interval_keys_clash(cfg: &Config) -> bool {
+    cfg.run
+        .as_ref()
+        .is_some_and(|run| run.copy_every_seconds.is_some() && run.copy_every_minutes.is_some())
+}
 
 /// The key a name stands for, in either spelling, or the error that lists the choices.
 fn canonical(key: &str) -> Result<Key, ConfigError> {
@@ -639,6 +656,9 @@ pub fn set_key(cfg: &Config, key: &str, value: &str) -> Result<Config, ConfigErr
                 aliases.join(", ")
             )));
         }
+    }
+    if copy_interval_keys_clash(&out) {
+        return Err(invalid(COPY_INTERVAL_KEYS_CLASH.to_string()));
     }
     normalize(&mut out);
     Ok(out)
@@ -1445,6 +1465,25 @@ impl Reader<'_> {
             self.unknown(Code::UnknownKey, at, name, false, message, suggestion);
         }
         self.check_default_backend(doc);
+        self.check_copy_interval_keys(doc);
+    }
+
+    /// `run.copy_every_seconds` and `run.copy_every_minutes` set the same interval, so a file that sets both is refused, at the line
+    /// of its `[run]` table.
+    fn check_copy_interval_keys(&mut self, doc: &DeTable<'_>) {
+        if !copy_interval_keys_clash(&self.cfg) {
+            return;
+        }
+        let at = doc
+            .iter()
+            .find(|(k, _)| name_of(k) == "run")
+            .map_or(0, |(k, _)| k.span().start);
+        self.error(
+            Code::OutOfRange,
+            at,
+            Some("run.copy_every_seconds"),
+            COPY_INTERVAL_KEYS_CLASH.to_string(),
+        );
     }
 
     /// `defaultBackend` must be `default` or the alias of a `[[backend]]` table of the same file.

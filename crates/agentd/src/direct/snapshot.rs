@@ -144,10 +144,18 @@ impl GitBudget {
     }
 }
 
+/// Whether a look that failed was given up by its own git limit: the limit has passed (`past_limit`), no silent tree ended the
+/// git work first (`tree_silent`), and the git work had not ended (`git_ended`). A look whose git ended in time and whose copy could not
+/// be stored afterwards failed for the store: its git limit gave nothing up, however long the store took, and the next look keeps the
+/// limit ([`GitBudget::ended`]).
+pub fn git_limit_gave_up(tree_silent: bool, git_ended: bool, past_limit: bool) -> bool {
+    !tree_silent && !git_ended && past_limit
+}
+
 /// The timer of the copy task. It counts from the start of one look to the start of the next. A look that a request to end asked
 /// for leaves the tick that was due where it is, so the copy of a stop never moves the next copy back; and after a copy of a stop that
-/// could not be saved, a process that runs on looks again soon ([`STOP_COPY_RETRY`]). After any look that failed the next one is due
-/// [`COPY_RETRY`] after that look started at the latest, whatever the timer.
+/// could not be saved, a process that runs on looks again soon ([`STOP_COPY_RETRY`]). After any look that failed the tick of the next
+/// one is due [`COPY_RETRY`] after that look started at the latest, whatever the timer.
 #[derive(Clone, Copy, Debug)]
 pub struct CopyTimer {
     every: Option<Duration>,
@@ -339,22 +347,28 @@ impl GiveUp {
     }
 }
 
-/// A copy that a tool call asked for starts no sooner than this after the last look at the tree started.
+/// A copy that a tool call asked for starts no sooner than this after the last look at the tree started: the default timer, which
+/// is also the shortest timer a run may name. Under the default timer the tick comes as soon, so a tool call brings a look forward only
+/// under a timer the user lengthened.
 pub const COPY_FLOOR: Duration = Duration::from_secs(15);
-/// After a look whose git work took D the next one starts no sooner than this many times D after that work ended, so that making
-/// copies takes at most a tenth of the session's time whatever the repository. The uploads are not counted ([`CopyClock::looked`]).
+/// After a look whose git work took D the next one starts no sooner than this many times D after that work ended, so that the
+/// looks take a tenth of the session's time at the most ([`Cadence::delay`] has the formula and its numbers). The uploads are not counted
+/// ([`CopyClock::looked`]); a look that failed counts with the time its git work took ([`CopyClock::failed`]).
 pub const COPY_SPACING: u32 = 9;
-/// The spacing never holds a look back longer than this many timer periods (five minutes at the default timer), so that one slow
-/// copy cannot leave the work without a copy for long. A timer the user lengthened does not lengthen it: [`COPY_SPACING_MAX`].
+/// A timer that a test set (`AGENTD_DIRECT_SNAPSHOT_EVERY_MS`) caps the spacing at this many of its own periods
+/// ([`Cadence::with_space_max`]), as every timer did while the default timer was one minute, so that the whole-turn tests keep their
+/// clocks. No run has it: the cap of a run is [`COPY_SPACING_MAX`].
 pub const COPY_SPACING_CAP: u32 = 5;
-/// The most the spacing holds a look back whatever the timer of the run: five minutes, [`COPY_SPACING_CAP`] periods of the default
-/// timer. A user lengthens the timer (`run.copy_every_minutes`) to store fewer copies, and the timer alone does that; five periods of an
-/// hourly timer would leave the work without a look for five hours after one slow copy.
+/// The most the spacing holds a look back, whatever the timer of the run: five minutes, so that one slow look cannot leave
+/// the work without a look for long. A user lengthens the timer (`run.copy_every_seconds`) to store fewer copies, and the timer alone
+/// does that. While the default timer was one minute the cap was also five timer periods. At a timer of 15 s that would be 75 s: a look
+/// of 30 s would come back after 75 s and take 29% of the time, and one of 120 s 62%. Five minutes keep the tenth for every look of at
+/// most 33 s (a look of 120 s takes 29%).
 pub const COPY_SPACING_MAX: Duration = Duration::from_secs(300);
-/// A look that failed is tried again this long after it started at the latest, whatever the timer of the run: the default timer
-/// (`harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S`). The run was told "ham keeps trying", and a longer timer saves nothing on a copy
-/// that was not stored.
-pub const COPY_RETRY: Duration = Duration::from_secs(60);
+/// A look that failed is tried again this long after it started, whatever the timer of the run: the default timer.
+/// The run was told "ham keeps trying", and a longer timer
+/// saves nothing on a copy that was not stored.
+pub const COPY_RETRY: Duration = Duration::from_secs(15);
 /// A tool call wakes the copy task only while the last bundle was at most this many bytes. A repository with a long history (its
 /// bundle holds the whole history each time) stays on the timer.
 pub const WAKE_MAX_BUNDLE_BYTES: u64 = 8 * 1024 * 1024;
@@ -379,19 +393,39 @@ impl CopyClock {
         }
     }
 
-    /// The look that started at `started` could not make or store its copy. Nothing is spaced after it: the next look is the next tick
-    /// of the timer, which comes after [`COPY_RETRY`] at the latest ([`Cadence::period`]), or a tool call after the floor, so the task
-    /// keeps trying as the run is told. The size of the bundle before is kept.
-    pub fn failed(&mut self, started: Instant) {
-        self.last = Some((started, started));
+    /// A look could not make or store its copy, and what the spacing counts of it ran from `started` to `ended` ([`failed_look_counts`]):
+    /// its git work, to the end of that work or to the moment the git was given up; a look that never started git counts as one of no
+    /// length. It counts as a look that stored a copy does: a look whose git was given up after five minutes is not started
+    /// again at once, and a look whose store failed after a short git work, or that ran no git at all, holds nothing back. The next look
+    /// is the next tick of the timer, which comes [`COPY_RETRY`] after the start of this
+    /// one at the latest ([`Cadence::period`]), or a tool call after the floor, and then waits for the spacing ([`Cadence::delay`]). The
+    /// size of the bundle before is kept.
+    pub fn failed(&mut self, started: Instant, ended: Instant) {
+        self.last = Some((started, ended.max(started)));
+    }
+}
+
+/// What the spacing counts of a look that failed ([`CopyClock::failed`]): its git work, from when that work began (`git_started`)
+/// to when it ended (`git_ended`), or to `now` when it did not end (the git was given up). A look that never started git (`git_started` is
+/// `None`: the file system of the work tree did not answer, or the copy before it had not ended) cost the engine nothing, however long it
+/// waited: it counts as a look of no length at `started`, its own start, so the next try comes with the retry tick.
+pub fn failed_look_counts(
+    started: Instant,
+    git_started: Option<Instant>,
+    git_ended: Option<Instant>,
+    now: Instant,
+) -> (Instant, Instant) {
+    match git_started {
+        None => (started, started),
+        Some(from) => (from, git_ended.unwrap_or(now).max(from)),
     }
 }
 
 /// When the copy task looks at the tree while the engine works. On the timer (`every`, counted from the start of one look to the
 /// start of the next), and after a tool call ended ([`Cadence::wakes`]); a look that a tool call asked for waits for [`COPY_FLOOR`], and
-/// every look waits for [`COPY_SPACING`] times the time git took for the look before it, at most [`COPY_SPACING_CAP`] timer periods and at
-/// most [`COPY_SPACING_MAX`]. A look that failed is not spaced ([`CopyClock::failed`]) and is tried again after [`COPY_RETRY`] at the latest
-/// ([`Cadence::period`]). A look copies only when the tree changed.
+/// every look waits for [`COPY_SPACING`] times the time git took for the look before it, at most [`COPY_SPACING_MAX`]
+/// ([`Cadence::delay`]). A look that failed counts the same way ([`CopyClock::failed`]) and its timer is [`COPY_RETRY`] when that is
+/// shorter ([`Cadence::period`]). A look copies only when the tree changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cadence {
     /// The timer; `None` when the invocation switched the copies off (`snapshotEveryS` 0): no look while the engine works.
@@ -400,6 +434,8 @@ pub struct Cadence {
     pub floor: Duration,
     /// [`COPY_RETRY`], or what a test set.
     pub retry: Duration,
+    /// [`COPY_SPACING_MAX`], or [`COPY_SPACING_CAP`] periods of a timer that a test set.
+    pub space_max: Duration,
 }
 
 impl Cadence {
@@ -408,7 +444,14 @@ impl Cadence {
             every,
             floor: COPY_FLOOR,
             retry: COPY_RETRY,
+            space_max: COPY_SPACING_MAX,
         }
+    }
+
+    /// [`Cadence::new`] with another cap of the spacing (the copy task, for a timer that a test set; tests).
+    pub fn with_space_max(mut self, space_max: Duration) -> Self {
+        self.space_max = space_max;
+        self
     }
 
     /// [`Cadence::new`] with another floor (tests).
@@ -439,16 +482,33 @@ impl Cadence {
                 .is_none_or(|bytes| bytes <= WAKE_MAX_BUNDLE_BYTES)
     }
 
+    /// [`Cadence::wakes`] as the copy task asks it. While the task tries the copy of a stop again (`retrying`: the first process of its
+    /// machine was asked to end, the copy could not be saved, and the task looks every [`STOP_COPY_RETRY`]) no tool call wakes it. Those
+    /// looks have no floor and no spacing, so a wake would start one after each tool call, each with its full git work, for as long as
+    /// the copies fail. Nothing is lost: the retry tick comes sooner than [`COPY_FLOOR`] would let a tool call's look start.
+    pub fn wakes_now(&self, clock: &CopyClock, retrying: bool) -> bool {
+        !retrying && self.wakes(clock)
+    }
+
     /// How long the task waits at `now` before it looks; `wake` says that a tool call asked for the look, not the timer.
+    ///
+    /// The formula of the looks. With S the start of the last look, E the end of its git work, D = E - S and I the timer of the
+    /// run ([`Cadence::period`]), the tick comes at S + I and this wait puts the next look at
+    ///
+    /// ```text
+    /// max(S + I, E + min(9 * D, 300 s))        the timer
+    /// max(S + 15 s, E + min(9 * D, 300 s))     a tool call that ended, when that is sooner
+    /// ```
+    ///
+    /// so the looks take D of every 10 * D at the most, a tenth of the time, while D is at most 33 s; a look that takes longer is
+    /// followed by five minutes without one ([`COPY_SPACING_MAX`]). At the default timer of 15 s: D = 0.2 s, the next look 15 s after
+    /// the start of this one (1.3% of the time); D = 3 s, after 30 s (10%); D = 30 s, after 300 s (10%); D = 120 s, after 420 s (29%).
+    /// The share is of the wall clock, the time one git works: git is given no lower priority than the engine's commands.
     pub fn delay(&self, clock: &CopyClock, wake: bool, now: Instant) -> Duration {
         let Some((started, ended)) = clock.last else {
             return Duration::ZERO;
         };
-        let space = ended.saturating_duration_since(started) * COPY_SPACING;
-        // Five periods of the timer, and never more than five minutes whatever the timer.
-        let space = self.every.map_or(space, |every| {
-            space.min((every * COPY_SPACING_CAP).min(COPY_SPACING_MAX))
-        });
+        let space = (ended.saturating_duration_since(started) * COPY_SPACING).min(self.space_max);
         let spaced = ended + space;
         let floored = if wake { started + self.floor } else { started };
         spaced.max(floored).saturating_duration_since(now)

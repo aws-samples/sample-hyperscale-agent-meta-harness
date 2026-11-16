@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::atomic::Ordering;
 use support::{AKID, Fake, SECRET, TOKEN};
 
 const MODEL: &str = "global.anthropic.claude-sonnet-5-5";
@@ -396,4 +397,60 @@ async fn an_existing_but_empty_rules_directory_stops_the_run_and_sends_nothing()
         fake.mem.posts("/v1/direct/runs").is_empty(),
         "nothing was sent"
     );
+}
+
+/// A stage that predates the copy interval of a run refuses a request that carries one, and `ham` names the key that set it. Whole
+/// minutes can come from either key (120 seconds are 2 minutes). The request does not say which, the command knows what the file sets, and
+/// it names that key alone: the `ham config unset` it prints is one that changes the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b823_an_older_stage_is_answered_with_the_key_the_config_sets_for_the_copy_interval() {
+    for (label, line, named, other) in [
+        (
+            "seconds",
+            "copy_every_seconds = 120",
+            "run.copy_every_seconds = 120; run `ham config unset run.copy_every_seconds` or update the stage",
+            "run.copy_every_minutes",
+        ),
+        (
+            "minutes",
+            "copy_every_minutes = 2",
+            "run.copy_every_minutes = 2; run `ham config unset run.copy_every_minutes` or update the stage",
+            "run.copy_every_seconds",
+        ),
+    ] {
+        let fake = direct_fake().await;
+        fake.faults
+            .predates_copy_interval
+            .store(1, Ordering::SeqCst);
+        let h = home(&fake, &format!("direct-older-copy-{label}"));
+        let config = h.root.join(".config/ham/config.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            format!("configVersion = 1\n{text}\n[run]\n{line}\n"),
+        )
+        .unwrap();
+        let o = ham(&h, &start_args(&["--no-rules"]), &[]).await;
+        let said = err(&o);
+        assert_ne!(o.status.code(), Some(0), "{label}: {}\n{said}", out(&o));
+        assert_eq!(
+            fake.mem.posts("/v1/direct/runs").len(),
+            1,
+            "{label}: one request, and no second one without the interval\n{said}"
+        );
+        assert_eq!(
+            body_of(&fake, 0)["snapshotEveryS"],
+            120,
+            "{label}: TRIGGER PRESENT: the request carried the interval"
+        );
+        assert!(
+            said.contains("this stage predates the copy interval of a run"),
+            "{label}: {said}"
+        );
+        assert!(said.contains(named), "{label}: {said}");
+        assert!(
+            !said.contains(other),
+            "{label}: the file does not set {other}: {said}"
+        );
+    }
 }

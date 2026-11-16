@@ -15,6 +15,7 @@ pub mod direct_attachments;
 pub mod direct_build;
 pub mod direct_compute;
 pub mod direct_continue;
+pub mod direct_delivery;
 pub mod direct_engine_config;
 pub mod direct_flow;
 pub mod direct_goal;

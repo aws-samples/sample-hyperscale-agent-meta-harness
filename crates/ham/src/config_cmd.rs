@@ -327,7 +327,9 @@ fn name_of(key: &str) -> &str {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Effective {
     pub key: Key,
-    /// The value in force; for a key nothing sets, the default as the registry words it (`stage default`, `AWS chain`).
+    /// The value in force; for a key nothing sets, the default as the registry words it (`stage default`, `AWS chain`). The row of
+    /// `run.copy_every_seconds` is the one exception: while the file sets `run.copy_every_minutes` alone, it shows the interval that key
+    /// gives, in seconds, with the key's name, origin `file`, and `set` stays false.
     pub value: String,
     pub origin: Origin,
     pub applies: Applies,
@@ -393,7 +395,19 @@ pub fn effective(cfg: &Config, env: Env<'_>, key: Key) -> Effective {
         Order::FileOverEnv => from_file().or_else(from_env),
     };
     let set = picked.is_some();
-    let (value, origin) = picked.unwrap_or_else(|| (row.default_text.to_string(), Origin::Default));
+    // `run.copy_every_minutes` sets the interval that the row of `run.copy_every_seconds` describes. While the file sets the minutes key
+    // alone, that row shows the interval in force, in seconds, and names the key it came from: its own default is not what the run gets.
+    let from_minutes = || {
+        let minutes = Key::RunCopyEveryMinutes.row().name;
+        (key == Key::RunCopyEverySeconds)
+            .then(|| get_key(cfg, minutes).ok().flatten())
+            .flatten()
+            .and_then(|m| m.parse::<u64>().ok())
+            .map(|m| (format!("{} seconds ({minutes})", m * 60), Origin::File))
+    };
+    let (value, origin) = picked
+        .or_else(from_minutes)
+        .unwrap_or_else(|| (row.default_text.to_string(), Origin::Default));
     Effective {
         key,
         value,

@@ -428,7 +428,7 @@ async fn start_follow_up<P: ControlPlane>(
     note.clone_from(&cleared.note);
     cleared
         .api
-        .start_direct_run(&request, &key)
+        .start_direct_run_set_by(&request, &key, resolved.copy_interval_key())
         .await
         .map(|r| r.run_id)
         .map_err(|e| crate::api::start_failure(&e))

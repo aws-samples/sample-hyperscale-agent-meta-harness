@@ -886,3 +886,32 @@ fn b766_the_starter_is_the_users_file_in_the_delivery_skill() {
     bad.files[2].sha256 = "0".repeat(64);
     assert_eq!(dox::starter(&[bad]), None);
 }
+
+/// The harness's word on how the run delivers is its own fact about the run, not a part of the DOX seed: a starter whose first line
+/// is `DOX off` switches the seed off and leaves the word in the first prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn b847_a_starter_that_says_dox_off_does_not_switch_the_word_on_the_delivery_off() {
+    let mut d = Direct::start(Opts::default()).await;
+    with_skills(
+        &mut d,
+        &[skill_with(
+            "DOX off\nThis text is ignored.\n# DOX framework\n",
+        )],
+    );
+    d.req.delivery = Some(harness_protocol::direct::DirectDelivery::zip());
+    let (_, seen) = run_probed(&d).await;
+    let seen = seen.unwrap();
+    assert_eq!(seen.root, None, "the trigger: the DOX seed is off");
+    assert_eq!(seed_commits(&d.worktree()), 0);
+    let prompts = d.prompts_received();
+    assert!(
+        prompts[0].starts_with(agentd::direct::delivery_word::HEADING),
+        "{}",
+        prompts[0]
+    );
+    assert!(
+        prompts[0].contains("this run delivers only a zip"),
+        "{}",
+        prompts[0]
+    );
+}

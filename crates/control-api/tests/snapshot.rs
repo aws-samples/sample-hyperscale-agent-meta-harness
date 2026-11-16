@@ -73,7 +73,7 @@ async fn the_owner_gets_a_url_for_the_last_snapshot_and_what_it_holds() {
         signed,
         vec![(s3::snapshot_bundle_key(RUN), DOWNLOAD_URL_TTL)]
     );
-    // Pinned to the version whose header was checked: agentd overwrites the bundle every minute while the files change, and a slow download of the
+    // Pinned to the version whose header was checked: agentd overwrites the bundle every 15 seconds by default while the files change, and a slow download of the
     // checked one must not end in a replaced file.
     let versions = w.presigned_versions.lock().unwrap().clone();
     assert_eq!(versions, vec![Some(version_of(&bundle(HEAD, 5_000_000)))]);

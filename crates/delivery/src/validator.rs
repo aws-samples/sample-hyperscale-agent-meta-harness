@@ -41,6 +41,7 @@ use crate::glob::glob_match;
 use crate::ports::{Blobs, PutMeta};
 use crate::third_party;
 use harness_protocol::common::is_ulid;
+use harness_protocol::direct::REPOSITORY_REFUSES;
 use harness_protocol::store::s3::verified_bundle_key;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -210,11 +211,14 @@ pub fn protected(path: &str) -> Option<Protected> {
     protected_in(EngineConfigMode::All, path)
 }
 
-/// [`protected`] for a request's `engineConfig` mode. Workflow files and the PR-check buildspec are protected in both.
+/// [`protected`] for a request's `engineConfig` mode. Workflow files and the PR-check buildspec are protected in both. Their two paths
+/// come from the one list [`REPOSITORY_REFUSES`], which the worker's words to the engine and the default rules name too: every
+/// path under the folder, and the file at the root.
 pub fn protected_in(mode: EngineConfigMode, path: &str) -> Option<Protected> {
-    if path.starts_with(".github/workflows/") {
+    let [workflows, buildspec] = REPOSITORY_REFUSES;
+    if path.starts_with(workflows) {
         Some(Protected::Workflow)
-    } else if path == "buildspec.yml" {
+    } else if path == buildspec {
         Some(Protected::Buildspec)
     } else if engine_config_path(mode, path) {
         Some(Protected::EngineConfig)

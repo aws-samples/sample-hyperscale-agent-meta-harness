@@ -1,6 +1,7 @@
 //! The ACP driver of a direct run: `initialize`, `session/new` at the repository root,
-//! the model pin check, ONE `session/prompt` carrying the user's text byte for byte, and the watchdogs around it. It reports
-//! how the prompt ended ([`RawEnd`]) and decides nothing about the work.
+//! the model pin check, ONE `session/prompt` carrying the user's text byte for byte after the harness's block on the delivery when the
+//! plan's prompt holds one, and the watchdogs around it. It reports how the prompt ended ([`RawEnd`]) and decides nothing about
+//! the work.
 //!
 //! The optional nudge sends the nudge text
 //! as a follow-up prompt after an `end_turn` that did not say DONE, while the tree keeps changing; it never runs by default.
@@ -119,7 +120,8 @@ pub struct PromptPlan {
     pub engine: String,
     /// The catalog id of the model the run starts on. The engine must report `acp_model_value(engine, model)` at `session/new`.
     pub model: String,
-    /// The user's prompt, sent as typed.
+    /// The first prompt of the session, sent as it is. In the first session of a run it is the user's prompt as typed, after the harness's
+    /// block on the delivery when the invocation carries `delivery`.
     pub prompt: String,
     pub nudge: Option<Nudge>,
     /// The user's cancel, as the events response delivered it: once true, no follow-up prompt is sent.
@@ -322,8 +324,9 @@ impl SessionTrigger {
 }
 
 /// One send of the run and what it needs around it. The first stage of every run is `Prompt(plan.prompt)`: setup (`initialize`,
-/// `session/new`, the model pin) and the user's text byte for byte. Later stages exist only for a run that may ask its user what to
-/// do: they are started by an answer, or by agentd's one automatic fresh session.
+/// `session/new`, the model pin) and the user's text byte for byte, after the harness's block on the delivery when the plan's prompt holds
+/// one. Later stages exist only for a run that may ask its user what to do: they are started by an answer, or by agentd's
+/// one automatic fresh session.
 #[derive(Clone, Debug)]
 pub enum Stage {
     /// A prompt in the live session: the user's first text, or what the person typed to continue.
@@ -1173,8 +1176,11 @@ pub struct InputWiring {
     pub sources: Arc<dyn DigestSource>,
     /// `<agent_data>/context/`, outside the work tree.
     pub context: ContextDir,
-    /// The user's first prompt, byte for byte.
+    /// The user's first prompt, byte for byte: the task alone, without the harness's block on the delivery.
     pub task: String,
+    /// How the run delivers, from the invocation. The first prompt of a fresh session says it again, because that session starts
+    /// without the earlier conversation. `None`: unknown, and nothing is said.
+    pub delivery: Option<harness_protocol::direct::DirectDelivery>,
     /// How the engine is named in the texts of the events (`engine::direct::engine_label`): the driver itself names no engine.
     pub engine_label: String,
     /// The routes `try_model` may name: the invocation's own, which the session credentials cover.
@@ -1779,6 +1785,8 @@ impl Machine {
             analyzer_notes.as_deref(),
             self.w.context.path(),
         );
+        // The harness's word on how the run delivers comes first in every session, this one included.
+        let prompt = crate::direct::delivery_word::with_block(self.w.delivery.as_ref(), &prompt);
         FreshSpec {
             restart,
             prompt,
@@ -2169,7 +2177,8 @@ pub(crate) fn init_params() -> Value {
     json!({ "protocolVersion": 1, "clientCapabilities": { "fs": { "readTextFile": false, "writeTextFile": false }, "terminal": false } })
 }
 
-/// The first stage: setup (`initialize`, `session/new`, the model pin), then the user's prompt byte for byte.
+/// The first stage: setup (`initialize`, `session/new`, the model pin), then the user's prompt byte for byte, after the harness's block on
+/// the delivery when the plan's prompt holds one.
 async fn exchange<R, W>(
     client: &mut AcpClient<R, W>,
     collector: &mut DirectCollector,

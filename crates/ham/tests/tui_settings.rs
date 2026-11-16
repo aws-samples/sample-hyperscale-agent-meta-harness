@@ -186,9 +186,9 @@ fn goto(app: &mut App, clock: &mut Clock, label: &str) {
 }
 
 /// The height of the window that holds the whole list of the Settings screen: the registry rows, the 5 of the Cline engine, six group
-/// headings and the locked line, and the title, a blank line and the key line (it was 47 with 32 rows, 51 with 36, 56 with 41, 57 with 42 and 58 with 43, 59 with 44, 60 with 45 and 61 with 46: each
+/// headings and the locked line, and the title, a blank line and the key line (it was 47 with 32 rows, 51 with 36, 56 with 41, 57 with 42 and 58 with 43, 59 with 44, 60 with 45, 61 with 46 and 62 with 47: each
 /// setting adds one line).
-const WHOLE_LIST_ROWS: u16 = 62;
+const WHOLE_LIST_ROWS: u16 = 63;
 
 /// The screen at 120 columns and [`WHOLE_LIST_ROWS`] rows.
 fn screen(app: &App) -> String {
@@ -258,7 +258,7 @@ fn rows_are_generated_from_the_registry_and_the_locked_line_names_the_seven_clas
         ],
         "{text}"
     );
-    assert_eq!(ROWS.len(), 47);
+    assert_eq!(ROWS.len(), 48);
     // The groups of the registry head the rows.
     for g in ["Run", "Interface", "Paths", "Run limits", "Connection"] {
         assert!(
@@ -967,6 +967,51 @@ fn a_stall_key_is_typed_in_the_box_and_a_value_outside_its_range_stays_open_with
     assert_eq!(effects, vec![set(Key::RunCommandGraceMinutes, "90")]);
     feed(&mut app, &w, effects);
     assert!(row_of(&app, "Command grace").contains("90 minutes"));
+}
+
+/// The Settings screen has a row for each of the two keys of the copy interval. While `run.copy_every_minutes` sets the interval, the
+/// row of `run.copy_every_seconds` shows it in seconds and names the minutes key; it does not show its own default, which the run does not get.
+#[test]
+fn b823_the_copy_interval_row_shows_the_interval_of_the_minutes_key_while_that_key_sets_it() {
+    let w = World::new(
+        "copy-minutes",
+        Some(&format!(
+            "{OWNER}configVersion = 1\n\n[run]\ncopy_every_minutes = 10\n"
+        )),
+    );
+    let (app, _) = open(&w);
+    let minutes = row_of(&app, "Copy interval (min)");
+    assert!(
+        minutes.contains("10 minutes") && minutes.contains("file"),
+        "{minutes}"
+    );
+    let seconds = row_of(&app, "Copy interval");
+    assert!(
+        seconds.contains("600 seconds (run.copy_every_minutes)"),
+        "{seconds}"
+    );
+    assert!(seconds.contains("file"), "{seconds}");
+    assert!(!seconds.contains("15 seconds"), "{seconds}");
+
+    // The seconds key set: its own value on its row.
+    let w = World::new(
+        "copy-seconds",
+        Some(&format!(
+            "{OWNER}configVersion = 1\n\n[run]\ncopy_every_seconds = 120\n"
+        )),
+    );
+    let (app, _) = open(&w);
+    let seconds = row_of(&app, "Copy interval");
+    assert!(
+        seconds.contains("120 seconds") && seconds.contains("file"),
+        "{seconds}"
+    );
+    assert!(!seconds.contains("run.copy_every_minutes"), "{seconds}");
+    let minutes = row_of(&app, "Copy interval (min)");
+    assert!(
+        minutes.contains("not set") && minutes.contains("default"),
+        "{minutes}"
+    );
 }
 
 #[test]

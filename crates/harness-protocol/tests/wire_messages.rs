@@ -58,7 +58,7 @@ fn request(text: &str) -> SendMessageRequest {
 #[test]
 fn the_protocol_is_1_38_0() {
     // The message routes, the research route and the stored conversation share the one version of the release.
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
 }
 
 #[test]

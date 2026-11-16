@@ -3,6 +3,7 @@
 //! alternate screen, bracketed paste, focus events and, when wanted, mouse reports, all given back on exit, Ctrl-C, a signal and a
 //! panic) and the 1 s poll timer.
 
+pub mod agent_table;
 mod app;
 pub mod burst;
 pub mod chat;
@@ -577,7 +578,14 @@ async fn submit<P: ControlPlane>(
         },
     };
     // The start goes through the client the check aimed: the account that was read and switched is the one of the backend the run starts on.
-    match crate::start::start_direct(&cleared.api, &request, nonce).await {
+    match crate::start::start_direct_set_by(
+        &cleared.api,
+        &request,
+        nonce,
+        resolved.copy_interval_key(),
+    )
+    .await
+    {
         Ok(started) => {
             let response = harness_protocol::api::v1::StartRunResponse {
                 run_id: started.run_id,

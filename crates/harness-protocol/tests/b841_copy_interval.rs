@@ -3,7 +3,7 @@
 //! when the user keeps the default, so the request of a client that never sets the key is byte for byte what protocol 1.59.0 carried. The worker's
 //! invocation has carried a member of the same name since the copies exist; run-session copies the request's value into it.
 //!
-//! A request may name 60 to 3,600 seconds. 0, which the invocation accepts and which switches the copies off while the engine works, is no value of a
+//! A request may name 15 to 3,600 seconds. 0, which the invocation accepts and which switches the copies off while the engine works, is no value of a
 //! request: a run always has a copy of its work in the bucket while it works (root invariant 9).
 
 #![allow(clippy::unwrap_used)]
@@ -27,8 +27,8 @@ fn parse(extra: Value) -> Result<StartDirectRunRequest, serde_json::Error> {
 }
 
 #[test]
-fn b841_copy_the_protocol_is_1_60_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+fn b841_copy_the_protocol_is_1_61_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
 }
 
 #[test]
@@ -87,6 +87,6 @@ fn b841_copy_the_contract_file_describes_the_member() {
         "{}",
         req["snapshotEveryS"]
     );
-    assert_eq!(v1["info"]["version"], "1.60.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.60.0");
+    assert_eq!(v1["info"]["version"], "1.61.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.61.0");
 }

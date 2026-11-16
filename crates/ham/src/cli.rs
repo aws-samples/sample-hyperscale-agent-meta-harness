@@ -21,7 +21,7 @@ use crate::output::{Output, Stream};
 use crate::pull::{card, pull_with, range_bytes, select};
 use crate::push::{PushError, PushRequest, push_run};
 use crate::sigv4::Signer;
-use crate::start::{launch_nonce, start_direct};
+use crate::start::{launch_nonce, start_direct_set_by};
 use crate::tui::{App, DirectSettings};
 use crate::watch::{WatchOptions, exit_of, pulled_json, watch};
 use ham_core::command::{Command, DirectArgs, Invocation, PullArtifact, TargetArg, parse};
@@ -728,12 +728,16 @@ async fn cmd_start_direct(
     if let Some(line) = &cleared.note {
         eprintln!("{line}");
     }
-    let started = match start_direct(&cleared.api, &request, &nonce).await {
-        Ok(s) => s,
-        // A stage that is being updated says so in one sentence, which is shown alone
-        Err(e) if crate::api::stage_updating(&e) => return fail(crate::api::start_failure(&e)),
-        Err(e) => return fail(format!("POST /v1/direct/runs: {e}")),
-    };
+    // The start is told which key of the file set the copy interval: a stage that predates it is answered with that key's name.
+    let started =
+        match start_direct_set_by(&cleared.api, &request, &nonce, resolved.copy_interval_key())
+            .await
+        {
+            Ok(s) => s,
+            // A stage that is being updated says so in one sentence, which is shown alone
+            Err(e) if crate::api::stage_updating(&e) => return fail(crate::api::start_failure(&e)),
+            Err(e) => return fail(format!("POST /v1/direct/runs: {e}")),
+        };
     if json {
         let mut start = json!({"runId": started.run_id, "status": started.status, "idempotencyKey": started.idempotency_key,
                    "model": chosen.0, "modelSource": chosen.2.label()});

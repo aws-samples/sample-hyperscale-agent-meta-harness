@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Test data of the default rules file: `default-earlier/` holds the 23 earlier texts of `crates/ham-core/assets/default-rules.md`, the ones `ham rules init` replaces when a machine still has one of them unedited.
+Test data of the default rules file: `default-earlier/` holds the 24 earlier texts of `crates/ham-core/assets/default-rules.md`, the ones `ham rules init` replaces when a machine still has one of them unedited.
 
 ## Ownership
 

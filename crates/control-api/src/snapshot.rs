@@ -1,7 +1,7 @@
 //! `POST /v1/runs/{runId}/snapshot/download-url`: a short-lived download URL for the latest saved copy of a run's work.
 //!
 //! agentd saves `snapshot.bundle` (a git bundle of `refs/heads/snapshot`) and then `snapshot.json` under
-//! `runs/<run>/agents/direct/turns/<n>/` while the files change (every minute, and after a tool call) and once more when the engine has
+//! `runs/<run>/agents/direct/turns/<n>/` while the files change (every 15 seconds by default, and after a tool call) and once more when the engine has
 //! stopped; the record of that last copy says `"final": true`. This route (owner only, whatever the run's status: a run that ended
 //! blocked, cleared or with a zip answers like one that works) reads the record (at most 64 KiB) and the first 8 KiB of the bundle,
 //! checks that both name the same commit, and presigns the bundle for fifteen minutes. The answer carries the bundle's size and ETag,

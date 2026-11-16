@@ -101,11 +101,12 @@ pub enum Key {
     DefaultEngine,
     UpdateSource,
     RunCopyEveryMinutes,
+    RunCopyEverySeconds,
 }
 
 impl Key {
     /// Every key, in registry order.
-    pub const ALL: [Key; 47] = [
+    pub const ALL: [Key; 48] = [
         Key::ApiEndpoint,
         Key::Region,
         Key::AwsProfile,
@@ -153,6 +154,7 @@ impl Key {
         Key::DefaultEngine,
         Key::UpdateSource,
         Key::RunCopyEveryMinutes,
+        Key::RunCopyEverySeconds,
     ];
 
     /// The row of this key.
@@ -320,6 +322,12 @@ impl Key {
                     .run
                     .get_or_insert_with(RunTable::default)
                     .copy_every_minutes,
+            ),
+            Key::RunCopyEverySeconds => Slot::Number(
+                &mut cfg
+                    .run
+                    .get_or_insert_with(RunTable::default)
+                    .copy_every_seconds,
             ),
             Key::RunProviderSharing => Slot::Bool(
                 &mut cfg
@@ -641,7 +649,7 @@ const fn row(
 }
 
 /// The registry, in the order of [`Key`].
-pub static ROWS: [Row; 47] = [
+pub static ROWS: [Row; 48] = [
     Row {
         applies: Applies::Restart,
         security: true,
@@ -1401,8 +1409,10 @@ pub static ROWS: [Row; 47] = [
         )
     },
     Row {
-        default: DefaultValue::Number(harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S / 60),
-        default_text: "1 minute",
+        // The default of the timer is 15 seconds, no whole minute, so this key has no default of its own: unset, `run.copy_every_seconds`
+        // decides.
+        default: DefaultValue::Absent,
+        default_text: "not set",
         wire: Some("snapshotEveryS"),
         since: 1,
         group: Group::Limits,
@@ -1411,12 +1421,31 @@ pub static ROWS: [Row; 47] = [
             ("run", "copy_every_minutes"),
             "run.copy_every_minutes",
             Kind::Number {
-                min: harness_protocol::direct::MIN_SNAPSHOT_EVERY_S / 60,
+                min: 1,
                 max: harness_protocol::direct::MAX_SNAPSHOT_EVERY_S / 60,
                 unit: "minutes",
             },
+            "Copy interval (min)",
+            "The copy interval of run.copy_every_seconds in whole minutes: m minutes are 60 m seconds. It stays for a config written before that key; set one of the two, because ham refuses a config that sets both. A look saves a copy of the work to the stage's bucket when files changed, and ham pull <runId> --snapshot downloads the latest copy. A session that is stopped or dies loses the changes since the last copy, so a longer interval can lose more; it suits a repository whose copies are large. Two copies do not move with this key: the copy after a tool call that changed a file, made while the copies are 8 MiB or smaller, and the copy when the engine stops, which is always made. No value switches the copies off. A run that ham resume or /retry starts keeps the interval of the run it comes from.",
+        )
+    },
+    Row {
+        default: DefaultValue::Number(harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S),
+        default_text: "15 seconds",
+        wire: Some("snapshotEveryS"),
+        since: 1,
+        group: Group::Limits,
+        ..row(
+            Key::RunCopyEverySeconds,
+            ("run", "copy_every_seconds"),
+            "run.copy_every_seconds",
+            Kind::Number {
+                min: harness_protocol::direct::MIN_SNAPSHOT_EVERY_S,
+                max: harness_protocol::direct::MAX_SNAPSHOT_EVERY_S,
+                unit: "seconds",
+            },
             "Copy interval",
-            "The minutes between two looks of the service at the work of a run. A look saves a copy of the work to the stage's bucket when files changed, and ham pull <runId> --snapshot downloads the latest copy. A session that dies loses at most the changes since the last copy, so a longer interval can lose more; it suits a repository whose copies are large. Two copies do not move with this key: the copy after a tool call that changed a file, made while the copies are 8 MiB or smaller, and the copy when the engine stops, which is always made. No value switches the copies off. A run that ham resume or /retry starts keeps the interval of the run it comes from.",
+            "The seconds between two looks of the service at the work of a run. A look saves a copy of the work to the stage's bucket when files changed, and ham pull <runId> --snapshot downloads the latest copy. A session that is stopped or dies saves nothing afterwards, so it loses the changes since the last copy: about this interval plus the time one copy takes, and more for a repository whose copies take long. A copy every 15 seconds does not save every write. A stage of an older release has a longer timer of its own: a run that sets no interval, or sets 15, is copied on that timer until the stage is updated. A longer interval stores fewer copies and can lose more; it suits a repository whose copies are large. Two copies do not move with this key: the copy after a tool call that changed a file, made while the copies are 8 MiB or smaller, and the copy when the engine stops, which is always made. No value switches the copies off. Set this key or run.copy_every_minutes, not both. A run that ham resume or /retry starts keeps the interval of the run it comes from.",
         )
     },
 ];

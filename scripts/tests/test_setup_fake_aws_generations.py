@@ -7,9 +7,11 @@ stages of one account cannot share (a VPC, a key, a runtime id) get their own. T
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import setup_fake_aws as fake
 
@@ -92,6 +94,36 @@ class WorldCase(unittest.TestCase):
         self.assertIsNone(fake.World.stage_stack_gen("other-app"))
         self.assertEqual(fake.World.runner_stack_gen("cah-setup-runner"), "legacy")
         self.assertEqual(fake.World.gomod_bucket_gen("cah-direct-gomod-111122223333"), "legacy")
+
+
+
+class SaveCase(unittest.TestCase):
+    def test_a_reader_never_finds_the_state_file_empty_while_the_stand_in_saves_it(self) -> None:
+        """A test reads `world.json` while the stand-in CLI, a process of its own, saves it (`world()` of setup_full_support.py). `save`
+        therefore writes the new state to a file beside the state file and renames it over: at every moment the state file holds the old
+        state or the new one, whole. Written in place, the file is empty between the truncation and the write, and a reader fails with
+        a JSON error (seen once under load in test_setup_b804_lock_left.py)."""
+        w = world()
+        w.save()
+        before = json.loads(w.path.read_text())
+        seen = []
+        real_replace = os.replace
+
+        def watching_replace(src, dst, *args, **kwargs):
+            # The moment before the rename: the state file is still whole, and the new state is whole beside it.
+            seen.append((json.loads(Path(dst).read_text()), json.loads(Path(src).read_text()), Path(src).parent == Path(dst).parent))
+            return real_replace(src, dst, *args, **kwargs)
+
+        w.put_param("/hamh/direct/example", "1", dict(fake.PROJECT_TAGS))
+        with mock.patch.object(fake.os, "replace", watching_replace):
+            w.save()
+        self.assertEqual(len(seen), 1, "save renames one finished file over the state file")
+        old, new, beside = seen[0]
+        self.assertEqual(old, before, "the state file holds the old state until the rename")
+        self.assertEqual(new["params"]["/hamh/direct/example"], "1")
+        self.assertTrue(beside, "the temporary file is in the folder of the state file, so the rename stays on one file system")
+        self.assertEqual(json.loads(w.path.read_text()), new)
+        self.assertEqual(sorted(p.name for p in w.dir.iterdir() if p.name.startswith("world.json")), ["world.json"], "no temporary file is left")
 
 
 if __name__ == "__main__":

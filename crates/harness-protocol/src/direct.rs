@@ -28,6 +28,7 @@ pub use crate::direct_attachments::*;
 pub use crate::direct_build::*;
 pub use crate::direct_compute::*;
 pub use crate::direct_continue::*;
+pub use crate::direct_delivery::*;
 pub use crate::direct_engine_config::*;
 pub use crate::direct_flow::*;
 pub use crate::direct_goal::*;
@@ -79,18 +80,22 @@ pub const DIRECT_ENGINE: &str = "cline";
 /// The microVM lifetime (28,800 s) less a 900 s reserve for commit, bundle, upload and turn-complete.
 pub const MAX_DIRECT_TIMEOUT_S: u32 = 27_900;
 /// How often agentd looks at the work tree for a copy while the prompt runs.
-/// agentd also copies after a tool call that changed the tree, and when the engine
-/// has stopped. It is the default of a run: a start request may name another interval.
-pub const DEFAULT_SNAPSHOT_EVERY_S: u32 = 60;
+/// A look stores a copy only when the tree changed. A session that is stopped from outside or dies saves
+/// nothing afterwards, because its work tree stops answering before the signal arrives: what it loses is what was written after the newest
+/// stored copy, and the timer is what bounds that. agentd also copies after a tool call that changed the tree, and when the engine has
+/// stopped. It is the default of a run: a start request may name another interval.
+/// A worker of an older release refuses an interval
+/// below 60, so run-session leaves the member out of the invocation when the request names none and each worker keeps its own default.
+pub const DEFAULT_SNAPSHOT_EVERY_S: u32 = 15;
 /// The longest silence limit an invocation may ask for.
 pub const MAX_PROVIDER_SILENCE_S: u32 = 3_600;
 /// The shortest non-zero snapshot interval.
-pub const MIN_SNAPSHOT_EVERY_S: u32 = 60;
+pub const MIN_SNAPSHOT_EVERY_S: u32 = 15;
 /// The longest snapshot interval.
 pub const MAX_SNAPSHOT_EVERY_S: u32 = 3_600;
 /// Whether `s` is a copy interval a start request may name: [`MIN_SNAPSHOT_EVERY_S`] to [`MAX_SNAPSHOT_EVERY_S`]. The 0 of an invocation
 /// (no copies while the engine works) is no value of a request: a run always has a copy of its work in the bucket while it works. `ham` takes
-/// the bounds of `run.copy_every_minutes` from the two constants, control-api answers 400 outside them, and run-session checks the stored
+/// the bounds of `run.copy_every_seconds` and `run.copy_every_minutes` from the two constants, control-api answers 400 outside them, and run-session checks the stored
 /// value again before it writes it into the invocation.
 pub fn snapshot_every_s_ok(s: u32) -> bool {
     (MIN_SNAPSHOT_EVERY_S..=MAX_SNAPSHOT_EVERY_S).contains(&s)
@@ -205,7 +210,7 @@ pub struct DirectInvocationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_silence_s: Option<u32>,
     /// Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off. run-session sends the interval the start request
-    /// named or the default, never 0.
+    /// named and leaves the member out when the request named none, never 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_every_s: Option<u32>,
     /// The CodeArtifact token, kept in agentd's memory only; absent on a run without packages.
@@ -223,6 +228,12 @@ pub struct DirectInvocationRequest {
     /// so an agentd image that predates the member parses what it always parsed. Required from turn 2 on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slice: Option<DirectSlice>,
+    /// Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. run-session writes it
+    /// from the run's target into the invocation of every session, and agentd says it to the engine at the start of every session, so an
+    /// engine that is asked for a file a pull request refuses and a zip takes knows which run it is in. Absent means unknown (the
+    /// invocation of a service that predates the member): agentd then says nothing about the delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<DirectDelivery>,
 }
 
 /// The slice member of an invocation (protocol 1.55.0).
@@ -277,6 +288,7 @@ impl fmt::Debug for DirectInvocationRequest {
             .field("packages_token", &self.packages_token)
             .field("packages_token_expires_at", &self.packages_token_expires_at)
             .field("input_wait_s", &self.input_wait_s)
+            .field("delivery", &self.delivery)
             .finish()
     }
 }
@@ -316,6 +328,8 @@ pub enum DirectInvocationError {
     BadEngine,
     BadRequestRef,
     BadRepo,
+    /// `delivery` is neither a zip that names no repository nor a pull request to a repository target (1.61.0).
+    BadDelivery,
 }
 
 impl fmt::Display for DirectInvocationError {
@@ -385,6 +399,10 @@ impl fmt::Display for DirectInvocationError {
             Self::BadRepo => write!(
                 f,
                 "repo must be an S3Bundle at s3://<bucket>/runs/<runId>/input/repo.bundle in the request's bucket"
+            ),
+            Self::BadDelivery => write!(
+                f,
+                "delivery must be kind zip with no repo, or kind pull-request with repo a repository target (cc:<name>)"
             ),
         }
     }
@@ -529,6 +547,10 @@ pub fn validate_direct_invocation(
             _ => return Err(E::BadRepo),
         },
         RepoSource::Local { .. } => return Err(E::BadRepo),
+    }
+    // 10. how the run delivers (1.61.0): agentd writes it into the first words the engine reads
+    if req.delivery.as_ref().is_some_and(|d| !check_delivery(d)) {
+        return Err(E::BadDelivery);
     }
     Ok(())
 }

@@ -281,6 +281,34 @@ expression: value
         }
       ]
     },
+    "DirectDelivery": {
+      "additionalProperties": false,
+      "description": "How the run delivers its work.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/DirectDeliveryKind"
+        },
+        "repo": {
+          "description": "The repository of a pull request, as the user named it (`cc:<name>`). Required for `pull-request`; absent for `zip`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "DirectDeliveryKind": {
+      "description": "What a run delivers.",
+      "enum": [
+        "zip",
+        "pull-request"
+      ],
+      "type": "string"
+    },
     "DirectEngineConfigRef": {
       "description": "The engine settings as `summary.json` lists them (protocol 1.39.0, `DirectSummary.engineConfig`): what the session was given, never a value.",
       "properties": {
@@ -710,6 +738,17 @@ expression: value
           "$ref": "#/$defs/ProcessCredentials",
           "description": "Session credentials of `harness-worker-session`, minted outside the VM."
         },
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DirectDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. run-session writes it\nfrom the run's target into the invocation of every session, and agentd says it to the engine at the start of every session, so an\nengine that is asked for a file a pull request refuses and a zip takes knows which run it is in. Absent means unknown (the\ninvocation of a service that predates the member): agentd then says nothing about the delivery."
+        },
         "engine": {
           "description": "The engine profile name, `cline`.",
           "type": "string"
@@ -803,7 +842,7 @@ expression: value
           "description": "What a slice of a run that renews its session needs to know. Absent for a run of one session,\nso an agentd image that predates the member parses what it always parsed. Required from turn 2 on."
         },
         "snapshotEveryS": {
-          "description": "Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off. run-session sends the interval the start request\nnamed or the default, never 0.",
+          "description": "Snapshot interval; absent means [`DEFAULT_SNAPSHOT_EVERY_S`], 0 turns snapshots off. run-session sends the interval the start request\nnamed and leaves the member out when the request named none, never 0.",
           "format": "uint32",
           "minimum": 0,
           "type": [

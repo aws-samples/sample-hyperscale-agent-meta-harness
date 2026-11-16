@@ -37,7 +37,7 @@
 
 ## Delivery
 
-- A delivery to a repository (a pull request) refuses a run that adds or changes a file under `.github/workflows/` or a root `buildspec.yml`: the run ends blocked and delivers nothing. A run that delivers only a zip takes such files; name each one you add in your last message.
+- A delivery to a repository (a pull request) refuses a run that adds or changes a file under `.github/workflows/` or a root `buildspec.yml`: the run ends blocked and delivers nothing. A run that delivers only a zip takes such files; name each one you add in your last message. When the first words of the run are written by the harness, they say which of the two this run is.
 - Every delivery refuses a change to the engine's own executable configuration: `.cline/hooks/`, `.cline/plugins/`, `.cline/agents/`, `.clinerules/hooks/`, `opencode.json`, `opencode.jsonc` and `.opencode/`. Do not add or change these.
 
 ## Environment of the cloud session

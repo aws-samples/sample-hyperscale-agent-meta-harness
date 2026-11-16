@@ -119,8 +119,10 @@ pub async fn first_prompt(
     let why = StopWhy {
         reason: None,
         session,
-        title: "The machine of the earlier session reached its time limit".to_string(),
-        explain: "A run lasts longer than one machine does. The earlier session's work was saved and this session starts from it, in a new machine; the files in this work tree are exactly what it left."
+        // The invocation does not say how the earlier session ended, so the words hold for a session that handed over at its time
+        // limit and for one the service lost and started again from the last saved copy.
+        title: "The earlier session of this run ended: its machine reached its time limit, or the service lost the session".to_string(),
+        explain: "A run lasts longer than one machine does, and a session that is lost is started again. This session starts in a new machine from the last saved copy of the earlier session's work. Changes the earlier session made after that copy may be missing."
             .to_string(),
         stop_outcome: Some(DirectOutcome::StoppedTimeout.as_str().to_string()),
         attempts: 0,

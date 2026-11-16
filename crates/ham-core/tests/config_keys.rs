@@ -85,8 +85,9 @@ fn all_set() -> Config {
 #[test]
 fn unset_of_each_new_key_leaves_the_other_sixteen_alone() {
     let full = all_set();
+    // `run.copy_every_seconds` is not in the list: it cannot be set beside `run.copy_every_minutes` (tests/b823_copy_seconds_key.rs).
     assert_eq!(non_defaults().len(), 47);
-    assert_eq!(KEYS.len(), 47);
+    assert_eq!(KEYS.len(), 48);
     for (key, _, printed) in non_defaults() {
         assert_eq!(
             get_key(&full, key).unwrap().as_deref(),
@@ -131,8 +132,10 @@ fn unset_of_each_new_key_leaves_the_other_sixteen_alone() {
 fn set_get_unset_work_for_every_key_in_both_spellings() {
     // Every pair of KEYS: either spelling sets, either gets, either unsets.
     for (file, snake) in KEYS {
+        // `run.copy_every_seconds` is not among the keys that are set all at once: it cannot stand beside `run.copy_every_minutes`.
         let (_, value, printed) = non_defaults()
             .into_iter()
+            .chain([("run.copy_every_seconds", "30", "30".to_string())])
             .find(|(k, _, _)| *k == snake)
             .unwrap_or_else(|| panic!("no value for {snake}"));
         for by in [file, snake] {

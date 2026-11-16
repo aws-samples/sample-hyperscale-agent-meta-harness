@@ -58,7 +58,7 @@ fn request_json() -> Value {
 fn this_change_is_in_the_protocol_line_of_1_42_0() {
     // The report card came in with 1.41.0; the stall limits of the goal loop (1.42.0) follow it on the same line, so the test names the
     // version the crate has now. A bump changes this literal like the one of every other wire test.
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
 }
 
 // ---- the request member -----------------------------------------------------------------------------------------------------

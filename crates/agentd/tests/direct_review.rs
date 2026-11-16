@@ -406,6 +406,7 @@ async fn run(s: Setup) -> Ran {
     let tree = Tree::new(s.totals, &s.paths);
     let dir = common::scratch("review");
     let wiring = InputWiring {
+        delivery: None,
         policy: policy(),
         instructions: instr_rx,
         cancel: cancel_rx.clone(),

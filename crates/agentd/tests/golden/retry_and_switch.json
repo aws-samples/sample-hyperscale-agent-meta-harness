@@ -381,7 +381,7 @@
     "usage": null,
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.60.0"
+      "protocol": "1.61.0"
     }
   },
   "wire": [

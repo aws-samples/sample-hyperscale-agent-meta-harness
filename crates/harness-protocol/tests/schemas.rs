@@ -657,7 +657,17 @@ const FROZEN: &[(&str, &str)] = &[
     // run-session sends. Both OpenAPI documents change their info.version; the wire format of every other member is unchanged.
     (
         "1.60.0",
-        "73010a641db2d69af649f2574683499893db0a9158429eda956d890b6a2cd175",
+        "6b38d62f36498ae5f36628e41513631e25a321ce1a092b7566cf480d46906025",
+    ),
+    // 1.61.0 carries two changes. Look for changes every 15 seconds: `snapshotEveryS` of the start request and of the invocation
+    // takes 15 to 3,600 seconds (60 to 3,600 before), and absent means 15 seconds (one minute before); the description of the start
+    // request's member says so and names the user's `run.copy_every_seconds`. How a run delivers: the invocation of a session
+    // gains the optional `delivery` (`DirectDelivery`: kind `zip`, or kind `pull-request` with the repository as the user named it),
+    // which the worker says to the engine at the start of every session; absent means unknown; `runtime.schema.json` gains the member
+    // and its two types. Both OpenAPI documents change their info.version. The wire format of every other member is unchanged.
+    (
+        "1.61.0",
+        "a75dcf285cb79de9239da26e39080584cc352cca1fb8f362ccdc2ef843731076",
     ),
 ];
 
@@ -1309,7 +1319,7 @@ fn b803_frozen_1_59_0_is_a_new_line_and_the_1_58_0_line_did_not_move() {
     assert_ne!(v158[0].1, v159[0].1);
 }
 
-/// 1.60.0 follows the 1.59.0 line: that line keeps its hash, the new line differs from it, and it is the newest.
+/// 1.60.0 follows the 1.59.0 line: that line keeps its hash and the new line differs from it.
 #[test]
 fn b841_frozen_1_60_0_is_a_new_line_and_the_1_59_0_line_did_not_move() {
     let v159: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.59.0").collect();
@@ -1324,7 +1334,25 @@ fn b841_frozen_1_60_0_is_a_new_line_and_the_1_59_0_line_did_not_move() {
         "fdd11147312e034980bd18da7eec099d03048e58cfc2dd624fb10af6518d8f5c"
     );
     assert_ne!(v159[0].1, v160[0].1);
-    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.60.0"));
+}
+
+/// 1.61.0 follows the 1.60.0 line: that line keeps its hash,
+/// the new line differs from it, and it is the newest. The two changes share the one line.
+#[test]
+fn b823_b847_frozen_1_61_0_is_one_new_line_and_the_1_60_0_line_did_not_move() {
+    let v160: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.60.0").collect();
+    let v161: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.61.0").collect();
+    assert_eq!(
+        (v160.len(), v161.len()),
+        (1, 1),
+        "one pinned line per version"
+    );
+    assert_eq!(
+        v160[0].1,
+        "6b38d62f36498ae5f36628e41513631e25a321ce1a092b7566cf480d46906025"
+    );
+    assert_ne!(v160[0].1, v161[0].1);
+    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.61.0"));
 }
 
 /// The ninth file is appended after the eight: the order of `SCHEMA_FILES` is part of the hash, so the file joins at the end and no existing file moves.

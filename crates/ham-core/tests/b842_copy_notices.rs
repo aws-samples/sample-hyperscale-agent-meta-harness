@@ -240,20 +240,24 @@ fn b842_b823_the_view_keeps_the_notices_about_copies_for_a_surface_without_a_con
         EventType::TurnProgress,
         json!({"turn": 1, "kind": "notify", "reason": "outage", "outageMinutes": 30}),
     ));
+    // Session 2 goes on: a copy is late, and then it could not be saved.
+    events.push(copy_notice(13, 1_172, LATE));
+    events.push(copy_notice(14, 1_176, NOT_SAVED));
     let v = state_of(events).view_at(Some(T0 + 1_180));
     let texts: Vec<&str> = v.copy_notices.iter().map(|n| n.text.as_str()).collect();
+    // What session 1 said before it was lost is over with it.
     assert_eq!(
         texts,
-        [LATE, NOT_SAVED, NOT_SAVED],
-        "the notices about copies, in the order the run said them"
+        [NOT_SAVED, LATE, NOT_SAVED],
+        "the notices about copies of the session in progress, in the order it said them"
     );
     // Each names its event, so a surface can tell a notice it has printed from a new one with the same words.
     let mut ids: Vec<&str> = v.copy_notices.iter().map(|n| n.event_id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 3, "{ids:?}");
-    // They stay among the run's notices as well, beside the one about the routes.
-    assert_eq!(v.notices.len(), 4, "{:?}", v.notices);
+    // The notices of both sessions stay among the run's notices, beside the one about the routes.
+    assert_eq!(v.notices.len(), 6, "{:?}", v.notices);
     // A run that said nothing about its copies has none.
     assert!(state_of(working_run()).view().copy_notices.is_empty());
 }
@@ -294,4 +298,65 @@ fn b842_b823_a_stored_copy_ends_what_the_view_keeps_of_the_notices_about_copies(
     let v = state_of(events).view();
     let said: Vec<&str> = v.copy_notices.iter().map(|n| n.text.as_str()).collect();
     assert_eq!(said, [NOT_SAVED]);
+}
+
+/// What a session said about its copies ends with the session. A session that was lost says nothing any more, and the session that
+/// follows it stores no copy until a file changes, so no stored copy ends the notices of the lost one: the service's word that the
+/// session was lost does. A surface that starts reading the run later is told only what the session in progress says.
+#[test]
+fn b842_b823_the_notices_about_copies_of_a_lost_session_are_not_kept_for_the_session_that_follows()
+{
+    let mut events = working_run();
+    events.push(copy_notice(6, 300, NOT_SAVED));
+    let said: Vec<String> = state_of(events.clone())
+        .view()
+        .copy_notices
+        .iter()
+        .map(|n| n.text.clone())
+        .collect();
+    assert_eq!(
+        said,
+        [NOT_SAVED],
+        "TRIGGER PRESENT: session 1 says that a copy could not be saved"
+    );
+    // The service calls session 1 lost.
+    events.push(h(
+        7,
+        960,
+        EventType::RunWaiting,
+        serde_json::to_value(lost(1, 960)).unwrap(),
+    ));
+    let v = state_of(events.clone()).view_at(Some(T0 + 970));
+    assert!(
+        v.copy_notices.is_empty(),
+        "nothing keeps trying for session 1: {:?}",
+        v.copy_notices
+    );
+    // The run's notices still hold what session 1 said.
+    assert_eq!(v.notices.len(), 1, "{:?}", v.notices);
+    // Session 2 starts from copy 1 and reads code for twenty minutes without changing a file: it stores no copy.
+    events.push(session_started(8, 990, 2));
+    let v = state_of(events.clone()).view_at(Some(T0 + 2_190));
+    assert!(v.copy_notices.is_empty(), "{:?}", v.copy_notices);
+    // What session 2 says about a copy is kept.
+    events.push(copy_notice(9, 2_200, LATE));
+    let v = state_of(events).view_at(Some(T0 + 2_210));
+    let said: Vec<&str> = v.copy_notices.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said, [LATE]);
+}
+
+/// A session that handed over at its time limit is over as well: the start of the session that follows ends what the view keeps of the
+/// earlier session's notices, and what the new session says afterwards is kept.
+#[test]
+fn b842_b823_the_start_of_a_later_session_ends_the_notices_about_copies_of_the_session_before() {
+    let mut events = working_run();
+    events.push(copy_notice(6, 300, NOT_SAVED));
+    events.push(session_started(7, 990, 2));
+    let v = state_of(events.clone()).view_at(Some(T0 + 1_000));
+    assert!(v.copy_notices.is_empty(), "{:?}", v.copy_notices);
+    assert_eq!(v.notices.len(), 1, "{:?}", v.notices);
+    events.push(copy_notice(8, 1_100, LATE));
+    let v = state_of(events).view_at(Some(T0 + 1_110));
+    let said: Vec<&str> = v.copy_notices.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said, [LATE]);
 }

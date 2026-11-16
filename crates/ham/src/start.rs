@@ -5,6 +5,7 @@
 use crate::api::{Api, ApiError};
 use crate::http::ControlPlane;
 use ham_core::request::direct_idempotency_key_on;
+use ham_core::settings::Key;
 use harness_protocol::api::v1::StartDirectRunRequest;
 use harness_protocol::goal::GoalStatus;
 
@@ -43,9 +44,20 @@ pub async fn start_direct<P: ControlPlane>(
     request: &StartDirectRunRequest,
     nonce: &str,
 ) -> Result<Started, ApiError> {
+    start_direct_set_by(api, request, nonce, None).await
+}
+
+/// [`start_direct`] for a caller that resolved the run from the config file: `copy_key` is the key of the file that set the copy interval of the
+/// request, which the sentence for a stage that predates the interval names.
+pub async fn start_direct_set_by<P: ControlPlane>(
+    api: &Api<P>,
+    request: &StartDirectRunRequest,
+    nonce: &str,
+    copy_key: Option<Key>,
+) -> Result<Started, ApiError> {
     // With several backends the Api is aimed at one and its alias is part of the key; with one backend the key is the one of before.
     let key = direct_idempotency_key_on(request, nonce, api.target());
-    let r = api.start_direct_run(request, &key).await?;
+    let r = api.start_direct_run_set_by(request, &key, copy_key).await?;
     Ok(Started {
         run_id: r.run_id,
         status: r.status,

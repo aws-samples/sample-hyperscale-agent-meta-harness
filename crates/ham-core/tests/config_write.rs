@@ -170,7 +170,8 @@ fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
         ("update_source", "https://example.com/me/fork.git"),
         ("run.copy_every_minutes", "10"),
     ];
-    assert_eq!(values.len(), KEYS.len());
+    // `run.copy_every_seconds` is not in the list: it cannot be set beside `run.copy_every_minutes` (tests/b823_copy_seconds_key.rs).
+    assert_eq!(values.len() + 1, KEYS.len());
     // Each key alone, on a commented file.
     for (key, value) in values {
         let set = set_text(BARE, key, value);
@@ -344,7 +345,7 @@ fn a_bad_key_a_bad_value_and_a_hostile_value_change_nothing() {
         panic!("an unknown key");
     };
     assert_eq!(key, "nokey");
-    assert!(known.contains(&"run.goal".to_string()) && known.len() == 47);
+    assert!(known.contains(&"run.goal".to_string()) && known.len() == 48);
     assert!(matches!(
         plan_unset(OWNER, "nokey"),
         Err(PlanError::Config(ConfigError::UnknownKey { .. }))

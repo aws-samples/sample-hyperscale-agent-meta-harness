@@ -72,9 +72,13 @@ fn screen_text(app: &App, w: u16, h: u16) -> String {
     out
 }
 
+fn snapshot_at(app: &App, name: &str, w: u16, h: u16) {
+    insta::assert_snapshot!(format!("{name}_{w}x{h}"), screen_text(app, w, h));
+}
+
 fn snapshot_sizes(app: &App, name: &str) {
     for (w, h) in SIZES {
-        insta::assert_snapshot!(format!("{name}_{w}x{h}"), screen_text(app, w, h));
+        snapshot_at(app, name, w, h);
     }
 }
 
@@ -268,21 +272,249 @@ impl DrawClock {
     }
 }
 
+/// The times of some draws, each read on the clock of the bound and on the wall clock.
+struct Draws {
+    n: u32,
+    clock: Duration,
+    wall: Duration,
+    slowest: Duration,
+    what: &'static str,
+}
+
+impl Draws {
+    fn new() -> Self {
+        Self {
+            n: 0,
+            clock: Duration::ZERO,
+            wall: Duration::ZERO,
+            slowest: Duration::ZERO,
+            what: "no draw",
+        }
+    }
+
+    /// One more draw, which began when `t` started and has just ended.
+    fn add(&mut self, t: &DrawClock) {
+        let read = t.elapsed();
+        self.wall += t.wall.elapsed();
+        self.n += 1;
+        self.clock += read;
+        self.slowest = self.slowest.max(read);
+        self.what = t.what();
+    }
+
+    /// The seconds one draw took on the clock of the bound, the mean of the draws.
+    fn per_draw(&self) -> f64 {
+        self.clock.as_secs_f64() / f64::from(self.n)
+    }
+
+    fn on_the_wall(&self) -> f64 {
+        self.wall.as_secs_f64() / f64::from(self.n)
+    }
+}
+
+/// One more tool call of agent `A0000`, the `n`th.
+fn row_change(n: u32) -> Envelope {
+    env(
+        20_000 + n,
+        EventType::ToolSummary,
+        None,
+        Some("A0000"),
+        u64::from(n) + 1,
+        json!({"toolCallId": format!("call-again-{n}"), "title": format!("running the tests, pass {n}"), "kind": "execute", "status": "pending"}),
+    )
+}
+
+/// Agent `A0000` reports one more tool call: its row of the agents card changes, as some row does all the time on a live run.
+fn one_row_changes(app: &mut App, n: u32) {
+    app.update(pages(vec![row_change(n)]));
+}
+
+#[test]
+fn b836_a_draw_makes_only_the_rows_of_the_agents_that_changed() {
+    let mut app = dashboard(agents(500));
+    screen_text(&app, 120, 40);
+    assert_eq!(app.agent_rows_made(), 500);
+    screen_text(&app, 120, 40);
+    assert_eq!(
+        app.agent_rows_made(),
+        500,
+        "a second draw of the same screen made the rows of its agents again"
+    );
+    one_row_changes(&mut app, 0);
+    screen_text(&app, 120, 40);
+    assert_eq!(
+        app.agent_rows_made(),
+        501,
+        "one agent's row changed, so the draw after it makes that row and no other"
+    );
+}
+
+#[test]
+fn b836_a_screen_drawn_before_shows_the_agents_a_first_draw_shows() {
+    // One app draws, sees rows change between its draws and draws at every size. The other gets the same events at once: its first
+    // draw makes every row in one go.
+    let mut drawn = dashboard(agents(500));
+    for (w, h) in SIZES {
+        screen_text(&drawn, w, h);
+    }
+    for n in 0..3 {
+        one_row_changes(&mut drawn, n);
+        screen_text(&drawn, 120, 40);
+    }
+    let mut events = agents(500);
+    events.extend((0..3).map(row_change));
+    let mut first = dashboard(events);
+    assert_eq!(screen_text(&drawn, 120, 40), screen_text(&first, 120, 40));
+    assert_eq!(first.agent_rows_made(), 500);
+    // The agents card, opened, from its end to its start.
+    for app in [&mut drawn, &mut first] {
+        press(app, KeyCode::BackTab);
+        press(app, KeyCode::Char(' '));
+        screen_text(app, 120, 40);
+    }
+    for key in [
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageUp,
+        KeyCode::Home,
+    ] {
+        for app in [&mut drawn, &mut first] {
+            press(app, key);
+        }
+        // Both are drawn at the same sizes in the same order: a page is as tall as the last draw.
+        for (w, h) in SIZES {
+            let (was_drawn, at_once) = (screen_text(&drawn, w, h), screen_text(&first, w, h));
+            assert_eq!(was_drawn, at_once, "{key:?} at {w}x{h}");
+            if key == KeyCode::End {
+                // TRIGGER PRESENT: the screens that are compared show the rows of the opened agents card.
+                assert!(
+                    at_once.contains("A0499 "),
+                    "the last agent's row at {w}x{h}: {at_once}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn five_thousand_agents_draw_in_bounded_time() {
-    let app = dashboard(agents(5000));
-    let t = DrawClock::start();
-    snapshot_sizes(&app, "dash_5000_agents");
-    for _ in 0..10 {
-        screen_text(&app, 200, 60);
+    const AGENTS: u64 = 5000;
+    let mut app = dashboard(agents(5000));
+    // The bound holds for each kind of draw on its own, so that no cheap kind hides a dear one in a mean:
+    // - a whole draw makes every row of the agent table and makes the agents card into a block: the first draw of the screen and a
+    //   draw after the layout of the table changed. Until every draw did both.
+    // - a draw after one agent's row changed makes that row and the agents card again: the draw of a live run.
+    // - a draw of the screen that did not change makes neither.
+    let (mut whole, mut changed, mut again) = (Draws::new(), Draws::new(), Draws::new());
+    // The snapshots first, each compared inside the timed part as it always was. What a draw made says which kind it is: the rows of
+    // 120 and of 200 columns are the same text, so the third size makes its rows for another layout and no block.
+    for (w, h) in SIZES {
+        let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let t = DrawClock::start();
+        snapshot_at(&app, "dash_5000_agents", w, h);
+        let kind = match (
+            app.agent_rows_made() - rows,
+            app.card_blocks_made() - blocks,
+        ) {
+            (AGENTS, 1..) => &mut whole,
+            (0, 0) => &mut again,
+            _ => &mut changed,
+        };
+        kind.add(&t);
     }
-    let per_draw = t.elapsed().as_secs_f64() / 13.0;
-    let on_the_wall = t.wall.elapsed().as_secs_f64() / 13.0;
     assert!(
-        per_draw < 0.5,
-        "a draw of 5,000 agents took {per_draw:.3} s ({}; {on_the_wall:.3} s on the wall clock)",
-        t.what()
+        whole.n >= 1,
+        "the first draw of the run screen did not make every row and the agents card"
     );
+    // Whole draws until there are thirteen, as many draws as the bound was always the mean of. The table goes from its narrow layout
+    // to its wide one and back: each draw makes every row, and the rows differ, so each makes the agents card.
+    let mut size = (120, 40);
+    while whole.n < 13 {
+        size = if size == (80, 24) {
+            (120, 40)
+        } else {
+            (80, 24)
+        };
+        let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let t = DrawClock::start();
+        let screen = screen_text(&app, size.0, size.1);
+        whole.add(&t);
+        // TRIGGER PRESENT: the draw made every row and the agents card.
+        assert_eq!(
+            app.agent_rows_made() - rows,
+            AGENTS,
+            "the draw at {size:?} after another layout did not make every row"
+        );
+        assert!(
+            app.card_blocks_made() > blocks,
+            "the draw at {size:?} after another layout made no card into a block"
+        );
+        assert!(screen.contains("agents 5000"), "{screen}");
+    }
+    // Ten draws of a live run: one agent's row changed before each.
+    for n in 0..10 {
+        one_row_changes(&mut app, n);
+        let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let t = DrawClock::start();
+        let screen = screen_text(&app, size.0, size.1);
+        changed.add(&t);
+        // TRIGGER PRESENT: the draw made the row that changed, and the agents card again.
+        assert_eq!(
+            app.agent_rows_made() - rows,
+            1,
+            "draw {n} after one agent's row changed"
+        );
+        assert!(
+            app.card_blocks_made() > blocks,
+            "draw {n} after one agent's row changed made no card into a block"
+        );
+        assert!(screen.contains("agents 5000"), "{screen}");
+    }
+    // The same screen ten more times: nothing changed, so no row and no card is made again.
+    for _ in 0..10 {
+        let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let t = DrawClock::start();
+        screen_text(&app, size.0, size.1);
+        again.add(&t);
+        assert_eq!(
+            (
+                app.agent_rows_made() - rows,
+                app.card_blocks_made() - blocks
+            ),
+            (0, 0),
+            "a draw of the screen that did not change made rows or cards again"
+        );
+    }
+    // The figures of a run, shown with `--nocapture` and in the output of a failure.
+    eprintln!(
+        "DRAW-TIMES 5,000 agents: a whole draw {:.3} s (the slowest of {} {:.3} s; {:.3} s on the wall clock), a draw after one row changed {:.3} s (the slowest of {} {:.3} s; {:.3} s on the wall clock), a draw of the unchanged screen {:.3} s ({:.3} s on the wall clock); {}",
+        whole.per_draw(),
+        whole.n,
+        whole.slowest.as_secs_f64(),
+        whole.on_the_wall(),
+        changed.per_draw(),
+        changed.n,
+        changed.slowest.as_secs_f64(),
+        changed.on_the_wall(),
+        again.per_draw(),
+        again.on_the_wall(),
+        whole.what
+    );
+    for (draws, kind) in [
+        (&whole, "that makes every row and the agents card"),
+        (&changed, "after one agent's row changed"),
+        (&again, "of a screen that did not change"),
+    ] {
+        assert!(
+            draws.per_draw() < 0.5,
+            "a draw of 5,000 agents {kind} took {:.3} s ({}; {:.3} s on the wall clock; the slowest of {} took {:.3} s)",
+            draws.per_draw(),
+            draws.what,
+            draws.on_the_wall(),
+            draws.n,
+            draws.slowest.as_secs_f64()
+        );
+    }
     assert!(screen_text(&app, 200, 60).contains("agents 5000"));
 }
 

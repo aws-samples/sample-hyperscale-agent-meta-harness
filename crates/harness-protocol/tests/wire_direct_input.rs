@@ -66,7 +66,7 @@ fn assert_event_round_trip<T: Serialize + for<'de> Deserialize<'de>>(name: &str)
 
 #[test]
 fn the_protocol_is_1_38_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
 }
 
 #[test]

@@ -937,6 +937,8 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         EventType::RunWaiting => {
             if let Some(lost) = crate::lost_session::SessionLost::parse(e) {
                 v.session_open = false;
+                // What the session said about its copies is over with it; nothing keeps trying for a session that is gone.
+                v.copy_notices.clear();
                 v.lost_in_a_row = lost.lost_in_a_row;
                 v.lost.push(lost);
                 let excess = v.lost.len().saturating_sub(crate::lost_session::MAX_KEPT);
@@ -971,7 +973,15 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
                 v.session_started_unix = Some(v.session_started_unix.map_or(t, |held| held.max(t)));
             }
             v.beat_s = typed::<u64>(e, "beatS").filter(|s| *s > 0);
-            v.session_now = typed::<u32>(e, "session").filter(|s| *s > 0);
+            let session = typed::<u32>(e, "session").filter(|s| *s > 0);
+            // What an earlier session said about its copies is over when a later session starts.
+            if session
+                .zip(v.session_now)
+                .is_some_and(|(now, before)| now > before)
+            {
+                v.copy_notices.clear();
+            }
+            v.session_now = session;
             if let Some(id) = agent_id {
                 agent(v, &id).turns += 1;
             }

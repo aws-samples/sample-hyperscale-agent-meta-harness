@@ -1,6 +1,6 @@
 //! The latest saved copy of a run's work: `POST /v1/runs/{runId}/snapshot/download-url`.
 //!
-//! agentd saves the work tree while the files change (every minute, and after a tool call) and once more when the engine has stopped:
+//! agentd saves the work tree while the files change (every 15 seconds by default, and after a tool call) and once more when the engine has stopped:
 //! `snapshot.bundle` (a git bundle of `refs/heads/snapshot`), then `snapshot.json` beside it. The copy of the end carries `"final": true`
 //! and is the session's final head, so the route answers for a run that ended as it does for one that works. The route reads the record and the first bytes of the bundle, checks that both name the same commit,
 //! and presigns the bundle. The worker role can write both objects, so the pair is **worker-made and not verified by the harness**

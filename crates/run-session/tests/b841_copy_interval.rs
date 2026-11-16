@@ -55,18 +55,20 @@ fn plan_for(n: u32) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn b841_copy_a_request_without_the_member_gets_the_default_minute() {
+async fn b841_copy_a_request_without_the_member_leaves_the_timer_to_the_worker() {
+    // The worker's default is 15 seconds, and a worker of an older release refuses a number below 60. A session of a run that was active
+    // while the stage was updated can still reach such a worker, so the invocation names no interval unless the request did.
     let mem = Mem::default();
     mem.seed(RunTarget::S3Only, PROMPT, MODEL);
     start(&mem, 1).await.unwrap();
-    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 60);
-    assert_eq!(invocation(&mem, 0).snapshot_every_s, Some(60));
-    assert_eq!(mem.invocations()[0]["snapshotEveryS"], json!(60));
+    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 15);
+    assert_eq!(invocation(&mem, 0).snapshot_every_s, None);
+    assert!(mem.invocations()[0].get("snapshotEveryS").is_none());
 }
 
 #[tokio::test]
 async fn b841_copy_the_interval_of_the_request_reaches_the_invocation() {
-    for s in [60u32, 600, 3_600] {
+    for s in [15u32, 59, 60, 600, 3_600] {
         let mem = Mem::default();
         mem.seed_with_members(
             RunTarget::S3Only,
@@ -117,7 +119,7 @@ async fn b841_copy_every_session_of_the_run_keeps_the_interval() {
 #[tokio::test]
 async fn b841_copy_a_stored_interval_no_request_may_name_ends_the_start_and_invokes_nothing() {
     // control-api refuses such a value; a request stored by another version, or changed in the bucket, is refused here once more
-    for s in [0u32, 59, 3_601] {
+    for s in [0u32, 14, 3_601] {
         let mem = Mem::default();
         mem.seed_with_members(
             RunTarget::S3Only,

@@ -21,6 +21,7 @@ pub mod compat;
 pub mod context;
 pub mod continue_from;
 pub mod creds_fn;
+pub mod delivery_word;
 pub mod disk;
 pub mod dox;
 pub mod driver;
@@ -76,9 +77,10 @@ use crate::direct::request::{rule_refs, rules_digest, rules_manifest};
 use crate::direct::retry::RetryPolicy;
 use crate::direct::review::{GitRepo, ReviewPlan};
 use crate::direct::snapshot::{
-    COPY_LATE_AFTER, Cadence, CopyClock, CopyTimer, GitBudget, GitSource, GiveUp, STOP_COPY_BUDGET,
-    STOP_COPY_RETRY, SnapshotMade, Snapshotter, TREE_ANSWER_LIMIT, TREE_ASK_EVERY, TreeAlive,
-    cut_unix, late_after, snapshot_json, store_limit,
+    COPY_LATE_AFTER, COPY_SPACING_CAP, COPY_SPACING_MAX, Cadence, CopyClock, CopyTimer, GitBudget,
+    GitSource, GiveUp, STOP_COPY_BUDGET, STOP_COPY_RETRY, SnapshotMade, Snapshotter,
+    TREE_ANSWER_LIMIT, TREE_ASK_EVERY, TreeAlive, cut_unix, failed_look_counts, late_after,
+    snapshot_json, store_limit,
 };
 use crate::direct::summary::{
     InputNote, SummaryExtras, SummaryInputs, build_summary_with, nudge_note, reclassify,
@@ -1668,11 +1670,15 @@ async fn start_and_prompt(
             cwd: top,
             engine: req.engine.clone(),
             model: req.model.id.clone(),
-            // The user's text as typed; a run in the earlier records folder gets one line before it (COMPAT-CAH-DATA).
-            prompt: match &st.records_line {
-                Some(line) => format!("{line}\n\n{first}"),
-                None => first.to_string(),
-            },
+            // The user's text as typed; a run in the earlier records folder gets one line before it (COMPAT-CAH-DATA). The
+            // harness's word on how the run delivers comes first, in every session of the run; an unknown delivery adds nothing.
+            prompt: delivery_word::with_block(
+                req.delivery.as_ref(),
+                &match &st.records_line {
+                    Some(line) => format!("{line}\n\n{first}"),
+                    None => first.to_string(),
+                },
+            ),
             nudge,
             cancel: Some(controls.subscribe()),
             // What is left of the deadline now that everything before the prompt is done.
@@ -2112,6 +2118,7 @@ async fn input_wiring(
         }),
         context,
         task: task.to_string(),
+        delivery: req.delivery.clone(),
         engine_label: crate::engine::direct::engine_label(&req.engine).to_string(),
         routes: if routes.len() > 1 {
             routes
@@ -2259,6 +2266,13 @@ struct LookBound {
     asked: Arc<std::sync::atomic::AtomicBool>,
     /// The look was given up because the file system of the work tree did not answer.
     silent: Arc<std::sync::atomic::AtomicBool>,
+    /// The git work of the look ended within its limit; what follows is the store of the copy.
+    git_ended: Arc<std::sync::atomic::AtomicBool>,
+    /// When the git work of the look began: after the file system of the tree answered and the copy before it had ended. Unset for a look
+    /// that never got that far.
+    git_started_at: Arc<std::sync::OnceLock<std::time::Instant>>,
+    /// When that git work ended.
+    git_ended_at: Arc<std::sync::OnceLock<std::time::Instant>>,
 }
 
 impl LookBound {
@@ -2271,7 +2285,34 @@ impl LookBound {
             git_at,
             asked: Arc::default(),
             silent: Arc::default(),
+            git_ended: Arc::default(),
+            git_started_at: Arc::default(),
+            git_ended_at: Arc::default(),
         }
+    }
+
+    /// The git work of this look starts now.
+    fn git_starts(&self) {
+        let _ = self.git_started_at.set(std::time::Instant::now());
+    }
+
+    /// The git work of this look has ended and made a copy: the look goes on to store it.
+    fn git_has_ended(&self) {
+        let _ = self.git_ended_at.set(std::time::Instant::now());
+        self.git_ended
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// What the spacing counts of this look, which started at `started`, asked when the look has failed (`snapshot::failed_look_counts`):
+    /// its git work, to its end or to now when the git was given up, and nothing for a look that never started git (the tree did not
+    /// answer, or the copy before it had not ended).
+    fn counted(&self, started: std::time::Instant) -> (std::time::Instant, std::time::Instant) {
+        failed_look_counts(
+            started,
+            self.git_started_at.get().copied(),
+            self.git_ended_at.get().copied(),
+            std::time::Instant::now(),
+        )
     }
 
     /// agentd was asked to end. With `end_by` (a process that ends after the copy) nothing of this look runs after that time; without
@@ -2295,9 +2336,14 @@ impl LookBound {
         self.git.no_later_than(Instant::now());
     }
 
-    /// Whether the git work of this look, which failed, ran for its own limit: no silent tree ended it, and no request to end.
+    /// Whether the git work of this look, which failed, ran for its own limit: no silent tree ended it, and it had not ended when the
+    /// limit passed (`snapshot::git_limit_gave_up`). A look whose copy could not be stored after its git had ended did not.
     fn git_limit_reached(&self) -> bool {
-        !self.silent.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() >= self.git_at
+        crate::direct::snapshot::git_limit_gave_up(
+            self.silent.load(std::sync::atomic::Ordering::SeqCst),
+            self.git_ended.load(std::sync::atomic::Ordering::SeqCst),
+            Instant::now() >= self.git_at,
+        )
     }
 }
 
@@ -2389,8 +2435,8 @@ fn copy_number(subject: &str) -> Option<u32> {
 /// The number of the newest copy the run saved before the session of `req` (0 for a run that saved none). The copies of a run are
 /// numbered within the run, so that a number names one copy: a session after the first reads the record of the newest earlier session
 /// that left one (`turns/<k>/snapshot.json`, in the worker's own prefix) and goes on from its `count`. A session that ended between its two
-/// uploads leaves the bundle of its newest copy without that copy's record; the bundle is what this session restored, so when the restored
-/// commit is the copy after the record's, its number counts too. A session that left no record answers 404, or 403 where the role may
+/// uploads leaves the bundle of its newest copy without that copy's record; the bundle is what this session restored, so the larger of the
+/// record's number and the restored commit's counts ([`copies_counted`]). A session that left no record answers 404, or 403 where the role may
 /// not list the bucket, and the session before it is asked. A record that cannot be read after [`COPIES_BEFORE_TRIES`] tries leaves the
 /// number of the restored commit, and without one the count starts again: the session goes on either way, and the client tells two copies
 /// of one number apart by their commits.
@@ -2444,12 +2490,15 @@ async fn copies_before(
             }
         }
     }
-    match (recorded, restored) {
-        (Some(r), Some(h)) if h == r.saturating_add(1) => h,
-        (Some(r), _) => r,
-        (None, Some(h)) => h,
-        (None, None) => 0,
-    }
+    copies_counted(recorded, restored)
+}
+
+/// The number the copies of a session go on from: the larger of the number the newest record of an earlier session names
+/// (`recorded`) and the number of the commit the session restored (`restored`, `None` for a commit that is no copy). A session can
+/// leave bundles without their records (it ended between the two uploads of one copy, or the upload of an earlier copy failed and it
+/// ended before the record of a later one), so the restored commit can be any number ahead of the record, and no number names two copies.
+pub fn copies_counted(recorded: Option<u32>, restored: Option<u32>) -> u32 {
+    recorded.unwrap_or(0).max(restored.unwrap_or(0))
 }
 
 impl Copies {
@@ -2627,6 +2676,8 @@ impl Copies {
         let Some(mut snapshotter) = bound.git.run(self.snapshotter.lock()).await else {
             return self.look_failed(bound, "the copy before it had not ended");
         };
+        // What the spacing counts of a look that fails starts here: a look that never got this far ran no git.
+        bound.git_starts();
         let looked = snapshotter.snapshot_until(&bound.git).await;
         self.log_tidy(&mut snapshotter);
         let made = match looked {
@@ -2636,6 +2687,7 @@ impl Copies {
         };
         // What the spacing counts ends here: the uploads cost the engine nothing, and one that hangs must not hold the next look back.
         let git_ended = std::time::Instant::now();
+        bound.git_has_ended();
         self.step
             .store(STEP_STORE, std::sync::atomic::Ordering::SeqCst);
         let limit = self
@@ -2842,13 +2894,22 @@ enum Why {
     Ending(u64),
 }
 
-/// The copy clock after a look.
-fn note_look(clock: &mut CopyClock, started: std::time::Instant, looked: &Looked) {
+/// The copy clock after a look that ran under `bound`.
+fn note_look(
+    clock: &mut CopyClock,
+    started: std::time::Instant,
+    bound: &LookBound,
+    looked: &Looked,
+) {
     match looked {
         Looked::Stored { bytes, git_ended } => clock.looked(started, *git_ended, Some(*bytes)),
         Looked::Same => clock.looked(started, std::time::Instant::now(), None),
-        // Nothing is spaced after a copy that failed: the next tick tries again, as the run was told.
-        Looked::Failed => clock.failed(started),
+        // A look that failed counts with the time its git work took, as a look that stored a copy does. The store that failed
+        // is not counted, so a bucket that does not answer holds no look back; neither is the wait of a look that never started git.
+        Looked::Failed => {
+            let (from, to) = bound.counted(started);
+            clock.failed(from, to);
+        }
     }
 }
 
@@ -2900,9 +2961,9 @@ async fn watched_look(
 }
 
 /// Starts the copy task: it looks at the tree every `snapshotEveryS` seconds, counted from the start of one look to the start of
-/// the next, and when a tool call ended ([`Cadence`]), and stores a copy when the tree changed. A copy that failed is tried again after
-/// `snapshot::COPY_RETRY` at the latest, whatever the timer. With the copies switched off (0) it looks on no timer and after
-/// no tool call; the copy of the end is made all the same.
+/// the next, and when a tool call ended ([`Cadence`]), and stores a copy when the tree changed. The looks take a tenth of the time at the
+/// most (`Cadence::delay` has the formula). After a copy that failed the timer is `snapshot::COPY_RETRY` when that is shorter.
+/// With the copies switched off (0) it looks on no timer and after no tool call; the copy of the end is made all the same.
 ///
 /// When agentd is asked to end (`server::Ending`) the task saves a copy at once, with no floor and no spacing, whatever the timer: a look
 /// that is in flight ends first, because its copy may be all but stored, and one more look follows it, because the look in flight read
@@ -2929,6 +2990,10 @@ fn start_snapshots(
     if let Some(retry) = app.cfg.direct.snapshot_retry {
         cadence = cadence.with_retry(retry);
     }
+    if let Some(test_timer) = app.cfg.direct.snapshot_interval {
+        // A timer that a test set keeps the cap the spacing had while the default timer was one minute: five of its periods.
+        cadence = cadence.with_space_max((test_timer * COPY_SPACING_CAP).min(COPY_SPACING_MAX));
+    }
     let mut ending = app.ending.watch();
     Some(SnapshotTask(tokio::spawn(async move {
         // The cadence counts in real time (`std`); the sleeps are tokio's.
@@ -2950,10 +3015,12 @@ fn start_snapshots(
             };
             let mut why = tokio::select! {
                 () = tick => Why::Timer,
-                () = wake.notified(), if cadence.wakes(&clock) => Why::ToolCall,
+                () = wake.notified(), if cadence.wakes_now(&clock, trying_again) => Why::ToolCall,
                 n = ending.asked() => Why::Ending(n),
             };
-            if !matches!(why, Why::Ending(_)) {
+            // A look that a request to end asked for has no floor and no spacing, and neither has a look that tries its copy again: only
+            // the retry tick and a request to end start one then, no tool call (`Cadence::wakes_now`).
+            if !matches!(why, Why::Ending(_)) && !trying_again {
                 let wait = cadence.delay(
                     &clock,
                     matches!(why, Why::ToolCall),
@@ -2971,7 +3038,8 @@ fn start_snapshots(
             // A look that a request to end asked for leaves the tick that was due where it is.
             let mut look_started = Instant::now();
             timer.look_starts(look_started, asked_first);
-            let bound = copies.bound(&git);
+            // The bound of the look that ran last: what the copy clock counts of a look that failed ends with it.
+            let mut bound = copies.bound(&git);
             let late = late_after(copies.limits.late, last_took);
             let mut stop = match why {
                 Why::Ending(n) => Some(copies.stop_asked(n, &bound)),
@@ -2986,10 +3054,10 @@ fn start_snapshots(
                 && (!copies.ends_after_copy || Instant::now() < asked.at)
             {
                 // The request to end came while that look ran: what was written after it had read the tree is in no copy yet.
-                note_look(&mut clock, started, &looked);
+                note_look(&mut clock, started, &bound, &looked);
                 started = std::time::Instant::now();
                 look_started = Instant::now();
-                let bound = copies.bound(&git);
+                bound = copies.bound(&git);
                 bound.asked_to_end(copies.ends_after_copy.then_some(asked.at));
                 looked = watched_look(&copies, &bound, late, &mut ending, &mut stop).await;
                 note_git(&mut git, started, &bound, &looked);
@@ -3003,9 +3071,9 @@ fn start_snapshots(
                 // A process that ends after the copy tries nothing more; the first process of its machine runs on.
                 trying_again |= !copies.ends_after_copy && matches!(looked, Looked::Failed);
             }
-            note_look(&mut clock, started, &looked);
-            // A look that failed is tried again after the retry time at the latest, counted from its start, whatever the timer of
-            // the run (`Cadence::period`); a tick of the timer that comes sooner stays.
+            note_look(&mut clock, started, &bound, &looked);
+            // The tick after a look that failed comes after the retry time at the latest, counted from its start, whatever the
+            // timer of the run (`Cadence::period`); a tick of the timer that comes sooner stays.
             if matches!(looked, Looked::Failed)
                 && let Some(retry) = cadence.period(true)
             {

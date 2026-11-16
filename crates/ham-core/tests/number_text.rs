@@ -78,6 +78,6 @@ fn the_default_of_every_number_row_reads_as_the_same_value_set_by_the_user_would
     }
     assert_eq!(
         seen, 14,
-        "the four stall keys that are numbers, the allowance of new calls, the total time of a run, the copy limit, the three run counts, the three research budgets and the copy interval of a run"
+        "the four stall keys that are numbers, the allowance of new calls, the total time of a run, the copy limit, the three run counts, the three research budgets and the copy interval of a run in seconds (the key in minutes has no default of its own)"
     );
 }

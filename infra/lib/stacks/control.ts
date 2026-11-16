@@ -234,7 +234,7 @@ export class ControlStack extends Stack {
             // of the bundle and presigns the bundle, so the role may get these two objects of the direct agent and nothing else under
             // agents/ (the summary, the stop digests, the nonce, the final bundle and a future transcript stay closed to it).
             // s3:GetObjectVersion on the same two keys: the URL is pinned to the version whose header the route checked, so a bundle
-            // agentd overwrites meanwhile (every minute while the files change) does not break a slow download; the bucket keeps noncurrent versions 30 days.
+            // agentd overwrites meanwhile (every 15 seconds by default while the files change) does not break a slow download; the bucket keeps noncurrent versions 30 days.
             { Sid: "SnapshotDownload", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"],
               // Each session of a run keeps its own snapshot under turns/n/, and the route reads the newest one. `?` is one
               // character: the turns 1 to 9, 10 to 99 and 100 to 256 need one pattern each, with no wildcard that spans a path (the test

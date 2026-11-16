@@ -259,3 +259,39 @@ async fn b842_the_end_after_lost_sessions_says_whether_there_is_a_copy_to_delive
     next_slice(&mem, missed_heartbeat(), LoopState::default()).await;
     assert!(word(&mem).get("delivers").is_none(), "{}", word(&mem));
 }
+
+/// The word about a lost session never changes what the run does. The decision and the plan of the next session are stored before the
+/// event is written, so an event that cannot be written leaves the decision as it is, and asking again writes the event.
+#[tokio::test]
+async fn b842_a_lost_session_whose_word_cannot_be_written_still_gets_the_decision_that_was_stored()
+{
+    use run_session::error::RunSessionError;
+    let mem = started().await;
+    mem.put_snapshot_t(1, HEAD);
+    mem.set_now_ms(T0 + 700_000);
+    // An error the state machine does not retry: its Catch would end the run where the service had decided to start session 2.
+    mem.fail(
+        "put_event",
+        RunSessionError::Invalid("the event was refused".into()),
+    );
+    let out = handle(
+        &mem.deps(),
+        &Op::NextSlice {
+            run_id: RUN.to_string(),
+            staged: staged(),
+            session: missed_heartbeat(),
+            loop_state: LoopState::default(),
+        },
+    )
+    .await
+    .expect("the stored decision is returned although its word could not be written");
+    assert_eq!(out["continue"], json!(true), "session 2 starts: {out}");
+    assert!(
+        lost_events(&mem).is_empty(),
+        "TRIGGER PRESENT: the event write failed"
+    );
+    // Asked again: the same decision, and its word is written now.
+    let again = next_slice(&mem, SessionState::default(), LoopState::default()).await;
+    assert_eq!(again, out);
+    assert_eq!(lost_events(&mem).len(), 1);
+}

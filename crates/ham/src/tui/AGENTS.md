@@ -243,7 +243,16 @@ image key (`scripts/image-key-guard.sh`).
   first, then the box, the notice, the banner and the pending rows take what is left. The module holds no `App` and reads no events.
   - Seams for the TUI-core owner (the branch that replaces the Dashboard): the app builds `ChatFacts` (header, banner, notice, pending rows, footer,
     box title, focus) and the `Card`s from strings it already has, and calls `set_model` when new events arrive and `set_cards` for the status and
-    agent card (folded), the question card (open, `alert`), the blocked panel and the delivery card (open). A card line never wraps at
+    agent card (folded), the question card (open, `alert`), the blocked panel and the delivery card (open). `set_cards` is called at every draw: it keeps each card it
+    was last given with the block made of it and makes a block only for a card that changed, because making a block redacts and cleans its whole body
+    and the agents card of a large run is thousands of rows.
+    The rows of the agents card come from `agent_table.rs`. The module holds no
+    `App`. A row is made of its agent (`AgentRow`), of the window the agent's session reports and of the layout (the columns that show and the width of
+    the LAST column): its cells pass `sanitize_line` and are cut and padded to their columns. The table keeps each row with what it was made of and makes
+    a row again only when one of the three changed, so a draw makes the rows of the agents that changed since the draw before it; `rows_made()` counts
+    them, and an agent that is no longer listed is forgotten. `ui.rs` hands it the list (`agent_lines`); `App` holds it in a `RefCell` beside the
+    conversation, starts a new one when another run opens and reads the count with `agent_rows_made()`.
+    A card line never wraps at
     `ChatView::card_width(area_width)` columns, so the delivery card's one-line link is fitted to it (`render::link_line`). `InputPane` is the box:
     `rows_at(inner_width)` and `render(f, area, block, focused)` are the frozen `ChatBox` signatures, so `impl InputPane for ChatBox` forwards them.
   - Keys and mouse: `scroll(ScrollAction)` (line, page, top, bottom), `select(Step)`, `toggle_selected_fold()`, `click(x, y)` and the read-outs

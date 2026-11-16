@@ -535,7 +535,7 @@ where
     let n = prev.slice.max(1);
     // 1. a decision is made once; its word to the run's events is written again, the same
     if let Some(end) = read_end(&deps.blobs, run_id, n).await? {
-        announce_lost(deps, run_id, &end).await?;
+        tell_lost(deps, run_id, &end).await;
         return Ok(end.state());
     }
     let now = deps.cfg.now_ms();
@@ -718,8 +718,23 @@ where
         }
     };
     let end = write_once(&deps.blobs, &end_key(run_id, n), end).await?;
-    announce_lost(deps, run_id, &end).await?;
+    tell_lost(deps, run_id, &end).await;
     Ok(end.state())
+}
+
+/// [`announce_lost`] for a decision that is stored. The word about a lost session never changes what the run does: a failure to
+/// read its records or to write the event is logged, and the caller returns the decision. A repeated `next-slice` writes the event again.
+async fn tell_lost<S, T, M, R, B, P>(deps: &Deps<S, T, M, R, B, P>, run_id: &str, end: &SliceEnd)
+where
+    S: Store,
+    B: Blobs,
+{
+    if let Err(e) = announce_lost(deps, run_id, end).await {
+        println!(
+            "{}",
+            serde_json::json!({ "warning": "session-lost-event", "runId": run_id, "session": end.slice, "reason": e.to_string() })
+        );
+    }
 }
 
 /// The service's word to the run's events that the session of `end` was lost and what follows: the session that starts and what it

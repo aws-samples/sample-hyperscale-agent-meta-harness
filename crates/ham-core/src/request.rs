@@ -266,8 +266,9 @@ pub struct ResolvedRun {
     /// The most seconds this run may take in all: `--max-run-hours` over `run.max_run_hours` of the file, in seconds. Unset sends no member, so the
     /// stage's own 24 hours applies and the request is the one an older client sends.
     pub max_run_s: Option<u32>,
-    /// The seconds between two looks of the worker for a copy of the run's work: `run.copy_every_minutes` of the file, in seconds. Unset sends no
-    /// member, so the stage's own minute applies and the request is the one an older client sends. A key set to the default is `None` too: the default
+    /// The seconds between two looks of the worker for a copy of the run's work: `run.copy_every_seconds` of the file, or
+    /// `run.copy_every_minutes` in seconds. Unset sends no member, so the stage's own default applies (15 seconds; one minute on a stage of an
+    /// older release) and the request is the one an older client sends. A key set to the default is `None` too: the default
     /// is what the stage does by itself, and a stage of an older release refuses a request with a member it does not know.
     pub snapshot_every_s: Option<u32>,
     /// Provider data sharing for this run: `--provider-sharing` over `run.provider_sharing` of the file, off when neither is set. Only `true` reaches the
@@ -298,6 +299,14 @@ impl ResolvedRun {
     /// Every run key with its origin, in registry order.
     pub fn origins(&self) -> &[(Key, Origin)] {
         &self.origins
+    }
+
+    /// The key of the file that set the copy interval of this run: `run.copy_every_seconds`, else `run.copy_every_minutes`; `None` when the
+    /// file sets neither. The request carries seconds and does not say which key they came from, so a sentence that names the key asks here.
+    pub fn copy_interval_key(&self) -> Option<Key> {
+        [Key::RunCopyEverySeconds, Key::RunCopyEveryMinutes]
+            .into_iter()
+            .find(|key| self.origin(*key) == Some(Origin::File))
     }
 
     /// The id the request's `engine` member carries: `None` for the default engine, so a run on it sends the bytes an older client sends (and a
@@ -519,6 +528,10 @@ pub fn resolve_run_settings_in(
         Key::RunCopyEveryMinutes,
         layer(false, run.copy_every_minutes.is_some()),
     ));
+    origins.push((
+        Key::RunCopyEverySeconds,
+        layer(false, run.copy_every_seconds.is_some()),
+    ));
     origins.sort_by_key(|(k, _)| *k);
     Ok(ResolvedRun {
         args: out,
@@ -533,9 +546,10 @@ pub fn resolve_run_settings_in(
         compute,
         container_signals,
         max_run_s: max_run_hours.map(|h| h * 3600),
+        // The seconds key, else the minutes key in seconds; a config never sets both (`config::COPY_INTERVAL_KEYS_CLASH`).
         snapshot_every_s: run
-            .copy_every_minutes
-            .map(|m| m * 60)
+            .copy_every_seconds
+            .or(run.copy_every_minutes.map(|m| m * 60))
             .filter(|s| *s != harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S),
         provider_sharing,
         build: BuildOptions {
@@ -683,7 +697,8 @@ pub fn with_max_run_setting(
 }
 
 /// `request` with the copy interval of the run: seconds in the `snapshotEveryS` member, left out when the file does not set
-/// `run.copy_every_minutes` or sets it to the default, so the request is byte for byte the one an older client sends and the stage's own minute applies.
+/// `run.copy_every_seconds` or `run.copy_every_minutes`, or sets the default, so the request is byte for byte the one an older client sends and the
+/// stage's own default applies.
 pub fn with_copy_interval_setting(
     request: StartDirectRunRequest,
     snapshot_every_s: Option<u32>,

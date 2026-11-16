@@ -900,6 +900,8 @@ pub struct App {
     pub(crate) cached: Option<RunView>,
     pub(crate) agent_rows: Vec<AgentRow>,
     pub(crate) list: Vec<ListLine>,
+    /// The agent table of the run screen with the rows it keeps between draws. A draw asks it for its rows, hence the cell.
+    pub(crate) agent_table: RefCell<super::agent_table::AgentTable>,
     /// The run screen's conversation and its scroll state. A draw sets the cards on it, hence the cell.
     pub(crate) chat: RefCell<ChatView>,
     /// Search inside the conversation: the bar, the matches and the folded block it holds open.
@@ -1065,6 +1067,7 @@ impl App {
             cached: None,
             agent_rows: Vec::new(),
             list: Vec::new(),
+            agent_table: RefCell::new(super::agent_table::AgentTable::new()),
             chat: RefCell::new(ChatView::new()),
             search: ChatSearchUi::new(),
             notice: None,
@@ -1380,6 +1383,7 @@ impl App {
             self.cached = None;
             self.agent_rows.clear();
             self.list.clear();
+            self.agent_table = RefCell::new(super::agent_table::AgentTable::new());
             self.chat = RefCell::new(ChatView::new());
             self.search = ChatSearchUi::new();
             self.notice = None;
@@ -1924,6 +1928,18 @@ impl App {
     /// The regions of the last draw.
     pub fn hit_map(&self) -> std::cell::Ref<'_, HitMap> {
         self.hits.borrow()
+    }
+
+    /// How many cards the draws of the run screen have made into blocks so far ([`ChatView::card_blocks_made`]). A draw of a screen
+    /// that did not change makes none; a draw after a card changed makes that card again.
+    pub fn card_blocks_made(&self) -> u64 {
+        self.chat.borrow().card_blocks_made()
+    }
+
+    /// How many rows of the agent table the draws of the run screen have made so far (`AgentTable::rows_made`). A draw makes the rows of
+    /// the agents that changed since the draw before it.
+    pub fn agent_rows_made(&self) -> u64 {
+        self.agent_table.borrow().rows_made()
     }
 
     /// The terminal changed size: a click before the next draw hits nothing.

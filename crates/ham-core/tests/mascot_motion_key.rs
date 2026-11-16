@@ -11,9 +11,9 @@ use ham_core::settings::{Applies, DefaultValue, Group, Key, Kind, Order, ROWS};
 
 #[test]
 fn the_registry_has_one_row_for_it_at_the_end() {
-    assert_eq!(Key::ALL.len(), 47);
-    assert_eq!(ROWS.len(), 47);
-    assert_eq!(KEYS.len(), 47);
+    assert_eq!(Key::ALL.len(), 48);
+    assert_eq!(ROWS.len(), 48);
+    assert_eq!(KEYS.len(), 48);
     assert_eq!(Key::ALL[31], Key::UiMascotMotion);
     let row = Key::UiMascotMotion.row();
     assert_eq!(row.name, "ui.mascot_motion");

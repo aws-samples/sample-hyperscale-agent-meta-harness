@@ -228,7 +228,7 @@ fn ms(n: u64) -> Duration {
 
 #[test]
 fn b823_the_constants_of_the_cadence_are_the_ones_the_pages_state() {
-    assert_eq!(harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S, 60);
+    assert_eq!(harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S, 15);
     assert_eq!(COPY_FLOOR, s(15));
     assert_eq!(COPY_SPACING, 9);
     assert_eq!(WAKE_MAX_BUNDLE_BYTES, 8 * 1024 * 1024);

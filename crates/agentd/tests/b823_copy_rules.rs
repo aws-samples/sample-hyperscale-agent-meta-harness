@@ -6,7 +6,7 @@ mod common;
 
 use agentd::direct::snapshot::{
     COPY_GIT_FACTOR, COPY_GIT_FLOOR, COPY_GIT_LIMIT, CopyTimer, GitBudget, STOP_COPY_RETRY,
-    TREE_ANSWER_LIMIT, TREE_ASK_EVERY, TreeAlive, ask_tree, git_limit,
+    TREE_ANSWER_LIMIT, TREE_ASK_EVERY, TreeAlive, ask_tree, git_limit, git_limit_gave_up,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -176,4 +176,29 @@ async fn b823_a_question_that_does_not_return_is_no_answer_and_is_asked_once() {
     }
     assert!(answered, "the tree answers once its storage does");
     assert_eq!(asked.load(Ordering::SeqCst), 2);
+}
+
+/// The git limit doubles only for a look that this limit gave up. A look whose git ended in time and whose copy could not be stored
+/// afterwards fails for the store, also when the store was given up after the git limit had passed: a bundle of 400 MiB has 430 s to
+/// be stored, and the git limit is 300 s. Counted as given up, four such looks during an outage of the bucket raised the git limit to
+/// one hour, and a git that then hung was held for that hour.
+#[test]
+fn b823_a_copy_that_could_not_be_stored_after_its_git_ended_does_not_double_the_git_limit() {
+    // git ended after 20 s; the store was given up at 450 s, past the git limit of 300 s.
+    assert!(!git_limit_gave_up(false, true, true));
+    // The git work was cut at its limit.
+    assert!(git_limit_gave_up(false, false, true));
+    // A silent tree ended the git work, or the look failed before the limit: no doubling.
+    assert!(!git_limit_gave_up(true, false, true));
+    assert!(!git_limit_gave_up(false, false, false));
+    // Four looks whose store failed late leave the limit where it was.
+    let mut budget = GitBudget::default();
+    for _ in 0..4 {
+        if git_limit_gave_up(false, true, true) {
+            budget.gave_up();
+        } else {
+            budget.ended();
+        }
+    }
+    assert_eq!(budget.limit(), COPY_GIT_FLOOR);
 }

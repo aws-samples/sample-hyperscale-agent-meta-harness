@@ -1,8 +1,9 @@
 //! Drawing: the Runs screen, the New-run composer, the run dashboard (status,
 //! the reconnect banner, the blocked panel, the grouped agent list, the delivery card, all as the chat view of the run) and the Artifacts screen. Every
-//! string that came from the API passes through `sanitize_line` here, including agent text that
-//! `RunState` already sanitized, so no escape sequence reaches the terminal.
+//! string that came from the API passes through `sanitize_line` here (the rows of the agent table in `agent_table.rs`), including
+//! agent text that `RunState` already sanitized, so no escape sequence reaches the terminal.
 
+use super::agent_table::Item;
 use super::app::{
     App, ArtifactList, BOX_BACKEND, BOX_BASE, BOX_MESSAGE, BOX_MODEL, BOX_OPTIONS, BOX_PROMPT,
     BOX_REPO, BOX_SUBMIT, BOX_TARGET, CloneState, DownloadState, Field, ListLine, MODEL_LIST,
@@ -27,7 +28,7 @@ use ham_core::render::{
 use ham_core::runfilter::position_text;
 use ham_core::sanitize::{display_line, sanitize_line};
 use ham_core::state::RunView;
-use ham_core::tables::{compact_tokens, group_digits};
+use ham_core::tables::group_digits;
 use harness_protocol::api::v1::RunTarget;
 use harness_protocol::direct::{InstructAction, MAX_INPUT_TEXT_BYTES};
 use ratatui::Frame;
@@ -39,9 +40,6 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap}
 /// The most command rows the popup shows at once, and the text rows of the chip.
 const POPUP_ROWS: usize = 7;
 const CHIP_ROWS: u16 = 2;
-
-/// The agents table shows the MODEL column from this width on.
-const WIDE_MIN_WIDTH: u16 = 100;
 
 /// The most rows the note under the Runs table takes for an error: a long error wraps at word boundaries onto these rows, and one that needs
 /// more ends in an ellipsis. Without an error the note is one row.
@@ -218,14 +216,8 @@ fn help_line(f: &mut Frame, area: Rect, text: &str) {
 }
 
 impl App {
-    /// The agent's CTX cell: its effective window compactly (`session.started` `contextTokens`), `-` while it reports none.
-    fn ctx_cell(&self, agent_id: &str) -> String {
-        self.view_window(agent_id)
-            .map_or_else(|| "-".to_string(), compact_tokens)
-    }
-
     /// The effective window the agent's session reported (`session.started`, or a later
-    /// `context.changed`), if any.
+    /// `context.changed`), if any: what the CTX cell of its row shows.
     fn view_window(&self, agent_id: &str) -> Option<u32> {
         self.cached
             .as_ref()
@@ -1365,53 +1357,18 @@ impl App {
         cards
     }
 
-    /// The agent table as text rows: the column heads, then a heading for each group and a row for each agent.
+    /// The agent table as text rows: the column heads, then a heading for each group and a row for each agent. The table keeps its
+    /// rows between draws (`agent_table`), so a draw makes only the rows of the agents that changed since the draw before it.
     fn agent_lines(&self, v: &RunView, width: usize) -> Vec<String> {
-        // The MODEL column needs the width of a 100-column terminal; a narrower one keeps the summary readable instead.
-        let wide = width + 2 >= usize::from(WIDE_MIN_WIDTH);
         // The CTX column shows once a session reports its window.
         let ctx = !v.windows().is_empty();
-        let mut cols: Vec<(&str, usize)> = if wide {
-            vec![("AGENT", 14), ("ENGINE", 9), ("MODEL", 30), ("TURNS", 5)]
-        } else {
-            vec![("AGENT", 14), ("ENGINE", 9), ("TURNS", 5)]
-        };
-        if ctx {
-            cols.insert(cols.len() - 1, ("CTX", 6));
-        }
-        let fixed: usize = cols.iter().map(|(_, w)| w + 1).sum();
-        let last_w = width.saturating_sub(fixed).max(4);
-        let mut head: String = cols.iter().map(|(h, w)| fit(h, *w) + " ").collect();
-        head.push_str("LAST");
-        let mut lines = vec![head];
-        for line in &self.list {
-            match line {
-                ListLine::Group(g, n) => lines.push(format!("▾ {} ({n})", g.title())),
-                ListLine::Agent(i) => {
-                    let Some(r) = self.agent_rows.get(*i) else {
-                        continue;
-                    };
-                    let dash =
-                        |x: &Option<String>| x.as_deref().map(s).unwrap_or_else(|| "-".into());
-                    let mut cells = vec![s(&r.agent_id), dash(&r.engine)];
-                    if wide {
-                        cells.push(dash(&r.model_id));
-                    }
-                    if ctx {
-                        cells.push(self.ctx_cell(&r.agent_id));
-                    }
-                    cells.push(r.turns.to_string());
-                    let mut text: String = cells
-                        .iter()
-                        .zip(&cols)
-                        .map(|(c, (_, w))| fit(c, *w) + " ")
-                        .collect();
-                    text.push_str(&fit(&s(&r.last), last_w));
-                    lines.push(text.trim_end().to_string());
-                }
-            }
-        }
-        lines
+        let items = self.list.iter().filter_map(|line| match line {
+            ListLine::Group(g, n) => Some(Item::Group(g.title(), *n)),
+            ListLine::Agent(i) => self.agent_rows.get(*i).map(Item::Agent),
+        });
+        self.agent_table
+            .borrow_mut()
+            .lines(width, ctx, items, |id| self.view_window(id))
     }
 
     /// The dashboard's help line: the answer keys that are offered while a question is open, else the usual keys.
@@ -2261,22 +2218,6 @@ fn runs_note(runs: &[harness_protocol::api::v1::RunSummary], selected: usize) ->
         }
     }
     note
-}
-
-/// `text` cut to `width` terminal columns and padded to it.
-fn fit(text: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let w = Span::raw(c.to_string()).width();
-        if used + w > width {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    out.push_str(&" ".repeat(width - used));
-    out
 }
 
 /// The widths of the ARTIFACT and FILE columns of the Artifacts table, which is `inner` columns wide (inside its border) and whose longest

@@ -23,8 +23,8 @@ fn parse(extra: Value) -> Result<StartDirectRunRequest, serde_json::Error> {
 }
 
 #[test]
-fn b803_the_protocol_is_1_60_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+fn b803_the_protocol_is_1_61_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
 }
 
 #[test]

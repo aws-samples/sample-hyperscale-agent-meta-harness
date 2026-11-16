@@ -44,12 +44,12 @@ fn the_row() -> &'static Row {
 }
 
 #[test]
-fn b841_copy_the_row_is_the_last_key_and_rides_in_the_snapshot_member() {
-    assert_eq!(Key::ALL.len(), 47);
+fn b841_copy_the_row_rides_in_the_snapshot_member() {
+    assert_eq!(Key::ALL.len(), 48);
     assert_eq!(
-        Key::ALL.last().copied(),
-        Some(key()),
-        "the newest key is the last"
+        Key::ALL[Key::ALL.len() - 2],
+        key(),
+        "the key before run.copy_every_seconds, the newest"
     );
     let r = the_row();
     assert_eq!(r.name, NAME);
@@ -64,26 +64,26 @@ fn b841_copy_the_row_is_the_last_key_and_rides_in_the_snapshot_member() {
         "the file only: no flag and no variable"
     );
     assert!(KEYS.contains(&(NAME, NAME)));
-    assert_eq!(KEYS.len(), 47);
+    assert_eq!(KEYS.len(), 48);
 }
 
 #[test]
 fn b841_copy_the_default_and_the_bounds_are_the_protocols_own_numbers() {
     let r = the_row();
-    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S % 60, 0);
-    assert_eq!(
-        r.default,
-        DefaultValue::Number(DEFAULT_SNAPSHOT_EVERY_S / 60)
-    );
-    assert_eq!(r.default_text, "1 minute");
+    // The default of the timer is 15 seconds, no whole minute. The key has no default of its own: unset, `run.copy_every_seconds`
+    // decides.
+    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 15);
+    assert_eq!(r.default, DefaultValue::Absent);
+    assert_eq!(r.default_text, "not set");
     match r.kind {
         Kind::Number { min, max, unit } => {
             assert_eq!(unit, "minutes");
             assert_eq!(
-                (min * 60, max * 60),
-                (MIN_SNAPSHOT_EVERY_S, MAX_SNAPSHOT_EVERY_S),
-                "the least and the most minutes are the seconds an invocation may name"
+                (min, max * 60),
+                (1, MAX_SNAPSHOT_EVERY_S),
+                "one minute to the most seconds an invocation may name"
             );
+            assert!(min * 60 >= MIN_SNAPSHOT_EVERY_S);
             assert!(
                 min >= 1,
                 "no value switches the copies off: 0 is no minute of the key"
@@ -157,37 +157,23 @@ fn b841_copy_a_run_with_no_setting_sends_no_member() {
 }
 
 #[test]
-fn b841_copy_a_key_set_to_the_default_sends_no_member_as_an_unset_key_does() {
-    let minutes = DEFAULT_SNAPSHOT_EVERY_S / 60;
-    let cfg = cfg_of(&format!(
-        "configVersion = 1\n[run]\ncopy_every_minutes = {minutes}\n"
-    ));
-    assert_eq!(
-        get_key(&cfg, NAME).unwrap().as_deref(),
-        Some("1"),
-        "TRIGGER PRESENT: the file sets the key, to the default"
-    );
+fn b841_copy_one_minute_is_sent_as_sixty_seconds_since_the_default_is_fifteen() {
+    // While the default of the timer was one minute, a key set to 1 sent no member. The default is 15 seconds now, so one minute is
+    // an interval the user chose and it rides in the request like every other.
+    let cfg = cfg_of("configVersion = 1\n[run]\ncopy_every_minutes = 1\n");
+    assert_eq!(get_key(&cfg, NAME).unwrap().as_deref(), Some("1"));
     let wire = request(&cfg);
-    assert!(
-        wire.get("snapshotEveryS").is_none(),
-        "the default is what the stage does by itself: {wire}"
-    );
-    assert_eq!(
-        wire,
-        request(&cfg_of("configVersion = 1\n")),
-        "the request of a file that sets the default is the request of a file that sets nothing"
-    );
-    // The value still comes from the file, as `ham config show` says.
+    assert_eq!(wire["snapshotEveryS"], serde_json::json!(60), "{wire}");
     let run = resolve_run_settings(&cfg, &|_| None, &args(), false).unwrap();
     assert_eq!(run.origin(key()), Some(Origin::File));
-    assert_eq!(run.snapshot_every_s, None);
+    assert_eq!(run.snapshot_every_s, Some(60));
 }
 
 #[test]
 fn b841_copy_the_file_becomes_seconds_and_every_minute_of_the_key_is_one_an_invocation_may_name() {
-    // The default minute is one an invocation may name too; it is the one value the request leaves out.
+    // The default of the timer is one an invocation may name too; it is the one value the request leaves out.
     assert!((MIN_SNAPSHOT_EVERY_S..=MAX_SNAPSHOT_EVERY_S).contains(&DEFAULT_SNAPSHOT_EVERY_S));
-    for minutes in [2u32, 10, 59, 60] {
+    for minutes in [1u32, 2, 10, 59, 60] {
         let cfg = cfg_of(&format!(
             "configVersion = 1\n[run]\ncopy_every_minutes = {minutes}\n"
         ));

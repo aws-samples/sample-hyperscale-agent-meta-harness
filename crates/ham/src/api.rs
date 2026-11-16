@@ -7,6 +7,7 @@ use crate::http::{ControlPlane, TransportError};
 use ham_core::poll::PollPlan;
 use ham_core::runfilter::{IndexEntry, IndexedRead, Pages, Refresh, RunsRead};
 use ham_core::runtag::wire::{TagEditRequest, TagEditResponse};
+use ham_core::settings::Key;
 use ham_core::state::RunState;
 use harness_protocol::api::ApiError as WireError;
 use harness_protocol::api::v1::{
@@ -172,10 +173,46 @@ fn names_copy_interval_member(error: &WireError, body: &[u8]) -> bool {
 
 /// What `ham` says when the stage predates the copy interval of a run: the key that put the member into the request, with its value, and
 /// the two ways out.
-pub fn predates_copy_interval_words(snapshot_every_s: u32) -> String {
+///
+/// The member comes from `run.copy_every_seconds` or from `run.copy_every_minutes`, and the request does not say which. `set_by` is the key
+/// of the config file that set it, from a caller that resolved the run (`ResolvedRun::copy_interval_key`): the words name that key alone, so the
+/// `ham config unset` they print changes the file. A caller that does not know the key passes `None`: seconds that are no whole minutes can only
+/// come from the seconds key, and whole minutes name the minutes key first and the seconds key beside it.
+pub fn predates_copy_interval_words(snapshot_every_s: u32, set_by: Option<Key>) -> String {
+    let seconds = || {
+        format!(
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; run `ham config unset run.copy_every_seconds` or update the stage"
+        )
+    };
+    match set_by {
+        Some(Key::RunCopyEveryMinutes) => format!(
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {}; run `ham config unset run.copy_every_minutes` or update the stage",
+            snapshot_every_s / 60
+        ),
+        Some(_) => seconds(),
+        None if snapshot_every_s.is_multiple_of(60) => format!(
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {} (or run.copy_every_seconds = {snapshot_every_s}, whichever your config sets); run `ham config unset run.copy_every_minutes` (or `ham config unset run.copy_every_seconds`) or update the stage",
+            snapshot_every_s / 60
+        ),
+        None => seconds(),
+    }
+}
+
+/// True for the answer of a stage whose copy interval starts at one minute to a request that names
+/// fewer seconds: its control-api answers `400 bad-request` with the member, the number and its own range, "snapshotEveryS is <n> seconds; it
+/// must be 60 to 3600...". Only `run.copy_every_seconds` can name fewer than 60 seconds.
+fn refuses_short_copy_interval(error: &WireError, snapshot_every_s: u32) -> bool {
+    snapshot_every_s < 60
+        && error.code == "bad-request"
+        && error.message.starts_with(&format!(
+            "snapshotEveryS is {snapshot_every_s} seconds; it must be 60 to "
+        ))
+}
+
+/// What `ham` says when the stage takes no copy interval under one minute: the key with its value, and the ways out.
+pub fn predates_short_copy_interval_words(snapshot_every_s: u32) -> String {
     format!(
-        "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {}; run `ham config unset run.copy_every_minutes` or update the stage",
-        snapshot_every_s / 60
+        "this stage predates copy intervals under one minute, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; set it to 60 or more, run `ham config unset run.copy_every_seconds` or update the stage"
     )
 }
 
@@ -390,12 +427,25 @@ impl<P: ControlPlane> Api<P> {
     /// answer, for a request that carries the member, becomes the code `stage-predates-engine-settings` and the words of [`predates_words`]. The
     /// request is not sent again without the member: a setting the run did not get must not look as if it did.
     ///
-    /// The same holds for the copy interval of a run: the answer of a stage that
+    /// The same holds for the copy interval of a run:
+    /// the answer of a stage that
     /// does not know that member becomes the code `stage-predates-copy-interval` and the words of [`predates_copy_interval_words`].
     pub async fn start_direct_run(
         &self,
         req: &StartDirectRunRequest,
         idempotency_key: &str,
+    ) -> Result<StartRunResponse, ApiError> {
+        self.start_direct_run_set_by(req, idempotency_key, None)
+            .await
+    }
+
+    /// [`Api::start_direct_run`] for a caller that resolved the run from the config file and knows which key of it set the copy interval of the
+    /// request: the words for a stage that predates the member then name that key alone.
+    pub async fn start_direct_run_set_by(
+        &self,
+        req: &StartDirectRunRequest,
+        idempotency_key: &str,
+        copy_key: Option<Key>,
     ) -> Result<StartRunResponse, ApiError> {
         let body = serde_json::to_vec(req).map_err(|e| ApiError::Decode {
             what: "StartDirectRunRequest".into(),
@@ -430,7 +480,19 @@ impl<P: ControlPlane> Api<P> {
                     status: 400,
                     error: WireError {
                         code: "stage-predates-copy-interval".into(),
-                        message: predates_copy_interval_words(snapshot_every_s),
+                        message: predates_copy_interval_words(snapshot_every_s, copy_key),
+                        request_id: error.request_id,
+                    },
+                });
+            }
+            (Err(ApiError::Http { status: 400, error }), Some(snapshot_every_s))
+                if refuses_short_copy_interval(&error, snapshot_every_s) =>
+            {
+                return Err(ApiError::Http {
+                    status: 400,
+                    error: WireError {
+                        code: "stage-predates-copy-interval".into(),
+                        message: predates_short_copy_interval_words(snapshot_every_s),
                         request_id: error.request_id,
                     },
                 });

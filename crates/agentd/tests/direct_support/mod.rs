@@ -1713,6 +1713,7 @@ impl Direct {
                 .then(|| u64::try_from(now_unix() + 3600).unwrap()),
             input_wait_s: opts.input_wait_s,
             slice: None,
+            delivery: None,
         };
         Self {
             process,

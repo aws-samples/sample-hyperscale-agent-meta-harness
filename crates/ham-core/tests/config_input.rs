@@ -12,7 +12,7 @@ fn the_key_is_listed_in_both_spellings() {
         KEYS.contains(&("inputWaitMinutes", "input_wait_minutes")),
         "{KEYS:?}"
     );
-    assert_eq!(KEYS.len(), 47);
+    assert_eq!(KEYS.len(), 48);
 }
 
 #[test]

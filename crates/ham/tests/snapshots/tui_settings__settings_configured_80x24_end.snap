@@ -3,7 +3,6 @@ source: crates/ham/tests/tui_settings.rs
 expression: "screen_text(&app, 80, 24)"
 ---
 ham · Settings · config.toml
-   No debug info        on                                default  next run
    No incremental       on                                default  next run
    Exclude target/      on                                default  next run
    Outside-work note    on                                default  next run
@@ -15,7 +14,8 @@ ham · Settings · config.toml
    Research repo size   200 MiB                           default  next run
    Research total size  300 MiB                           default  next run
    Container signals    default                           default  next run
-   Copy interval        1 minute                          default  next run
+   Copy interval (min)  not set                           default  next run
+   Copy interval        15 seconds                        default  next run
  Connection
    Service address      https://abc.execute-api.us-east…  file     restart
    Region               us-east-1                         file     restart

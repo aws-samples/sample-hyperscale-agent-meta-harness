@@ -113,6 +113,7 @@ async fn run(
     };
     let dir = b790_support::scratch("ladder");
     let wiring = InputWiring {
+        delivery: None,
         policy: InputPolicy {
             wait: Duration::from_secs(1800),
             max_requests: 3,

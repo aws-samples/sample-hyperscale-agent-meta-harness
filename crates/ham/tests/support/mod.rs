@@ -1382,6 +1382,9 @@ pub struct Faults {
     pub post_503: AtomicU32,
     /// `POST /v1/runs`: run the handler, then drop the connection this many times.
     pub post_drop_after_commit: AtomicU32,
+    /// `POST /v1/direct/runs` with a `snapshotEveryS` member: answer this many times as a stage of a release before that member does, whose strict
+    /// request type refuses the body and names the member (400 `bad-request`, serde's `unknown field`).
+    pub predates_copy_interval: AtomicU32,
     /// Events reads: answer 503 this many times.
     pub events_503: AtomicU32,
     /// Events reads: wait this many milliseconds before the answer (0 = answer at once).
@@ -1547,6 +1550,17 @@ impl Fake {
                 503,
                 "unavailable",
                 "the harness is unavailable; retry with the same Idempotency-Key",
+            );
+        }
+        if method == Method::POST
+            && v1_path == "/v1/direct/runs"
+            && String::from_utf8_lossy(&body).contains("\"snapshotEveryS\"")
+            && take(&self.faults.predates_copy_interval)
+        {
+            return api_error(
+                400,
+                "bad-request",
+                "StartDirectRunRequest: unknown field `snapshotEveryS`, expected one of `prompt`, `target`, `model`",
             );
         }
         if v1_path.ends_with("/events") {

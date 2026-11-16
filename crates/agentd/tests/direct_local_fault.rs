@@ -262,6 +262,7 @@ async fn run(refuse_switch: bool, prompt_error: (&'static str, Value), answer: P
     };
     let dir = common::scratch("local-fault");
     let wiring = InputWiring {
+        delivery: None,
         policy: policy(),
         instructions: rx,
         cancel: cancel_rx,

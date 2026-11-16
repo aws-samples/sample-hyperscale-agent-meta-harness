@@ -1,6 +1,7 @@
 //! What the spacing of the copy task counts. It counts the time git took to make a copy, never the
-//! uploads; it never holds a look back longer than five timer periods;
-//! and nothing is spaced after a look that failed. Before, one
+//! uploads; it never holds a look back longer than five minutes, whatever the timer;
+//! and a look that failed counts with the time its git work took, so one that
+//! failed fast holds nothing back. Before, one
 //! request to the bucket that hung made the task wait nine times as long with no look at the tree, while the run was told
 //! "ham keeps trying". The whole-turn tests of the same rules are in `b823_copies_run.rs` (`b823_a_slow_upload_does_not_space_the_next_copy`,
 //! `b823_after_a_copy_that_failed_the_next_look_comes_at_the_next_tick`).
@@ -21,11 +22,12 @@ fn ms(n: u64) -> Duration {
 const FOUR_TRIES_S: u64 = 494;
 
 #[test]
-fn b823_a_look_that_failed_does_not_hold_the_next_one_back() {
+fn b823_a_look_whose_store_failed_does_not_hold_the_next_one_back() {
     let c = Cadence::new(Some(s(60)));
     let t0 = Instant::now();
     let mut clock = CopyClock::default();
-    clock.failed(t0);
+    // Its git work took 0.2 s; the four tries of its upload are not counted.
+    clock.failed(t0, t0 + ms(200));
     // The timer's next tick looks at once: the run was told "ham keeps trying".
     assert_eq!(c.delay(&clock, false, t0 + s(FOUR_TRIES_S)), Duration::ZERO);
     // A tool call asks at once too: its floor counts from the start of the look, long ago.
@@ -33,11 +35,11 @@ fn b823_a_look_that_failed_does_not_hold_the_next_one_back() {
 }
 
 #[test]
-fn b823_the_spacing_is_capped_at_five_timer_periods() {
+fn b823_the_spacing_is_capped_at_five_minutes() {
     let c = Cadence::new(Some(s(60)));
     let t0 = Instant::now();
     let mut clock = CopyClock::default();
-    // Git took 100 s to make this copy: nine times that is 900 s. The cap is five periods of the 60 s timer.
+    // Git took 100 s to make this copy: nine times that is 900 s. The cap is five minutes.
     clock.looked(t0, t0 + s(100), Some(900_000_000));
     assert_eq!(c.delay(&clock, false, t0 + s(100)), s(300));
     assert_eq!(c.delay(&clock, true, t0 + s(100)), s(300));
@@ -50,8 +52,11 @@ fn b823_the_spacing_is_capped_at_five_timer_periods() {
     let slow = Cadence::new(Some(s(600)));
     clock.looked(t0, t0 + s(100), Some(900_000_000));
     assert_eq!(slow.delay(&clock, false, t0 + s(100)), s(300));
-    // A timer shorter than a minute keeps five of its own periods.
-    let quick = Cadence::new(Some(s(10)));
+    // The default timer of 15 s has the same cap (five of its periods would be 75 s).
+    let default = Cadence::new(Some(s(15)));
+    assert_eq!(default.delay(&clock, false, t0 + s(100)), s(300));
+    // A timer that a test set keeps five of its own periods (`Cadence::with_space_max`, set by the copy task).
+    let quick = Cadence::new(Some(s(10))).with_space_max(s(10) * COPY_SPACING_CAP);
     assert_eq!(quick.delay(&clock, false, t0 + s(100)), s(50));
 }
 
@@ -67,7 +72,7 @@ fn b823_a_look_that_failed_fast_is_still_floored_for_a_tool_call() {
     let c = Cadence::new(Some(s(60)));
     let t0 = Instant::now();
     let mut clock = CopyClock::default();
-    clock.failed(t0);
+    clock.failed(t0, t0 + ms(50));
     assert_eq!(c.delay(&clock, true, t0 + s(4)), s(11));
     assert_eq!(c.delay(&clock, false, t0 + s(4)), Duration::ZERO);
 }
@@ -83,7 +88,7 @@ fn b823_a_failed_look_keeps_the_size_of_the_last_stored_bundle() {
         Some(agentd::direct::snapshot::WAKE_MAX_BUNDLE_BYTES + 1),
     );
     assert!(!c.wakes(&clock));
-    clock.failed(t0 + s(60));
+    clock.failed(t0 + s(60), t0 + s(60));
     assert!(
         !c.wakes(&clock),
         "a long history stays on the timer after a failed copy"

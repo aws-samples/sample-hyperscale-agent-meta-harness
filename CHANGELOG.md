@@ -6,6 +6,38 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.21] - 2026-11-15
+
+### Added
+
+- `run.copy_every_seconds` sets the seconds between the worker's looks for changed files of a run, from 15 to 3,600 with a default of 15. `run.copy_every_minutes` keeps working. `ham` refuses a config that sets both keys and says to unset one of them.
+- `ham config show` and the Settings screen show the interval in force on the row of `run.copy_every_seconds` while `run.copy_every_minutes` sets it, for example `600 seconds (run.copy_every_minutes)`.
+- At the start of every session, the harness tells the engine how the run delivers, in a short block that begins `How this run delivers (written by the harness):`. The block comes before your prompt, which still reaches the engine as typed. The run's target sets what the block says, and the block has no setting of its own. A follow-up with `ham continue`, a run that `ham resume` starts and a run started again with `/retry` get the block for their own target. A later session of a run gets the block again, before the words on the earlier session.
+- A `--s3-only` run is told that it delivers only a zip, that a zip takes files under `.github/workflows/` and a root `buildspec.yml`, and to name each such file it adds in its last message. A run that targets a repository is told which repository gets the pull request and that the delivery refuses a run that adds, changes or removes such a file. It is told to hold such a change back and name the file in its last message. Before, the engine had to guess which kind of run it was in, and a zip-only run could leave out a workflow file that its prompt asked for.
+
+### Changed
+
+- While the engine works, the worker looks for changed files every 15 seconds and saves a copy of the run's work when it finds a change. Before, it looked every minute. A look that finds no change stores nothing. A session that is stopped or dies loses about 15 seconds of file changes plus the time one copy takes, or more for a repository whose copies take long. A copy every 15 seconds does not save every write.
+- After a slow copy, the next look waits nine times as long as git worked on the copy, five minutes at most, under every interval. A copy that failed is spaced the same way.
+- `run.copy_every_minutes = 1` sends an interval of 60 seconds with the run. Before, one minute was the default and sent nothing.
+- On an updated stage, a run started by an older `ham` that sets no interval is copied every 15 seconds.
+- A stage of an older release has a longer timer of its own. A run that sets no interval, or sets 15, starts there and is copied on that timer until the stage is updated. It refuses an interval of 16 to 59 seconds: `ham` says `this stage predates copy intervals under one minute` and names the ways out.
+- When a stage does not know the copy interval of a run, `ham` names the key your config sets, `run.copy_every_seconds` or `run.copy_every_minutes`.
+- The backend takes a copy interval in `snapshotEveryS` of the start request from 15 seconds. Before, the lowest value was 60 seconds.
+- The service writes how the run delivers into the request of every session, and a worker image of an earlier version refuses that request. No run starts when the worker image alone is rolled back. Roll the service and the worker image back together.
+- The delivery rule of the default rules file ends with a new sentence: when the first words of the run are written by the harness, they say which kind of delivery the run has. `ham rules init` updates a rules file that was never edited and leaves an edited file alone.
+- The guides state the bound of lost work as about 15 seconds of file changes, or the interval you set, plus the time one copy takes, or more for a repository whose copies take long. Every place that states the bound names the interval a user sets, and the guides call the timer's default a default.
+- The run screen of `ham` redraws faster for a run with thousands of agents. A card or an agent row that did not change is not built again.
+
+### Fixed
+
+- The copies of a run that continues in a new session go on counting from the larger of the recorded number and the number of the copy the session started from. Before, after a failed upload two different copies could get the same number.
+- `ham watch` without a terminal no longer shows a warning about a copy of an earlier session once that session is lost or a later session starts. Every notice stays in the run's notices and its stored conversation.
+- The first prompt of a session that continues a run says that the earlier session reached its time limit or was lost. It says that the session starts from the last saved copy and that changes made after that copy may be missing. Before, it told the engine that the files are exactly what the earlier session left.
+- A run goes on into its next session when the service has decided to start one and the event that announces the lost session cannot be written. Before, such a run could end.
+- A copy that could not be stored after its git work ended no longer doubles the time limit of the git work of later copies. Before, four such failures during a storage outage raised that limit from five minutes to one hour.
+- The Troubleshooting table of the user guide has rows for a run that ends `blocked` with exit 12 and no zip, for `ham watch` ending with `ended early`, for a run name that stays dim, for a run that shows no tags, and for the `WARN catalog` and `FAIL catalog` lines of `ham doctor`.
+
 ## [5.20] - 2026-11-14
 
 ### Added
@@ -35,15 +67,17 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 - A copy names the last whole second before its files were read. `ham pull <run id> --snapshot` never names a time later than its contents.
 - The copies of a run are numbered within the run. A run that continues in a new session goes on counting.
 - A new session saves its first copy when a file changes. The copy it started from is saved already.
-- A question that was open when its session was lost is closed. The new session asks again when it needs your answer.
+- The run screen, `ham watch` and the run list no longer offer a question that was open when its session was lost. The new session asks again when it needs your answer.
 - The guides state one bound for lost work in every place: one minute of file changes plus the time one copy takes, and when it is more. They promise no copy at once for a session that is stopped from outside.
 
 ### Fixed
 
 - The guides say what the service does with a lost session. After 600 seconds without a heartbeat it starts a new session from the last saved copy, and after 3 lost sessions in a row the run ends `stalled` with the last saved copy delivered. Before, the guides said that a missed heartbeat ends the run.
-- The clean-checkout test report gives a result for a language whose only logged test commands name single test files, tests or filters. It runs the detected whole-suite command for that language after the logged commands.
+- The clean-checkout test report gives a result for a language whose only logged test commands name single test files, tests or filters. It runs the detected whole-suite command for that language in place of them.
 - The `Tests` line and `EVIDENCE.md` say when the report ran a command in place of logged commands or left a logged command out, and why.
 - The `Tests` line for a failed install names the command that did not run, also when no test command ran. When two installs fail, the report counts each skipped test command with the install that stopped it.
+- The clean-checkout test report counts a command that chains two test suites for both languages. `dotnet test`, `rspec` and `phpunit` no longer hide the tests of other languages.
+- A command the test report added that is stopped at its time limit is listed as not run. The report stays `ran`.
 - `ham pull <run id> --snapshot` keeps a downloaded file that holds another copy. The second file is named `<run id>-snapshot-<n>-<first 12 characters of the commit>.bundle`.
 - The stored conversation of a run that went on after a lost session no longer ends with a notice about an abnormal end. A line where the earlier session stopped says that its last lines may be missing.
 - The detail of a run that ended after lost sessions names the time of the copy it delivers, also when the last session saved no copy of its own.

@@ -53,7 +53,8 @@ ham · Settings · config.toml (no file yet)
    Research repo size   200 MiB                                                                  default  next run
    Research total size  300 MiB                                                                  default  next run
    Container signals    default                                                                  default  next run
-   Copy interval        1 minute                                                                 default  next run
+   Copy interval (min)  not set                                                                  default  next run
+   Copy interval        15 seconds                                                               default  next run
  Connection
    Service address      none                                                                     default  restart
    Region               AWS chain                                                                default  restart

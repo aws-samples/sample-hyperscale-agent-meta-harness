@@ -287,8 +287,8 @@ fn each_validation_failure_names_the_first_broken_rule() {
             E::BadProviderSilence,
         ),
         (
-            "snapshot 59",
-            Box::new(|v| v["snapshotEveryS"] = json!(59)),
+            "snapshot 14",
+            Box::new(|v| v["snapshotEveryS"] = json!(14)),
             E::BadSnapshotInterval,
         ),
         (
@@ -416,7 +416,7 @@ fn the_limits_themselves_are_accepted() {
         validate_direct_invocation(&mutated(|v| {
             v["timeoutS"] = json!(1);
             v["providerSilenceS"] = json!(1);
-            v["snapshotEveryS"] = json!(60);
+            v["snapshotEveryS"] = json!(15);
         })),
         Ok(())
     );
@@ -478,13 +478,13 @@ fn error_messages_name_the_rule_and_never_a_value() {
 
 #[test]
 fn the_body_limit_and_the_constants_are_the_contract_values() {
-    assert_eq!(PROTOCOL_VERSION, "1.60.0");
+    assert_eq!(PROTOCOL_VERSION, "1.61.0");
     assert_eq!(DIRECT_AGENT_ID, "direct");
     assert_eq!(DIRECT_TURN, 1);
     assert_eq!(DIRECT_TASK_ID, "root");
     assert_eq!(DIRECT_ENGINE, "cline");
     assert_eq!(MAX_DIRECT_TIMEOUT_S, 27_900);
-    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 60);
+    assert_eq!(DEFAULT_SNAPSHOT_EVERY_S, 15);
     assert_eq!(MAX_DIRECT_BODY_BYTES, 64 * 1024);
     assert_eq!(SUMMARY_SCHEMA_VERSION, 1);
     assert_eq!(MAX_DIRECT_SUMMARY_BYTES, 1024 * 1024);

@@ -278,3 +278,32 @@ async fn b688_a_slice_with_no_message_from_the_one_before_still_starts_with_the_
         prompts[0]
     );
 }
+
+/// A later session follows one that handed over at its time limit or one that the service lost and restarted from the last saved
+/// copy. The invocation does not say which, so the first prompt promises neither a time limit nor that nothing is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn b842_the_first_prompt_of_a_later_session_does_not_say_that_the_tree_is_exactly_what_the_earlier_session_left()
+ {
+    let (bundle, head, base) = first_slice().await;
+    let d2 = second_slice(bundle, &head, &base, &head, true).await;
+    d2.invoke().await;
+    let prompts = d2.prompts_received();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    let p = &prompts[0];
+    assert!(
+        !p.contains("exactly what it left"),
+        "a session that follows a lost one lacks the changes after the last saved copy: {p}"
+    );
+    assert!(
+        p.contains("reached its time limit, or the service lost the session"),
+        "both ways an earlier session ends: {p}"
+    );
+    assert!(
+        p.contains("from the last saved copy of the earlier session's work"),
+        "{p}"
+    );
+    assert!(
+        p.contains("Changes the earlier session made after that copy may be missing"),
+        "{p}"
+    );
+}

@@ -30,15 +30,16 @@ use dispatcher::items::{Dispatch, agent_item, mint_plan, rfc3339};
 use dispatcher::policy::session_policy_for_routes;
 use harness_core::engine_profile::bundled_profile;
 use harness_protocol::common::{Engine, Transport};
+use harness_protocol::direct::DirectDelivery;
 use harness_protocol::direct::{
-    DEFAULT_SNAPSHOT_EVERY_S, DIRECT_AGENT_ID, DIRECT_TASK_ID, DIRECT_TURN,
-    DirectInvocationRequest, DirectKind, DirectSlice, InputRef, MAX_DIRECT_BODY_BYTES,
-    MAX_DIRECT_TIMEOUT_S, MAX_SLICES, MAX_SNAPSHOT_EVERY_S, MIN_SNAPSHOT_EVERY_S,
-    snapshot_every_s_ok, validate_direct_invocation,
+    DIRECT_AGENT_ID, DIRECT_TASK_ID, DIRECT_TURN, DirectInvocationRequest, DirectKind, DirectSlice,
+    InputRef, MAX_DIRECT_BODY_BYTES, MAX_DIRECT_TIMEOUT_S, MAX_SLICES, MAX_SNAPSHOT_EVERY_S,
+    MIN_SNAPSHOT_EVERY_S, snapshot_every_s_ok, validate_direct_invocation,
 };
 use harness_protocol::goal::{GoalPhase, GoalStatus};
 use harness_protocol::runtime::{InvocationAccepted, PackagesToken, RepoSource};
 use harness_protocol::store::{CredsBinding, ResumePath, TurnItem};
+use harness_protocol::target::RunTarget;
 use serde::Serialize;
 use serde_json::Value;
 use std::future::Future;
@@ -187,6 +188,19 @@ fn target_mode(run: &harness_protocol::store::RunItem) -> String {
         .unwrap_or_else(|| "repo".into())
 }
 
+/// How the run delivers, for the invocation of every session: a zip alone for the zip target, else a pull request to the repository
+/// as the user named it (`cc:<name>`). The delivery plan reads the same member of the Run item when it tells the bundle validator the
+/// target (`plan_delivery`: `target: zip` for the zip target, a pull request for every other run), so the words the engine reads at the
+/// start of a session and the check its work meets at the end cannot differ (`tests/b847_delivery_word.rs`).
+pub fn delivery_of(target: &RunTarget) -> DirectDelivery {
+    match target {
+        RunTarget::S3Only => DirectDelivery::zip(),
+        RunTarget::Repo { repo } | RunTarget::NewRepo { repo } => {
+            DirectDelivery::pull_request(repo.to_string())
+        }
+    }
+}
+
 pub async fn start_session<S, T, M, R, B, P>(
     deps: &Deps<S, T, M, R, B, P>,
     run_id: &str,
@@ -220,11 +234,13 @@ where
         return Err(invalid(format!("run {run_id} is no longer active")));
     }
     let (request, request_sha256) = read_request(&deps.store, &deps.blobs, run_id).await?;
-    // The copy interval of the run is the request's, or the default. control-api refuses a value no request may name; a request stored by
-    // another version is checked here once more, before anything is minted or invoked. Every session of the run gets the same interval.
+    // The copy interval of the run is the request's, or the worker's default. control-api refuses a value no request may name; a request stored by
+    // another version is checked here once more, before anything is minted or invoked. Every session of the run gets the same interval. A request that
+    // names none leaves the member out of the invocation, and the worker's own default applies (15 seconds). A worker of an older release refuses a
+    // number below 60, and a session of a run that was active while the stage was updated can still reach one.
     let snapshot_every_s = match request.snapshot_every_s {
-        None => DEFAULT_SNAPSHOT_EVERY_S,
-        Some(s) if snapshot_every_s_ok(s) => s,
+        None => None,
+        Some(s) if snapshot_every_s_ok(s) => Some(s),
         Some(s) => {
             return Err(invalid(format!(
                 "the stored request names snapshotEveryS {s}; it must be {MIN_SNAPSHOT_EVERY_S} to {MAX_SNAPSHOT_EVERY_S}"
@@ -543,7 +559,7 @@ where
         },
         timeout_s,
         provider_silence_s: cfg.provider_silence_s,
-        snapshot_every_s: Some(snapshot_every_s),
+        snapshot_every_s,
         packages_token: None,
         packages_token_expires_at: None,
         // The answer window the client asked for. None, or 0 in a request stored by another version, leaves the member out of the
@@ -551,6 +567,8 @@ where
         // validation below.
         input_wait_s: request.input_wait_s.filter(|s| *s != 0),
         slice: slice_member,
+        // Every session of the run is told how the run delivers, so the worker can say it to the engine in its first words.
+        delivery: Some(delivery_of(&run.target)),
     };
     // The package token is minted with this Lambda's own role, for the whole session plus agentd's margin. A failed
     // mint is logged and the run goes on without one: installs fail where Cline reports them.

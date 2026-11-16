@@ -502,6 +502,11 @@ pub struct ChatView {
     state: RefCell<TranscriptState>,
     /// The transcript's area at the last draw.
     area: Cell<Rect>,
+    /// The cards `set_cards` was last given, each with the block made of it. Every draw of the run screen gives its cards again, and
+    /// making a block redacts and cleans its whole body: the agents card of a run with 5,000 agents is a megabyte of rows.
+    made: Vec<(Card, Block)>,
+    /// How many cards `set_cards` has made into blocks.
+    card_blocks_made: u64,
 }
 
 impl Default for ChatView {
@@ -517,6 +522,8 @@ impl ChatView {
             n_model: 0,
             state: RefCell::new(TranscriptState::new()),
             area: Cell::new(Rect::default()),
+            made: Vec::new(),
+            card_blocks_made: 0,
         }
     }
 
@@ -533,19 +540,40 @@ impl ChatView {
         self.model.blocks.extend(cards);
     }
 
-    /// The cards at the end of the conversation, in order. The same cards again change nothing.
+    /// The cards at the end of the conversation, in order. The same cards again change nothing. A card equal to one of the last call
+    /// keeps the block made of it then (a block is made of its card alone), so only a card that changed is made into a block again.
     pub fn set_cards(&mut self, cards: &[Card]) {
-        let blocks: Vec<Block> = cards.iter().map(Card::block).collect();
-        if self.model.blocks[self.n_model..] == blocks[..] {
+        let mut last = std::mem::take(&mut self.made);
+        for card in cards {
+            let pair = match last.iter().position(|(held, _)| held == card) {
+                Some(i) => last.swap_remove(i),
+                None => {
+                    self.card_blocks_made += 1;
+                    (card.clone(), card.block())
+                }
+            };
+            self.made.push(pair);
+        }
+        if self.model.blocks[self.n_model..]
+            .iter()
+            .eq(self.made.iter().map(|(_, block)| block))
+        {
             return;
         }
         self.model.blocks.truncate(self.n_model);
-        self.model.blocks.extend(blocks);
+        self.model
+            .blocks
+            .extend(self.made.iter().map(|(_, block)| block.clone()));
     }
 
     /// The model with the cards.
     pub fn model(&self) -> &ChatModel {
         &self.model
+    }
+
+    /// How many cards `set_cards` has made into blocks so far.
+    pub fn card_blocks_made(&self) -> u64 {
+        self.card_blocks_made
     }
 
     /// A selection begins at the cell `(x, y)` of the last draw.

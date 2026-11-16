@@ -191,7 +191,8 @@ fn refusal_with(catalog: &direct_models::Catalog, r: &StartDirectRunRequest) -> 
             ),
         ));
     }
-    // The seconds between two looks of the worker for a copy of the run's work: the one check run-session calls again.
+    // The seconds between two looks of the worker for a copy of the run's work: the one
+    // check run-session calls again.
     if let Some(s) = r.snapshot_every_s
         && !snapshot_every_s_ok(s)
     {

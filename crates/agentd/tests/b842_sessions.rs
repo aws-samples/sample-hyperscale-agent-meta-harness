@@ -492,3 +492,23 @@ async fn b842_the_count_steps_over_a_session_whose_missing_record_the_store_answ
     assert_eq!(copies[0]["count"], 5);
     assert_eq!(copies[0]["session"], 3);
 }
+
+/// The number a session's copies go on from, for what the newest record of an earlier session names and the number of the commit the
+/// session restored. A session can leave bundles without their records: it ended between the two uploads of one copy, or the upload of
+/// an earlier copy failed and the session ended before the record of a later one.
+#[test]
+fn b842_the_count_goes_on_from_the_restored_copy_when_it_is_more_than_one_ahead_of_the_record() {
+    use agentd::direct::copies_counted;
+    // Session 1 recorded copy 1; the upload of copy 2 failed; the bundle of copy 3 went up and the session ended before its record.
+    // Session 2 restored the commit `harness: snapshot 3`: its first copy is the fourth of the run, and no second commit is copy 3.
+    assert_eq!(copies_counted(Some(1), Some(3)), 3, "a gap of two");
+    // The session ended between the two uploads of one copy: the bundle is one ahead of the record.
+    assert_eq!(copies_counted(Some(4), Some(5)), 5);
+    // The record names the restored copy, or a later copy than the commit that was restored.
+    assert_eq!(copies_counted(Some(4), Some(4)), 4);
+    assert_eq!(copies_counted(Some(5), Some(3)), 5);
+    // One of the two is missing: the restored commit is no copy (the bundle of a session's end), or no record could be read.
+    assert_eq!(copies_counted(Some(4), None), 4);
+    assert_eq!(copies_counted(None, Some(2)), 2);
+    assert_eq!(copies_counted(None, None), 0);
+}
