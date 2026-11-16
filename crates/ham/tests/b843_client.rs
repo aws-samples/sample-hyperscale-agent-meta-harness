@@ -421,7 +421,7 @@ fn b843_the_guide_says_what_line_mode_and_json_show_of_a_saved_copy_and_of_a_blo
         "at most once a minute",
         "`savedCopy`",
         "A blocked run prints its card too",
-        "`ham watch --json` writes `delivered` as the line does",
+        "`ham watch --json` and `ham runs --json` write `delivered` as the lines do",
     ] {
         assert!(all.contains(words), "{words:?} is missing from the guide");
     }

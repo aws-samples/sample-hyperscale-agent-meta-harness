@@ -184,6 +184,7 @@ fn the_plain_card_keeps_the_whole_url_and_names_the_push_command() {
         tests: None,
         flow: None,
         session: None,
+        outside_prompts: None,
     };
     let text = final_card(&delivered().view(), &card);
     let link: Vec<&str> = text.lines().filter(|l| l.starts_with("Link ")).collect();

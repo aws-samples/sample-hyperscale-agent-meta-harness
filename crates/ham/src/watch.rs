@@ -8,10 +8,14 @@
 //! right after the zip. Transient read failures are reported on stderr and retried with backoff up to 30 s.
 //!
 //! Line mode has no status block: while the run works it says when a newer copy of the work was saved, at most once a minute
-//! (`ham_core::saved_copy::WatchMemo`), the JSON view carries the newest copy as `savedCopy`, and the card is printed for every run that
+//! (`ham_core::saved_copy::WatchMemo`), the JSON view carries the newest copy as `savedCopy` and what the run said about its copies
+//! since as `copyNotices`, and the card is printed for every run that
 //! ended with something to say where its work is: a delivery, a pull request, a blocked run, or an ended run with a saved copy. It also
 //! prints, once each, what the run says about a copy that is late or could not be saved since its newest stored copy:
-//! the run screen shows those sentences in the conversation, which line mode does not have.
+//! the run screen shows those sentences in the conversation, which line mode does not have. After the
+//! run's word that its session was asked to end it says what is true about the copies and an open question, and while such notices
+//! stand no `saved:` line names the copy from before them; after any other notice about a copy it names that copy once, in words
+//! that date it before the notice.
 
 use crate::api::{Api, ApiError};
 use crate::commands::now_unix;
@@ -104,7 +108,7 @@ pub fn card_due(v: &RunView) -> bool {
 
 /// The view as JSON. Every string in it is harness data or text `RunState` already sanitized. The phase is written as the line writes it:
 /// a `complete` run whose stored phase is `delivering` reads `delivered`, every other phase as
-/// stored. `ham runs --json` prints the service's own list and keeps the stored word.
+/// stored. `ham runs --json` writes the same word.
 pub fn view_json(v: &RunView) -> Value {
     let agents: Vec<Value> = v
         .agents
@@ -147,6 +151,20 @@ pub fn view_json(v: &RunView) -> Value {
         if let Some(quiet) = v.silence() {
             o.insert("silentSince".into(), json!(quiet.since));
         }
+    }
+    // Only a view that holds what the run said about its copies since its newest stored copy carries it: each notice with its
+    // time, the worker's sentence, and whether it is the word that the session was asked to end. Line mode prints these sentences; a
+    // script that follows the JSON view learned of the trouble only with `silentSince`, minutes later.
+    if let (false, Some(o)) = (v.copy_notices.is_empty(), out.as_object_mut()) {
+        let notices: Vec<Value> = v
+            .copy_notices
+            .iter()
+            .map(|n| {
+                json!({"at": ham_core::sanitize::sanitize_line(&n.ts), "text": n.text,
+                       "endRequest": ham_core::notice::is_end_request(&n.text)})
+            })
+            .collect();
+        o.insert("copyNotices".into(), Value::Array(notices));
     }
     // Only a run that ended early carries it, so every other view is unchanged.
     if let (Some(a), Some(o)) = (&v.aborted, out.as_object_mut()) {
@@ -285,6 +303,12 @@ pub struct InputMemo {
     sessions: u32,
     /// The silence this watch has told (the time nothing was heard since).
     silent: Option<i64>,
+    /// This watch told a silence, or a lost session whose next session had not started or that a later read brought, and has not
+    /// said since that a session answers again.
+    awaiting: bool,
+    /// A first read has been told. What the first read brings is history: a lost session whose next session works already is
+    /// told, and no sentence follows that a session answers again.
+    read_before: bool,
 }
 
 impl InputMemo {
@@ -298,7 +322,14 @@ impl InputMemo {
     /// The lines to print now for what is new in `v`: a question that opened (its card and the commands that answer it), a question
     /// this watch saw open that has ended, a fresh session, a notice of the run about a copy of its work, a lost session and a silence.
     pub fn lines(&mut self, v: &RunView) -> Vec<String> {
+        self.lines_marked(v).0
+    }
+
+    /// [`InputMemo::lines`], and the place in them right after the last notice about a copy that this read printed, when that notice
+    /// is no request to end: where [`LineMemo::lines`] names the last saved copy, which is from before the notice.
+    fn lines_marked(&mut self, v: &RunView) -> (Vec<String>, Option<usize>) {
         let mut out = Vec::new();
+        let mut after_notice = None;
         if let Some(q) = &v.input.open
             && self.shown.insert(q.request_id.clone())
         {
@@ -362,15 +393,6 @@ impl InputMemo {
                 out.push(r.watch_line());
             }
         }
-        // With: what the run says about a copy of its work (a copy that is late, a copy that could not be saved) is told
-        // once, in the worker's own sentence. The run screen shows it in the conversation; line mode has none, and the lines below
-        // name the last saved copy as what a new session starts from. The view keeps what the run said since its newest stored copy,
-        // so a watch that starts later is not told of trouble that is over.
-        for n in &v.copy_notices {
-            if self.shown.insert(format!("copy:{}", n.event_id)) {
-                out.push(n.text.clone());
-            }
-        }
         // A session the service lost is told once, with the session that starts and the copy it starts from.
         for lost in &v.lost {
             if self
@@ -378,22 +400,116 @@ impl InputMemo {
                 .insert(format!("lost:{}:{}", lost.session, lost.decided_at))
             {
                 out.push(lost.sentence());
-            }
-        }
-        // A session that has gone silent is told once per silence: since when, and what the service does when that lasts. A
-        // session that is heard again after it is told too.
-        match v.silence() {
-            Some(quiet) if self.silent != Some(quiet.since_unix) => {
-                self.silent = Some(quiet.since_unix);
-                out.push(quiet.sentence());
-            }
-            Some(_) => {}
-            None => {
-                if self.silent.take().is_some() && v.session_open && !v.has_ended() {
-                    out.push("The run's session answers again.".to_string());
+                if lost.restart().is_some() && (self.read_before || !v.session_open) {
+                    self.awaiting = true;
                 }
             }
         }
+        // A session that has gone silent is told once per silence: since when, and what the service does when that lasts. A
+        // session that is heard again after it is told too. So is the session that starts after a lost one, in whichever read
+        // shows it: the sentence was printed only when one read brought the service's word and the start of the next session together.
+        // The lines of one read follow the order of what happened: the lost session above, then that a session answers again, then
+        // what the session in progress says about its copies, and a new silence last.
+        let quiet = v.silence();
+        if quiet.is_none() {
+            self.silent = None;
+            if v.has_ended() {
+                self.awaiting = false;
+            } else if self.awaiting && v.session_open {
+                self.awaiting = false;
+                out.push("The run's session answers again.".to_string());
+            }
+        }
+        // With: what the run says about a copy of its work (a copy that is late, a copy that could not be saved) is told
+        // once, in the worker's own sentence. The run screen shows it in the conversation; line mode has none, and the lines below
+        // name the last saved copy as what a new session starts from. The view keeps what the run said since its newest stored copy,
+        // so a watch that starts later is not told of trouble that is over.
+        // After the run's word that its session was asked to end, what is true about the copies (the last saved copy is from
+        // before that request, or there was none) and, for an open question, whose question it is.
+        for n in &v.copy_notices {
+            if self.shown.insert(format!("copy:{}", n.event_id)) {
+                out.push(n.text.clone());
+                if ham_core::notice::is_end_request(&n.text) {
+                    out.push(ham_core::saved_copy::before_end_request(
+                        v.saved.as_ref(),
+                        &v.run_id,
+                        v.copies_failed_before_end_request(),
+                    ));
+                    if v.input.waiting().is_some() {
+                        out.push(ham_core::input::asked_by_ending_session(v.lost_in_a_row));
+                    }
+                } else {
+                    after_notice = Some(out.len());
+                }
+            }
+        }
+        if let Some(quiet) = quiet
+            && self.silent != Some(quiet.since_unix)
+        {
+            self.silent = Some(quiet.since_unix);
+            self.awaiting = true;
+            out.push(quiet.sentence());
+        }
+        self.read_before = true;
+        (out, after_notice)
+    }
+}
+
+/// What line mode has told about one run: the questions, sessions and notices ([`InputMemo`]) and the saved copies
+/// (`ham_core::saved_copy::WatchMemo`), in the order the watch loop prints them.
+#[derive(Debug)]
+pub struct LineMemo {
+    input: InputMemo,
+    saved: ham_core::saved_copy::WatchMemo,
+    /// The session and the number of the copy that a sentence dated before the notices about copies that stand
+    /// (`ham_core::saved_copy::before_notice`, or the sentence after a request to end). `None` while no such notice stands.
+    dated: Option<(u32, u32)>,
+}
+
+impl Default for LineMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LineMemo {
+    pub fn new() -> Self {
+        Self {
+            input: InputMemo::new(),
+            saved: ham_core::saved_copy::WatchMemo::default(),
+            dated: None,
+        }
+    }
+
+    /// The lines to print now for `v`: what [`InputMemo::lines`] says, then the line of a newer saved copy, at most once a minute.
+    /// While the run's notices about a copy stand, the copy the view holds
+    /// is from before them. It gets no `saved:` line then or later: the line read as a copy saved after the notice. The sentence after
+    /// a request to end names that copy. After any other notice about a copy (a copy that is late or could not be saved, a session
+    /// that cannot save copies) the copy is named once, under the notice, in words that date it before the notice
+    /// (`ham_core::saved_copy::before_notice`): a reader who is told that the work may not be kept learns where the last kept copy
+    /// is, also when the watch started after that copy was stored.
+    pub fn lines(&mut self, v: &RunView, elapsed_s: u64) -> Vec<String> {
+        let (mut out, after_notice) = self.input.lines_marked(v);
+        if v.copy_notices.is_empty() {
+            self.dated = None;
+            out.extend(self.saved.line(v.saved.as_ref(), &v.run_id, elapsed_s));
+            return out;
+        }
+        let held = v.saved.as_ref().map(|c| (c.session, c.count));
+        let end_request = v
+            .copy_notices
+            .iter()
+            .any(|n| ham_core::notice::is_end_request(&n.text));
+        if end_request {
+            // The sentence after the request to end named the copy.
+            self.dated = held;
+        } else if let (Some(at), Some(c)) = (after_notice, v.saved.as_ref())
+            && self.dated != held
+        {
+            self.dated = held;
+            out.insert(at, ham_core::saved_copy::before_notice(c, &v.run_id));
+        }
+        self.saved.hold(v.saved.as_ref());
         out
     }
 }
@@ -435,8 +551,7 @@ pub async fn watch_settled<P: ControlPlane, O: Write, E: Write>(
     let mut state = RunState::new(run_id);
     let mut last: Option<String> = None;
     let mut last_blocked: Option<String> = None;
-    let mut input_memo = InputMemo::new();
-    let mut saved_memo = ham_core::saved_copy::WatchMemo::default();
+    let mut memo = LineMemo::new();
     let mut aborted_shown = false;
     let mut failures: u32 = 0;
     // Adaptive polling (client polish B2): every shard on the first cycle, then the shards that matter, and a longer wait while
@@ -505,17 +620,12 @@ pub async fn watch_settled<P: ControlPlane, O: Write, E: Write>(
             writeln!(out, "blocked: {}", b.reason).map_err(out_err)?;
             last_blocked = Some(b.reason.clone());
         }
+        // The questions, sessions and notices, then a newer copy of the work, at most once a minute; the copy of the end is on
+        // the card.
         if !opts.json {
-            for l in input_memo.lines(&view) {
+            for l in memo.lines(&view, began.elapsed().as_secs()) {
                 writeln!(out, "{}", l).map_err(out_err)?;
             }
-        }
-        // A newer copy of the work, at most once a minute; the copy of the end is on the card.
-        if !opts.json
-            && let Some(l) =
-                saved_memo.line(view.saved.as_ref(), &view.run_id, began.elapsed().as_secs())
-        {
-            writeln!(out, "{l}").map_err(out_err)?;
         }
         if !opts.json
             && !aborted_shown

@@ -1550,9 +1550,14 @@ fn line_with_backend(line: &str, alias: Option<String>) -> String {
 
 /// The JSON of one run of `ham runs --json`: the summary as it always was, plus `name` and `nameSource` when the row has a name and `tags` when
 /// the row has the member. No other member of the index row (`title`, `model`, `lastActivity`,
-/// `outcome`) is added.
-fn run_json(r: &ham_core::run_index::RunRow) -> serde_json::Value {
+/// `outcome`) is added. The `phase` is written as the line writes it: `delivered` for a
+/// `complete` run whose stored phase is `delivering`, every other pair as stored. `ham runs`, `ham watch --json` and this JSON agree.
+pub fn run_json(r: &ham_core::run_index::RunRow) -> serde_json::Value {
     let mut v = serde_json::to_value(&r.summary).unwrap_or_default();
+    if let Some(obj) = v.as_object_mut() {
+        let phase = ham_core::render::phase_listed(Some(r.summary.status), Some(r.summary.phase));
+        obj.insert("phase".into(), json!(phase));
+    }
     if let (Some(name), Some(obj)) = (&r.name, v.as_object_mut()) {
         obj.insert("name".into(), json!(name));
         if let Some(source) = &r.name_source {

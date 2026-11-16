@@ -8,7 +8,7 @@ notice ▾ status
          blocked (delivering)
          Model  Claude Sonnet 5.5
          Outcome Cline stopped: the session was lost
-         PR     none yet
+         PR     none
 notice ▸ agents 1
 notice ▾ blocked · r retry
          reason: the session ended before any work was saved

@@ -525,6 +525,12 @@ pub(crate) async fn prepare<S: Store, B: Blobs, E: Execution>(
     if request.input_wait_s == Some(0) {
         request.input_wait_s = None;
     }
+    // The block on how the run delivers is on unless the request says `false`. `true` is the default said out loud and is stored as no
+    // member, so the stored request of a default run is the one of protocol 1.61.0, which a worker image that predates the member reads.
+    // `false` is stored as sent: the worker reads it there and writes no block. The request type refuses a value that is no boolean.
+    if request.delivery_note == Some(true) {
+        request.delivery_note = None;
+    }
     // The follow-up's source is read before anything is written; the stored request carries the head resolved here.
     if let Some(c) = request.continue_from.clone() {
         request.continue_from = Some(resolve_continue(&c, &request.target, caller, deps).await?);

@@ -41,6 +41,10 @@ pub const NOT_BLOCKED: &str =
 pub const ENDED: &str =
     "This run already ended (blocked): there is nothing to cancel. r retries it.";
 
+/// The words that take the place of `Esc browse` in the typing key line of a blocked run on a screen too narrow for the ending
+/// `Esc, then r retry`: the retry is named inside the Esc part, so the line is whole at 80 columns and ends with no ellipsis.
+pub const AFTER_ESC: &str = "Esc browse (r retry)";
+
 /// The title of the confirmation panel.
 pub const CONFIRM_TITLE: &str = "Retry blocked run?";
 

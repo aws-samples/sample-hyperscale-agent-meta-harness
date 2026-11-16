@@ -891,14 +891,19 @@ fn b766_the_starter_is_the_users_file_in_the_delivery_skill() {
 /// is `DOX off` switches the seed off and leaves the word in the first prompt.
 #[tokio::test(flavor = "multi_thread")]
 async fn b847_a_starter_that_says_dox_off_does_not_switch_the_word_on_the_delivery_off() {
-    let mut d = Direct::start(Opts::default()).await;
+    // The user kept the default of the delivery note (no `deliveryNote` in the stored request), so the worker writes the block of the zip
+    // target.
+    let mut d = Direct::start(Opts {
+        delivery_note: None,
+        ..Opts::default()
+    })
+    .await;
     with_skills(
         &mut d,
         &[skill_with(
             "DOX off\nThis text is ignored.\n# DOX framework\n",
         )],
     );
-    d.req.delivery = Some(harness_protocol::direct::DirectDelivery::zip());
     let (_, seen) = run_probed(&d).await;
     let seen = seen.unwrap();
     assert_eq!(seen.root, None, "the trigger: the DOX seed is off");

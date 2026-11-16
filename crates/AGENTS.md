@@ -31,6 +31,14 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
 - A fake of an AWS API rejects what the real API rejects (formats, name patterns, enums, required
   pairs), with the API reference cited in the fake. A permissive fake let a runtime version pass as
   InvokeAgentRuntime's `qualifier` (an endpoint name) and broke live dispatch.
+- A test with a time bound of its own that fails only beside the other tests of a full run gets a row in `.config/nextest.toml` that gives it every test thread of the run
+  (`threads-required = 'num-test-threads'`), one row with one term for each test. Its bound stays as it is. Besides the stress test of the fake engine, four tests have such a
+  row: `five_thousand_agents_draw_in_bounded_time` of `ham/tests/tui_w2.rs`, `b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer` of
+  `agentd/tests/b823_copies_run.rs`, and `b823_a_git_that_hangs_on_the_work_tree_is_said_and_ended_and_the_next_look_copies` and
+  `b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more` of `agentd/tests/b823_stop_copy.rs`. The three worker tests wait for copies that git
+  processes make. A row is not free: it waits for the tests in flight and then holds every test thread, and the four rows add about a third to the length of a full run of the
+  workspace's tests; add one only for a test that failed a first pass beside the other tests and passed alone. The note stands here and not in the agentd crate because every file
+  of that crate is an input of the worker image key.
 
 ## Verification
 

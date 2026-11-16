@@ -121,7 +121,7 @@ pub struct PromptPlan {
     /// The catalog id of the model the run starts on. The engine must report `acp_model_value(engine, model)` at `session/new`.
     pub model: String,
     /// The first prompt of the session, sent as it is. In the first session of a run it is the user's prompt as typed, after the harness's
-    /// block on the delivery when the invocation carries `delivery`.
+    /// block on the delivery unless the run switched the block off.
     pub prompt: String,
     pub nudge: Option<Nudge>,
     /// The user's cancel, as the events response delivered it: once true, no follow-up prompt is sent.
@@ -1178,8 +1178,9 @@ pub struct InputWiring {
     pub context: ContextDir,
     /// The user's first prompt, byte for byte: the task alone, without the harness's block on the delivery.
     pub task: String,
-    /// How the run delivers, from the invocation. The first prompt of a fresh session says it again, because that session starts
-    /// without the earlier conversation. `None`: unknown, and nothing is said.
+    /// What the engine is told about how the run delivers (`delivery_word::for_run`). The first prompt of a fresh session says it
+    /// again, because that session starts without the earlier conversation. `None`: the run switched the block off, or the worker
+    /// stands behind no delivery, and nothing is said.
     pub delivery: Option<harness_protocol::direct::DirectDelivery>,
     /// How the engine is named in the texts of the events (`engine::direct::engine_label`): the driver itself names no engine.
     pub engine_label: String,

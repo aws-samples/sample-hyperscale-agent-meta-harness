@@ -149,6 +149,14 @@ pub struct StartDirectRunRequest {
     /// run. The copy after a tool call that changed the tree and the copy when the engine has stopped do not move with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_every_s: Option<u32>,
+    /// Protocol 1.62.0: `false` switches off the harness's block on how the run delivers, from the user's `run.delivery_note`. The
+    /// worker otherwise writes the block before the first prompt of every session and of a fresh chat inside a session. With `false` the engine
+    /// is told nothing about the delivery and the first words it reads are the ones of protocol 1.60.0. Absent (the default) and `true` leave
+    /// the block on; only `false` is ever sent or stored, so a request that keeps the default is byte for byte the request of protocol 1.61.0.
+    /// The worker reads the member of the stored request ([`crate::direct::delivery_to_say`]); a worker image that predates the member refuses
+    /// a stored request that holds it, and tells the engine nothing about the delivery of a request that does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<bool>,
 }
 
 /// `GET /v1/direct/models` (protocol 1.31.0; served only by the `direct` stage) and `ham models --json`: every

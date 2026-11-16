@@ -580,7 +580,7 @@ fn init_replaces_the_default_of_76e3a433c_and_the_next_run_sends_the_exact_kit_c
     assert_eq!(code(&o), 0, "{}{}", out(&o), err(&o));
     for sent in [
         "python3 \"${HAMH_ENGINE_CONFIG_ROOT}/skills/lifecycle-check/scripts/scanner_kit.py\"",
-        "run it in the background, output to a file",
+        "run it in the background the same way and wait for its end file",
     ] {
         assert!(
             out(&o).contains(sent),

@@ -128,11 +128,11 @@ fn the_member_needs_all_three_parts_and_an_object_of_settings() {
 
 #[test]
 fn the_member_is_part_of_the_exported_contract_and_the_version_is_1_39_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.61.0");
+    assert_eq!(PROTOCOL_VERSION, "1.62.0");
     let docs: std::collections::BTreeMap<&str, Value> = all_schemas().into_iter().collect();
     let v1 = &docs["openapi-v1.json"]["components"]["schemas"];
-    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.61.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.61.0");
+    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.62.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.62.0");
     assert!(v1["StartDirectRunRequest"]["properties"]["engineConfig"].is_object());
     let member = &v1["EngineConfig"];
     assert_eq!(member["additionalProperties"], json!(false));

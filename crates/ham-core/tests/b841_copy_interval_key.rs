@@ -45,11 +45,12 @@ fn the_row() -> &'static Row {
 
 #[test]
 fn b841_copy_the_row_rides_in_the_snapshot_member() {
-    assert_eq!(Key::ALL.len(), 48);
+    // Added one key after the two of the copy interval.
+    assert_eq!(Key::ALL.len(), 49);
     assert_eq!(
-        Key::ALL[Key::ALL.len() - 2],
+        Key::ALL[Key::ALL.len() - 3],
         key(),
-        "the key before run.copy_every_seconds, the newest"
+        "the key before run.copy_every_seconds"
     );
     let r = the_row();
     assert_eq!(r.name, NAME);
@@ -64,7 +65,7 @@ fn b841_copy_the_row_rides_in_the_snapshot_member() {
         "the file only: no flag and no variable"
     );
     assert!(KEYS.contains(&(NAME, NAME)));
-    assert_eq!(KEYS.len(), 48);
+    assert_eq!(KEYS.len(), 49);
 }
 
 #[test]

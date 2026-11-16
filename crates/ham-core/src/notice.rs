@@ -197,6 +197,16 @@ pub fn is_copy_notice(e: &Envelope) -> bool {
         )
 }
 
+/// The first words of the worker's sentence for a request to end whose copy could not be saved (`agentd::direct`,
+/// `STOP_COPY_NOT_SAVED`: "The session was asked to end, and a copy of the work could not be saved."). The worker says nothing else
+/// about a request to end, so these words are how the client knows of one; a test holds them to the worker's source.
+pub const END_REQUEST_WORDS: &str = "The session was asked to end";
+
+/// Whether the text of a notice about a copy ([`is_copy_notice`]) is the worker's word that its session was asked to end.
+pub fn is_end_request(text: &str) -> bool {
+    text.starts_with(END_REQUEST_WORDS)
+}
+
 fn notify(v: &Value) -> String {
     match string(v, "reason").unwrap_or("") {
         "outage" => match number(v, "outageMinutes") {

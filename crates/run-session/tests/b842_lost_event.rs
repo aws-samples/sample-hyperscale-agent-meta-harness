@@ -295,3 +295,91 @@ async fn b842_a_lost_session_whose_word_cannot_be_written_still_gets_the_decisio
     assert_eq!(again, out);
     assert_eq!(lost_events(&mem).len(), 1);
 }
+
+/// A lost session whose word fails `failures` times in a row with `fault`, then the decision of `next-slice`.
+async fn lost_with_failing_word(
+    fault: fn(String) -> run_session::error::RunSessionError,
+    failures: usize,
+) -> (Mem, Value) {
+    let mem = started().await;
+    mem.put_snapshot_t(1, HEAD);
+    mem.set_now_ms(T0 + 700_000);
+    for _ in 0..failures {
+        mem.fail("put_event", fault("the table did not answer".into()));
+    }
+    let out = handle(
+        &mem.deps(),
+        &Op::NextSlice {
+            run_id: RUN.to_string(),
+            staged: staged(),
+            session: missed_heartbeat(),
+            loop_state: LoopState::default(),
+        },
+    )
+    .await
+    .expect("the stored decision is returned whatever happens to its word");
+    (mem, out)
+}
+
+/// The state machine never sees an error of the word (it is only logged), so nothing tried the write again and the run's events
+/// never said that the session was lost. A write that failed while the store was unavailable is tried once more by the service itself.
+#[tokio::test]
+async fn b846_a_word_that_failed_once_while_the_store_was_unavailable_is_written_by_a_second_try() {
+    use run_session::error::RunSessionError;
+    let (mem, out) = lost_with_failing_word(RunSessionError::Unavailable, 1).await;
+    assert_eq!(out["continue"], json!(true), "session 2 starts: {out}");
+    let events = lost_events(&mem);
+    assert_eq!(events.len(), 1, "the second try wrote the word");
+    assert_eq!((events[0].session, events[0].next_session), (1, Some(2)));
+}
+
+#[tokio::test]
+async fn b846_a_word_whose_conditional_write_lost_once_is_written_by_a_second_try() {
+    use run_session::error::RunSessionError;
+    let (mem, out) = lost_with_failing_word(RunSessionError::Conflict, 1).await;
+    assert_eq!(out["continue"], json!(true), "{out}");
+    assert_eq!(lost_events(&mem).len(), 1);
+}
+
+/// One second try, not a loop: a store that stays unavailable is given up, the decision stands, and asking again writes the word.
+#[tokio::test]
+async fn b846_a_word_that_fails_twice_is_given_up_and_the_run_still_goes_on_into_its_next_session()
+{
+    use run_session::error::RunSessionError;
+    let (mem, out) = lost_with_failing_word(RunSessionError::Unavailable, 2).await;
+    assert_eq!(out["continue"], json!(true), "session 2 starts: {out}");
+    assert!(
+        lost_events(&mem).is_empty(),
+        "TRIGGER PRESENT: both tries failed"
+    );
+    let again = next_slice(&mem, SessionState::default(), LoopState::default()).await;
+    assert_eq!(again, out);
+    assert_eq!(lost_events(&mem).len(), 1);
+}
+
+/// An error that can never work is not tried again: a second failure queued behind it is still waiting when the op has answered.
+#[tokio::test]
+async fn b846_a_word_that_was_refused_is_not_tried_again() {
+    use run_session::error::RunSessionError;
+    let mem = started().await;
+    mem.put_snapshot_t(1, HEAD);
+    mem.set_now_ms(T0 + 700_000);
+    mem.fail(
+        "put_event",
+        RunSessionError::Invalid("the event was refused".into()),
+    );
+    mem.fail(
+        "put_event",
+        RunSessionError::Invalid("a second try would have met this".into()),
+    );
+    next_slice(&mem, missed_heartbeat(), LoopState::default()).await;
+    assert!(lost_events(&mem).is_empty());
+    // The failure that no second try used up meets the next write: the word is still missing after one more `next-slice`, and there after another.
+    next_slice(&mem, SessionState::default(), LoopState::default()).await;
+    assert!(
+        lost_events(&mem).is_empty(),
+        "the first op used one failure only"
+    );
+    next_slice(&mem, SessionState::default(), LoopState::default()).await;
+    assert_eq!(lost_events(&mem).len(), 1);
+}

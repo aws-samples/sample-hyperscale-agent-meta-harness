@@ -122,7 +122,9 @@ refusal texts. `test_repo_names.py` runs it through `scripts/lib/aws_target.py`,
   a lock without a Maven row is ignored, and `gates-lang-tools.sh` calls the seed before the installer.
 - `test_fetch_retry.py` runs `images/tools/fetch.sh` against a local HTTP server that serves a bad file once and then
   the right one (deploy B2's gosec mismatch), a stub `sleep` that records the pauses (5, 15 and 45 seconds, four attempts) and a stub
-  `curl` that exits 56 first; runs `tools/lang/install.sh` on a copy of the tools tree with a stub Node archive and `tools/install.sh` with a
+  `curl` that exits 56 first; runs `tools/lang/install.sh` on a copy of the tools tree with a stub Node archive (the stand-in Node reads its input when the script it is given reads
+  `process.stdin`, as Node does: one that ended without reading could close the pipe before the installer wrote its version table into it, which failed about 3
+  installs in 100 on a loaded build host; one case makes the writer of a copy of the installer slow to hold that) and `tools/install.sh` with a
   fake uv and a pip that fails once (each retried, a persistent mismatch still ending `install.sh: SHA-256 mismatch for <url>`); and
   checks that no installer runs a network command outside `retry_run` or `fetch_pinned`, that `images/services/install.sh` carries the
   same `retry-lib` block as `fetch.sh`, and that the 5 release downloads of `images/codebuild/*.yml` (worker-python 4, delivery 1) are `fetch.sh` calls.

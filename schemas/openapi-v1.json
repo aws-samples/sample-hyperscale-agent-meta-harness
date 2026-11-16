@@ -2129,6 +2129,13 @@
             ],
             "description": "Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted only with the `s3-only` target and no\n`baseRef`; control-api stores the delivered head it resolved in `headSha`."
           },
+          "deliveryNote": {
+            "description": "Protocol 1.62.0: `false` switches off the harness's block on how the run delivers, from the user's `run.delivery_note`. The\nworker otherwise writes the block before the first prompt of every session and of a fresh chat inside a session. With `false` the engine\nis told nothing about the delivery and the first words it reads are the ones of protocol 1.60.0. Absent (the default) and `true` leave\nthe block on; only `false` is ever sent or stored, so a request that keeps the default is byte for byte the request of protocol 1.61.0.\nThe worker reads the member of the stored request ([`crate::direct::delivery_to_say`]); a worker image that predates the member refuses\na stored request that holds it, and tells the engine nothing about the delivery of a request that does not.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "engine": {
             "anyOf": [
               {
@@ -2453,7 +2460,7 @@
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness public API",
-    "version": "1.61.0"
+    "version": "1.62.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

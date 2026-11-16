@@ -11,6 +11,9 @@
 //!   ended and was read to its end is not polled.
 //! - **A failed read** keeps what is shown, says so once, and is tried again after a pause that grows; a first page that fails three times
 //!   in a row (a stage without the route) is given up for the run.
+//! - **Older, for the card.** The `Outside` row of the delivery card needs the conversation read whole. For a delivered run
+//!   whose card has a `Tokens` row the older chunks are read as the timer fires, one page at a time and without a key, while the
+//!   conversation can still give the sum (`StoredChat::can_be_whole`); the view stays where it is.
 //!
 //! - **The run it continues from.** A follow-up run shows the stored conversation of that
 //!   run above a divider, read-only. It is read once (the run is finished), page by page upward when the view reaches its top; a first read
@@ -80,6 +83,12 @@ pub(crate) struct History {
 }
 
 impl App {
+    /// The tokens of the prompts that answered, from the stored conversation of the run on screen when it is whole
+    /// (`StoredChat::answered_tokens`).
+    pub(crate) fn answered_tokens(&self) -> Option<u64> {
+        self.hist.stored.answered_tokens()
+    }
+
     /// The run is open: the first page, from the end (or from a search hit).
     pub(crate) fn hist_open(&mut self, run_id: &str) -> Vec<Effect> {
         let token = self.hist.next_open.take();
@@ -128,6 +137,24 @@ impl App {
         self.cached
             .as_ref()
             .is_none_or(|v| v.status.is_none_or(|s| !s.is_terminal()))
+    }
+
+    /// The delivery card of the run on screen has a `Tokens` row (the run has ended, its zip is on the card and the stage
+    /// reported usage), and the stored conversation can still give the tokens of the prompts that answered once it is read whole
+    /// (`StoredChat::can_be_whole`). Its older chunks are then read as the timer fires: the conversation is opened at its end with one
+    /// page, and the sum that the `Outside` row needs was never there for a long run unless the view had been scrolled to the first
+    /// line.
+    fn card_wants_whole(&self) -> bool {
+        !self.run_is_live()
+            && self.hist.stored.can_be_whole()
+            && self.cached.as_ref().is_some_and(|v| v.zip.is_some())
+            && matches!(
+                self.download,
+                DownloadState::Done(_) | DownloadState::Refresh(_)
+            )
+            && self.detail.as_ref().is_some_and(|d| {
+                d.summary.run_id == self.hist.run_id && crate::pull::run_usage(d).is_some()
+            })
     }
 
     /// Older chunks are wanted: the view is at its top, or it fits the screen and there is more behind it.
@@ -313,7 +340,9 @@ impl App {
             .parent
             .as_ref()
             .is_some_and(|p| p.settled() && !p.inflight);
-        if (self.wants_older() || (below_a_divider && self.hist.stored.older().is_some()))
+        // So are the older chunks of a delivered run whose card can still get its `Outside` row.
+        let in_the_background = below_a_divider || self.card_wants_whole();
+        if (self.wants_older() || (in_the_background && self.hist.stored.older().is_some()))
             && let Some(q) = self.older_query()
         {
             return self.hist_request(q, Read::Older);
@@ -439,6 +468,11 @@ impl App {
                 progress: &progress,
                 user: &user,
                 live: self.run_is_live(),
+                // The run's events say when its last session began, which ties an `end` record to that session.
+                last_session_began: self
+                    .cached
+                    .as_ref()
+                    .and_then(ham_core::state::RunView::last_session_began),
             },
         );
         self.with_previous_run(own)
@@ -459,6 +493,8 @@ impl App {
                     progress: &none,
                     user: &[],
                     live: false,
+                    // The events of the previous run are not read: its last line stays as the route declared it.
+                    last_session_began: None,
                 },
             );
             // The ids of the two runs' blocks never meet: the widget keys its folds, wrap cache and selection by id.

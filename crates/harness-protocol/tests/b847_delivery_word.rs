@@ -41,8 +41,8 @@ fn parse(v: Value) -> DirectInvocationRequest {
 }
 
 #[test]
-fn b847_the_protocol_is_1_61_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.61.0");
+fn b847_the_protocol_is_1_62_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.62.0");
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn b847_the_contract_file_describes_the_member() {
     for needle in ["DirectDelivery", "DirectDeliveryKind", "pull-request"] {
         assert!(text.contains(needle), "{needle:?} in runtime.schema.json");
     }
-    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.61.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.61.0");
+    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.62.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.62.0");
 }
 
 #[test]

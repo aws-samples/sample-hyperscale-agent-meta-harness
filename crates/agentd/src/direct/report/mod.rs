@@ -46,7 +46,7 @@ use harness_protocol::direct::{
 };
 use harness_protocol::envelope::EventType;
 use harness_protocol::output_pins::OutputPin;
-use plan::{Install, Plan, PlanNotes, PlannedStep};
+use plan::{Install, NotAgain, Plan, PlanNotes, PlannedStep};
 use progress::Progress;
 use run::{RunEnv, SKIPPED_FOR_DISK, checkout, ran_out_of_disk, run_step_scanned};
 use std::collections::BTreeMap;
@@ -662,7 +662,9 @@ pub async fn run_planned(
 
 /// Writes what the plan says of the commands of the lifecycle log it left out at the head of the output of the steps that carry it:
 /// on a step the harness chose from the layout, the line that names the commands it ran in place of ([`PlanNotes::stand_ins`]); on the first
-/// step, one line for each reason that names the commands left out with nothing in their place ([`PlanNotes::left_out`]). `done` are the results of the
+/// step, one line for each reason that names the commands left out with nothing in their place ([`PlanNotes::left_out`]) and, behind them, one
+/// line for each whole-suite command the plan did not run again because the log recorded it as failed and a later row of the same suite passed.
+/// `done` are the results of the
 /// steps of the plan in the order of the plan, so a result has the place of its step; a step that was never reached carries nothing. Every
 /// step loses a line of either form that the repository printed where agentd writes ([`run::set_plan_lines`]). The lines ride in a member
 /// every reader has: the summary reads them back (`TestStep::in_place_of`, `TestStep::left_out`) and a reader that predates them passes over them.
@@ -681,9 +683,28 @@ pub fn note_left_out(done: &mut [TestStep], notes: &PlanNotes, cap: usize) {
                     left.logged.as_ref(),
                 )
             }));
+            // Behind the lines the summary reads, whose reading ends at the first line of another form.
+            lines.extend(not_again_lines(&notes.not_again));
         }
         run::set_plan_lines(step, &lines, cap);
     }
+}
+
+/// The lines of the first step for the whole-suite commands of the lifecycle log that the plan did not run again: one line for
+/// each of the first [`run::MAX_NOT_AGAIN_LINES`] commands, in the order of the log, with what the log recorded for the command and the
+/// later command that passed ([`run::not_again_line`]), and a last line that counts the others. The commands are redacted.
+fn not_again_lines(rows: &[NotAgain]) -> Vec<String> {
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(run::MAX_NOT_AGAIN_LINES)
+        .map(|row| run::not_again_line(&redact(&row.command), &row.logged, &redact(&row.passed_as)))
+        .collect();
+    if rows.len() > run::MAX_NOT_AGAIN_LINES {
+        lines.push(run::not_again_more_line(
+            rows.len() - run::MAX_NOT_AGAIN_LINES,
+        ));
+    }
+    lines
 }
 
 /// Checks the report, writes it under the run's data directory and uploads it. Ordinary failures are log lines. A refused create-only

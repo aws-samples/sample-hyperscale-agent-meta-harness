@@ -669,6 +669,15 @@ const FROZEN: &[(&str, &str)] = &[
         "1.61.0",
         "a75dcf285cb79de9239da26e39080584cc352cca1fb8f362ccdc2ef843731076",
     ),
+    // 1.62.0, the switch of the delivery note. The start request gains the optional `deliveryNote` (only `false` is sent: the worker
+    // then writes no block on how the run delivers); `summary.json` and the evidence gain the optional `deliveryNote`, the block the worker
+    // wrote before the first prompt of the session; the description of the invocation's `delivery` says that only a service of 1.61.0 writes
+    // it and that the worker reads how the run delivers from the target of the stored request. Both OpenAPI documents change their
+    // info.version. The wire format of every other member is unchanged.
+    (
+        "1.62.0",
+        "f46e0f1d779f055ca2e3800894b380b31051769bb29a663e6cc50c85f732c575",
+    ),
 ];
 
 /// 1.26.0 adds one optional turn member after 1.25.0 shipped: the released line keeps its hash and
@@ -1352,7 +1361,25 @@ fn b823_b847_frozen_1_61_0_is_one_new_line_and_the_1_60_0_line_did_not_move() {
         "6b38d62f36498ae5f36628e41513631e25a321ce1a092b7566cf480d46906025"
     );
     assert_ne!(v160[0].1, v161[0].1);
-    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.61.0"));
+}
+
+/// 1.62.0 follows the 1.61.0 line: that line keeps its hash, the new line differs from it, and it
+/// is the newest.
+#[test]
+fn b850_frozen_1_62_0_is_a_new_line_and_the_1_61_0_line_did_not_move() {
+    let v161: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.61.0").collect();
+    let v162: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.62.0").collect();
+    assert_eq!(
+        (v161.len(), v162.len()),
+        (1, 1),
+        "one pinned line per version"
+    );
+    assert_eq!(
+        v161[0].1,
+        "a75dcf285cb79de9239da26e39080584cc352cca1fb8f362ccdc2ef843731076"
+    );
+    assert_ne!(v161[0].1, v162[0].1);
+    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.62.0"));
 }
 
 /// The ninth file is appended after the eight: the order of `SCHEMA_FILES` is part of the hash, so the file joins at the end and no existing file moves.

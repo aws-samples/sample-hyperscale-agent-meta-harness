@@ -139,8 +139,11 @@ install -m 0755 "$work/mailpit" "$dest/bin/mailpit"
 
 for b in /usr/bin/postgres /usr/bin/initdb /usr/bin/psql /usr/libexec/mariadbd /usr/bin/my_print_defaults /usr/bin/valkey-server /usr/lib64/pgsql/plpgsql.so; do
   [ -e "$b" ] || { echo "install.sh: $b is missing" >&2; exit 1; }
-  if ldd "$b" 2>&1 | grep -q 'not found'; then
-    echo "install.sh: $b does not resolve: $(ldd "$b" | grep 'not found' | tr '\n' ' ')" >&2; exit 1
+  # The list is captured and matched on a here-string. A pipeline into `grep -q` ends at the first match: an ldd that still prints then ends the pipeline with
+  # status 141 under pipefail, and a missing library that is not the last line read as resolved.
+  libs=$(ldd "$b" 2>&1) || true
+  if grep -q 'not found' <<<"$libs"; then
+    echo "install.sh: $b does not resolve: $(grep 'not found' <<<"$libs" | tr '\n' ' ')" >&2; exit 1
   fi
 done
 pg=$(/usr/bin/postgres --version | awk '{ print $3 }')

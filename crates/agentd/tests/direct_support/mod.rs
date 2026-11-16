@@ -1174,6 +1174,14 @@ pub struct Opts {
     /// Files moved in the repository before it is bundled (`git mv`, from and to): `tests/test_calc.py` to a name that is no test file gives a tree
     /// with no test layout the report knows, now that the report runs a plain pytest layout.
     pub repo_moved: Vec<(&'static str, &'static str)>,
+    /// `StartDirectRunRequest.deliveryNote`. The harness writes `Some(false)` unless a test says otherwise: the
+    /// worker then tells the engine nothing about the delivery, so the first prompt of every test that does not look at the block, and the
+    /// 13 golden streams, are byte for byte what they were. `None` leaves the member out of `request.json`, which is the request of a user
+    /// who keeps the default: the worker writes the block of the stored target before the first prompt.
+    pub delivery_note: Option<bool>,
+    /// `StartDirectRunRequest.target` as the JSON of the request member. `None`
+    /// is the zip target, `{"mode": "s3-only"}`, as in every test before.
+    pub target: Option<serde_json::Value>,
 }
 
 impl Default for Opts {
@@ -1207,6 +1215,8 @@ impl Default for Opts {
             goal: None,
             repo_files: Vec::new(),
             repo_moved: Vec::new(),
+            delivery_note: Some(false),
+            target: None,
         }
     }
 }
@@ -1564,11 +1574,14 @@ impl Direct {
         }
         let mut request_value = serde_json::json!({
             "prompt": opts.prompt,
-            "target": {"mode": "s3-only"},
+            "target": opts.target.clone().unwrap_or_else(|| serde_json::json!({"mode": "s3-only"})),
             "model": MODEL,
             "rules": opts.rules,
             "nudge": opts.nudge,
         });
+        if let Some(on) = opts.delivery_note {
+            request_value["deliveryNote"] = serde_json::json!(on);
+        }
         if let Some(on) = opts.report_tests {
             request_value["reportTests"] = serde_json::json!(on);
         }

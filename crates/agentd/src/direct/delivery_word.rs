@@ -2,9 +2,11 @@
 //!
 //! The rules every run gets say that a delivery to a repository (a pull request) refuses a run that adds or changes a file under
 //! `.github/workflows/` or a root `buildspec.yml`, and that a run that delivers only a zip takes such files. Nothing told the engine which
-//! of the two its run was, so an engine that was asked for a workflow file in a zip run could hold the file back. The service knows (the
-//! run's target) and tells the worker in the invocation of every session (`DirectInvocationRequest.delivery`, protocol 1.61.0). This module
-//! turns that member into ONE short block of the harness's own words, and the block comes before whatever the engine reads first:
+//! of the two its run was, so an engine that was asked for a workflow file in a zip run could hold the file back. The run's target says
+//! which it is, and the worker reads it from the stored request. A service of protocol 1.61.0 wrote
+//! the fact into the invocation of every session instead (`DirectInvocationRequest.delivery`); such a member is still read, and one that
+//! differs from the stored target means that nothing is said. This module turns the delivery into ONE short block of the harness's own
+//! words, and the block comes before whatever the engine reads first:
 //!
 //! * the first prompt of a session (`direct/mod.rs`, the prompt plan): the user's text in the first session of a run, and the harness's
 //!   continuation prompt ([`crate::direct::slice::first_prompt`]) in every later session;
@@ -14,13 +16,22 @@
 //! A follow-up run (`ham continue`), a resumed run (`ham resume`) and a blocked run started again are new runs with invocations of their
 //! own, so their first prompt is the first case.
 //!
-//! The block is a fact about the run. It is no outcome label and it judges nothing: the engine still decides when the work is done. An
-//! unknown delivery (no member: the invocation of a service that predates it) adds nothing. The block does not depend on the DOX starter,
-//! so `DOX off` as the first line of the starter does not switch it off.
+//! The block is a fact about the run. It is no outcome label and it judges nothing: the engine still decides when the work is done. The
+//! block does not depend on the DOX starter, so `DOX off` as the first line of the starter does not switch it off.
 //!
-//! The block has no setting and no switch of its own. What it says is set by the run's target (`--s3-only`, or a repository), and the run
-//! cannot deliver in another way than the block says. The engine has to know that fact whatever the user's rules say: without it a zip
-//! run held back a file its prompt asked for. How the engine works stays in the user's rules.
+//! The block is on unless the user switches it off: `run.delivery_note = false` in the client's `config.toml` becomes `deliveryNote: false`
+//! in the stored request, and [`for_run`] then returns no delivery, so nothing is written before the prompt and the first words the engine
+//! reads are the ones it read before the block existed. What the block says is not the user's to change: the run's target sets it
+//! (`--s3-only`, or a repository), and the run cannot deliver in another way than the block says. Without the block a zip run held back a
+//! file its prompt asked for, which is why it is on by default. How the engine works stays in the user's rules.
+//!
+//! A prompt that begins with a slash follows the block like any other prompt. The default engine resolves no slash command in a
+//! prompt it gets over ACP, so such a prompt is text to it wherever it stands; an engine that reads a leading slash as a command has a
+//! guard that keeps a task a task (`engine::config::prompt_guard`), and with the block first the prompt no longer begins with the slash.
+//!
+//! The summary of the session records the block as it was written (`DirectSummary.deliveryNote`), so the run's records say what the
+//! engine was told. A session that ended before its first prompt was written (the engine failed in `initialize`, `session/new` or the
+//! model pin) records none: its engine read nothing.
 //!
 //! The sentences say what the delivery really does, and each side has a test against the one list of paths
 //! ([`harness_protocol::direct::REPOSITORY_REFUSES`]): the bundle validator (`crates/delivery/tests/b847_delivery_word.rs`), the default
@@ -28,8 +39,9 @@
 //! such a file, a removal and a change of type included, so the block says "adds, changes or removes"; the rule of the default rules, which
 //! is the user's file, says "adds or changes".
 
+use harness_protocol::api::v1::StartDirectRunRequest;
 use harness_protocol::direct::{
-    DirectDelivery, DirectDeliveryKind, REPOSITORY_REFUSES, check_delivery,
+    DirectDelivery, DirectDeliveryKind, REPOSITORY_REFUSES, check_delivery, delivery_to_say,
 };
 
 /// The first words of the block: the harness names itself as the writer.
@@ -52,6 +64,16 @@ pub fn block(delivery: Option<&DirectDelivery>) -> Option<String> {
         )),
         (DirectDeliveryKind::PullRequest, None) => None,
     }
+}
+
+/// What the engine of this run is told about the delivery, or `None` for nothing: the delivery of the stored request's target,
+/// unless the request switched the block off (`deliveryNote: false`) or the invocation carries a member that differs from that target
+/// ([`delivery_to_say`]).
+pub fn for_run(
+    invocation: Option<&DirectDelivery>,
+    request: &StartDirectRunRequest,
+) -> Option<DirectDelivery> {
+    delivery_to_say(invocation, &request.target, request.delivery_note)
 }
 
 /// `prompt` with the block before it and one empty line between the two; `prompt` as it is when there is no block.

@@ -812,6 +812,7 @@ pub fn card(detail: Option<&RunDetail>, pulled: Option<&Pulled>) -> FinalCard {
         tests: None,
         flow: None,
         session: detail.and_then(|d| d.summary.session),
+        outside_prompts: None,
     }
 }
 

@@ -248,7 +248,7 @@ fn b842_the_card_of_a_run_that_lost_a_session_says_which_and_what_it_started_fro
     let card = final_card(&v, &FinalCard::default());
     assert!(
         card.lines().any(|l| l
-            == "Lost      session 1 at 2026-11-14 07:14 UTC; session 2 started from the copy saved at 2026-11-14 07:03 UTC; file changes after that copy were lost"),
+            == "Lost      session 1: last heartbeat 2026-11-14 07:04 UTC, called lost 07:14 UTC; session 2 started from the copy saved at 2026-11-14 07:03 UTC; file changes after that copy were lost"),
         "{card}"
     );
     // A run that lost none has no such row.
@@ -270,7 +270,7 @@ fn b842_a_session_that_says_it_beats_and_then_falls_silent_is_named_after_two_mi
     assert_eq!(s.secs, 150);
     assert_eq!(
         s.sentence(),
-        "No word from the run's session since 2026-11-14 07:04 UTC (2 min). When the service receives no heartbeat from a session for \
+        "No event from the run's session since 2026-11-14 07:04 UTC (2 min). When the service receives no heartbeat from a session for \
          600 seconds, it starts a new session from the last saved copy (saved 2026-11-14 07:03 UTC) when the run has time left; file changes after that copy are lost."
     );
     // Without a clock nothing is said.

@@ -116,7 +116,7 @@ async fn a_run_without_the_member_leaves_the_13_golden_streams_unchanged() {
     );
     for (name, text) in &all {
         assert_eq!(
-            text.matches("\"protocol\": \"1.61.0\"").count(),
+            text.matches("\"protocol\": \"1.62.0\"").count(),
             1,
             "{name}: one protocol line, the one the latest bump changed"
         );

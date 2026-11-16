@@ -90,6 +90,8 @@ pub fn direct_run_request(
         provider_sharing: None,
         // Left out here too: `ResolvedRun::request` lays the user's copy interval in.
         snapshot_every_s: None,
+        // Left out here too: `ResolvedRun::request` lays the user's switch of the delivery note in.
+        delivery_note: None,
     })
 }
 
@@ -271,6 +273,10 @@ pub struct ResolvedRun {
     /// older release) and the request is the one an older client sends. A key set to the default is `None` too: the default
     /// is what the stage does by itself, and a stage of an older release refuses a request with a member it does not know.
     pub snapshot_every_s: Option<u32>,
+    /// `run.delivery_note` of the file: only `false` reaches the request, as `deliveryNote`, and the worker then writes no block on
+    /// how the run delivers. Unset and on send no member, so the request is the one an older client sends and a stage of an older release
+    /// starts it.
+    pub delivery_note: Option<bool>,
     /// Provider data sharing for this run: `--provider-sharing` over `run.provider_sharing` of the file, off when neither is set. Only `true` reaches the
     /// request, as `providerSharing`, so the request of a user who never turns it on is the one an older client sends.
     pub provider_sharing: bool,
@@ -329,6 +335,7 @@ impl ResolvedRun {
             .map(|r| with_compute_choice(r, self.compute, self.container_signals.as_deref()))
             .map(|r| with_max_run_setting(r, self.max_run_s))
             .map(|r| with_copy_interval_setting(r, self.snapshot_every_s))
+            .map(|r| with_delivery_note_setting(r, self.delivery_note))
             .map(|r| with_provider_sharing_setting(r, self.provider_sharing))
             .map(|r| with_build_settings(r, &self.build))
             .map(|r| with_limits_setting(r, &self.limits))
@@ -532,6 +539,10 @@ pub fn resolve_run_settings_in(
         Key::RunCopyEverySeconds,
         layer(false, run.copy_every_seconds.is_some()),
     ));
+    origins.push((
+        Key::RunDeliveryNote,
+        layer(false, run.delivery_note.is_some()),
+    ));
     origins.sort_by_key(|(k, _)| *k);
     Ok(ResolvedRun {
         args: out,
@@ -551,6 +562,8 @@ pub fn resolve_run_settings_in(
             .copy_every_seconds
             .or(run.copy_every_minutes.map(|m| m * 60))
             .filter(|s| *s != harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S),
+        // Only off is a choice the request carries; on is what the stage does by itself.
+        delivery_note: run.delivery_note.filter(|on| !on),
         provider_sharing,
         build: BuildOptions {
             cargo_no_debug_info: run.cargo_no_debug_info.filter(|on| !on),
@@ -705,6 +718,17 @@ pub fn with_copy_interval_setting(
 ) -> StartDirectRunRequest {
     let mut request = request;
     request.snapshot_every_s = snapshot_every_s;
+    request
+}
+
+/// `request` with the user's `run.delivery_note` setting: the block on how the run delivers is on by default, so only `false` is
+/// sent (`deliveryNote: false`); on, or no setting, leaves the member out and the request as it was.
+pub fn with_delivery_note_setting(
+    request: StartDirectRunRequest,
+    delivery_note: Option<bool>,
+) -> StartDirectRunRequest {
+    let mut request = request;
+    request.delivery_note = (delivery_note == Some(false)).then_some(false);
     request
 }
 

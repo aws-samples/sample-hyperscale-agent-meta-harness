@@ -722,14 +722,27 @@ where
     Ok(end.state())
 }
 
+/// The pause before the second try of the word about a lost session ([`tell_lost`]): the pause of the store calls of the tag branch.
+const LOST_WORD_PAUSE: (std::time::Duration, std::time::Duration) = (
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_millis(400),
+);
+
 /// [`announce_lost`] for a decision that is stored. The word about a lost session never changes what the run does: a failure to
 /// read its records or to write the event is logged, and the caller returns the decision. A repeated `next-slice` writes the event again.
+/// A failure that a second try can change (the store was unavailable, a conditional write lost) gets that second try after a short
+/// pause before it is logged: the state machine never sees this error, so nothing else tries again, and without the event the run's
+/// screens never say that the session was lost and what the next one started from. An error that can never work is not tried again.
 async fn tell_lost<S, T, M, R, B, P>(deps: &Deps<S, T, M, R, B, P>, run_id: &str, end: &SliceEnd)
 where
     S: Store,
     B: Blobs,
 {
-    if let Err(e) = announce_lost(deps, run_id, end).await {
+    let told = crate::tag_run::retry_once_after(LOST_WORD_PAUSE.0, LOST_WORD_PAUSE.1, || {
+        announce_lost(deps, run_id, end)
+    })
+    .await;
+    if let Err(e) = told {
         println!(
             "{}",
             serde_json::json!({ "warning": "session-lost-event", "runId": run_id, "session": end.slice, "reason": e.to_string() })

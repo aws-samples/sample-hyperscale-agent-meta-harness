@@ -250,6 +250,10 @@ pub struct RunTable {
     /// `copy_every_minutes` ([`COPY_INTERVAL_KEYS_CLASH`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_every_seconds: Option<u32>,
+    /// `false` switches off the block the harness writes before the first prompt of every session on how the run delivers; the
+    /// request carries it as `deliveryNote: false`. Unset and `true` leave the block on and send no member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<bool>,
 }
 
 /// The keys of `[research]`.
@@ -408,7 +412,7 @@ pub enum ConfigError {
 }
 
 /// The settable keys as `(file name, name `ham config` prints)`. A key of a table is dotted in both columns.
-pub const KEYS: [(&str, &str); 48] = [
+pub const KEYS: [(&str, &str); 49] = [
     ("apiEndpoint", "api_endpoint"),
     ("region", "region"),
     ("awsProfile", "aws_profile"),
@@ -457,6 +461,7 @@ pub const KEYS: [(&str, &str); 48] = [
     ("updateSource", "update_source"),
     ("run.copy_every_minutes", "run.copy_every_minutes"),
     ("run.copy_every_seconds", "run.copy_every_seconds"),
+    ("run.delivery_note", "run.delivery_note"),
 ];
 
 /// What `ham` says of a config that sets both keys of the copy interval, when it reads the file and when `ham config set` would

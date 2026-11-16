@@ -71,6 +71,7 @@ fn non_defaults() -> Vec<(&'static str, &'static str, String)> {
             "https://example.com/me/fork.git".into(),
         ),
         ("run.copy_every_minutes", "10", "10".into()),
+        ("run.delivery_note", "off", "false".into()),
     ]
 }
 
@@ -86,8 +87,8 @@ fn all_set() -> Config {
 fn unset_of_each_new_key_leaves_the_other_sixteen_alone() {
     let full = all_set();
     // `run.copy_every_seconds` is not in the list: it cannot be set beside `run.copy_every_minutes` (tests/b823_copy_seconds_key.rs).
-    assert_eq!(non_defaults().len(), 47);
-    assert_eq!(KEYS.len(), 48);
+    assert_eq!(non_defaults().len(), 48);
+    assert_eq!(KEYS.len(), 49);
     for (key, _, printed) in non_defaults() {
         assert_eq!(
             get_key(&full, key).unwrap().as_deref(),

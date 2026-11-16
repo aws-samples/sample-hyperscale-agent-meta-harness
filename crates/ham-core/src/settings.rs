@@ -17,6 +17,9 @@
 //! The last row (`ui.mascot_motion`) is the switch of the smoke that moves under the mascot's feet in the title band and in the empty Runs list; it is on unless the file says `false`, and
 //! it rides in no request.
 //!
+//! The row `run.delivery_note` is the switch of the block the harness writes before the first prompt of every session on how the run delivers. It is on unless the
+//! file says `false`, which is the only value that reaches a request (the `deliveryNote` member).
+//!
 //! The first nine rows are the keys of v4.02, with the names, types, ranges, environment variables and spellings they always had. The
 //! six after them (`run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`) and the ones added later (`ui.mascot`,
 //! `run.report_command_minutes`) live in the tables `[run]`,
@@ -102,11 +105,12 @@ pub enum Key {
     UpdateSource,
     RunCopyEveryMinutes,
     RunCopyEverySeconds,
+    RunDeliveryNote,
 }
 
 impl Key {
     /// Every key, in registry order.
-    pub const ALL: [Key; 48] = [
+    pub const ALL: [Key; 49] = [
         Key::ApiEndpoint,
         Key::Region,
         Key::AwsProfile,
@@ -155,6 +159,7 @@ impl Key {
         Key::UpdateSource,
         Key::RunCopyEveryMinutes,
         Key::RunCopyEverySeconds,
+        Key::RunDeliveryNote,
     ];
 
     /// The row of this key.
@@ -329,6 +334,9 @@ impl Key {
                     .get_or_insert_with(RunTable::default)
                     .copy_every_seconds,
             ),
+            Key::RunDeliveryNote => {
+                Slot::Bool(&mut cfg.run.get_or_insert_with(RunTable::default).delivery_note)
+            }
             Key::RunProviderSharing => Slot::Bool(
                 &mut cfg
                     .run
@@ -649,7 +657,7 @@ const fn row(
 }
 
 /// The registry, in the order of [`Key`].
-pub static ROWS: [Row; 48] = [
+pub static ROWS: [Row; 49] = [
     Row {
         applies: Applies::Restart,
         security: true,
@@ -1446,6 +1454,21 @@ pub static ROWS: [Row; 48] = [
             },
             "Copy interval",
             "The seconds between two looks of the service at the work of a run. A look saves a copy of the work to the stage's bucket when files changed, and ham pull <runId> --snapshot downloads the latest copy. A session that is stopped or dies saves nothing afterwards, so it loses the changes since the last copy: about this interval plus the time one copy takes, and more for a repository whose copies take long. A copy every 15 seconds does not save every write. A stage of an older release has a longer timer of its own: a run that sets no interval, or sets 15, is copied on that timer until the stage is updated. A longer interval stores fewer copies and can lose more; it suits a repository whose copies are large. Two copies do not move with this key: the copy after a tool call that changed a file, made while the copies are 8 MiB or smaller, and the copy when the engine stops, which is always made. No value switches the copies off. Set this key or run.copy_every_minutes, not both. A run that ham resume or /retry starts keeps the interval of the run it comes from.",
+        )
+    },
+    Row {
+        default: DefaultValue::Bool(true),
+        default_text: "on",
+        wire: Some("deliveryNote"),
+        since: 1,
+        group: Group::Limits,
+        ..row(
+            Key::RunDeliveryNote,
+            ("run", "delivery_note"),
+            "run.delivery_note",
+            Kind::Bool,
+            "Delivery note",
+            "On, the harness tells the engine at the start of every session how the run delivers, in one short block before your prompt: only a zip, which takes a workflow file and a root buildspec.yml, or a pull request to the repository you named, which refuses a run that adds, changes or removes such a file. Off, the engine is told nothing about the delivery and your prompt is the first thing it reads: a zip run may then leave out a workflow file you asked for, and a pull-request run may add one and end blocked. A stage that predates the switch refuses a start with it off, and ham names the key. A run that ham resume or /retry starts keeps the setting of the run it comes from.",
         )
     },
 ];

@@ -85,7 +85,9 @@ pull_image() { # <ref>
   while :; do
     if out=$("$docker_bin" pull -q "$ref" 2>&1); then echo "node.sh: pulled $ref" >&2; return 0; fi
     last=$(printf '%s\n' "$out" | tail -n 1 | cut -c1-200)
-    if printf '%s\n' "$out" | grep -Eiq 'manifest unknown|name unknown|not found|invalid reference|no matching manifest'; then
+    # Matched on a here-string: this script sets pipefail, and a pipeline into `grep -q` reports a writer that the match left behind (SIGPIPE) as a failed
+    # lookup, so a long error that names a missing manifest first was retried.
+    if grep -Eiq 'manifest unknown|name unknown|not found|invalid reference|no matching manifest' <<<"$out"; then
       echo "node.sh: docker pull $ref failed and is not retried: $last" >&2
       return 1
     fi

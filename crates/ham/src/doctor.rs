@@ -1,5 +1,5 @@
 //! `ham doctor`: one `PASS|FAIL <check> <detail>`
-//! line per check, then one indented line per repository allowlist entry; with `--json`
+//! line per check, with one indented line per repository allowlist entry under the `allowlist` line; with `--json`
 //! `{"checks": [{"name","pass","level","detail"}], "allowlist": [RepoAllowView]}` (`level` is `pass`, `warn` or `fail`; a warning
 //! has `pass` true). Exit 0 when no check failed, else 1; a `WARN` line is advice and never changes the exit code.
 //!
@@ -459,7 +459,7 @@ pub fn config_checks(env: &dyn Fn(&str) -> Option<String>) -> Vec<Check> {
     checks
 }
 
-/// One allowlist entry as `ham doctor` prints it, indented under the checks.
+/// One allowlist entry as `ham doctor` prints it, indented under the line of the allowlist.
 pub fn entry_line(e: &RepoAllowView) -> String {
     format!(
         "  {} added by {} at {}",
@@ -469,7 +469,20 @@ pub fn entry_line(e: &RepoAllowView) -> String {
     )
 }
 
-/// Writes the checks and the allowlist; the exit code.
+/// The index of the check line the allowlist entries are printed under: the passing `allowlist` line whose count is the number
+/// of entries held, else the last `allowlist` line. With several backends each has its own line, led by its alias, and the entries
+/// held are those of the first backend that has any. `None` for a report without such a line: the entries are then printed last.
+fn entries_under(checks: &[Check], entries: usize) -> Option<usize> {
+    let counted = format!("{entries} entries");
+    let own = |c: &Check| c.name == "allowlist";
+    checks
+        .iter()
+        .position(|c| own(c) && c.pass && c.detail.rsplit(": ").next() == Some(counted.as_str()))
+        .or_else(|| checks.iter().rposition(own))
+}
+
+/// Writes the checks and the allowlist; the exit code. The entries of the allowlist follow the line of the allowlist
+/// ([`entries_under`]): they stood after the last check, under the line of whatever check came last.
 pub fn report(d: &Doctor, json: bool, out: &Output) -> i32 {
     let checks = &d.checks;
     if json {
@@ -481,16 +494,24 @@ pub fn report(d: &Doctor, json: bool, out: &Output) -> i32 {
             .collect();
         out.out_line(json!({ "checks": c, "allowlist": d.allowlist }));
     } else {
-        for c in checks {
+        let under = entries_under(checks, d.allowlist.len());
+        for (i, c) in checks.iter().enumerate() {
             out.out_line(format!(
                 "{} {} {}",
                 c.level().to_uppercase(),
                 c.name,
                 c.detail
             ));
+            if under == Some(i) {
+                for e in &d.allowlist {
+                    out.out_line(entry_line(e));
+                }
+            }
         }
-        for e in &d.allowlist {
-            out.out_line(entry_line(e));
+        if under.is_none() {
+            for e in &d.allowlist {
+                out.out_line(entry_line(e));
+            }
         }
     }
     if checks.iter().all(|c| c.pass) {

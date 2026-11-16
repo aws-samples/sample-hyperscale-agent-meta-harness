@@ -35,6 +35,7 @@ fn evidence(engine: Engine, message: Option<&str>) -> DirectEvidence {
         review: None,
         flow: None,
         engine: (engine != Engine::CLINE).then_some(engine),
+        delivery_note: None,
     }
 }
 
@@ -43,8 +44,10 @@ fn md(d: DirectEvidence) -> String {
         run_id: RUN.into(),
         repo: "hamh-e2e-python-calc".into(),
         base_sha: None,
+        judged_base_sha: None,
         head_sha: HEAD.into(),
         objective: "Add pct(a, b).".into(),
+        target: Default::default(),
         pr_url: None,
         direct: d,
     })

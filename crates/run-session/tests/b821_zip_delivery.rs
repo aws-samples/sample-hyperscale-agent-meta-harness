@@ -574,6 +574,50 @@ async fn b821_a_run_that_continues_nothing_is_judged_from_its_staged_base() {
     }
 }
 
+/// The packager of a zip run is told the base the validator judges from (`package.judgedBaseSha`), so the sentence about a
+/// workflow file in EVIDENCE.md names the files the validator reported, which the run card shows. `package.baseSha` stays the staged base.
+#[tokio::test]
+async fn b850_the_packager_of_a_zip_run_is_told_the_base_the_validator_judges_from() {
+    // A follow-up of a run that was not delivered is judged from that run's base.
+    let mem = follow_up(RunTarget::S3Only);
+    add_run(
+        &mem,
+        SOURCE,
+        "blocked",
+        &RunTarget::S3Only,
+        Some(SOURCE_BASE),
+        SOURCE_HEAD,
+        None,
+    );
+    let p = plan_staged(&mem, staged_on_the_source_head()).await;
+    println!(
+        "B850 TRIGGER PRESENT: the judged base differs from the staged base: {}",
+        p["validate"]["baseSha"] != p["package"]["baseSha"]
+    );
+    assert_eq!(p["validate"]["baseSha"], SOURCE_BASE, "{p}");
+    assert_eq!(p["package"]["baseSha"], SOURCE_HEAD, "{p}");
+    assert_eq!(p["package"]["judgedBaseSha"], SOURCE_BASE, "{p}");
+    // The packager of this build reads the member.
+    let r: delivery::packager::PackageRequest =
+        serde_json::from_value(p["package"].clone()).unwrap();
+    assert_eq!(r.judged_base_sha.as_deref(), Some(SOURCE_BASE));
+    assert_eq!(r.base_sha.as_deref(), Some(SOURCE_HEAD));
+
+    // A run that continues nothing: the staged base is the judged base.
+    let p = plan(&seeded(RunTarget::S3Only)).await;
+    assert_eq!(p["package"]["judgedBaseSha"], BASE, "{p}");
+
+    // A source whose records cannot be read is judged from the empty tree: neither payload names a base to judge from.
+    let mem = follow_up(RunTarget::S3Only);
+    let p = plan_staged(&mem, staged_on_the_source_head()).await;
+    assert!(p["validate"].get("baseSha").is_none(), "{p}");
+    assert!(p["package"].get("judgedBaseSha").is_none(), "{p}");
+
+    // A repository run: the packager reads no changes for it, and its payload stays as it was.
+    let p = plan(&seeded(repo_target())).await;
+    assert!(p["package"].get("judgedBaseSha").is_none(), "{p}");
+}
+
 #[tokio::test]
 async fn b821_a_store_that_cannot_answer_fails_the_plan_so_the_machine_retries_it() {
     let mem = follow_up(repo_target());

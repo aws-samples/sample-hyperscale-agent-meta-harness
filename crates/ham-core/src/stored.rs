@@ -121,6 +121,40 @@ impl StoredChat {
         self.records.is_empty() && self.gaps.is_empty()
     }
 
+    /// The tokens of the prompts that answered, added up: `result.usage.totalTokens` of each `prompt_result` record that has a
+    /// stop reason. `None` unless the conversation is whole (the run has ended and the worker declared no loss, no page named a gap,
+    /// and every chunk was read), and `None` when no prompt reported usage. The run's total minus this sum is what the engine used
+    /// outside the prompts that answered: the goal-check rounds and the prompts that failed.
+    pub fn answered_tokens(&self) -> Option<u64> {
+        let whole = self.can_be_whole() && self.older.is_none() && self.newer.is_none();
+        if !whole {
+            return None;
+        }
+        self.records
+            .values()
+            .filter(|r| {
+                r.kind == "prompt_result"
+                    && r.data
+                        .pointer("/result/stopReason")
+                        .is_some_and(Value::is_string)
+            })
+            .filter_map(|r| {
+                r.data
+                    .pointer("/result/usage/totalTokens")
+                    .and_then(Value::as_u64)
+            })
+            .fold(None, |sum: Option<u64>, t| {
+                Some(sum.unwrap_or(0).saturating_add(t))
+            })
+    }
+
+    /// Reading the rest of the conversation can still give [`StoredChat::answered_tokens`]: the run has ended, the worker
+    /// declared no loss, and no page read so far named a gap. A surface that wants the sum reads the older chunks only while this
+    /// holds.
+    pub fn can_be_whole(&self) -> bool {
+        self.state == Some(TranscriptState::Complete) && self.gaps.is_empty()
+    }
+
     /// The `before` that reads the chunks older than the oldest page; `None` when there are none (or none is known).
     pub fn older(&self) -> Option<u64> {
         self.older
@@ -131,13 +165,31 @@ impl StoredChat {
         self.newer.clone()
     }
 
-    /// The blocks of the engine track in order, with the holes in place.
+    /// The blocks of the engine track in order, with the holes in place. Nothing is known here about the run's sessions
+    /// ([`StoredChat::blocks_for`]).
     pub fn blocks(&self) -> Vec<Block> {
-        self.timed().into_iter().map(|(_, b)| b).collect()
+        self.blocks_for(None)
     }
 
-    /// The blocks with the time (Unix seconds) of the record each began at, when it has one.
+    /// [`StoredChat::blocks`] for a run whose events say when its last session began ([`StoredChat::timed_for`]).
+    pub fn blocks_for(&self, last_session_began: Option<i64>) -> Vec<Block> {
+        self.timed_for(last_session_began)
+            .into_iter()
+            .map(|(_, b)| b)
+            .collect()
+    }
+
+    /// The blocks with the time (Unix seconds) of the record each began at, when it has one. Nothing is known here about the run's
+    /// sessions ([`StoredChat::timed_for`]).
     pub fn timed(&self) -> Vec<(Option<i64>, Block)> {
+        self.timed_for(None)
+    }
+
+    /// [`StoredChat::timed`] for a run whose events say when its last session began (`last_session_began`, Unix seconds:
+    /// `RunView::last_session_began`). The notice of an open tail at the end of the run is left out only when the record that
+    /// closes the conversation is the last session's own, which the records alone cannot say: a later session that stored nothing
+    /// leaves no record. Without that time the notice stays.
+    pub fn timed_for(&self, last_session_began: Option<i64>) -> Vec<(Option<i64>, Block)> {
         // The holes: what the pages named and the ranged losses the worker declared, in chunk order.
         let mut holes: Vec<Hole> = self
             .gaps
@@ -187,7 +239,10 @@ impl StoredChat {
             }
         }
         holes.sort_by(|a, b| (a.from, a.to, &a.order).cmp(&(b.from, b.to, &b.order)));
-        let mut pj = Projector::default();
+        let mut pj = Projector {
+            last_session_began,
+            ..Projector::default()
+        };
         let mut next_hole = 0;
         for ((seq, _, _), rec) in &self.records {
             while next_hole < holes.len() && holes[next_hole].from <= *seq {
@@ -395,6 +450,12 @@ struct Projector {
     tools: HashMap<String, Tool>,
     turns: u32,
     gap_serial: u32,
+    /// The last record projected is the end of a conversation (`end`): the session that wrote it closed its conversation.
+    closed: bool,
+    /// The time of that `end` record (Unix seconds), when it has one.
+    closed_at: Option<i64>,
+    /// When the run's last session began, as its events say (`StoredChat::timed_for`); `None` when they do not say.
+    last_session_began: Option<i64>,
 }
 
 impl Projector {
@@ -424,6 +485,14 @@ impl Projector {
 
     /// The completeness list the worker declared: a loss with a count and no range is a line at the end;
     /// what was left out on purpose (thoughts, binary output) says nothing; the open tail of the run's last session is the last line.
+    ///
+    /// The read route names an open tail without a chunk for every run that ended without a summary of its conversation. When the
+    /// last record held is the end of a conversation and that end is the last session's own, the last session closed its
+    /// conversation: the line "the conversation was closed cleanly" is not followed by one that says the last session's
+    /// conversation was not closed, whether or not an earlier session was lost. The end is the last session's own when the run's
+    /// events say when that session began and the record is no older ([`Projector::closed_by_last_session`]). The line stays when
+    /// the last record is no end, and when the end cannot be tied to the last session: a later session that stored nothing after
+    /// the one that closed its conversation, events that do not name the sessions, a record without a time.
     fn declared(&mut self, entries: &[CompletenessEntry]) {
         let mut tail_unknown = false;
         let mut counted: Vec<&CompletenessEntry> = Vec::new();
@@ -446,16 +515,29 @@ impl Projector {
             let b = Block::gap(&id, e.kind.cause(), detail.as_deref());
             self.push(None, b);
         }
-        if tail_unknown {
+        if tail_unknown && !self.closed_by_last_session() {
             let b = Block::gap("declared:tail-unknown", GapCause::TailUnknown, None);
             self.push(None, b);
         }
+    }
+
+    /// The last record projected is an `end` that the run's last session wrote: the run's events say when that session began,
+    /// and the record's time is no older. The two times are the workers' own clocks; a session takes seconds to start after the one
+    /// before it has ended.
+    fn closed_by_last_session(&self) -> bool {
+        self.closed
+            && matches!(
+                (self.closed_at, self.last_session_began),
+                (Some(end), Some(began)) if end >= began
+            )
     }
 
     fn record(&mut self, r: &TranscriptRecord) {
         let t = r.t.as_deref().and_then(parse_utc_unix);
         let id = Block::record_id(&r.incarnation, r.n);
         let d = &r.data;
+        self.closed = r.kind == "end";
+        self.closed_at = if self.closed { t } else { None };
         match r.kind.as_str() {
             "agent_message_chunk" => self.agent_message(r, t, &id),
             "user_message_chunk" => {
@@ -814,6 +896,10 @@ pub struct Context<'a> {
     pub user: &'a [UserItem],
     /// The run has not ended: the newest message tail of the progress feed may be shown as a live line.
     pub live: bool,
+    /// When the run's last session began, as its events say (`RunView::last_session_began`, Unix seconds); `None` when they
+    /// do not say, and for a run whose events are not read (the run a follow-up continues from). With it the notice of an open tail
+    /// at the end is left out for a conversation that its last session closed ([`StoredChat::timed_for`]).
+    pub last_session_began: Option<i64>,
 }
 
 /// Whether the view should be built from the stored conversation: the store supports it and holds something to show. A store that is
@@ -874,7 +960,7 @@ pub fn compose(stored: &StoredChat, cx: &Context<'_>) -> ChatModel {
     if let Some(p) = progress.blocks.iter().find(|b| b.id == "prompt") {
         blocks.push(p.clone());
     }
-    let engine = stored.timed();
+    let engine = stored.timed_for(cx.last_session_began);
     let mut extras = extras.into_iter().peekable();
     for (t, b) in &engine {
         if let Some(et) = t {

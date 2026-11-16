@@ -66,7 +66,7 @@ fn file_name(row: &ham_core::settings::Row) -> String {
 
 #[test]
 fn every_key_variant_has_one_row_and_every_row_one_variant() {
-    assert_eq!(Key::ALL.len(), 48);
+    assert_eq!(Key::ALL.len(), 49);
     assert_eq!(ROWS.len(), Key::ALL.len());
     for (i, key) in Key::ALL.iter().enumerate() {
         assert_eq!(ROWS[i].key, *key, "row {i} is out of the variant order");
@@ -110,12 +110,12 @@ fn every_key_variant_has_one_row_and_every_row_one_variant() {
         }
     }
     let names: std::collections::BTreeSet<_> = ROWS.iter().map(|r| r.name).collect();
-    assert_eq!(names.len(), 48, "names are unique");
+    assert_eq!(names.len(), 49, "names are unique");
 }
 
 #[test]
 fn the_nine_legacy_rows_keep_name_type_range_env_and_spelling() {
-    assert_eq!(KEYS.len(), 48);
+    assert_eq!(KEYS.len(), 49);
     let today: Vec<(&str, &str)> = LEGACY.iter().map(|(f, s, ..)| (*f, *s)).collect();
     assert_eq!(&KEYS[..9], &today[..]);
     for (i, (file, snake, kind, env, alias)) in LEGACY.iter().enumerate() {
@@ -206,7 +206,7 @@ fn the_reference_table_lists_every_row_with_origin_flag_env_and_effect() {
         "| Key | Type | Default | Flag | Environment variable | Takes effect |"
     );
     assert_eq!(lines[1], "| --- | --- | --- | --- | --- | --- |");
-    assert_eq!(lines.len(), 2 + 48, "48 body rows:\n{md}");
+    assert_eq!(lines.len(), 2 + 49, "49 body rows:\n{md}");
     for (line, row) in lines[2..].iter().zip(ROWS.iter()) {
         assert!(
             line.starts_with(&format!("| `{}` |", file_name(row))),

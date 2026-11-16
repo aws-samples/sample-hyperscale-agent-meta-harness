@@ -108,6 +108,7 @@ fn evidence() -> DirectEvidence {
         review: None,
         flow: None,
         engine: None,
+        delivery_note: None,
     }
 }
 
@@ -116,8 +117,10 @@ fn req(w: &World) -> PackageRequest {
         run_id: RUN.into(),
         repo: REPO.into(),
         base_sha: Some(w.base.clone()),
+        judged_base_sha: None,
         head_sha: w.head.clone(),
         objective: "Add percent_change(a, b) with tests".into(),
+        target: Default::default(),
         pr_url: Some(PR.into()),
         direct: evidence(),
     }

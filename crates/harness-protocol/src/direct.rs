@@ -228,10 +228,12 @@ pub struct DirectInvocationRequest {
     /// so an agentd image that predates the member parses what it always parsed. Required from turn 2 on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slice: Option<DirectSlice>,
-    /// Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. run-session writes it
-    /// from the run's target into the invocation of every session, and agentd says it to the engine at the start of every session, so an
-    /// engine that is asked for a file a pull request refuses and a zip takes knows which run it is in. Absent means unknown (the
-    /// invocation of a service that predates the member): agentd then says nothing about the delivery.
+    /// Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. Only run-session of
+    /// protocol 1.61.0 writes it, from the run's target into the invocation of every session. From protocol 1.62.0 the service
+    /// writes none, because a worker image that predates the member refuses an invocation that holds it: agentd reads how the run delivers
+    /// from the target of the stored request ([`delivery_to_say`]) and says it to the engine at the start of every session, so an engine
+    /// that is asked for a file a pull request refuses and a zip takes knows which run it is in. agentd still takes the member, checks it
+    /// and says nothing about the delivery when it differs from the stored target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<DirectDelivery>,
 }
@@ -1328,6 +1330,13 @@ pub struct DirectSummary {
     /// when the harness could not read the run's commits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<DirectFlow>,
+    /// Protocol 1.62.0: the block on how the run delivers that agentd wrote before the first prompt of this session, word for word
+    /// (it begins `How this run delivers (written by the harness):`). Left out when agentd wrote none: the user switched it off
+    /// (`run.delivery_note`), the worker could not stand behind a delivery ([`delivery_to_say`]), or the session ended before its first
+    /// prompt was written, so the engine read nothing. A record of the harness's own words to the engine, never a claim about the work;
+    /// nothing reads it to decide an outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<String>,
 }
 
 /// The first rule of [`DirectSummary::validate`] a summary breaks.
@@ -1528,6 +1537,8 @@ impl DirectSummary {
             engine: Engine::new(&self.engine.name)
                 .ok()
                 .filter(|e| *e != Engine::CLINE),
+            // What the engine was told about the delivery, when it is the one short line the block is.
+            delivery_note: self.delivery_note.clone().filter(|n| delivery_note_ok(n)),
         }
     }
 }
@@ -1579,6 +1590,11 @@ pub struct DirectEvidence {
     /// leaves it out for a Cline run, so the evidence of a Cline run is byte for byte what it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<Engine>,
+    /// What the harness told the engine about the delivery at the start of the session: the block of the summary,
+    /// word for word, so that a person who holds only the zip reads it in EVIDENCE.md. Absent when the engine was told nothing, and for a
+    /// run with no summary. It never changes `outcome` or `label`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<String>,
 }
 
 impl DirectEvidence {

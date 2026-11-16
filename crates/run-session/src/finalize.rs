@@ -185,26 +185,11 @@ pub(crate) async fn touch_index<S, T, M, R, B, P>(
     }
 }
 
-/// The longest path [`zip_notice`] names; a longer one is cut and ends with three dots.
-const NOTICE_PATH_CHARS: usize = 120;
-
-/// A path as the notice shows it: the engine chose the file name, so a control character becomes a space and a long path is cut.
-fn shown_path(path: &str) -> String {
-    let clean: String = path
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    if clean.chars().count() > NOTICE_PATH_CHARS {
-        format!("{}...", head_chars(&clean, NOTICE_PATH_CHARS))
-    } else {
-        clean
-    }
-}
-
 /// What a delivered zip holds that a repository would have refused, in the words the user reads on the run card. The bundle
 /// validator reports a workflow file and a root build specification under `findings` when the run delivers a zip alone; one sentence for
 /// each kind says that the zip holds it and when it would run. One path is named and the rest are counted. `None` without such a finding
-/// (an answer of an earlier validator has none).
+/// (an answer of an earlier validator has none). The words are `harness_protocol::direct::zip_holds`, which the packager uses for the
+/// same sentence in EVIDENCE.md.
 fn zip_notice(validated: &Value) -> Option<String> {
     let findings = validated.get("findings").and_then(Value::as_array)?;
     let paths = |rule: &str| -> Vec<String> {
@@ -212,28 +197,10 @@ fn zip_notice(validated: &Value) -> Option<String> {
             .iter()
             .filter(|f| f.get("rule").and_then(Value::as_str) == Some(rule))
             .filter_map(|f| f.get("path").and_then(Value::as_str))
-            .map(shown_path)
+            .map(str::to_string)
             .collect()
     };
-    let mut sentences: Vec<String> = Vec::new();
-    let workflows = paths("workflow-file");
-    if let Some(first) = workflows.first() {
-        sentences.push(match workflows.len() {
-            1 => format!(
-                "The zip holds a workflow file ({first}); it runs only if the code is pushed to a git host that runs such files."
-            ),
-            n => format!(
-                "The zip holds {n} workflow files ({first} and {} more); they run only if the code is pushed to a git host that runs such files.",
-                n - 1
-            ),
-        });
-    }
-    if let Some(first) = paths("buildspec").first() {
-        sentences.push(format!(
-            "The zip holds a build specification ({first}); a build service runs it only if a build project builds this code."
-        ));
-    }
-    (!sentences.is_empty()).then(|| sentences.join(" "))
+    harness_protocol::direct::zip_holds(&paths("workflow-file"), &paths("buildspec"))
 }
 
 /// The detail of `run.completed`: a fault of the test report's storage, Cline's specifics, then why no pull request was opened, then what

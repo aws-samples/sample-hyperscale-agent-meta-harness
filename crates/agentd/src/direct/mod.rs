@@ -671,6 +671,9 @@ struct State {
     records_folder: Option<&'static str>,
     /// The first line of the first prompt, when the run works in the earlier records folder.
     records_line: Option<String>,
+    /// The block on how the run delivers that was put before the first prompt of this session, as written, for the summary; `None`
+    /// when the engine was told nothing about the delivery, which includes a session that ended before its first prompt was written.
+    delivery_note: Option<String>,
     base: Option<String>,
     hidden: Option<Hidden>,
     git_state: Option<GitState>,
@@ -1666,14 +1669,26 @@ async fn start_and_prompt(
             None => None,
         };
         let first = slice_prompt.as_deref().unwrap_or(&start.prompt);
+        // What the engine is told about the delivery: the delivery of the stored request's target, unless the user switched the
+        // block off (`deliveryNote: false`) or the invocation carries a member that differs from that target.
+        let delivery = delivery_word::for_run(req.delivery.as_ref(), &start);
+        if req.delivery.is_some() && delivery.is_none() && start.delivery_note != Some(false) {
+            app.log.line(
+                "direct turn delivery: the invocation's member differs from the stored request's target; the engine is told nothing about the delivery",
+            );
+        }
+        // The block as the engine reads it, for the summary: the run's records say what the engine was told. It becomes a member of the
+        // summary only once the first prompt was written (after the stage loop, below).
+        let delivery_note = delivery_word::block(delivery.as_ref());
         let plan = PromptPlan {
             cwd: top,
             engine: req.engine.clone(),
             model: req.model.id.clone(),
             // The user's text as typed; a run in the earlier records folder gets one line before it (COMPAT-CAH-DATA). The
-            // harness's word on how the run delivers comes first, in every session of the run; an unknown delivery adds nothing.
+            // harness's word on how the run delivers comes first, in every session of the run; a run that switched the block off
+            // gets nothing before its text.
             prompt: delivery_word::with_block(
-                req.delivery.as_ref(),
+                delivery.as_ref(),
                 &match &st.records_line {
                     Some(line) => format!("{line}\n\n{first}"),
                     None => first.to_string(),
@@ -1755,6 +1770,7 @@ async fn start_and_prompt(
             &st.secrets,
             review_plan,
             start.limits.unwrap_or_default(),
+            delivery,
         )
         .await;
         let end = run_direct_stages(
@@ -1806,6 +1822,9 @@ async fn start_and_prompt(
         st.nudges_sent = end.nudges_sent;
         st.max_silent_gap_s = end.max_silent_gap_s;
         st.prompt_s = end.prompt_started.map(|t| t.elapsed().as_secs());
+        // The summary records the block only when the first prompt of the session was written. An engine that failed in the stages
+        // before it (`initialize`, `session/new`, the model pin) read nothing, and the records of the run must not say it was told.
+        st.delivery_note = delivery_note.filter(|_| end.prompt_started.is_some());
         st.attempts = end.attempts;
         st.switches = end.switches;
         st.final_model = end.final_model;
@@ -2058,6 +2077,7 @@ async fn input_wiring(
     secrets: &SecretSet,
     review: ReviewPlan,
     limits: harness_protocol::direct::RunLimits,
+    delivery: Option<harness_protocol::direct::DirectDelivery>,
 ) -> Option<InputWiring> {
     let d = &app.cfg.direct;
     let wait = req
@@ -2118,7 +2138,7 @@ async fn input_wiring(
         }),
         context,
         task: task.to_string(),
-        delivery: req.delivery.clone(),
+        delivery,
         engine_label: crate::engine::direct::engine_label(&req.engine).to_string(),
         routes: if routes.len() > 1 {
             routes
@@ -3545,6 +3565,8 @@ async fn finish(
     summary.review = st.review.clone();
     // The flow the run declared: a fact read from the commits, never a part of the classification.
     summary.flow = flow;
+    // What the harness told the engine about the delivery: its own block, as it was written before the first prompt.
+    summary.delivery_note = st.delivery_note.clone();
     // The modules add their members to the summary; it is checked and written after.
     hooks.summary(hook_env, &classified, &mut summary).await;
     summary::fit_summary(&mut summary);

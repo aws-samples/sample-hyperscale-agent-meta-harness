@@ -345,6 +345,13 @@
             "null"
           ]
         },
+        "deliveryNote": {
+          "description": "What the harness told the engine about the delivery at the start of the session: the block of the summary,\nword for word, so that a person who holds only the zip reads it in EVIDENCE.md. Absent when the engine was told nothing, and for a\nrun with no summary. It never changes `outcome` or `label`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "detail": {
           "type": [
             "string",
@@ -743,7 +750,7 @@
               "type": "null"
             }
           ],
-          "description": "Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. run-session writes it\nfrom the run's target into the invocation of every session, and agentd says it to the engine at the start of every session, so an\nengine that is asked for a file a pull request refuses and a zip takes knows which run it is in. Absent means unknown (the\ninvocation of a service that predates the member): agentd then says nothing about the delivery."
+          "description": "Protocol 1.61.0: how the run delivers its work, a zip alone or a pull request to a named repository. Only run-session of\nprotocol 1.61.0 writes it, from the run's target into the invocation of every session. From protocol 1.62.0 the service\nwrites none, because a worker image that predates the member refuses an invocation that holds it: agentd reads how the run delivers\nfrom the target of the stored request ([`delivery_to_say`]) and says it to the engine at the start of every session, so an engine\nthat is asked for a file a pull request refuses and a zip takes knows which run it is in. agentd still takes the member, checks it\nand says nothing about the delivery when it differs from the stored target."
         },
         "engine": {
           "description": "The engine profile name, `cline`.",
@@ -1422,6 +1429,13 @@
         },
         "clineMessage": {
           "description": "The last [`MAX_CLINE_MESSAGE_CHARS`] characters of Cline's final message.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deliveryNote": {
+          "description": "Protocol 1.62.0: the block on how the run delivers that agentd wrote before the first prompt of this session, word for word\n(it begins `How this run delivers (written by the harness):`). Left out when agentd wrote none: the user switched it off\n(`run.delivery_note`), the worker could not stand behind a delivery ([`delivery_to_say`]), or the session ended before its first\nprompt was written, so the engine read nothing. A record of the harness's own words to the engine, never a claim about the work;\nnothing reads it to decide an outcome.",
           "type": [
             "string",
             "null"

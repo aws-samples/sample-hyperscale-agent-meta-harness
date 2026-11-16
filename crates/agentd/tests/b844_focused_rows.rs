@@ -156,6 +156,7 @@ fn b844_the_log_of_the_run_plans_the_python_layout_beside_the_node_command() {
             left_out: Vec::new(),
             // The Python step is the report's addition behind the two steps of the model's command.
             chosen_from: Some(2),
+            not_again: Vec::new(),
         }
     );
     // `plan` gives the same steps.
@@ -260,6 +261,7 @@ fn b844_the_step_of_the_layout_brings_its_install() {
             left_out: Vec::new(),
             // The install and the step behind it are the report's additions.
             chosen_from: Some(1),
+            not_again: Vec::new(),
         }
     );
 }
@@ -285,6 +287,7 @@ fn b844_a_command_left_out_with_nothing_in_its_place_is_in_the_notes() {
             stand_ins: Vec::new(),
             left_out: vec![omitted("npx jest src/a.test.ts", 0)],
             chosen_from: None,
+            not_again: Vec::new(),
         }
     );
     // Python: a file names packages that the report has no install step for, so the layout is not run, as before, and the entry
@@ -334,6 +337,7 @@ fn b844_a_command_left_out_with_nothing_in_its_place_is_in_the_notes() {
             stand_ins: Vec::new(),
             left_out: vec![omitted("cd api && python3 -m pytest tests/test_a.py -q", 0)],
             chosen_from: None,
+            not_again: Vec::new(),
         }
     );
 }
@@ -366,6 +370,7 @@ fn b844_a_log_with_only_such_rows_still_falls_through_to_the_layout_and_says_wha
             left_out: Vec::new(),
             // A plan that is the detection: the step is no addition to commands of the model's.
             chosen_from: None,
+            not_again: Vec::new(),
         }
     );
     // The goal card comes before the layout, as before; the Python layout is added behind its command.

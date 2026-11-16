@@ -42,6 +42,11 @@ fn step(
 }
 
 fn md_of(steps: Vec<TestStep>) -> String {
+    md_with(steps, None)
+}
+
+/// The page for a run whose engine was told `note` about the delivery, or nothing.
+fn md_with(steps: Vec<TestStep>, note: Option<&str>) -> String {
     let report = TestReport {
         schema_version: 1,
         run_id: RUN.into(),
@@ -58,8 +63,10 @@ fn md_of(steps: Vec<TestStep>) -> String {
         run_id: RUN.into(),
         repo: "hamh-e2e-textstats-20261114".into(),
         base_sha: None,
+        judged_base_sha: None,
         head_sha: HEAD.into(),
         objective: "Build a small repository with two parts".into(),
+        target: Default::default(),
         pr_url: None,
         direct: DirectEvidence {
             outcome: DirectOutcome::ReportedDone,
@@ -79,6 +86,7 @@ fn md_of(steps: Vec<TestStep>) -> String {
             review: None,
             flow: None,
             engine: None,
+            delivery_note: note.map(str::to_string),
         },
     })
 }
@@ -146,5 +154,89 @@ fn b844_evidence_names_the_logged_command_that_was_left_out_with_nothing_in_its_
         "{md}"
     );
     assert!(!md.contains("PLAN NOTE"), "{md}");
+    assert_eq!(banned_claim_word(&md), None, "{md}");
+}
+
+// ---- the lanes of release 5.22 together: a command that was not run again, a left-out command and the block on the delivery ---------
+
+/// The line agentd writes behind the notes of the plan for a whole-suite command it did not run again:
+/// the log recorded the command as failed and a later run of the same suite passed.
+const NOT_AGAIN: &str = "PLAN NOTE: not run again `python3 -m pytest`; logged exit 1, 2 failed; passed later as `python3 -m pytest -q`";
+const TOLD: &str = "How this run delivers (written by the harness): this run delivers only a zip.";
+
+/// A step whose output begins with the note of a left-out command and, behind it, the line of a command that was not run again.
+fn step_with_both_lines(exit: i32, passed: Option<u32>) -> TestStep {
+    step(
+        TestStepRole::Test,
+        TestCommandSource::LifecycleLog,
+        "python3 -m pytest -q",
+        exit,
+        passed,
+        Some(format!(
+            "{}\n{NOT_AGAIN}",
+            left_out_line("npx jest src/a.test.ts", 0)
+        )),
+    )
+}
+
+/// The page keeps the detail of the left-out command beside the line of the command that was not run again, prints neither machine
+/// line, and quotes the block on the delivery in its own section: the three additions of one release do not displace each other. The
+/// command that was not run again is named in `evidence/test-report.json`; the page gives the count of the command that ran.
+#[test]
+fn b851_b850_evidence_keeps_the_left_out_detail_beside_a_command_that_was_not_run_again_and_the_delivery_block()
+ {
+    let md = md_with(vec![step_with_both_lines(0, Some(45))], Some(TOLD));
+    println!(
+        "B851-B850 TRIGGER PRESENT: the step's output holds both machine lines and the run was told how it delivers: {}",
+        md.contains("about the delivery")
+    );
+    assert!(
+        md.contains("repository tests pass in a clean checkout: 45 of 45. The report left out 1 command of the lifecycle log that names part of a suite; details are in EVIDENCE.md."),
+        "{md}"
+    );
+    assert!(
+        md.contains("- `python3 -m pytest -q`: exit 0, 45 passed, 0 failed.\n- `npx jest src/a.test.ts` of the lifecycle log was left out: it names a test file, a test or a filter, and the report found no command for the whole suite.\n"),
+        "{md}"
+    );
+    assert!(
+        !md.contains("PLAN NOTE"),
+        "no machine line on the page: {md}"
+    );
+    assert!(
+        md.contains(&format!(
+            "## What the harness told Cline about the delivery\n\n> {TOLD}\n"
+        )),
+        "{md}"
+    );
+    let at = |needle: &str| {
+        md.find(needle)
+            .unwrap_or_else(|| panic!("{needle} in {md}"))
+    };
+    assert!(
+        at("## Objective") < at("## What the harness told Cline about the delivery")
+            && at("## What the harness told Cline about the delivery")
+                < at("## Cline's last message"),
+        "the block stands after the objective and before the last message: {md}"
+    );
+    assert_eq!(banned_claim_word(&md), None, "{md}");
+}
+
+/// The same step when its command failed: the page shows the end of the output of a failed command, and the machine lines at the
+/// head of that output still stay off the page.
+#[test]
+fn b851_b850_a_failed_step_shows_no_machine_line_either() {
+    let md = md_with(vec![step_with_both_lines(1, None)], Some(TOLD));
+    assert!(
+        md.contains("`python3 -m pytest -q`"),
+        "TRIGGER PRESENT: the failed command is on the page: {md}"
+    );
+    assert!(
+        !md.contains("PLAN NOTE"),
+        "no machine line on the page: {md}"
+    );
+    assert!(
+        md.contains("## What the harness told Cline about the delivery"),
+        "{md}"
+    );
     assert_eq!(banned_claim_word(&md), None, "{md}");
 }

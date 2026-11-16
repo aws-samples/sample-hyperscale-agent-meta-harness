@@ -398,6 +398,7 @@ fn composed_from_the_store() -> (ChatModel, TranscriptPage) {
         progress: &progress,
         user: &user,
         live: false,
+        last_session_began: None,
     };
     (compose(&stored, &cx), page)
 }
@@ -687,6 +688,7 @@ fn the_pages_of_a_stored_conversation_export_the_same_when_read_in_two_halves() 
         progress: &progress,
         user: &[],
         live: false,
+        last_session_began: None,
     };
     let halves = compose(&stored, &cx);
     let engine = |m: &ChatModel| -> Vec<(String, String, String)> {

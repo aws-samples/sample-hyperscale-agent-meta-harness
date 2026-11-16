@@ -325,7 +325,7 @@ fn b832_a_run_a_resume_did_not_start_keeps_the_reason_as_a_card_until_one_starts
 // ---- the run screen ---------------------------------------------------------------------------------------------------------------
 
 #[test]
-fn b832_a_retry_that_did_not_start_says_why_and_keeps_the_text() {
+fn b832_a_retry_that_did_not_start_says_why_as_a_card() {
     let after_switch = format!("{} the service did not answer", switched());
     for why in [stop(), after_switch] {
         for (w, h) in SIZES {
@@ -338,7 +338,12 @@ fn b832_a_retry_that_did_not_start_says_why_and_keeps_the_text() {
             let text = sized(&app, w, h);
             assert!(text.contains("retry did not start"), "{w}x{h}: {text}");
             assert!(text.contains(&flat(&why)), "{w}x{h}: {text}");
-            assert!(text.contains("your text is kept"), "{w}x{h}: {text}");
+            // The box is empty, so no text is called kept.
+            assert!(
+                text.contains("the retry did not start (the card above says why)"),
+                "{w}x{h}: {text}"
+            );
+            assert!(!text.contains("your text is kept"), "{w}x{h}: {text}");
         }
     }
 }
@@ -380,7 +385,8 @@ fn b832_a_follow_up_that_did_not_start_shows_the_switch_and_why() {
             .find("the follow-up run did not start: the stage takes no run now")
             .unwrap_or_else(|| panic!("{w}x{h}: {text}"));
         assert!(line < why, "{w}x{h}: {text}");
-        assert!(text.contains("your text is kept"), "{w}x{h}: {text}");
+        // The box is empty, so no text is called kept.
+        assert!(!text.contains("your text is kept"), "{w}x{h}: {text}");
 
         // A start that the check of provider data sharing stopped says the whole of it too.
         let mut app = ready(finished_events());

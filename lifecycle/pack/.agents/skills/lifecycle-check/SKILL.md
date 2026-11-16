@@ -36,9 +36,12 @@ description: Check your own lifecycle records with the bundled script before you
      python3 .agents/skills/lifecycle-check/scripts/scanner_kit.py
      python3 "$HOME/../config/skills/lifecycle-check/scripts/scanner_kit.py"
    It scans the python and shell files changed since your work started: the Base commit of the goal card, else the commit your clone had before your first commit,
-   plus uncommitted files (--base REF or PATH arguments name other files). Its second line, KIT-SCOPE, names that commit and where it came from; via=all means no base was
-   found and every file is scanned. The first call installs semgrep, the pinned rules and bandit, which takes minutes: start it in the background with its output in a file
-   and read the file when it ends; later calls take seconds.
+   plus uncommitted files (--base REF or PATH arguments name other files). Its second line, KIT-SCOPE, names that commit and its source; via=all means no base was
+   found and every file is scanned. The first call installs semgrep, the pinned rules and bandit and takes minutes: start it in the background and wait for
+   kit.end (repeat line 2 as # wait 2 while empty):
+     : >/tmp/kit.end; (trap 'echo $? >/tmp/kit.end' EXIT; <command>) >/tmp/kit.txt 2>&1 &
+     timeout 100 sh -c 'until test -s /tmp/kit.end; do sleep 1; done'; tail /tmp/kit.txt # wait 1
+   Later calls take seconds: run them in the foreground.
 8. KIT-FINDING lines give file:line, the rule and the message. The rule is a semgrep rule name, bandit/<test id> or secret-shape/<class>. Fix the code, or excuse a false
    positive in the form the repository uses for that scanner (semgrep and bandit each have their own comment: copy an existing one with its reason). Run the kit again until
    it prints KIT-PASS.

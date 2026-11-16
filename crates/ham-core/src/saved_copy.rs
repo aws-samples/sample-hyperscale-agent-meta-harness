@@ -133,6 +133,48 @@ pub fn card_line(c: &SavedCopy, engine: &Engine, over: bool, run_id: &str) -> St
     )
 }
 
+/// What is true about the copies of a run right after its word that the session was asked to end and no copy could be saved
+/// (`crate::notice::is_end_request`): the last saved copy is from before that request, or the run had saved none. The view empties its
+/// notices about copies when a copy is stored, so a copy it holds beside such a notice is older than the notice.
+///
+/// `copies_failed` says that the run had said before the request that a copy was late, could not be saved or cannot be saved in
+/// this session (`RunView::copies_failed_before_end_request`). A run without a copy then has file changes that no copy holds, and
+/// the sentence does not explain the missing copy by unchanged files.
+pub fn before_end_request(copy: Option<&SavedCopy>, run_id: &str, copies_failed: bool) -> String {
+    match copy {
+        Some(c) => format!(
+            "The last saved copy is from before that request: {}; ham pull {} --snapshot downloads it.",
+            utc_minute(&c.at),
+            sanitize_line(run_id)
+        ),
+        None if copies_failed => "No copy of the work has been saved in this run.".to_string(),
+        None => "No copy of the work had been saved before that request: a run saves a copy only after its files change."
+            .to_string(),
+    }
+}
+
+/// A copy the run stored after its word that the session was asked to end. The worker tries the copy of a request to end
+/// again every few seconds while its process runs on, so the copy the view holds can be newer than that word
+/// (`RunView::saved_after_end_asked`).
+pub fn after_end_request(c: &SavedCopy, run_id: &str) -> String {
+    format!(
+        "A copy of the work was saved after that request: {}; ham pull {} --snapshot downloads it.",
+        utc_minute(&c.at),
+        sanitize_line(run_id)
+    )
+}
+
+/// The copy a run holds while a notice about its copies stands that is no request to end (a copy that is late or could not be
+/// saved, a session that cannot save copies): the view empties those notices when a copy is stored, so the copy is from before the
+/// notice. Line mode prints this once in place of the `saved:` line, which read as a copy saved since.
+pub fn before_notice(c: &SavedCopy, run_id: &str) -> String {
+    format!(
+        "The last saved copy is from before that notice: {}; ham pull {} --snapshot downloads it.",
+        utc_minute(&c.at),
+        sanitize_line(run_id)
+    )
+}
+
 /// How often at most line mode says that a newer copy of the work was saved, in seconds.
 pub const WATCH_LINE_EVERY_S: u64 = 60;
 
@@ -178,6 +220,18 @@ impl WatchMemo {
         self.said = Some(key);
         self.said_at_s = Some(elapsed_s);
         Some(watch_line(c, run_id))
+    }
+
+    /// `copy` is held to be said, without a line. While the run's notices about a copy stand (`RunView::copy_notices`), the copy
+    /// the view holds is from before them: a `saved:` line printed after them, when the minute is over, read as a copy saved since. A
+    /// later copy is said as usual.
+    pub fn hold(&mut self, copy: Option<&SavedCopy>) {
+        if let Some(c) = copy {
+            let key = (c.session, c.count);
+            if self.said.is_none_or(|said| key > said) {
+                self.said = Some(key);
+            }
+        }
     }
 }
 

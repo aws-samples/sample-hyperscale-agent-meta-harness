@@ -94,6 +94,7 @@ fn evidence(outcome: DirectOutcome) -> DirectEvidence {
         review: None,
         flow: None,
         engine: None,
+        delivery_note: None,
     }
 }
 
@@ -102,8 +103,10 @@ fn req(w: &World, d: DirectEvidence) -> PackageRequest {
         run_id: RUN.into(),
         repo: REPO.into(),
         base_sha: Some(w.base.clone()),
+        judged_base_sha: None,
         head_sha: w.head.clone(),
         objective: "Add percent_change(a, b) with unit coverage".into(),
+        target: Default::default(),
         pr_url: Some(PR.into()),
         direct: d,
     }
@@ -197,6 +200,7 @@ fn evidence_md_names_the_model_the_run_ended_on_after_its_switches() {
         render_evidence(&PackageRequest {
             head_sha: "a".repeat(40),
             base_sha: Some("b".repeat(40)),
+            judged_base_sha: None,
             ..req_stub(d)
         })
     };
@@ -330,6 +334,7 @@ fn evidence_md_shows_the_label_the_model_the_rules_and_what_the_harness_did() {
     let r = PackageRequest {
         head_sha: w_head,
         base_sha: Some("b".repeat(40)),
+        judged_base_sha: None,
         ..req_stub(evidence(DirectOutcome::ReportedDone))
     };
     let md = render_evidence(&r);
@@ -377,8 +382,10 @@ fn req_stub(d: DirectEvidence) -> PackageRequest {
         run_id: RUN.into(),
         repo: REPO.into(),
         base_sha: None,
+        judged_base_sha: None,
         head_sha: "c".repeat(40),
         objective: "Add percent_change(a, b) with unit coverage".into(),
+        target: Default::default(),
         pr_url: Some(PR.into()),
         direct: d,
     }

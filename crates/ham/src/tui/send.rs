@@ -63,6 +63,10 @@ const CONTEXT_GUARD_MS: u64 = 300;
 
 pub(crate) const NOT_WAITING_TEXT: &str = engines::NOT_WAITING;
 
+/// The largest count of runs that the sentences of a paused or stalled run's screen give as a number:
+/// three digits fit the title of the box at 80 columns.
+const RESUME_COUNT_MOST: usize = 999;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Phase {
     /// The request is on its way.
@@ -246,6 +250,23 @@ impl App {
         if v.status == Some(harness_protocol::goal::GoalStatus::Blocked) {
             return Plan::Retry;
         }
+        // A run that ended paused or stalled delivered its work and has no session: it takes no answer and no message and has nothing to
+        // cancel, and `R` resumes it. The box is in typing mode when Enter is pressed, where `R` is a letter: the words name Esc
+        // first, and what `R` resumes ([`App::resume_words`]): this run alone only when it is the only one.
+        if matches!(
+            v.status,
+            Some(
+                harness_protocol::goal::GoalStatus::Paused
+                    | harness_protocol::goal::GoalStatus::Stalled
+            )
+        ) {
+            return Plan::Unavailable(match self.resume_words() {
+                Some((word, object)) => {
+                    format!("this run ended {word}: Esc, then R resumes {object}")
+                }
+                None => "this run has ended and takes no messages".to_string(),
+            });
+        }
         if self.question().is_some() {
             return Plan::Answer;
         }
@@ -308,7 +329,15 @@ impl App {
             Plan::Next => format!("Enter: Send next to run {short}{more}"),
             Plan::FollowUp => format!("Enter: {}", followup::header(self.send.head.as_deref())),
             Plan::Retry => format!("Enter: {}", retry::header(id)),
-            Plan::Unavailable(_) => self.engine_say(engines::NOT_WAITING_TITLE),
+            // A run that has ended has nothing to cancel, so its title names no `/cancel`: it names the key that resumes a paused
+            // or stalled run, after Esc, because the title is shown while the box has the focus, and what that key resumes.
+            Plan::Unavailable(_) => match (self.resume_words(), self.run_has_ended()) {
+                (Some((word, object)), _) => {
+                    format!("Not available: run {word}; Esc, then R resumes {object}")
+                }
+                (None, true) => "Not available: the run has ended".to_string(),
+                (None, false) => self.engine_say(engines::NOT_WAITING_TITLE),
+            },
         };
         // A blocked Enter makes the title say so for a moment, so the person reads it again before pressing Enter once more.
         let flashing = self
@@ -429,10 +458,13 @@ impl App {
                 return vec![];
             }
             Plan::FollowUp | Plan::Unavailable(_) => {
-                self.panel = Some(Panel::not_run(
-                    "Nothing was sent",
-                    &self.engine_say(NOT_WAITING_TEXT),
-                ));
+                // A run that has ended has no turn to interrupt and nothing to cancel.
+                let why = if self.run_has_ended() {
+                    "This run has ended: there is no turn to interrupt.".to_string()
+                } else {
+                    self.engine_say(NOT_WAITING_TEXT)
+                };
+                self.panel = Some(Panel::not_run("Nothing was sent", &why));
                 return vec![];
             }
         }
@@ -686,6 +718,10 @@ impl App {
     pub(crate) fn send_footer(&self, base: String, typing: bool) -> String {
         // A blocked run: browse mode's footer already names `r retry` in the place of `c cancel` (`usual_help`); typing mode names the way there.
         if typing && self.run_is_blocked() {
+            // A screen too narrow for the ending names the retry inside the Esc part: that line needs no ending.
+            if base.contains(retry::AFTER_ESC) {
+                return base;
+            }
             return format!("{base} \u{b7} Esc, then r retry");
         }
         let Some(page) = self.send.page.as_ref() else {
@@ -1697,6 +1733,137 @@ impl App {
         self.send_plan() == Plan::Retry
     }
 
+    /// Whether the run on screen has ended and has nothing to cancel: it delivered its work (`complete`, `paused`, `stalled`), was
+    /// cleared, or ended blocked. The service refuses the cancel of a run that delivered, and no session of the others is left to stop. The
+    /// box title, the key lines and the command list offer no cancel then, and `c` says so ([`App::ended_words`]).
+    pub(crate) fn run_has_ended(&self) -> bool {
+        use harness_protocol::goal::GoalStatus;
+        self.cached.as_ref().is_some_and(|v| {
+            v.aborted.is_some()
+                || v.status.is_some_and(|s| {
+                    s.is_delivered() || s.is_terminal() || s == GoalStatus::Blocked
+                })
+        })
+    }
+
+    /// Whether the held Runs list is older than the events of the run on screen: the events say that the run ended paused or
+    /// stalled, and the list holds no row of the run with that status. The list was read while the run worked (the screen of a start
+    /// command reads it once, when it opens) or before the run started, so the plan of `R` over it leaves the run out and counts the
+    /// other runs as they were. Nothing is counted from such a list: the words read as with no list, and the list is asked for again
+    /// ([`App::runs_catch_up`]).
+    pub(crate) fn runs_behind_view(&self) -> bool {
+        use harness_protocol::goal::GoalStatus;
+        let Some(v) = self.cached.as_ref() else {
+            return false;
+        };
+        let Some(status @ (GoalStatus::Paused | GoalStatus::Stalled)) = v.status else {
+            return false;
+        };
+        !self.runs.is_empty()
+            && !self
+                .runs
+                .iter()
+                .any(|r| r.run_id == v.run_id && r.status == status)
+    }
+
+    /// One read of the Runs list when the run on screen has ended paused or stalled and the held list is older than that,
+    /// so that the screen can say again how many runs `R` resumes. It is asked for once for each
+    /// stop of a run: a list that does not catch up (the read fails, or the run is not on the page the read returns) keeps the words
+    /// that give no count, and no poll of the run asks again.
+    pub(crate) fn runs_catch_up(&mut self) -> Vec<Effect> {
+        if self.runs_inflight || !self.runs_behind_view() {
+            return vec![];
+        }
+        let Some(stop) = self
+            .cached
+            .as_ref()
+            .and_then(|v| Some((v.run_id.clone(), v.status?)))
+        else {
+            return vec![];
+        };
+        if self.runs_caught_up.as_ref() == Some(&stop) {
+            return vec![];
+        }
+        self.runs_caught_up = Some(stop);
+        self.runs_inflight = true;
+        vec![Effect::RefreshRuns(Refresh::Timer)]
+    }
+
+    /// The run on screen as `R` takes it: its status word (`paused` or `stalled`) and how many runs the plan of `R` over the
+    /// held Runs list resumes, this run among them. `None` when `R` does not resume this run: it did not end paused or stalled, or the
+    /// plan leaves it out (a run that a later run continues, or whose row says that nothing can be resumed), so no line promises that
+    /// `R` resumes it. With no list read (a chat opened without the Runs screen), or with a list that is older than the run's events
+    /// ([`App::runs_behind_view`]), the command reads the list itself: the word stands and the count is `None`.
+    fn resume_scope(&self) -> Option<(&'static str, Option<usize>)> {
+        use harness_protocol::goal::GoalStatus;
+        let v = self.cached.as_ref()?;
+        let word = match v.status? {
+            GoalStatus::Paused => "paused",
+            GoalStatus::Stalled => "stalled",
+            _ => return None,
+        };
+        if self.runs.is_empty() || self.runs_behind_view() {
+            return Some((word, None));
+        }
+        let plan = ham_core::resume::plan(&self.runs);
+        plan.resume
+            .contains(&v.run_id)
+            .then_some((word, Some(plan.resume.len())))
+    }
+
+    /// The status word of a run on screen that `R` resumes, and what `R` resumes, for the sentences of that screen. `R` is the
+    /// key of `/resume --all`: it resumes every paused and stalled run of the list that no later run continues, never the run on
+    /// screen alone, and each resume starts a billable run. So the sentences say `R resumes it` only when this run is the only one the
+    /// plan takes, `R resumes <n> runs` when it takes more, and `R resumes all` when no list has been read and nothing can be counted;
+    /// the preview of the first `R` then names the runs before anything starts. A count of four digits or more reads `all` too
+    /// ([`RESUME_COUNT_MOST`]): the title of the box has room for three at 80 columns, and a longer title is cut without a mark.
+    pub(crate) fn resume_words(&self) -> Option<(&'static str, String)> {
+        let (word, count) = self.resume_scope()?;
+        let object = match count {
+            Some(n) if n <= 1 => "it".to_string(),
+            Some(n) if n <= RESUME_COUNT_MOST => format!("{n} runs"),
+            _ => "all".to_string(),
+        };
+        Some((word, object))
+    }
+
+    /// The label of `R` on the key lines of a paused or stalled run that `R` resumes: `R resume` when this run is the only one
+    /// the plan takes, `R resume all` when it takes more or no list has been read. The key lines have no room for the count; the title
+    /// of the box and the preview of the first `R` give it.
+    pub(crate) fn resume_label(&self) -> Option<&'static str> {
+        Some(match self.resume_scope()?.1 {
+            Some(n) if n <= 1 => "R resume",
+            _ => "R resume all",
+        })
+    }
+
+    /// What `c` says on a run that has ended: its status, that there is nothing to cancel, and the key that does something
+    /// for it: `r` retries a blocked run, `R` resumes a paused or stalled one, with what `R` resumes ([`App::resume_words`]). The notice
+    /// is one row: a sentence that a long count makes wider than [`NOTICE_COLUMNS`] takes its short form.
+    pub(crate) fn ended_words(&self) -> String {
+        use harness_protocol::goal::GoalStatus;
+        if self.run_is_blocked() {
+            return retry::ENDED.to_string();
+        }
+        if let Some((word, object)) = self.resume_words() {
+            let whole = format!(
+                "This run already ended ({word}): there is nothing to cancel. R resumes {object}."
+            );
+            if whole.chars().count() <= NOTICE_COLUMNS {
+                return whole;
+            }
+            return format!("This run ended {word}: nothing to cancel. R resumes {object}.");
+        }
+        let status = match self.cached.as_ref().and_then(|v| v.status) {
+            Some(GoalStatus::Complete) => "complete",
+            Some(GoalStatus::Paused) => "paused",
+            Some(GoalStatus::Stalled) => "stalled",
+            Some(GoalStatus::Cleared) => "cleared",
+            _ => "ended",
+        };
+        format!("This run already ended ({status}): there is nothing to cancel.")
+    }
+
     /// Shows the offer to start the blocked run again and waits for the second Enter (typing mode) or the second `r` (browse mode): what
     /// starts, the blocked run's target when its detail has arrived, and that the text in the box is kept and not sent. Nothing starts here.
     pub(crate) fn retry_offer(&mut self) -> Vec<Effect> {
@@ -1706,7 +1873,7 @@ impl App {
             .as_ref()
             .map(|d| ham_core::run_index::target_text(&d.summary.target));
         let has_text = self.chat_text().is_some_and(|t| !t.trim().is_empty());
-        self.panel = Some(Panel::info(
+        self.panel = Some(Panel::offer(
             retry::CONFIRM_TITLE,
             &retry::confirmation_with(
                 &run,
@@ -1748,13 +1915,24 @@ impl App {
     }
 
     /// A key while the offer waits. Enter (either mode) or `r` (browse mode) 300 ms or more after the offer started the retry; an earlier one
-    /// is ignored and the offer stays. Esc withdraws it and the text stays. Any other key withdraws it and is the screen's own.
+    /// is ignored and the offer stays. Esc withdraws it and the text stays. Any other key withdraws it and is the screen's own, except the
+    /// keys that scroll a panel while the offer is longer than its panel: the offer wraps its sentences, so a short screen shows a
+    /// part of it, and PgUp and PgDn (in browse mode the arrow keys too; in typing mode they are the box's) bring the rest into view.
     fn retry_confirm_key(
         &mut self,
         key: &KeyEvent,
         shown_ms: u64,
         browse: bool,
     ) -> Option<Vec<Effect>> {
+        let scrolls = match key.code {
+            KeyCode::PageUp | KeyCode::PageDown => true,
+            KeyCode::Up | KeyCode::Down => browse,
+            _ => false,
+        };
+        if scrolls && key.modifiers.is_empty() && self.panel.as_ref().is_some_and(Panel::overflows)
+        {
+            return self.panel_key(key);
+        }
         // A billable start needs the plain Enter: Shift-Enter (a new line) and Alt-Enter (the literal send) are keys of the box. In browse mode
         // Esc and `r` arriving together read as Alt-`r`, which is `r`.
         let confirms = match key.code {

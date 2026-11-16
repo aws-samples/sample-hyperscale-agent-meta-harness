@@ -327,11 +327,20 @@ def lang_tree(tmp: Path, srv: Server, node_tar: bytes, pin: bytes | None = None)
     return tools
 
 
+# The stand-in for Node: it prints a version for any arguments. Like Node, it reads its input to the end when the script it is given reads `process.stdin`: the
+# installer pipes its version table into `node -e <such a script>`, and a stand-in that ended without reading could close the pipe before the installer wrote.
+# Every other call (`--version`, `-p`, a script that reads no input) leaves the input alone, so a caller whose own input stays open is not waited for.
+STUB_NODE = b'''#!/bin/bash
+case "${2-}" in *process.stdin*) cat > /dev/null ;; esac
+echo 0.0.0
+'''
+
+
 def stub_node_archive() -> bytes:
-    """A tar with one top directory holding bin/{node,npm,npx} stubs: node prints a version for any arguments."""
+    """A tar with one top directory holding bin/{node,npm,npx} stubs: node is STUB_NODE."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as t:
-        for name, body in (("bin/node", b'#!/bin/bash\necho 0.0.0\n'), ("bin/npm", b"#!/bin/bash\nexit 0\n"), ("bin/npx", b"#!/bin/bash\nexit 0\n"),
+        for name, body in (("bin/node", STUB_NODE), ("bin/npm", b"#!/bin/bash\nexit 0\n"), ("bin/npx", b"#!/bin/bash\nexit 0\n"),
                            ("include/x.h", b"x\n"), ("share/y", b"y\n"), ("README.md", b"r\n"), ("CHANGELOG.md", b"c\n")):
             info = tarfile.TarInfo(f"node-v0/{name}")
             info.size, info.mode = len(body), 0o755
@@ -387,6 +396,25 @@ class LangInstallerCase(Base):
             hits = srv.hits.get("/node.tar", 0)
         self.assertEqual((p.returncode, hits), (0, 0), p.stdout + p.stderr)
 
+    def test_the_stand_in_node_reads_the_version_table_as_node_does(self) -> None:
+        # The installer pipes its version table into Node: `printf ... | node -e <a script that reads process.stdin>`. Node reads its input to the end. A stand-in
+        # that answers without reading can end before the installer has written; the write then fails, and under pipefail the install ends after its
+        # `LANG-TOOLS OK node` line with nothing on standard error. On a loaded build host that failed about 3 installs in 100, in every test of this class. Here
+        # the writer of a COPY of the installer waits before it writes, so the stand-in has always answered by then and the outcome does not depend on the load.
+        node = stub_node_archive()
+        (self.tmp / "cache").mkdir()
+        (self.tmp / "cache" / "node.tar").write_bytes(node)
+        with Server({"/node.tar": [BAD]}) as srv:
+            tools = lang_tree(self.tmp, srv, node)
+            installer = tools / "lang" / "install.sh"
+            text = installer.read_text()
+            shape = "versions=$(printf '%s' \"$versions\" | "
+            self.assertEqual(text.count(shape), 1, "the installer pipes its version table into Node")
+            installer.write_text(text.replace(shape, "versions=$( { %s 0.3; printf '%%s' \"$versions\"; } | " % shutil.which("sleep")))
+            p = self.run_install(tools, self.tmp / "out")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("LANG-TOOLS PASS family=python", p.stdout)
+
     def test_npm_ci_is_run_again_when_it_fails(self) -> None:
         # An npm that fails once, counted in a file: the stub goes into the archive the lock points at.
         buf = io.BytesIO()
@@ -394,7 +422,7 @@ class LangInstallerCase(Base):
         npm = (f'#!/bin/bash\nn=$(( $(cat "{counter}" 2>/dev/null || echo 0) + 1 ))\necho $n > "{counter}"\n'
                '[ "$n" -gt 1 ] || { echo "npm ERR! EINTEGRITY" >&2; exit 1; }\nexit 0\n').encode()
         with tarfile.open(fileobj=buf, mode="w") as t:
-            for name, body in (("bin/node", b"#!/bin/bash\necho 0.0.0\n"), ("bin/npm", npm), ("bin/npx", b"#!/bin/bash\nexit 0\n")):
+            for name, body in (("bin/node", STUB_NODE), ("bin/npm", npm), ("bin/npx", b"#!/bin/bash\nexit 0\n")):
                 info = tarfile.TarInfo(f"node-v0/{name}")
                 info.size, info.mode = len(body), 0o755
                 t.addfile(info, io.BytesIO(body))

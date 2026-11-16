@@ -18,9 +18,10 @@ use crate::direct::report::plan::{PlannedStep, first_words, pytest_words, uses_c
 use crate::engine::{LaunchSpec, command_argv};
 use harness_core::refusal::redact;
 use harness_protocol::direct::{
-    IN_PLACE_PREFIX, LEFT_OUT_PREFIX, NEEDS_PREFIX, NOT_AS_WRITTEN, NOT_RUN_MARK, NOT_RUN_PREFIX,
-    PLAN_NOTE_COMMAND, PLAN_NOTE_PREFIX, STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep,
-    TestStepRole, plan_note_line, skipped_for_setup_reason,
+    IN_PLACE_PREFIX, LEFT_OUT_PREFIX, LoggedRun, MAX_PLAN_LINE_COMMAND_CHARS, NEEDS_PREFIX,
+    NOT_AS_WRITTEN, NOT_RUN_MARK, NOT_RUN_PREFIX, PLAN_NOTE_COMMAND, PLAN_NOTE_PREFIX,
+    STAND_IN_PREFIX, TestCommandSource, TestCounts, TestStep, TestStepRole, plan_note_line,
+    skipped_for_setup_reason,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -365,16 +366,58 @@ pub fn set_plan_note(step: &mut TestStep, members: Option<u32>, cap: usize) {
     step.output_truncated |= cut || shown.len() < block.len();
 }
 
-/// Whether `line` is one of the two lines about the plan that agentd writes at the head of a step's output.
+/// The start of the head line agentd writes on the first step of a report for a whole-suite command of the lifecycle log that the
+/// plan did not run again: ``PLAN NOTE: not run again `<command>`; logged exit <code>, <n> failed; passed later as
+/// `<command>` ``. The log's own row says the last run of the command did not pass, and a later row ran the same suite and passed.
+/// [`not_again_line`] is the whole line. It starts like the plan note ([`PLAN_NOTE_PREFIX`]) and stands behind the lines of
+/// [`IN_PLACE_PREFIX`] and [`LEFT_OUT_PREFIX`], so the summary's reading of those lines ends in front of it and a reader that does not
+/// know it passes over it.
+pub const NOT_AGAIN_PREFIX: &str = "PLAN NOTE: not run again ";
+/// The most commands a report names in lines of [`NOT_AGAIN_PREFIX`]; a last line counts the others ([`not_again_more_line`]).
+pub const MAX_NOT_AGAIN_LINES: usize = 8;
+
+/// The line agentd writes for `command`, a whole-suite command of the lifecycle log that the plan did not run again: the
+/// command, what the log said of its last run (`exit <code>, <n> failed`, `exit <code>` when the log counted no failed test) and
+/// `passed_as`, the later command of the log that ran the same suite and passed. Each command stands in backticks, cut to
+/// [`MAX_PLAN_LINE_COMMAND_CHARS`] characters, a backtick of its own as an apostrophe and without control characters.
+pub fn not_again_line(command: &str, logged: &LoggedRun, passed_as: &str) -> String {
+    let quoted = |text: &str| -> String {
+        text.chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_PLAN_LINE_COMMAND_CHARS)
+            .map(|c| if c == '`' { '\'' } else { c })
+            .collect()
+    };
+    let recorded = match (logged.exit_code, logged.failed.filter(|n| *n > 0)) {
+        (Some(code), Some(failed)) => format!("exit {code}, {failed} failed"),
+        (Some(code), None) => format!("exit {code}"),
+        (None, Some(failed)) => format!("{failed} failed"),
+        (None, None) => "a failed run".to_string(),
+    };
+    format!(
+        "{NOT_AGAIN_PREFIX}`{}`; logged {recorded}; passed later as `{}`",
+        quoted(command),
+        quoted(passed_as)
+    )
+}
+
+/// The line behind [`MAX_NOT_AGAIN_LINES`] lines of [`not_again_line`]: the number of the other commands the plan did not run again.
+pub fn not_again_more_line(more: usize) -> String {
+    format!("{NOT_AGAIN_PREFIX}{more} more")
+}
+
+/// Whether `line` is one of the lines about the plan that agentd writes at the head of a step's output.
 fn is_plan_line(line: &str) -> bool {
-    line.starts_with(IN_PLACE_PREFIX) || line.starts_with(LEFT_OUT_PREFIX)
+    line.starts_with(IN_PLACE_PREFIX)
+        || line.starts_with(LEFT_OUT_PREFIX)
+        || line.starts_with(NOT_AGAIN_PREFIX)
 }
 
 /// Puts `lines`, the lines about the plan that this step carries, at the head of its output: after
 /// the `NOT RUN:` line and the note of a Cargo workspace, in front of the other head lines and of the runtime block, which stay whole. A line
-/// of either form that the repository printed at that place is removed first, also from a step that carries none, so only agentd's lines are
+/// of one of these forms that the repository printed at that place is removed first, also from a step that carries none, so only agentd's lines are
 /// ever read there. The output gives way from its front, so the whole stays within `cap` bytes and the end of the output stays; a line of
-/// either form that the cut brings to the head of what is left goes too, because it would stand right behind agentd's lines. A step with
+/// one of these forms that the cut brings to the head of what is left goes too, because it would stand right behind agentd's lines. A step with
 /// no such line and none to write is left as it is, byte for byte.
 pub fn set_plan_lines(step: &mut TestStep, lines: &[String], cap: usize) {
     let mut at = 0;

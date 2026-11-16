@@ -573,6 +573,7 @@ fn an_older_run_keeps_the_progress_feed_and_its_label() {
         progress: &feed,
         user: &[],
         live: false,
+        last_session_began: None,
     };
     let model = compose(&unsupported, &cx);
     assert_eq!(model.source, Source::ProgressFeed);
@@ -609,6 +610,7 @@ fn a_stored_conversation_drops_the_progress_label() {
             progress: &feed,
             user: &[],
             live: false,
+            last_session_began: None,
         },
     );
     assert_eq!(model.source, Source::FullHistory);
@@ -690,6 +692,7 @@ fn the_prompt_comes_first_notices_and_user_items_are_placed_by_time_and_the_fina
             progress: &feed,
             user: &user,
             live: false,
+            last_session_began: None,
         },
     );
     let order: Vec<String> = model
@@ -742,6 +745,7 @@ fn a_tail_the_store_does_not_hold_yet_is_shown_as_a_labelled_live_line_and_dropp
             progress: &feed,
             user: &[],
             live: true,
+            last_session_began: None,
         },
     );
     let live = model.blocks.last().unwrap();
@@ -766,6 +770,7 @@ fn a_tail_the_store_does_not_hold_yet_is_shown_as_a_labelled_live_line_and_dropp
             progress: &feed,
             user: &[],
             live: true,
+            last_session_began: None,
         },
     );
     assert!(
@@ -780,6 +785,7 @@ fn a_tail_the_store_does_not_hold_yet_is_shown_as_a_labelled_live_line_and_dropp
             progress: &feed,
             user: &[],
             live: false,
+            last_session_began: None,
         },
     );
     assert!(model.blocks.iter().all(|b| b.id != "live"));
@@ -825,6 +831,7 @@ fn the_view_is_a_function_of_the_pages_and_the_events_so_a_reopen_shows_the_same
                 progress: &feed,
                 user: &[],
                 live: false,
+                last_session_began: None,
             },
         )
     };

@@ -69,6 +69,7 @@ fn card() -> FinalCard {
         tests: None,
         flow: None,
         session: None,
+        outside_prompts: None,
     }
 }
 

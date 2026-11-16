@@ -82,17 +82,24 @@ pub async fn cmd_cancel<P: ControlPlane>(
     }
 }
 
-/// Why a run shows no PR link. A complete `--s3-only` run, or a complete run whose `delivery.ready` carries no `prUrl`, has none
-/// by design; any other run may still get
-/// one.
+/// Why a run shows no PR link, in the words that are true for the state the run is in. A run that delivered (`complete`, or `paused`
+/// or `stalled` with its work delivered) and is `--s3-only`, or whose `delivery.ready` carries no `prUrl`, has none by design. A run
+/// that ended blocked or was cleared delivered nothing and opens none: the line says so and where the saved copy of its work is. Any
+/// other run may still get one.
 async fn no_pr_text<P: ControlPlane>(
     api: &Api<P>,
     v: &RunView,
     run_id: &str,
     status: &str,
 ) -> String {
-    let complete = v.status == Some(GoalStatus::Complete);
-    let by_design = complete
+    if matches!(v.status, Some(GoalStatus::Blocked | GoalStatus::Cleared)) {
+        return format!(
+            "run {run_id} has no PR and opens none (status {status}): the run ended without a delivery. {}",
+            ham_core::saved_copy::blocked_work(run_id, v.saved.as_ref())
+        );
+    }
+    let delivered = v.status.is_some_and(GoalStatus::is_delivered);
+    let by_design = delivered
         && (v.zip.is_some()
             || matches!(
                 api.get_run(run_id).await.map(|d| d.summary.target),

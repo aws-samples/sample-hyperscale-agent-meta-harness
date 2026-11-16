@@ -155,20 +155,33 @@ const UNKNOWN_MEMBER_PHRASE: &str = "the body has a member this API does not kno
 /// member the type does not know, so the bytes of the body before that column end with the member's name in quotes. `ham` sends the body on one
 /// line. A place that points anywhere else is another member, or another problem, and is not this.
 fn names_copy_interval_member(error: &WireError, body: &[u8]) -> bool {
-    const MEMBER: &[u8] = b"\"snapshotEveryS\"";
+    names_member(error, body, "snapshotEveryS")
+}
+
+/// True for the answer of a stage that does not know `member` of the start `body` this client sent, read as
+/// [`names_copy_interval_member`] says: serde's own words name the member, and the fixed phrase names the place where the body holds it.
+fn names_member(error: &WireError, body: &[u8], member: &str) -> bool {
     if error.code != "bad-request" {
         return false;
     }
-    if error.message.contains("unknown field `snapshotEveryS`") {
+    if error.message.contains(&format!("unknown field `{member}`")) {
         return true;
     }
+    let quoted = format!("\"{member}\"");
     error
         .message
         .split_once(UNKNOWN_MEMBER_PHRASE)
         .and_then(|(_, place)| place.strip_suffix(')'))
         .and_then(|column| column.parse::<usize>().ok())
         .and_then(|column| body.get(..column))
-        .is_some_and(|sent| sent.ends_with(MEMBER))
+        .is_some_and(|sent| sent.ends_with(quoted.as_bytes()))
+}
+
+/// What `ham` says when the stage predates the switch of the delivery note: the key that put the member into the request, with
+/// its value, and the two ways out. Such a stage either writes the block on how the run delivers in every run or knows no block at all,
+/// and cannot be told to leave it out.
+pub fn predates_delivery_note_words() -> String {
+    "this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage".to_string()
 }
 
 /// What `ham` says when the stage predates the copy interval of a run: the key that put the member into the request, with its value, and
@@ -430,6 +443,9 @@ impl<P: ControlPlane> Api<P> {
     /// The same holds for the copy interval of a run:
     /// the answer of a stage that
     /// does not know that member becomes the code `stage-predates-copy-interval` and the words of [`predates_copy_interval_words`].
+    ///
+    /// And for the switch of the delivery note: the code
+    /// `stage-predates-delivery-note` and the words of [`predates_delivery_note_words`].
     pub async fn start_direct_run(
         &self,
         req: &StartDirectRunRequest,
@@ -493,6 +509,23 @@ impl<P: ControlPlane> Api<P> {
                     error: WireError {
                         code: "stage-predates-copy-interval".into(),
                         message: predates_short_copy_interval_words(snapshot_every_s),
+                        request_id: error.request_id,
+                    },
+                });
+            }
+            (other, _) => other,
+        };
+        // The switch of the delivery note, the `deliveryNote` member of `run.delivery_note = false`. The request is not sent again
+        // without the member: a stage that predates it cannot leave the block out, and the run must not look as if it had.
+        let result = match (result, req.delivery_note) {
+            (Err(ApiError::Http { status: 400, error }), Some(false))
+                if names_member(&error, &body, "deliveryNote") =>
+            {
+                return Err(ApiError::Http {
+                    status: 400,
+                    error: WireError {
+                        code: "stage-predates-delivery-note".into(),
+                        message: predates_delivery_note_words(),
                         request_id: error.request_id,
                     },
                 });

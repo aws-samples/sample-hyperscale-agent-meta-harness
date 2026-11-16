@@ -16,8 +16,10 @@ fn md(flow: Option<DirectFlow>) -> String {
         run_id: RUN.into(),
         repo: "hamh-e2e-python-calc-20260925".into(),
         base_sha: None,
+        judged_base_sha: None,
         head_sha: HEAD.into(),
         objective: "Add percent_change(a, b)".into(),
+        target: Default::default(),
         pr_url: None,
         direct: DirectEvidence {
             outcome: DirectOutcome::ReportedDone,
@@ -41,6 +43,7 @@ fn md(flow: Option<DirectFlow>) -> String {
             review: None,
             flow,
             engine: None,
+            delivery_note: None,
         },
     })
 }

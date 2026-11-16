@@ -40,6 +40,17 @@
 //! whole-suite command of the same language, beside a command that may run the suite of any language (`make test`, a script, tox), or for a plan
 //! made from `.ham/test-command` or the repository's test scripts.
 //!
+//! A whole-suite row whose own run did not pass (an exit code other than 0, or failed tests) is run again, with one exception.
+//! When a later row of the log ran the
+//! same suite and passed, the later row is the log's word on the suite and the failed command is not run again ([`passed_later`]): the
+//! same suite means the same runner and the same words after it ([`suite_of`]). An option is one of those words, and so is a
+//! `NAME=value` in front, unless it is known to select no test ([`run_option_of`], [`RUN_PREFIXES`]): a later run that left tests out
+//! with `--ignore=<folder>`, `--lf`, `-short`, `--lib` or `SKIP_INTEGRATION=1` is another suite. The later run also counted at least the
+//! tests the failed run counted; when the failed run counted none, the later command holds no option and no prefix besides those that
+//! select no test. The plan says which commands it did not run again ([`PlanNotes::not_again`]). Every other failed row runs as
+//! before: the last word of the log on a suite, a row of another suite, a later row that counted fewer tests or gave no count, a
+//! command the shell has to read, and a runner whose suite the report cannot tell from its program (`make test`, a script, tox).
+//!
 //! The install steps. A test command needs the packages its tree declares, and a clean checkout has none of them. A plan made from the manifests
 //! (source 4) carries the install step it knows: the lockfile or `npm install` for a `package.json`, and for a Python tree with a
 //! `requirements.txt` the report's own virtual environment ([`VENV_INSTALL`]), in which the tests then run. Test commands that come from the
@@ -598,6 +609,9 @@ struct LoggedRow {
     logged: LoggedRun,
     /// The command names a part of a suite ([`is_focused`]): it is no command of the plan.
     focused: bool,
+    /// For a whole-suite row whose own run did not pass: the place among the rows of the later row that ran the same suite and
+    /// passed. The command is not run again: the later row is the log's word on the suite.
+    passed_at: Option<usize>,
 }
 
 /// Every plain test command of the lifecycle log made fit for the clean checkout, in the order of each command's last run.
@@ -643,7 +657,12 @@ fn logged_rows(root: &Path, records: &Records) -> Vec<LoggedRow> {
             command,
             logged,
             focused,
+            passed_at: None,
         });
+    }
+    // The rows are final now, in the order of each command's last run: a failed row is set beside the rows after it.
+    for at in 0..seen.len() {
+        seen[at].passed_at = passed_later(&seen, at);
     }
     seen
 }
@@ -705,17 +724,26 @@ fn entry_scripts(root: &Path, records: &Records) -> Vec<PlannedStep> {
         .collect()
 }
 
+/// The places among `rows` of the rows a plan made from the log runs: the whole-suite rows, without those a later row stands
+/// for, and of these the last [`MAX_TEST_STEPS`].
+fn kept_rows(rows: &[LoggedRow]) -> Vec<usize> {
+    let mut kept: Vec<usize> = (0..rows.len())
+        .filter(|&at| !rows[at].focused && rows[at].passed_at.is_none())
+        .collect();
+    let drop = kept.len().saturating_sub(MAX_TEST_STEPS);
+    kept.drain(..drop);
+    kept
+}
+
 fn from_log(rows: &[LoggedRow]) -> Vec<PlannedStep> {
-    let mut seen: Vec<&LoggedRow> = rows.iter().filter(|r| !r.focused).collect();
-    let keep = seen.len().saturating_sub(MAX_TEST_STEPS);
-    seen.drain(..keep);
-    seen.into_iter()
-        .map(|row| PlannedStep {
-            logged: Some(row.logged),
+    kept_rows(rows)
+        .into_iter()
+        .map(|at| PlannedStep {
+            logged: Some(rows[at].logged),
             ..step(
                 TestStepRole::Test,
                 TestCommandSource::LifecycleLog,
-                &row.command,
+                &rows[at].command,
             )
         })
         .collect()
@@ -1403,6 +1431,302 @@ fn with_installs(root: &Path, steps: Vec<PlannedStep>) -> Vec<PlannedStep> {
     out
 }
 
+// ---- a row of the log that failed while a later row of the same suite passed --------------------------------------------------
+
+/// A whole-suite command of the lifecycle log that the plan does not run again: the row of its last run says that run did not
+/// pass, and a later row ran the same suite and passed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotAgain {
+    /// The command, as the log wrote it and made fit for the clean checkout.
+    pub command: String,
+    /// What the log said of its last run: an exit code other than 0, or failed tests.
+    pub logged: LoggedRun,
+    /// The later command of the log that ran the same suite and passed, as the log wrote it. It is a command of the plan.
+    pub passed_as: String,
+}
+
+/// The options of one runner that select no test: they set how a run is shown, scheduled or ended, so a command with one
+/// runs the suite it would run without it. `flags` stand alone. `values` take a value, as the next word (`--tb short`) or behind `=`
+/// (`--tb=short`). Every other option is a word of the suite ([`suite_of`]): the report cannot say that it leaves no test out. An
+/// option that can fail a run whose tests pass without it is on no list either, although it selects no test: a later run without
+/// it does not stand for the strict command, which is run again.
+struct RunOptions {
+    flags: &'static [&'static str],
+    values: &'static [&'static str],
+}
+
+/// pytest. An option that can change what is collected (`-m`, `-k`, `-c`, `-o`, `--rootdir`, `--deselect`, `--ignore`, `--lf`) is
+/// not among them. Neither is `-W`, which can make a warning an error, nor `-n`, which runs the tests side by side and needs a
+/// plugin: the same tests can pass without either. The plugin switch `-p` is judged by its value ([`PYTEST_QUIET_PLUGINS`]).
+const PYTEST_RUN_OPTIONS: RunOptions = RunOptions {
+    flags: &[
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "-s",
+        "-x",
+        "--exitfirst",
+        "-l",
+        "--showlocals",
+    ],
+    values: &["-r", "--tb", "--color", "--maxfail", "--durations"],
+};
+/// The letters of pytest's flags that may stand together behind one dash (`-qx`, `-vv`).
+const PYTEST_FLAG_LETTERS: &str = "qvsxl";
+/// The letters of pytest's options whose value may follow the letter directly (`-rA`).
+const PYTEST_VALUE_LETTERS: &str = "r";
+/// The values of pytest's plugin switch `-p` that are known to collect nothing: the switch that turns the cache off. With any other
+/// value `-p` and the value are words of the suite, because a plugin can collect tests: `-p no:doctest` takes the doctests of text
+/// files away, and `-p no:unittest` the classes of `unittest`.
+const PYTEST_QUIET_PLUGINS: [&str; 1] = ["no:cacheprovider"];
+
+/// `go test`, which reads `--count` as `-count`. `-run`, `-skip`, `-short` and `-tags` are not among them, and neither is `-race`,
+/// which sets a build tag that a test file can exclude.
+const GO_RUN_OPTIONS: RunOptions = RunOptions {
+    flags: &["-v", "-cover", "-failfast", "-json"],
+    values: &["-count", "-timeout", "-p", "-parallel"],
+};
+
+/// cargo, and the test program behind `--`. `--lib`, `--test`, `-p`, `--features` and `--ignored` are not among them. Neither are
+/// `--locked`, `--offline` and `--frozen`: a run with one fails over a lock file that does not match the manifest or a package that
+/// is not at hand, where the same tests pass without it.
+const CARGO_RUN_OPTIONS: RunOptions = RunOptions {
+    flags: &[
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "--nocapture",
+        "--show-output",
+    ],
+    values: &["-j", "--jobs", "--color", "--test-threads"],
+};
+
+/// The `NAME=value` prefixes that select no test: where the code is and how the output looks. Any other prefix is a word of
+/// the suite: `SKIP_INTEGRATION=1 pytest -q` is another suite than `pytest -q`.
+const RUN_PREFIXES: [&str; 9] = [
+    "PYTHONPATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONUNBUFFERED",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "TERM",
+    "COLUMNS",
+    "CARGO_TERM_COLOR",
+    "RUST_BACKTRACE",
+];
+
+/// What an option that selects no test takes with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    /// Nothing: a flag, or an option with its value behind `=` or right behind its letter.
+    Alone,
+    /// The next word, which is its value.
+    WithNextWord,
+}
+
+/// Whether `option`, a word of a command of `runner` that starts with `-`, selects no test, and what it takes with it. `None`
+/// for an option that is not on the list of the runner ([`PYTEST_RUN_OPTIONS`], [`GO_RUN_OPTIONS`], [`CARGO_RUN_OPTIONS`]) and for every
+/// option of a runner that has no list. `next` is the word after `option`: the plugin switch of pytest is judged by its value, which
+/// is that word or stands right behind the letter ([`PYTEST_QUIET_PLUGINS`]).
+fn run_option_of(runner: &str, option: &str, next: Option<&str>) -> Option<Setting> {
+    let settings = match runner {
+        "pytest" => &PYTEST_RUN_OPTIONS,
+        "go" => &GO_RUN_OPTIONS,
+        "cargo" => &CARGO_RUN_OPTIONS,
+        _ => return None,
+    };
+    if runner == "pytest" && option.starts_with("-p") {
+        let (plugin, setting) = match option {
+            "-p" => (next?, Setting::WithNextWord),
+            _ => (option[2..].trim_start_matches('='), Setting::Alone),
+        };
+        return PYTEST_QUIET_PLUGINS.contains(&plugin).then_some(setting);
+    }
+    let (name, has_value) = match option.split_once('=') {
+        Some((name, _)) => (name, true),
+        None => (option, false),
+    };
+    let name = if runner == "go" && name.starts_with("--") {
+        &name[1..]
+    } else {
+        name
+    };
+    if settings.values.contains(&name) {
+        return Some(if has_value {
+            Setting::Alone
+        } else {
+            Setting::WithNextWord
+        });
+    }
+    if has_value {
+        return None;
+    }
+    if settings.flags.contains(&name) {
+        return Some(Setting::Alone);
+    }
+    if runner == "pytest"
+        && let Some(letters) = option.strip_prefix('-')
+        && !letters.starts_with('-')
+    {
+        let mut rest = letters.chars();
+        let first = rest.next()?;
+        if letters.chars().all(|c| PYTEST_FLAG_LETTERS.contains(c))
+            || (PYTEST_VALUE_LETTERS.contains(first) && rest.next().is_some())
+        {
+            return Some(Setting::Alone);
+        }
+    }
+    None
+}
+
+/// Whether a row of the log says that its run did not pass: an exit code other than 0, or failed tests.
+fn did_not_pass(run: &LoggedRun) -> bool {
+    run.exit_code.is_some_and(|code| code != 0) || run.failed.is_some_and(|n| n > 0)
+}
+
+/// What a test command runs, as far as its words tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Suite {
+    /// The runner the command starts: `pytest` for `python3 -m pytest` and `py.test`, `jest` for `npx jest`.
+    runner: String,
+    /// The `NAME=value` prefixes that are no setting ([`RUN_PREFIXES`]), sorted, and behind them the words after the runner
+    /// without the options that select no test ([`run_option_of`]) and without the `--` of cargo and of pytest.
+    words: Vec<String>,
+    /// Among the words is an option or a prefix: something the report cannot say leaves no test out.
+    unknown_option: bool,
+}
+
+/// What a test command runs, as far as its words tell: the runner it starts and the words after it. `pytest -q`,
+/// `python3 -m pytest -q -p no:cacheprovider` and `PYTHONPATH=. py.test` are `pytest` with no word; `pytest tests/unit -q` is `pytest`
+/// with `tests/unit`; `npm run test:e2e` is `npm` with `run` and `test:e2e`. The program in front of the runner is left off
+/// (`python3 -m`, `npx`, `bundle exec`). An option is a word of the suite, and so is a `NAME=value` in front, unless it is known to
+/// select no test ([`run_option_of`], with its value; [`RUN_PREFIXES`]): `pytest -q --ignore=tests/integration`, `pytest -q --lf`,
+/// `go test -short ./...`, `cargo test --lib` and `SKIP_INTEGRATION=1 pytest -q` are other suites than the command without the
+/// option or the prefix, and so are `cargo test --locked` and `pytest -W error`, whose option can fail a run that passes without it. `--` is no word for cargo (the first one, which stands in front of the options of the test program) and
+/// for pytest, where every word behind it is a path (`pytest -- -q` names a path `-q`). For any other runner it is a word of the
+/// suite, because it hands the words behind it to another program: `npm test -- --grep=smoke` runs a part, and
+/// `npm test --grep=smoke` does not. `None` for a command the shell has to read (`cd api && pytest -q`, a pipe), which
+/// runs as written, and for a runner whose suite the report cannot tell from its program ([`family`]: `make test`, a script, tox).
+fn suite_of(command: &str) -> Option<Suite> {
+    family(command)?;
+    let Ok(Parsed::Plain { env, argv }) = classify(command) else {
+        return None;
+    };
+    let (program, rest) = argv.split_first()?;
+    let name = base(program);
+    let (runner, args) = if name.starts_with("python") && rest.first().is_some_and(|w| w == "-m") {
+        (rest.get(1)?.as_str(), &rest[2..])
+    } else if matches!(name, "npx" | "pnpx") {
+        (rest.first()?.as_str(), &rest[1..])
+    } else if name == "bundle" && rest.first().is_some_and(|w| w == "exec") {
+        (rest.get(1)?.as_str(), &rest[2..])
+    } else {
+        (name, rest)
+    };
+    let runner = match base(runner) {
+        "py.test" => "pytest",
+        other => other,
+    };
+    let mut words: Vec<String> = env
+        .iter()
+        .filter(|(name, _)| !RUN_PREFIXES.contains(&name.as_str()))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    words.sort();
+    let mut unknown_option = !words.is_empty();
+    let mut is_value = false;
+    // Behind its `--` pytest reads every word as a path.
+    let mut paths_only = false;
+    let mut separators = 0;
+    for (at, word) in args.iter().enumerate() {
+        if std::mem::take(&mut is_value) {
+            continue;
+        }
+        if word == "--" && !paths_only {
+            separators += 1;
+            match runner {
+                "pytest" => paths_only = true,
+                // The first one stands in front of the options of the test program.
+                "cargo" if separators == 1 => {}
+                _ => {
+                    unknown_option = true;
+                    words.push(word.clone());
+                }
+            }
+            continue;
+        }
+        if !paths_only && word.starts_with('-') {
+            match run_option_of(runner, word, args.get(at + 1).map(String::as_str)) {
+                Some(Setting::WithNextWord) => is_value = true,
+                Some(Setting::Alone) => {}
+                None => {
+                    unknown_option = true;
+                    words.push(word.clone());
+                }
+            }
+            continue;
+        }
+        words.push(word.clone());
+    }
+    Some(Suite {
+        runner: runner.to_string(),
+        words,
+        unknown_option,
+    })
+}
+
+/// The place among `rows` of the later row that stands for the row at `at`, so that the command of that row is not run again.
+/// The row at `at` is a whole-suite row whose own run did not pass ([`did_not_pass`]). The later row ran the same suite ([`suite_of`]:
+/// the same runner and the same words, options included unless they select no test), exited 0 with no failed test, and counted at
+/// least one passed test and at least the tests the failed run counted (its passed and failed tests, as far as the log gave them).
+/// When the failed run counted no test, no count can show that the later run was a narrower one, so the later command then holds no
+/// option and no prefix besides those that select no test. The latest such row is the one named. `None` for a row that passed, a row
+/// that names a part of a suite, a row whose suite cannot be told, and a failed row that no later row stands for: the last word of
+/// the log on a suite is run again, green or red.
+fn passed_later(rows: &[LoggedRow], at: usize) -> Option<usize> {
+    let row = rows.get(at)?;
+    if row.focused || !did_not_pass(&row.logged) {
+        return None;
+    }
+    let suite = suite_of(&row.command)?;
+    let counted = row
+        .logged
+        .passed
+        .unwrap_or(0)
+        .saturating_add(row.logged.failed.unwrap_or(0));
+    (at + 1..rows.len()).rev().find(|&later| {
+        let other = &rows[later];
+        !other.focused
+            && other.logged.exit_code == Some(0)
+            && !did_not_pass(&other.logged)
+            && other
+                .logged
+                .passed
+                .is_some_and(|passed| passed >= counted.max(1))
+            && suite_of(&other.command)
+                .is_some_and(|ran| ran == suite && (counted > 0 || !ran.unknown_option))
+    })
+}
+
+/// The whole-suite commands of the log that a plan made from it does not run again, in the order of the log: each with what
+/// the log said of its last run and the later command that passed. A row whose later row the plan does not hold (a log with more
+/// whole-suite commands than [`MAX_TEST_STEPS`]) is not among them: nothing stands for it in the plan.
+fn not_again(rows: &[LoggedRow]) -> Vec<NotAgain> {
+    let kept = kept_rows(rows);
+    rows.iter()
+        .filter_map(|row| {
+            let later = row.passed_at.filter(|at| kept.contains(at))?;
+            Some(NotAgain {
+                command: row.command.clone(),
+                logged: row.logged,
+                passed_as: rows[later].command.clone(),
+            })
+        })
+        .collect()
+}
+
 // ---- the rows of the log that name a part of a suite --------------------------------------------------------------------------
 
 /// Test commands of the lifecycle log that the plan left out because each names a part of a suite: the last one run and the number
@@ -1437,6 +1761,10 @@ pub struct PlanNotes {
     /// there on is its own addition. `None` for a plan it added nothing to and for a plan that holds no command of the model's. Such a
     /// step never makes the report read as timed out (`report::run_planned`): the model's commands have run, and their result stands.
     pub chosen_from: Option<usize>,
+    /// The whole-suite commands of the log that the plan does not run again, in the order of the log: the log's own row says
+    /// the run did not pass, and a later row, which is a command of the plan, ran the same suite and passed. Only a plan made from the
+    /// log has any. The report writes one line for each on its first step (`report::note_left_out`).
+    pub not_again: Vec<NotAgain>,
 }
 
 /// The language of a test command, by the program it starts. The detection has a layout for the first six. `Dotnet`, `Ruby` and
@@ -1948,9 +2276,7 @@ fn omitted_by_reason(uncovered: &[(usize, &LoggedRow, LeftOutWhy)]) -> Vec<Omitt
                 .filter(|(_, _, w)| w == why)
                 .map(|(at, row, _)| (*at, *row))
                 .collect();
-            let logged = group.last().map(|(_, row)| row.logged).filter(|run| {
-                run.exit_code.is_some_and(|code| code != 0) || run.failed.is_some_and(|n| n > 0)
-            });
+            let logged = group.last().map(|(_, row)| row.logged).filter(did_not_pass);
             left_out_of(&group).map(|rows| Omitted {
                 rows,
                 why: why.clone(),
@@ -2002,18 +2328,25 @@ pub fn plan_with_notes(tree: &Path) -> (Plan, PlanNotes) {
     }
     let rows = logged_rows(&root, &records);
     // Each source with whether its commands are the model's own lines, which carry no install step (the log and the goal card).
-    for (steps, typed_by_the_model) in [
+    for (source, (steps, typed_by_the_model)) in [
         (from_log(&rows), true),
         (from_goal(&root, &records), true),
         (detect(&root), false),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         if has_test(&steps) {
             let steps = if typed_by_the_model {
                 with_installs(&root, steps)
             } else {
                 steps
             };
-            let (steps, notes) = with_stand_ins(&root, steps, typed_by_the_model, &rows);
+            let (steps, mut notes) = with_stand_ins(&root, steps, typed_by_the_model, &rows);
+            // The first source is the log: only its plan left a command out because a later row stands for it.
+            if source == 0 {
+                notes.not_again = not_again(&rows);
+            }
             return (Plan::Steps(steps), notes);
         }
     }

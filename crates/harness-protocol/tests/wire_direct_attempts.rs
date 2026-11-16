@@ -73,7 +73,7 @@ fn attempt(n: u32) -> DirectAttempt {
 
 #[test]
 fn the_protocol_is_1_38_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.61.0");
+    assert_eq!(PROTOCOL_VERSION, "1.62.0");
 }
 
 #[test]

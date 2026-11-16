@@ -27,8 +27,8 @@ fn parse(extra: Value) -> Result<StartDirectRunRequest, serde_json::Error> {
 }
 
 #[test]
-fn b841_copy_the_protocol_is_1_61_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.61.0");
+fn b841_copy_the_protocol_is_1_62_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.62.0");
 }
 
 #[test]
@@ -87,6 +87,6 @@ fn b841_copy_the_contract_file_describes_the_member() {
         "{}",
         req["snapshotEveryS"]
     );
-    assert_eq!(v1["info"]["version"], "1.61.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.61.0");
+    assert_eq!(v1["info"]["version"], "1.62.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.62.0");
 }

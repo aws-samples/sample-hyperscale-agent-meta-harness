@@ -16,3 +16,27 @@ test-group = 'seccomp-children'
 [[profile.default.overrides]]
 filter = 'binary(=fake_cline_inproc) & test(=b836_a_thousand_exchanges_beside_busy_threads_are_never_answered_from_the_queue)'
 threads-required = 'num-test-threads'
+
+# Four tests with a time bound of their own failed a first pass of a full run on a loaded build host and passed alone: the draw of 5,000 agents of the
+# client (0.505 s against its 0.5 s bound) and three copy tests of the worker, which wait for a copy that git processes make (a copy not seen within its
+# 7 s, one notice more than expected, 18.66 s against 16 s). Their bounds stay as they are. Each gets every test thread of the run, as the stress test
+# above does: it starts when no other test of the run works and no other test starts until it has ended, so the other tests of the run are no longer part
+# of what it measures. What other processes of the host do is still part of it. A row is not free: it waits until the tests in flight have ended and then
+# holds every test thread for the length of its test. The four rows add about a third to the length of a full run on a 36-processor build host, the three
+# rows of the worker about two thirds of that. The draw test keeps its row all the same: its clock leaves out the wait for a processor, but the draw
+# itself is slower while other work shares the processors, and beside the other tests of a run that work is the run's own.
+[[profile.default.overrides]]
+filter = 'binary(=tui_w2) & test(=five_thousand_agents_draw_in_bounded_time)'
+threads-required = 'num-test-threads'
+
+[[profile.default.overrides]]
+filter = 'binary(=b823_copies_run) & test(=b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer)'
+threads-required = 'num-test-threads'
+
+[[profile.default.overrides]]
+filter = 'binary(=b823_stop_copy) & test(=b823_a_git_that_hangs_on_the_work_tree_is_said_and_ended_and_the_next_look_copies)'
+threads-required = 'num-test-threads'
+
+[[profile.default.overrides]]
+filter = 'binary(=b823_stop_copy) & test(=b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more)'
+threads-required = 'num-test-threads'

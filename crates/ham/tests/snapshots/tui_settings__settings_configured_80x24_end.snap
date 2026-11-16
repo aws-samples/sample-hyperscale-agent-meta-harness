@@ -3,7 +3,6 @@ source: crates/ham/tests/tui_settings.rs
 expression: "screen_text(&app, 80, 24)"
 ---
 ham · Settings · config.toml
-   No incremental       on                                default  next run
    Exclude target/      on                                default  next run
    Outside-work note    on                                default  next run
    Total run time       24 hours                          default  next run
@@ -16,6 +15,7 @@ ham · Settings · config.toml
    Container signals    default                           default  next run
    Copy interval (min)  not set                           default  next run
    Copy interval        15 seconds                        default  next run
+   Delivery note        on                                default  next run
  Connection
    Service address      https://abc.execute-api.us-east…  file     restart
    Region               us-east-1                         file     restart

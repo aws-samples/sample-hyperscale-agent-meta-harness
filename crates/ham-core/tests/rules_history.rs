@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// SHA-256 of the current `assets/default-rules.md`. A change to that file fails the test below until the text it replaces is in
 /// `fixtures/rules/default-earlier/` and its hash is in the history; then this value moves to the new text.
-const CURRENT_SHA256: &str = "b84897968fbd54e0d44d167372bbaf126dc3d6d51df367917c54adae6ad600b0";
+const CURRENT_SHA256: &str = "b1ddaa9ed074f161cc9b382b704fa1d2540d126a5272d36ad7907a1e8a332d11";
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

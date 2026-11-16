@@ -52,6 +52,7 @@ fn card() -> FinalCard {
         flow: None,
         label_missing_after: None,
         session: None,
+        outside_prompts: None,
     }
 }
 

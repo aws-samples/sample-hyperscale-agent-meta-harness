@@ -51,12 +51,13 @@ fn says_to_unset_one(e: &str) {
 }
 
 #[test]
-fn b823_seconds_the_row_is_the_last_key_and_rides_in_the_snapshot_member() {
-    assert_eq!(Key::ALL.len(), 48);
+fn b823_seconds_the_row_follows_the_minutes_key_and_rides_in_the_snapshot_member() {
+    assert_eq!(Key::ALL.len(), 49);
+    // Added `run.delivery_note` after it.
     assert_eq!(
-        Key::ALL.last().copied(),
-        Some(key(SECONDS)),
-        "the newest key is the last"
+        Key::ALL[Key::ALL.len() - 2],
+        key(SECONDS),
+        "the key after run.copy_every_minutes and before run.delivery_note"
     );
     let r = row(SECONDS);
     assert_eq!(r.name, SECONDS);
@@ -71,7 +72,7 @@ fn b823_seconds_the_row_is_the_last_key_and_rides_in_the_snapshot_member() {
         "the file only: no flag and no variable"
     );
     assert!(KEYS.contains(&(SECONDS, SECONDS)));
-    assert_eq!(KEYS.len(), 48);
+    assert_eq!(KEYS.len(), 49);
 }
 
 #[test]

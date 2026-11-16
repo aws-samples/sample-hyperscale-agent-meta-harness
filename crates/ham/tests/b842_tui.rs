@@ -109,7 +109,7 @@ fn b842_the_run_screen_says_since_when_nothing_was_heard_and_what_the_service_do
     app.set_now(unix("2026-10-16T08:17:48Z"));
     let _ = app.update(Msg::Pages(Ok(vec![])));
     assert!(
-        !flat(&screen(&app, 160, 50)).contains("No word from"),
+        !flat(&screen(&app, 160, 50)).contains("No event from"),
         "one beat late is no silence"
     );
     // Five minutes after it.
@@ -118,7 +118,7 @@ fn b842_the_run_screen_says_since_when_nothing_was_heard_and_what_the_service_do
     let text = flat(&screen(&app, 160, 50));
     assert!(
         text.contains(
-            "No word from the run's session since 2026-10-16 08:16 UTC (5 min). When the service receives no heartbeat from a session \
+            "No event from the run's session since 2026-10-16 08:16 UTC (5 min). When the service receives no heartbeat from a session \
              for 600 seconds, it starts a new session from the last saved copy (saved 2026-10-16 08:15 UTC) when the run has time left; \
              file changes after that copy are lost."
         ),
@@ -135,7 +135,7 @@ fn b842_the_run_screen_says_which_session_was_lost_and_what_the_new_one_started_
     let text = flat(&screen(&app, 160, 50));
     assert!(text.contains(&lost().sentence()), "{text}");
     assert!(
-        !text.contains("No word from"),
+        !text.contains("No event from"),
         "the service has spoken: {text}"
     );
 }
@@ -158,7 +158,8 @@ fn b842_ham_watch_prints_the_silence_once_and_the_lost_session_once() {
     let silent = memo.lines(&view_at(working(), "2026-10-16T08:20:00Z"));
     assert_eq!(silent.len(), 1, "{silent:?}");
     assert!(
-        silent[0].starts_with("No word from the run's session since 2026-10-16 08:16 UTC (3 min)."),
+        silent[0]
+            .starts_with("No event from the run's session since 2026-10-16 08:16 UTC (3 min)."),
         "{silent:?}"
     );
     // The same silence a minute later is not printed again.
@@ -235,7 +236,7 @@ fn ready_at(events: Vec<Envelope>, now: &str) -> App {
 fn b842_a_client_that_cannot_read_the_run_does_not_call_the_session_silent() {
     // The last good read is 12 s after the session's newest event: nothing is wrong with the session.
     let mut app = ready_at(working(), "2026-10-16T08:17:00Z");
-    assert!(!flat(&screen(&app, 160, 50)).contains("No word from"));
+    assert!(!flat(&screen(&app, 160, 50)).contains("No event from"));
     // Ten minutes of clock in which every read fails (the laptop slept, the network or the sign-in is gone): the client has not
     // heard from the service, which says nothing about the session.
     for minute in 1..=10 {
@@ -243,7 +244,7 @@ fn b842_a_client_that_cannot_read_the_run_does_not_call_the_session_silent() {
         let _ = app.update(Msg::Pages(Err("the service did not answer".into())));
         let text = flat(&screen(&app, 160, 50));
         assert!(
-            !text.contains("No word from"),
+            !text.contains("No event from"),
             "after {minute} min without a read the client calls the session silent: {text}"
         );
     }
@@ -251,7 +252,7 @@ fn b842_a_client_that_cannot_read_the_run_does_not_call_the_session_silent() {
     let _ = app.update(Msg::Pages(Ok(vec![])));
     let text = flat(&screen(&app, 160, 50));
     assert!(
-        text.contains("No word from the run's session since 2026-10-16 08:16 UTC (10 min)."),
+        text.contains("No event from the run's session since 2026-10-16 08:16 UTC (10 min)."),
         "{text}"
     );
 }
@@ -277,7 +278,8 @@ fn beat(seq: u64, ts: &str, session: u32) -> Envelope {
 }
 
 const STARTS: &str = "Session 2 starts from the copy saved at 2026-10-16 08:15 UTC";
-const STARTED: &str = "Session 1 was lost at 2026-10-16 08:26 UTC: the service received no heartbeat from it for 600 seconds. Session 2 \
+const STARTED: &str = "Session 1 was lost: its last heartbeat came at 2026-10-16 08:16 UTC, and the service called it lost at 08:26 UTC after 600 \
+                       seconds without one. Session 2 \
                        started from the copy saved at 2026-10-16 08:15 UTC; file changes after that copy were lost.";
 
 #[test]
@@ -430,7 +432,7 @@ fn b842_b823_ham_watch_prints_each_notice_about_a_copy_once_beside_the_session_l
     let silent = memo.lines(&view_at(events.clone(), "2026-10-16T08:21:00Z"));
     assert_eq!(silent.len(), 1, "{silent:?}");
     assert!(
-        silent[0].starts_with("No word from the run's session since 2026-10-16 08:18 UTC"),
+        silent[0].starts_with("No event from the run's session since 2026-10-16 08:18 UTC"),
         "{silent:?}"
     );
     events.push(lost_event());
@@ -441,8 +443,15 @@ fn b842_b823_ham_watch_prints_each_notice_about_a_copy_once_beside_the_session_l
     // Session 2 says the same sentence about a copy of its own: that is one more notice, printed once.
     events.push(started(30, "2026-10-16T08:27:00Z", 2));
     events.push(copy_notice(31, "2026-10-16T08:29:00Z", COPY_NOT_SAVED));
+    // The watch told that session 1 was lost, so it says first that a session answers again.
     let again = memo.lines(&view_at(events.clone(), "2026-10-16T08:29:10Z"));
-    assert_eq!(again, vec![COPY_NOT_SAVED.to_string()]);
+    assert_eq!(
+        again,
+        vec![
+            "The run's session answers again.".to_string(),
+            COPY_NOT_SAVED.to_string()
+        ]
+    );
     assert!(
         memo.lines(&view_at(events, "2026-10-16T08:29:30Z"))
             .is_empty()
@@ -485,17 +494,20 @@ fn b842_b823_ham_watch_that_starts_later_prints_no_notice_about_a_copy_from_befo
     );
 }
 
-/// The JSON view of `ham watch` is unchanged by the notices about a copy: it carries the newest stored copy and the session facts.
+/// The JSON view of `ham watch` carries the notices about a copy in one member, `copyNotices`, and is otherwise unchanged by
+/// them: it carries the newest stored copy and the session facts. A view without such a notice has no such member.
 #[test]
-fn b842_b823_the_json_view_of_ham_watch_has_no_member_for_a_notice_about_a_copy() {
+fn b842_b823_the_json_view_of_ham_watch_has_one_member_for_the_notices_about_a_copy() {
     let mut events = working();
     events.push(copy_notice(13, "2026-10-16T08:17:10Z", COPY_LATE));
     let with = view_json(&view_at(events, "2026-10-16T08:17:20Z"));
     let without = view_json(&view_at(working(), "2026-10-16T08:17:20Z"));
     let keys = |v: &Value| -> Vec<String> {
         v.as_object()
-            .map(|o| o.keys().cloned().collect())
+            .map(|o| o.keys().filter(|k| *k != "copyNotices").cloned().collect())
             .unwrap_or_default()
     };
+    assert!(without.get("copyNotices").is_none(), "{without}");
+    assert_eq!(with["copyNotices"][0]["text"], COPY_LATE);
     assert_eq!(keys(&with), keys(&without));
 }

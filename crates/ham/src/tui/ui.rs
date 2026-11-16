@@ -1179,6 +1179,11 @@ impl App {
             Some(trouble) => format!("{state} \u{b7} {trouble}"),
             None => state,
         };
+        // A run that goes on without a session that answers says what it is missing beside its state.
+        let state = match self.session_gap(v) {
+            Some(gap) => format!("{state} \u{b7} {}", gap.words()),
+            None => state,
+        };
         Header {
             run_id: v.run_id.clone(),
             // The model the run is on now: the one the latest switch went to, else the one its session started on.
@@ -1230,11 +1235,37 @@ impl App {
     /// The silence is measured up to the last read that succeeded (`read_at`), not up to the screen's clock: after ten minutes offline,
     /// or a night with the lid closed, the newest event the client holds is old because the client read nothing, and the banner of the
     /// failed reads says that the last state read is shown.
+    ///
+    /// Before either, the run's own word that its session was asked to end (`RunView::end_request_note`): when, what is true
+    /// about the copies of the work, and whose question an open question is.
     pub(crate) fn session_note(&self, v: &RunView) -> Option<String> {
         if let Some(quiet) = self.read_at.and_then(|read| v.silence_at(read)) {
             return Some(quiet.sentence());
         }
-        v.lost_note(self.now)
+        v.lost_note(self.now).or_else(|| v.end_request_note())
+    }
+
+    /// What a run that goes on is missing while no session of it is known to answer (`RunView::session_gap_at`), measured like
+    /// the silence up to the last read that succeeded. The title's state and the first line of the status block say it.
+    pub(crate) fn session_gap(&self, v: &RunView) -> Option<ham_core::state::SessionGap> {
+        v.session_gap_at(self.read_at)
+    }
+
+    /// How many of the run's tokens the engine used outside the prompts that answered (the goal-check rounds, the prompts that
+    /// failed): the total the stage reported minus the sum of the stored conversation, when that conversation is whole
+    /// (`StoredChat::answered_tokens`) and the difference is above zero. The delivery card shows it on its `Outside` row.
+    fn outside_prompts(&self, usage: Option<ham_core::render::CardUsage>) -> Option<u64> {
+        let total = usage?.tokens;
+        let answered = self.answered_tokens()?;
+        total.checked_sub(answered).filter(|n| *n > 0)
+    }
+
+    /// The run on screen goes on and its session said that it was asked to end (`RunView::end_asked`): an open question is
+    /// that session's.
+    fn question_session_ending(&self) -> bool {
+        self.cached
+            .as_ref()
+            .is_some_and(|v| v.end_asked.is_some() && !v.has_ended())
     }
 
     /// The cards at the end of the conversation, in order: the status, the agents (folded), the blocked panel, the question and the
@@ -1253,6 +1284,11 @@ impl App {
                 self.model_fallback(&v.run_id),
                 self.saved_line(v).as_deref(),
                 self.session_note(v).as_deref(),
+                self.session_gap(v).map(|g| g.words()).as_deref(),
+                matches!(
+                    self.known_target(&v.run_id),
+                    Some(harness_protocol::target::RunTarget::S3Only)
+                ),
             )
             .iter()
             .map(line_text)
@@ -1285,8 +1321,11 @@ impl App {
             let (lines, title) = if v.aborted.is_some() {
                 (aborted_lines(v), "ended early · the run was cleared")
             } else {
+                // A run that left `blocked` for another end (a cancel clears it) has nothing to cancel either.
                 let title = if self.run_is_blocked() {
                     "blocked · r retry"
+                } else if self.run_has_ended() {
+                    "blocked"
                 } else {
                     "blocked · c cancel"
                 };
@@ -1317,10 +1356,12 @@ impl App {
             let text = match &self.download {
                 DownloadState::Done(p) | DownloadState::Refresh(p) => {
                     let again = matches!(self.download, DownloadState::Refresh(_));
+                    let base = card(self.detail.as_ref(), Some(p));
                     let shown = ham_core::render::FinalCard {
                         tests: self.tests.clone(),
                         flow: self.flow.clone(),
-                        ..card(self.detail.as_ref(), Some(p))
+                        outside_prompts: self.outside_prompts(base.usage),
+                        ..base
                     };
                     let whole = self.with_clone_state(final_card_shown(v, &shown), &v.run_id);
                     self.with_link_state(&whole, p, again, width)
@@ -1373,7 +1414,8 @@ impl App {
 
     /// The dashboard's help line: the answer keys that are offered while a question is open, else the usual keys.
     fn dashboard_help(&self, width: u16) -> String {
-        let Some(q) = self.question() else {
+        // A question that was open when the run ended is nobody's to answer, and the run has nothing to cancel.
+        let Some(q) = self.question().filter(|_| !self.run_has_ended()) else {
             return self.usual_help(width);
         };
         let wide = width >= 100;
@@ -1436,10 +1478,13 @@ impl App {
     /// withdraw` (and `, x confirm, h choose`) to it, and a line too wide for the screen loses that ending to an ellipsis.
     /// The keys share the one part of the line that the chip for Esc covers, so no chip for a letter is made that would type it in the box.
     /// A blocked run has ended and has nothing to cancel: its wording leaves out `c c cancel` and keeps `Esc browse, then a artifacts` (or the
-    /// usual `Esc browse`), and [`App::send_footer`] ends the line with `Esc, then r retry`.
+    /// usual `Esc browse`), and [`App::send_footer`] ends the line with `Esc, then r retry`. Where that ending does not fit
+    /// (under 87 columns) the wording is `Esc browse (r retry)` and the line has no ending, so it is whole at 80 columns.
     fn typing_hint(&self, usual: &str, width: u16) -> String {
         let keys = self.link_keys();
         let blocked = self.run_is_blocked();
+        // A run that has ended has nothing to cancel: no wording names `c c cancel`, and a run `R` resumes names that key.
+        let ended = self.run_has_ended();
         let mut then: Vec<&str> = Vec::new();
         if keys.open() {
             then.push(if keys.pr { "o open PR" } else { "o open" });
@@ -1448,11 +1493,18 @@ impl App {
             then.push("d download");
         }
         then.push("a artifacts");
-        if !blocked {
+        if !ended {
             then.push("c c cancel");
+        } else if let Some(label) = self.resume_label() {
+            then.push(label);
         }
         let mut wordings = vec![format!("Esc browse, then {}", then.join(", "))];
-        if !blocked {
+        if blocked {
+            // The usual words with the ending `Esc, then r retry`, then the short form that names the retry inside the Esc part and takes no
+            // ending: at 80 columns the ending does not fit, and a line cut to `Esc, then…` names no key.
+            wordings.push("Esc browse".to_string());
+            wordings.push(ham_core::retry::AFTER_ESC.to_string());
+        } else if !ended {
             wordings.push("Esc browse, then c c cancel".to_string());
             wordings.push("Esc browse (c c cancel)".to_string());
         }
@@ -1481,13 +1533,22 @@ impl App {
         for scroll in [Some("↑↓ PgUp PgDn scroll"), Some("↑↓ scroll"), None] {
             let mut parts = lead.clone();
             parts.extend(scroll);
-            // A blocked run has ended: `r retry` stands where `c cancel` stood.
+            // A run that has ended has nothing to cancel: `r retry` stands where `c cancel` stood on a blocked run, `R resume` on
+            // a paused or stalled run that `R` resumes (`R resume all` when it resumes more runs than this one), and nothing on any other
+            // run that has ended.
+            let resume = self.resume_label();
             let ends = if self.run_is_blocked() {
-                "r retry"
+                Some("r retry")
+            } else if resume.is_some() {
+                resume
+            } else if self.run_has_ended() {
+                None
             } else {
-                "c cancel"
+                Some("c cancel")
             };
-            parts.extend(["a artifacts", ends, "Esc runs", "n new run", "q quit"]);
+            parts.push("a artifacts");
+            parts.extend(ends);
+            parts.extend(["Esc runs", "n new run", "q quit"]);
             text = parts.join(" · ");
             // Before a link exists the line is the old one, whatever the width.
             if lead.is_empty() || text.chars().count() <= width {
@@ -1553,10 +1614,16 @@ impl App {
                 format!(
                     "{} needs you · {}",
                     q.engine,
-                    self.secs_left(q).map_or_else(
-                        || "waiting for your answer".to_string(),
-                        ham_core::input::left_text
-                    )
+                    // The session that asked said that it was asked to end: the minutes left to answer are no longer the
+                    // news, and the status block says what follows.
+                    if self.question_session_ending() {
+                        "its session was asked to end".to_string()
+                    } else {
+                        self.secs_left(q).map_or_else(
+                            || "waiting for your answer".to_string(),
+                            ham_core::input::left_text,
+                        )
+                    }
                 ),
                 Some(s(&q.headline())),
             )
@@ -2292,6 +2359,29 @@ fn aborted_lines(v: &RunView) -> Vec<Line<'static>> {
     lines
 }
 
+/// The words of the status block's `PR` row: the link once the harness announced one. While the run has not ended the row
+/// reads `none yet`, or `none: this run delivers a zip` when `zip_only` says that the screen holds the run's target and it is a zip:
+/// such a run opens no pull request. The view keeps no target, so the caller reads it from the run's summary or its row of
+/// the Runs list, and until one of them is read the row says `none yet`. A run
+/// whose last word is read (`run.completed`, `run.aborted`) or that ended blocked or cleared opens none: the row says `none`, and that
+/// the run delivered a zip when it did (a delivery without a link is a zip-only delivery).
+fn pr_words(v: &RunView, zip_only: bool) -> String {
+    use harness_protocol::goal::GoalStatus;
+    if let Some(url) = &v.pr_url {
+        return s(url);
+    }
+    let over = v.completed
+        || v.aborted.is_some()
+        || matches!(v.status, Some(GoalStatus::Blocked | GoalStatus::Cleared));
+    match (over, v.zip.is_some()) {
+        (false, _) if zip_only => "none: this run delivers a zip",
+        (false, _) => "none yet",
+        (true, true) => "none: this run delivered a zip",
+        (true, false) => "none",
+    }
+    .to_string()
+}
+
 /// The blocked panel: the reason the harness gave.
 fn blocked_lines(v: &RunView) -> Vec<Line<'static>> {
     let Some(b) = &v.blocked else {
@@ -2301,13 +2391,17 @@ fn blocked_lines(v: &RunView) -> Vec<Line<'static>> {
 }
 
 /// The status block of a run. `saved` is the line that says when the last copy of the work was saved, when the run has one;
-/// `note` is the sentence about a session that is silent or was lost, which the card wraps.
+/// `note` is the sentence about a session that is silent or was lost, which the card wraps; `gap` is what a run that goes on is
+/// missing while no session of it is known to answer, which follows the status on the first line; `zip_only` is whether the
+/// screen holds the run's target and it is a zip, which the `PR` row of a run that still works says.
 fn header_lines(
     v: &RunView,
     width: usize,
     fallback: Option<&str>,
     saved: Option<&str>,
     note: Option<&str>,
+    gap: Option<&str>,
+    zip_only: bool,
 ) -> Vec<Line<'static>> {
     // A direct run has no gates, tests or verdicts: its status block names the harness's label.
     let status = v
@@ -2319,6 +2413,9 @@ fn header_lines(
         Some(phase) => format!("{status} ({phase})"),
         None => status,
     };
+    if let Some(gap) = gap {
+        first.push_str(&format!(" \u{b7} {}", s(gap)));
+    }
     if v.untrusted > 0 {
         first.push_str(&format!("  ignored {} forged events", v.untrusted));
     }
@@ -2355,10 +2452,7 @@ fn header_lines(
             lines.push(Line::from(format!("  {mark}{}", s(&o.text))));
         }
     }
-    lines.push(Line::from(format!(
-        "PR     {}",
-        v.pr_url.as_deref().map_or_else(|| "none yet".into(), s)
-    )));
+    lines.push(Line::from(format!("PR     {}", pr_words(v, zip_only))));
     if let Some(saved) = saved {
         lines.push(Line::from(cut(&s(saved), width)));
     }

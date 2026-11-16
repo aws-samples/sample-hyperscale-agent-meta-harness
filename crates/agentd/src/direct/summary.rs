@@ -319,6 +319,8 @@ pub fn build_summary_with(i: SummaryInputs, extra: SummaryExtras) -> DirectSumma
         review: None,
         // The flow the run declared is read from the commits by the end sequence (`direct/mod.rs`) once the summary is built.
         flow: None,
+        // What the engine was told about the delivery is set by the end sequence (`direct/mod.rs`) once the summary is built.
+        delivery_note: None,
     };
     fit_summary(&mut summary);
     summary

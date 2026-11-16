@@ -355,6 +355,7 @@ async fn the_servers_refusal_of_a_model_is_shown_verbatim_and_not_retried() {
         engine: None,
         provider_sharing: None,
         snapshot_every_s: None,
+        delivery_note: None,
     };
     let e = api
         .start_direct_run(&request, "key-refused")

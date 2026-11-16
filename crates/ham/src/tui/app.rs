@@ -841,6 +841,10 @@ pub struct App {
     /// The service has answered a read of the Runs list at least once: before that an empty list means "not read yet", not "no runs"
     /// (the ham mascot of `mascot.rs` waits for it, so it never shows while the list is still loading).
     pub(crate) runs_answered: bool,
+    /// The run on screen and the status its events gave when the Runs list was asked for again because the held list was older than
+    /// those events: one read for each stop of a run, so a list that does not catch up is not asked
+    /// for on every poll.
+    pub(crate) runs_caught_up: Option<(String, harness_protocol::goal::GoalStatus)>,
     /// The dashboard's mode: typing in the message box, or browsing with the hotkeys.
     mode: Mode,
     /// A run opens in typing mode (the chat view's default) rather than browse mode.
@@ -1034,6 +1038,7 @@ impl App {
             resume_ask: None,
             resume_skipped: Vec::new(),
             runs_answered: false,
+            runs_caught_up: None,
             mode: Mode::Browse,
             opens_typing: false,
             drafts: HashMap::new(),
@@ -2669,7 +2674,8 @@ impl App {
     /// A retry or a follow-up from `source` that did not start: the run keeps `card` (the line of provider data sharing when the account
     /// was switched first, then the reason) as a card. On the Runs screen the note row says what did not start and the panel above it shows
     /// `card`; elsewhere, when `say` holds, the notice row has the sentence with `why` when it fits [`NOTICE_COLUMNS`], else a short one that
-    /// points to the card.
+    /// points to the card. The sentence ends with "your text is kept" only when the box of `source` holds a text: after `/retry` the
+    /// line that was typed was the command, and the box is empty.
     pub(crate) fn start_refused(
         &mut self,
         source: &str,
@@ -2689,7 +2695,11 @@ impl App {
             self.runs_say_detailed(what.runs_row(source), what.title(), card);
         } else if say {
             let here = self.focused_run() == Some(source);
-            self.say(&what.notice(source, why, here));
+            let kept = self
+                .drafts
+                .get(source)
+                .is_some_and(|b| !b.text().trim().is_empty());
+            self.say(&what.notice(source, why, here, kept));
         }
     }
 
@@ -2780,12 +2790,15 @@ impl App {
 
     /// A key while the preview of a hotkey is up: the same key again confirms it
     /// once the preview is 300 ms old (an earlier one is ignored and the preview stays); Esc withdraws the preview and stays on the run
-    /// screen; any other key withdraws it and then acts as itself. In browse mode Alt and a letter is the letter (the key table's rule).
-    /// `None` when no hotkey preview is up, or for the key that only withdrew it.
+    /// screen; any other key withdraws it and then acts as itself. The key is read as the key table read the first press:
+    /// a terminal sends an upper-case letter as the letter with Shift held, so Shift is the letter's case and never a reason to
+    /// take `R` for another key; in browse mode Alt and a letter is the letter (the key table's rule); a letter with Control held is not
+    /// the letter. `None` when no hotkey preview is up, or for the key that only withdrew it.
     fn hotkey_preview_key(&mut self, key: &KeyEvent) -> Option<Vec<Effect>> {
         let gesture = self.armed.as_ref()?.gesture_key()?;
-        let same = matches!(key.code, KeyCode::Char(c) if c == gesture)
-            && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::ALT);
+        let chord = keys::chord(key);
+        let same = matches!(chord.code, KeyCode::Char(c) if c == gesture)
+            && (chord.mods.is_empty() || chord.mods == KeyModifiers::ALT);
         if same {
             let now = self.key_ms;
             return Some(match self.armed.as_mut()?.press(ConfirmKey::Enter, now) {
@@ -2831,15 +2844,18 @@ impl App {
     }
 
     /// `R` on a run's screen: the preview of `ham resume --all`, with the count of the runs read; the same key again, 300 ms or more
-    /// later, starts the follow-up runs and the panel reports what each did.
+    /// later, starts the follow-up runs and the panel reports what each did. With no list to count from
+    /// the preview names no count and nothing is refused: the command reads the
+    /// list itself.
     fn resume_key(&mut self) -> Vec<Effect> {
         let plan = ham_core::resume::plan(&self.runs);
-        if plan.resume.is_empty() && !self.runs.is_empty() {
+        let uncounted = self.runs.is_empty() || self.runs_behind_view();
+        if plan.resume.is_empty() && !uncounted {
             self.say("no paused or stalled run to resume");
             return vec![];
         }
         let outcome = prepare_argv(&["resume".to_string(), "--all".to_string()], false);
-        let line = if self.runs.is_empty() {
+        let line = if uncounted {
             "press R again to resume every paused and stalled run".to_string()
         } else {
             format!(
@@ -2913,9 +2929,10 @@ impl App {
             }
             Action::Retry => self.retry_action(),
             Action::ResumeAll => self.resume_key(),
-            // A run that ended blocked has nothing to stop; `r` retries it.
-            Action::Cancel if self.run_is_blocked() => {
-                self.say(ham_core::retry::ENDED);
+            // A run that has ended has nothing to stop: `r` retries a blocked one, `R` resumes a paused or stalled one.
+            Action::Cancel if self.run_has_ended() => {
+                let words = self.ended_words();
+                self.say(&words);
                 vec![]
             }
             Action::Cancel => self.cancel_key(),
@@ -3457,7 +3474,7 @@ impl App {
     }
 
     /// The target of run `id` when the screen holds its summary: the run on screen, else a row of the run list. A run's target never changes.
-    fn known_target(&self, id: &str) -> Option<harness_protocol::target::RunTarget> {
+    pub(super) fn known_target(&self, id: &str) -> Option<harness_protocol::target::RunTarget> {
         self.detail
             .as_ref()
             .filter(|d| d.summary.run_id == id)
@@ -4708,6 +4725,8 @@ impl App {
                         self.refresh();
                         let mut effects = self.track_input();
                         effects.extend(self.maybe_download());
+                        // A run that ended paused or stalled while its screen was open: the held list is older than these events.
+                        effects.extend(self.runs_catch_up());
                         // The totals are as of the last turn that ended: a turn that ends after the first read asks for them again.
                         let turns = self.turn_ids.len();
                         if self.first_pages {
@@ -5090,26 +5109,25 @@ impl Refused {
 
     /// The notice off the Runs screen: the whole sentence when it fits [`NOTICE_COLUMNS`]. A longer one is cut to a short sentence, which
     /// points to the card above when `here` holds (the screen shows the run the start came from, which keeps the card) and names the run
-    /// otherwise, because the card is on that run's screen only.
-    fn notice(self, source: &str, why: &str, here: bool) -> String {
-        let (whole, short) = match self {
-            Refused::FollowUp => (
-                format!("the follow-up run did not start: {why}; your text is kept"),
-                "the follow-up run did not start (the card above says why); your text is kept",
-            ),
-            Refused::Retry => (
-                format!("the retry did not start: {why}; your text is kept"),
-                "the retry did not start (the card above says why); your text is kept",
-            ),
-            Refused::Resume => (
-                format!("the resume did not start: {why}"),
-                "the resume did not start (the card above says why)",
-            ),
+    /// otherwise, because the card is on that run's screen only. `kept` says that the box of the run holds a text: a retry or a
+    /// follow-up then ends with "your text is kept".
+    fn notice(self, source: &str, why: &str, here: bool, kept: bool) -> String {
+        let subject = match self {
+            Refused::FollowUp => "the follow-up run",
+            Refused::Retry => "the retry",
+            Refused::Resume => "the resume",
         };
+        let tail = if kept && self != Refused::Resume {
+            "; your text is kept"
+        } else {
+            ""
+        };
+        let whole = format!("{subject} did not start: {why}{tail}");
+        let short = format!("{subject} did not start (the card above says why){tail}");
         if ratatui::text::Span::raw(whole.as_str()).width() <= NOTICE_COLUMNS {
             whole
         } else if here {
-            short.to_string()
+            short
         } else {
             format!(
                 "the {} of run {} did not start: open it to see why",
@@ -5863,14 +5881,25 @@ mod refused_tests {
     #[test]
     fn b832_every_notice_of_a_start_that_did_not_start_fits_one_row() {
         for what in [Refused::Retry, Refused::FollowUp, Refused::Resume] {
-            for here in [true, false] {
-                let short = what.notice(ID, "the service did not answer", here);
+            for (here, kept) in [(true, true), (true, false), (false, true), (false, false)] {
+                let short = what.notice(ID, "the service did not answer", here, kept);
                 assert!(short.contains("the service did not answer"), "{short}");
-                let long = what.notice(ID, &"x".repeat(600), here);
+                // The text is called kept only when the box holds one, and never for a resume.
+                assert_eq!(
+                    short.contains("your text is kept"),
+                    kept && what != Refused::Resume,
+                    "{short}"
+                );
+                let long = what.notice(ID, &"x".repeat(600), here, kept);
                 assert!(long.chars().count() <= NOTICE_COLUMNS, "{long}");
                 assert_eq!(long.contains("the card above says why"), here, "{long}");
                 assert_eq!(long.contains(&short_id(ID)), !here, "{long}");
                 assert!(long.contains(what.word()), "{long}");
+                assert_eq!(
+                    long.contains("your text is kept"),
+                    here && kept && what != Refused::Resume,
+                    "{long}"
+                );
             }
             let row = what.runs_row(ID);
             assert!(row.chars().count() <= NOTICE_COLUMNS, "{row}");

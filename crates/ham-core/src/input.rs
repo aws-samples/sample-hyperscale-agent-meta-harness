@@ -11,10 +11,11 @@ use crate::sanitize::{sanitize_block, sanitize_line};
 use crate::tables::group_digits;
 use harness_protocol::common::parse_utc_unix;
 use harness_protocol::direct::{
-    InstructAction, MAX_INPUT_TEXT_BYTES, NeedsInputEvidence, NeedsInputModel, NeedsInputPayload,
-    fold_input,
+    DIRECT_AGENT_ID, InstructAction, MAX_INPUT_TEXT_BYTES, NeedsInputEvidence, NeedsInputModel,
+    NeedsInputPayload, PROGRESS_NEEDS_INPUT, fold_input,
 };
-use harness_protocol::envelope::Envelope;
+use harness_protocol::envelope::{Authority, Envelope, EventType, Payload};
+use std::collections::HashMap;
 
 /// Lines and columns of Cline's last words on the card. 64 columns plus the label "Last words: " fill the 76 columns of the card.
 pub const LAST_WORDS_LINES: usize = 12;
@@ -157,6 +158,28 @@ const REASONS: [(&str, ReasonWords); 14] = [
     ),
 ];
 
+/// What the client says about an open question once the run said that its session was asked to end. A session that has
+/// ended takes no answer; when the service calls it lost the question is closed, and the session it starts asks its own.
+///
+/// The sentence promises what the service does, by the rule of the notice of a silent session
+/// (`crate::lost_session::Silence::sentence`): a new session starts "when the run has time left" (the client cannot see the run's
+/// time), and none starts when the session would be lost session `MAX_LOST_SLICES` in a row, because the run ends then.
+/// `lost_in_a_row` is the count of the run's events (`RunView::lost_in_a_row`).
+pub fn asked_by_ending_session(lost_in_a_row: u32) -> String {
+    let head =
+        "The open question was asked by that session: once it has ended, no answer reaches it.";
+    let would = lost_in_a_row.saturating_add(1);
+    if would >= harness_protocol::direct::MAX_LOST_SLICES {
+        format!(
+            "{head} It would be lost session {would} in a row, so the run would end and no new session would ask again."
+        )
+    } else {
+        format!(
+            "{head} When the run has time left, a new session starts and asks again when it needs your answer."
+        )
+    }
+}
+
 /// What the run waits for, or the notice it raised: a [`NeedsInputPayload`] with every string sanitized.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputRequest {
@@ -164,7 +187,7 @@ pub struct InputRequest {
     pub engine: String,
     /// The id of the question: the answer names it, and it is the event id of the `needs-input` event.
     pub request_id: String,
-    /// The question's number in this run (1 for the first).
+    /// The question's number in this run (1 for the first), counted across the run's sessions.
     pub n: u32,
     /// The reason code (`engine_stop`, ...); an unknown code is shown with the event's own title.
     pub reason: String,
@@ -266,23 +289,87 @@ pub fn build<'a>(events: impl IntoIterator<Item = &'a Envelope>, now: Option<i64
     build_for(events, now, None)
 }
 
-/// [`build`] for a run on the engine `engine` names (an id of `crate::engines`).
+/// The number of each question within the run, by request id. A worker numbers its own questions from 1, so the first
+/// question of a later session carried the number of the run's first. The numbers of a session go on after the highest number of the
+/// sessions before it. A session is a worker that names itself at its start (`session` of `turn.started`): a run of one session, and a
+/// run whose workers name none, keep the numbers as written. The events are put in id order and a repeated request id counts once, as
+/// in `fold_input`.
+fn run_numbers(events: &[&Envelope]) -> HashMap<String, u32> {
+    let mut evs: Vec<&Envelope> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            e.authority == Authority::Agent
+                && e.agent_id.as_deref() == Some(DIRECT_AGENT_ID)
+                && matches!(
+                    e.event_type,
+                    EventType::TurnStarted | EventType::TurnProgress
+                )
+        })
+        .collect();
+    evs.sort_by(|a, b| a.event_id.cmp(&b.event_id));
+    evs.dedup_by(|a, b| a.event_id == b.event_id);
+    let number = |v: &serde_json::Value, key: &str| {
+        v.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let mut out = HashMap::new();
+    // The session in progress, the numbers given to the sessions before it, and the highest number of this one.
+    let (mut session, mut base, mut highest) = (1u32, 0u32, 0u32);
+    for e in evs {
+        let Payload::Inline { value } = &e.payload else {
+            continue;
+        };
+        if e.event_type == EventType::TurnStarted {
+            if let Some(n) = number(value, "session").filter(|n| *n > session) {
+                session = n;
+                base = base.saturating_add(highest);
+                highest = 0;
+            }
+            continue;
+        }
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some(PROGRESS_NEEDS_INPUT) {
+            continue;
+        }
+        let id = value
+            .get("requestId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty());
+        let (Some(id), Some(own)) = (id, number(value, "n")) else {
+            continue;
+        };
+        if out.contains_key(id) {
+            continue;
+        }
+        highest = highest.max(own);
+        out.insert(id.to_string(), base.saturating_add(own));
+    }
+    out
+}
+
+/// [`build`] for a run on the engine `engine` names (an id of `crate::engines`). The questions are numbered across the run's sessions
+/// ([`run_numbers`]).
 pub fn build_for<'a>(
     events: impl IntoIterator<Item = &'a Envelope>,
     now: Option<i64>,
     engine: Option<&str>,
 ) -> Built {
-    let fold = fold_input(events);
-    let open = fold
-        .open
-        .as_ref()
-        .map(|o| InputRequest::of_for(&o.payload, now, engine));
+    let events: Vec<&Envelope> = events.into_iter().collect();
+    let numbers = run_numbers(&events);
+    let number = |id: &str, own: u32| numbers.get(id).copied().unwrap_or(own);
+    let fold = fold_input(events.iter().copied());
+    let open = fold.open.as_ref().map(|o| {
+        let mut r = InputRequest::of_for(&o.payload, now, engine);
+        r.n = number(&o.request_id, r.n);
+        r
+    });
     let history = fold
         .closed
         .iter()
         .map(|c| InputOutcome {
             request_id: sanitize_line(&c.request_id),
-            n: c.n,
+            n: number(&c.request_id, c.n),
             reason: sanitize_line(&c.reason),
             how: sanitize_line(&c.how),
             ts: sanitize_line(&c.ts),

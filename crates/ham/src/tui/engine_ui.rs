@@ -26,9 +26,10 @@ impl App {
     /// The popup for the text after the slash.
     pub(crate) fn popup_for(&self, prefix: &str) -> Vec<&'static registry::Entry> {
         let mut list = engines::popup(&self.caps, prefix);
-        // Hidden, not greyed (E7): a run that ended blocked has nothing to cancel, and only a blocked run can be retried.
+        // Hidden, not greyed (E7): a run that has ended has nothing to cancel, and only a blocked run can be retried.
         let blocked = self.run_is_blocked();
-        list.retain(|e| e.name != if blocked { "cancel" } else { "retry" });
+        let ended = self.run_has_ended();
+        list.retain(|e| !(e.name == "cancel" && ended) && !(e.name == "retry" && !blocked));
         list
     }
 

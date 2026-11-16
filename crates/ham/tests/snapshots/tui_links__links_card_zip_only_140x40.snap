@@ -8,7 +8,7 @@ notice ▾ status
          complete
          Model  Claude Sonnet 5.5
          Outcome Cline reported done
-         PR     none yet
+         PR     none: this run delivered a zip
 notice ▸ agents 1
 notice ▾ delivery
          Run       01K6A0000000000000000000R1 complete
@@ -41,4 +41,4 @@ notice ▾ delivery
 ┌ Message to Cline · i or Enter to type ───────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                                                          │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-o open · d download · ↑↓ PgUp PgDn scroll · a artifacts · c cancel · Esc runs · n new run · q quit
+o open · d download · ↑↓ PgUp PgDn scroll · a artifacts · Esc runs · n new run · q quit

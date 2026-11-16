@@ -16,7 +16,8 @@
 //! status} and no `kind`; `turn.progress` {text | summary}, whose `kind` `provider-retry`, `provider-switch`, `engine-stop`, `notify`,
 //! `provider-wait` and `provider-outage` (and `permission.requested`) are the harness notices of [`crate::notice`];
 //! `turn.ended` {text | summary}; `run.waiting` of kind `session-lost`: the service's word that a session
-//! was lost and what follows, which changes no status. `turn.started` may carry `session` and `beatS`. The direct line
+//! was lost and what follows, which changes no status. `turn.started` may carry `session` and `beatS`. A notice about a copy
+//! whose words say that the session was asked to end is kept as [`RunView::end_asked`]. The direct line
 //! writes no other event type that the client reads: an event of any other type is accepted and changes nothing.
 
 use crate::input::{InputView, RestartNote};
@@ -385,6 +386,35 @@ pub struct RunView {
     pub session_started_unix: Option<i64>,
     /// The session in progress has been silent for two beats or more at the clock the view was built with ([`RunView::silence`]).
     pub silent: Option<crate::lost_session::Silence>,
+    /// When the session in progress said that it was asked to end: the time of the worker's notice
+    /// ([`crate::notice::is_end_request`]). `None` once the service called the session lost or a later session started.
+    pub end_asked: Option<String>,
+    /// The copy the view holds ([`RunView::saved`]) was stored after the word of [`RunView::end_asked`]: the worker tries the
+    /// copy of a request to end again every few seconds while its process runs on. False without such a word, and again after a
+    /// later one.
+    pub saved_after_end_asked: bool,
+}
+
+/// What a run that goes on is missing while no session of it is known to answer. The status stays `active` all the while.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionGap {
+    /// The worker said that its session was asked to end.
+    Ending,
+    /// The session in progress has been silent for two beats or more.
+    Silent,
+    /// The service called the session lost and starts the session of this number, which has not written its start.
+    Awaiting(u32),
+}
+
+impl SessionGap {
+    /// The words beside the status: `session asked to end`, `session silent`, `waiting for session 2`.
+    pub fn words(&self) -> String {
+        match self {
+            Self::Ending => "session asked to end".to_string(),
+            Self::Silent => "session silent".to_string(),
+            Self::Awaiting(n) => format!("waiting for session {n}"),
+        }
+    }
 }
 
 impl RunView {
@@ -427,6 +457,96 @@ impl RunView {
                 (self.session_open && told).then(|| lost.sentence_started())
             }
         }
+    }
+
+    /// The number of the session the service starts in place of the newest lost one, while that session has not written its
+    /// start. `None` when it has, when the service starts none, and for a run that lost no session.
+    fn awaiting_session(&self) -> Option<u32> {
+        let lost = self.lost.last()?;
+        let next = lost.restart()?;
+        let decided = harness_protocol::common::parse_utc_unix(&lost.decided_at)?;
+        let started = match (self.session_now, self.session_started_unix) {
+            (Some(s), _) => s >= next,
+            (None, Some(at)) => at >= decided,
+            (None, None) => false,
+        };
+        (!started).then_some(next)
+    }
+
+    /// What a run that goes on is missing at the clock `now` (Unix seconds; without one a silence is not seen): the session
+    /// the service starts has not written its start, the session in progress is silent, or its worker said that it was asked to end.
+    /// `None` for a run with a session that answers and for a run that has ended.
+    pub fn session_gap_at(&self, now: Option<i64>) -> Option<SessionGap> {
+        if self.has_ended() {
+            return None;
+        }
+        if let Some(next) = self.awaiting_session() {
+            return Some(SessionGap::Awaiting(next));
+        }
+        if now.is_some_and(|now| self.silence_at(now).is_some()) {
+            return Some(SessionGap::Silent);
+        }
+        self.end_asked.as_ref().map(|_| SessionGap::Ending)
+    }
+
+    /// The note of a run whose session said that it was asked to end ([`RunView::end_asked`]): when, what is true about the
+    /// copies of the work (the last saved copy is from before that request, [`crate::saved_copy::before_end_request`], or a copy was
+    /// stored after it, [`crate::saved_copy::after_end_request`]), and whose question an open question is
+    /// ([`crate::input::asked_by_ending_session`], which promises a new session only where the service starts one). `None` for every
+    /// other run and for a run that has ended.
+    pub fn end_request_note(&self) -> Option<String> {
+        if self.has_ended() {
+            return None;
+        }
+        let at = self.end_asked.as_deref()?;
+        let copies = match self.saved.as_ref() {
+            Some(c) if self.saved_after_end_asked => {
+                crate::saved_copy::after_end_request(c, &self.run_id)
+            }
+            copy => crate::saved_copy::before_end_request(
+                copy,
+                &self.run_id,
+                self.copies_failed_before_end_request(),
+            ),
+        };
+        let mut note = format!(
+            "The session was asked to end at {}. {copies}",
+            crate::saved_copy::utc_minute(at)
+        );
+        if self.input.waiting().is_some() {
+            note.push(' ');
+            note.push_str(&crate::input::asked_by_ending_session(self.lost_in_a_row));
+        }
+        Some(note)
+    }
+
+    /// When the run's last session began (Unix seconds): the time of the newest start a session wrote
+    /// ([`RunView::session_started_unix`]). `None` when no session named itself at its start, and when the service named a later
+    /// session that has not written its start (a session it started in place of a lost one, or a session it called lost): the
+    /// newest start is then not the last session's. The stored conversation ties an `end` record to the run's last session with it
+    /// (`crate::stored::StoredChat::timed_for`).
+    pub fn last_session_began(&self) -> Option<i64> {
+        let newest = self.session_now?;
+        let named_later = self
+            .lost
+            .iter()
+            .any(|l| l.session > newest || l.restart().is_some_and(|next| next > newest));
+        if named_later {
+            return None;
+        }
+        self.session_started_unix
+    }
+
+    /// The run said that a copy of its work was late, could not be saved or cannot be saved in this session, and after that
+    /// that its session was asked to end ([`RunView::copy_notices`] holds both, in event order). A run without a copy then has file
+    /// changes that no copy holds. False without a request to end and when the request is the first thing the run said about its
+    /// copies since its newest stored copy.
+    pub fn copies_failed_before_end_request(&self) -> bool {
+        let is_request = |n: &Notice| crate::notice::is_end_request(&n.text);
+        self.copy_notices
+            .iter()
+            .rposition(is_request)
+            .is_some_and(|at| self.copy_notices.iter().take(at).any(|n| !is_request(n)))
     }
 
     /// [`RunView::silence`] at the clock `now` (Unix seconds), for a surface that holds its own clock (the run screen).
@@ -729,6 +849,8 @@ impl RunState {
             lost_in_a_row: 0,
             session_started_unix: None,
             silent: None,
+            end_asked: None,
+            saved_after_end_asked: false,
         };
         let mut tools = ToolTracker::default();
         for e in self.events.values() {
@@ -910,6 +1032,11 @@ fn fold_progress(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
                 v.copy_notices.remove(0);
             }
             v.copy_notices.push(n.clone());
+            // The worker's word that its session was asked to end. The copy the view holds is from before it.
+            if crate::notice::is_end_request(&n.text) {
+                v.end_asked = Some(sanitize_line(&e.ts));
+                v.saved_after_end_asked = false;
+            }
         }
         v.notices.push(n);
     }
@@ -939,6 +1066,9 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
                 v.session_open = false;
                 // What the session said about its copies is over with it; nothing keeps trying for a session that is gone.
                 v.copy_notices.clear();
+                // So is its word that it was asked to end: the service's word about the session takes its place.
+                v.end_asked = None;
+                v.saved_after_end_asked = false;
                 v.lost_in_a_row = lost.lost_in_a_row;
                 v.lost.push(lost);
                 let excess = v.lost.len().saturating_sub(crate::lost_session::MAX_KEPT);
@@ -969,6 +1099,9 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
             v.route.working_again();
             // A session is in progress; a worker that writes beats says how often, and names the session.
             v.session_open = true;
+            // A request to end was an earlier session's.
+            v.end_asked = None;
+            v.saved_after_end_asked = false;
             if let Some(t) = harness_protocol::common::parse_utc_unix(&e.ts) {
                 v.session_started_unix = Some(v.session_started_unix.map_or(t, |held| held.max(t)));
             }
@@ -1006,6 +1139,9 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
                     // The events of two sessions can arrive in either order.
                     copy.final_copy =
                         copy.final_copy && v.engine_started_unix.is_none_or(|t| t <= copy.at_unix);
+                    // A copy stored after the session's word that it was asked to end (the worker's next try) is no copy
+                    // from before that word.
+                    v.saved_after_end_asked = v.end_asked.is_some();
                     v.saved = Some(copy);
                 }
                 return;

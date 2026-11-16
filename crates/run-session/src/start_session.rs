@@ -30,7 +30,6 @@ use dispatcher::items::{Dispatch, agent_item, mint_plan, rfc3339};
 use dispatcher::policy::session_policy_for_routes;
 use harness_core::engine_profile::bundled_profile;
 use harness_protocol::common::{Engine, Transport};
-use harness_protocol::direct::DirectDelivery;
 use harness_protocol::direct::{
     DIRECT_AGENT_ID, DIRECT_TASK_ID, DIRECT_TURN, DirectInvocationRequest, DirectKind, DirectSlice,
     InputRef, MAX_DIRECT_BODY_BYTES, MAX_DIRECT_TIMEOUT_S, MAX_SLICES, MAX_SNAPSHOT_EVERY_S,
@@ -39,7 +38,6 @@ use harness_protocol::direct::{
 use harness_protocol::goal::{GoalPhase, GoalStatus};
 use harness_protocol::runtime::{InvocationAccepted, PackagesToken, RepoSource};
 use harness_protocol::store::{CredsBinding, ResumePath, TurnItem};
-use harness_protocol::target::RunTarget;
 use serde::Serialize;
 use serde_json::Value;
 use std::future::Future;
@@ -188,19 +186,6 @@ fn target_mode(run: &harness_protocol::store::RunItem) -> String {
         .unwrap_or_else(|| "repo".into())
 }
 
-/// How the run delivers, for the invocation of every session: a zip alone for the zip target, else a pull request to the repository
-/// as the user named it (`cc:<name>`). The delivery plan reads the same member of the Run item when it tells the bundle validator the
-/// target (`plan_delivery`: `target: zip` for the zip target, a pull request for every other run), so the words the engine reads at the
-/// start of a session and the check its work meets at the end cannot differ (`tests/b847_delivery_word.rs`).
-pub fn delivery_of(target: &RunTarget) -> DirectDelivery {
-    match target {
-        RunTarget::S3Only => DirectDelivery::zip(),
-        RunTarget::Repo { repo } | RunTarget::NewRepo { repo } => {
-            DirectDelivery::pull_request(repo.to_string())
-        }
-    }
-}
-
 pub async fn start_session<S, T, M, R, B, P>(
     deps: &Deps<S, T, M, R, B, P>,
     run_id: &str,
@@ -235,9 +220,14 @@ where
     }
     let (request, request_sha256) = read_request(&deps.store, &deps.blobs, run_id).await?;
     // The copy interval of the run is the request's, or the worker's default. control-api refuses a value no request may name; a request stored by
-    // another version is checked here once more, before anything is minted or invoked. Every session of the run gets the same interval. A request that
-    // names none leaves the member out of the invocation, and the worker's own default applies (15 seconds). A worker of an older release refuses a
-    // number below 60, and a session of a run that was active while the stage was updated can still reach one.
+    // another version is checked here once more, before anything is minted or invoked. Every session of the run gets the same interval.
+    // A request that names none leaves the member out of the invocation, and the worker's own default applies (15 seconds). The
+    // reason is the worker image, not a run in flight: the deploy guard keeps a deploy from moving the worker runtime while a run is
+    // active, so no session of an active run reaches an earlier worker through an update. A worker image of an earlier release that the
+    // endpoint `live` is pointed back at refuses a number below 60, and it would refuse the default written out. With the member left out
+    // the invocation of a run that names no interval holds nothing such an image refuses, and each worker keeps its own default.
+    // The same holds for how the run delivers. The service of protocol 1.61.0 wrote `delivery` into every invocation, and an earlier
+    // worker image refused it; this version writes none (below), and the worker reads the target of the stored request.
     let snapshot_every_s = match request.snapshot_every_s {
         None => None,
         Some(s) if snapshot_every_s_ok(s) => Some(s),
@@ -567,8 +557,11 @@ where
         // validation below.
         input_wait_s: request.input_wait_s.filter(|s| *s != 0),
         slice: slice_member,
-        // Every session of the run is told how the run delivers, so the worker can say it to the engine in its first words.
-        delivery: Some(delivery_of(&run.target)),
+        // Every session of the run is told how the run delivers, so the worker can say it to the engine in its first words. The
+        // worker reads how the run delivers from the target of the stored request (`harness_protocol::direct::delivery_to_say`),
+        // which every worker receives; a member here is one that a worker image of an earlier release refuses, and then no run
+        // starts after a rollback of the image alone.
+        delivery: None,
     };
     // The package token is minted with this Lambda's own role, for the whole session plus agentd's margin. A failed
     // mint is logged and the run goes on without one: installs fail where Cline reports them.

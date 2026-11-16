@@ -644,9 +644,13 @@ case $TARGET_ARCH in x64) want_machine=3e00; machine_name=x86-64 ;; arm64) want_
 expected_version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/apps/cli/package.json" | head -n 1)
 version=""
 if [ "$TARGET_ARCH" = "$HOST_ARCH" ]; then
-  version=$(env -i HOME="$RUN_DIR/home" TMPDIR="$RUN_DIR/tmp" PATH=/usr/bin:/bin CLINE_NO_AUTO_UPDATE=1 \
-    timeout 60 "$BIN" --version </dev/null 2>"$RUN_DIR/version.err" | tr -d '\r' | head -n 1) ||
+  # The whole output is captured and its first line is cut out here, without a reader process: a pipeline into `head -n 1` ends at the first line, and a
+  # binary that is still printing then ends the pipeline with status 141 under pipefail, which read a good binary as a failed check.
+  version_out=$(env -i HOME="$RUN_DIR/home" TMPDIR="$RUN_DIR/tmp" PATH=/usr/bin:/bin CLINE_NO_AUTO_UPDATE=1 \
+    timeout 60 "$BIN" --version </dev/null 2>"$RUN_DIR/version.err") ||
     die 9 "$BIN --version failed on the host: $(head -n 3 "$RUN_DIR/version.err" | tr '\n' ' ')"
+  version=${version_out%%$'\n'*}
+  version=${version//$'\r'/}
   [ "$version" = "$expected_version" ] || die 9 "$BIN --version printed '$version', expected '$expected_version'"
   say "ok --version $version on the host"
 fi

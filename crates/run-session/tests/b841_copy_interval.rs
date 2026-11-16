@@ -56,8 +56,9 @@ fn plan_for(n: u32) -> Vec<u8> {
 
 #[tokio::test]
 async fn b841_copy_a_request_without_the_member_leaves_the_timer_to_the_worker() {
-    // The worker's default is 15 seconds, and a worker of an older release refuses a number below 60. A session of a run that was active
-    // while the stage was updated can still reach such a worker, so the invocation names no interval unless the request did.
+    // The worker's default is 15 seconds, and a worker image of an earlier release refuses a number below 60. The deploy guard keeps
+    // a deploy off the worker runtime while a run is active, so the case is a worker image rolled back alone: the invocation names no
+    // interval unless the request did, and such an image then keeps its own default instead of refusing the invocation.
     let mem = Mem::default();
     mem.seed(RunTarget::S3Only, PROMPT, MODEL);
     start(&mem, 1).await.unwrap();

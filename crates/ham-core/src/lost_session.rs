@@ -175,16 +175,27 @@ impl SessionLost {
         format!("{head} {then}")
     }
 
-    /// [`SessionLost::sentence`] once the session it names has started: the same facts in the past tense, with the time the service
-    /// decided. An event that starts no session reads as [`SessionLost::sentence`].
+    /// [`SessionLost::sentence`] once the session it names has started: the same facts in the past tense, with the last heartbeat
+    /// the service received and the time it called the session lost, which is [`SessionLost::silence_s`] seconds later.
+    /// An event that starts no session reads as
+    /// [`SessionLost::sentence`].
     pub fn sentence_started(&self) -> String {
         let n = self.session;
         let at = utc_minute(&self.decided_at);
         let head = if self.cause == CAUSE_NO_HEARTBEAT {
-            format!(
-                "Session {n} was lost at {at}: the service received no heartbeat from it for {} seconds.",
-                self.silence_s
-            )
+            match self.last_heartbeat_at.as_deref() {
+                Some(beat) => format!(
+                    "Session {n} was lost: its last heartbeat came at {}, and the service called it lost at {} after {} seconds \
+                     without one.",
+                    utc_minute(beat),
+                    utc_minute_after(beat, &self.decided_at),
+                    self.silence_s
+                ),
+                None => format!(
+                    "Session {n} was lost: the service called it lost at {at} after {} seconds without a heartbeat.",
+                    self.silence_s
+                ),
+            }
         } else {
             format!("Session {n} was lost at {at}: it ended without a result.")
         };
@@ -208,8 +219,9 @@ impl SessionLost {
         format!("{head} {then}")
     }
 
-    /// The row of the card: `Lost      session 1 at <time>; session 2 started from the copy saved at <time>; file changes after that
-    /// copy were lost`.
+    /// The row of the card: `Lost      session 1: last heartbeat <time>, called lost <time>; session 2 started from the copy saved at
+    /// <time>; file changes after that copy were lost`. The two times are the last heartbeat the service received and its decision,
+    /// [`SessionLost::silence_s`] seconds later; a service that holds no heartbeat of the session gives the decision alone.
     pub fn card_row(&self) -> String {
         let n = self.session;
         let then = match (
@@ -233,15 +245,31 @@ impl SessionLost {
             ),
             (None, _, _) => "no new session started, so the run ended".to_string(),
         };
-        format!(
-            "{LOST_LABEL}session {n} at {}; {then}",
-            utc_minute(&self.decided_at)
-        )
+        match self.last_heartbeat_at.as_deref() {
+            Some(beat) => format!(
+                "{LOST_LABEL}session {n}: last heartbeat {}, called lost {}; {then}",
+                utc_minute(beat),
+                utc_minute_after(beat, &self.decided_at)
+            ),
+            None => format!(
+                "{LOST_LABEL}session {n}, called lost {}; {then}",
+                utc_minute(&self.decided_at)
+            ),
+        }
     }
 
     /// The number of the session the service starts, when it starts one.
     pub fn restart(&self) -> Option<u32> {
         self.next_session.filter(|_| self.then == THEN_RESTART)
+    }
+}
+
+/// The second of two times in one sentence: `07:20 UTC` when `t` is on the day of `first`, else the whole [`utc_minute`].
+fn utc_minute_after(first: &str, t: &str) -> String {
+    let whole = utc_minute(t);
+    match (first.get(..10), t.get(..10), whole.get(11..)) {
+        (Some(a), Some(b), Some(time)) if a == b => time.to_string(),
+        _ => whole,
     }
 }
 
@@ -285,10 +313,12 @@ fn age(secs: i64) -> String {
 }
 
 impl Silence {
-    /// The notice of the run screen and of `ham watch`: since when nothing was heard, and what the service does when that lasts.
+    /// The notice of the run screen and of `ham watch`: since when no event of the run was read, and what the service does when
+    /// that lasts. The moment is the newest event the client read ([`Silence::since`]); the service counts from the last heartbeat
+    /// it received, which [`SessionLost::sentence`] names, and the two can be about a minute apart.
     pub fn sentence(&self) -> String {
         let head = format!(
-            "No word from the run's session since {} ({}). When the service receives no heartbeat from a session for \
+            "No event from the run's session since {} ({}). When the service receives no heartbeat from a session for \
              {SESSION_LOST_AFTER_S} seconds,",
             utc_minute(&self.since),
             age(self.secs)

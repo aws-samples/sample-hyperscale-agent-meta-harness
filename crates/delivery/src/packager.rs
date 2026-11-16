@@ -26,8 +26,10 @@ use crate::checks::{check_head_sha, harness_ref};
 use crate::credential::civil;
 use crate::error::DeliveryError;
 use crate::files::{scratch, sha256_file, sha256_hex};
+use crate::git::EMPTY_TREE;
 use crate::git::Git;
 use crate::ports::{Artifacts, Blobs, PutMeta};
+use crate::validator::{DeliveryTarget, Protected, protected};
 use harness_protocol::common::Usage;
 use harness_protocol::direct::{DirectEvidence, HeadSource, TestReportStatus};
 use harness_protocol::orchestration::DeliveryReadyPayload;
@@ -48,8 +50,20 @@ pub struct PackageRequest {
     pub repo: String,
     #[serde(default)]
     pub base_sha: Option<String>,
+    /// The commit the bundle validator judged the delivery from (`validate.baseSha` of the same plan). It is further back than
+    /// `baseSha` for a follow-up of a run that was not delivered.
+    /// Read only for a zip (`target`): the packager names the workflow files and the root build specification that changed between it and
+    /// the head, which are the paths the validator reported and the run card shows. Absent means the empty tree, as the validator reads a
+    /// request without a base: every file of the head. `plan-delivery` writes it for a zip run only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged_base_sha: Option<String>,
     pub head_sha: String,
     pub objective: String,
+    /// What the run delivers to, as the bundle validator is told (`plan-delivery` writes `zip` for a run with the zip target and no
+    /// member otherwise; the default, a pull request, is left off the wire). For a zip the packager names a workflow file or a root build
+    /// specification the zip holds, in EVIDENCE.md and in the zip's copy of `evidence/direct.json` (`zipHolds`).
+    #[serde(default, skip_serializing_if = "DeliveryTarget::is_pull_request")]
+    pub target: DeliveryTarget,
     #[serde(default)]
     pub pr_url: Option<String>,
     /// What Cline said about its own stop: the outcome label, Cline's last
@@ -133,6 +147,27 @@ fn quote(text: &str) -> String {
 /// did, and claims nothing about the work: no word of a check the harness does not make
 /// (`harness_protocol::direct::banned_claim_word`).
 pub fn render_evidence(r: &PackageRequest) -> String {
+    render_evidence_with(r, None)
+}
+
+/// The Detail row: the run's own detail, then what the zip holds that a repository would have refused, as the run card puts the
+/// two together. `None` when there is neither.
+fn detail_row(detail: Option<&str>, zip_holds: Option<&str>) -> Option<String> {
+    match (
+        detail.map(str::trim_end).filter(|d| !d.is_empty()),
+        zip_holds,
+    ) {
+        (Some(d), Some(h)) if d.ends_with(['.', '!', '?']) => Some(format!("{d} {h}")),
+        (Some(d), Some(h)) => Some(format!("{d}. {h}")),
+        (Some(d), None) => Some(d.to_string()),
+        (None, Some(h)) => Some(h.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// [`render_evidence`] with the sentence on what the zip holds that a repository would have refused,
+/// which the packager reads from the bundle it packages. The sentence ends the Detail row, as it ends the Detail of the run card.
+pub fn render_evidence_with(r: &PackageRequest, zip_holds: Option<&str>) -> String {
     let d = &r.direct;
     // The engine that ran the session: every line that says who reported, left, stopped or worked takes its name from here.
     let name = d.engine_or_default().display_name().to_string();
@@ -157,8 +192,8 @@ pub fn render_evidence(r: &PackageRequest) -> String {
         r.pr_url.as_deref().map_or("none".to_string(), cell)
     ));
     line(format!("| Outcome | {} |", cell(&d.label)));
-    if let Some(detail) = &d.detail {
-        line(format!("| Detail | {} |", cell(detail)));
+    if let Some(detail) = detail_row(d.detail.as_deref(), zip_holds) {
+        line(format!("| Detail | {} |", cell(&detail)));
     }
     if let Some(reason) = &d.stop_reason {
         line(format!("| {name} stop reason | `{}` |", cell(reason)));
@@ -220,6 +255,16 @@ pub fn render_evidence(r: &PackageRequest) -> String {
     line(String::new());
     line(quote(&r.objective));
     line(String::new());
+    // What the harness told the engine about the delivery at the start of the session: its own block, word for word, as the worker
+    // recorded it. A run that was told nothing (the user switched the block off, or the run has no summary) has no section.
+    if let Some(note) = d.delivery_note.as_deref().filter(|n| !n.trim().is_empty()) {
+        line(format!(
+            "## What the harness told {name} about the delivery"
+        ));
+        line(String::new());
+        line(quote(note));
+        line(String::new());
+    }
     line(format!("## {name}'s last message"));
     line(String::new());
     match d.cline_message.as_deref().filter(|m| !m.trim().is_empty()) {
@@ -325,6 +370,9 @@ fn check_request(r: &PackageRequest) -> Result<(), DeliveryError> {
     if let Some(b) = &r.base_sha {
         check_head_sha(b)?;
     }
+    if let Some(b) = &r.judged_base_sha {
+        check_head_sha(b)?;
+    }
     let repo_ok = (1..=100).contains(&r.repo.len())
         && !r.repo.starts_with('.')
         && r.repo
@@ -344,6 +392,46 @@ fn check_request(r: &PackageRequest) -> Result<(), DeliveryError> {
         )));
     }
     Ok(())
+}
+
+/// The plan's record as the zip names it (`runs/<run>/evidence/direct.json` in the bucket).
+const PLAN_RECORD: &str = "evidence/direct.json";
+
+/// The member of the zip's copy of the plan's record that holds the sentence of `harness_protocol::direct::zip_holds`.
+pub const ZIP_HOLDS_MEMBER: &str = "zipHolds";
+
+/// The most bytes of a plan's record the packager reads to add [`ZIP_HOLDS_MEMBER`]. The record holds the worker's summary, which is far
+/// smaller; a larger file is copied as the bucket holds it.
+const MAX_PLAN_RECORD_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The plan's record (`evidence/direct.json`) as the zip of a zip-only run holds it when the zip holds a workflow file or a root
+/// build specification: every byte `plan-delivery` wrote up to the brace that closes the record, then one more member,
+/// [`ZIP_HOLDS_MEMBER`], with the sentence that ends the Detail of the run card and of EVIDENCE.md. `plan-delivery` writes its record
+/// before the bundle check that finds such a file, so the object in the bucket has no such member and stays as it is; the copy in the zip
+/// is the one a person who holds only the zip reads. `None` when the file is not a JSON object, already holds the member or is larger
+/// than [`MAX_PLAN_RECORD_BYTES`]: the zip then holds the record as the bucket holds it.
+fn record_with_zip_holds(file: &Path, holds: &str) -> Option<Vec<u8>> {
+    if std::fs::metadata(file).ok()?.len() > MAX_PLAN_RECORD_BYTES {
+        return None;
+    }
+    let text = std::fs::read_to_string(file).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let members = record.as_object()?;
+    if members.contains_key(ZIP_HOLDS_MEMBER) {
+        return None;
+    }
+    // The members the plan wrote stay byte for byte: the new one goes before the closing brace, in the layout of the record.
+    let body = text.trim_end().strip_suffix('}')?.trim_end();
+    let comma = if members.is_empty() { "" } else { "," };
+    let value = serde_json::to_string(holds).ok()?;
+    let out = format!("{body}{comma}\n  \"{ZIP_HOLDS_MEMBER}\": {value}\n}}");
+    // The result must be the record with exactly this member added; anything else and the copy stays as the bucket holds it.
+    let mut want = record.clone();
+    want.as_object_mut()?.insert(
+        ZIP_HOLDS_MEMBER.into(),
+        serde_json::Value::String(holds.into()),
+    );
+    (serde_json::from_str::<serde_json::Value>(&out).ok()? == want).then(|| out.into_bytes())
 }
 
 /// A file entry to add after `src/`: bytes in memory or a file on disk.
@@ -386,9 +474,11 @@ impl<B: Blobs, T: Artifacts> Packager<B, T> {
         // Everything after src/, by path under the top directory.
         let mut rest: BTreeMap<String, Body> = BTreeMap::new();
         rest.insert("repo.bundle".into(), Body::File(bundle));
+        // What the zip of a zip-only run holds that a repository would have refused, in the words of the run card.
+        let zip_holds = self.zip_holds(repo, r).await;
         rest.insert(
             "EVIDENCE.md".into(),
-            Body::Bytes(render_evidence(r).into_bytes()),
+            Body::Bytes(render_evidence_with(r, zip_holds.as_deref()).into_bytes()),
         );
         let prefix = s3::evidence_prefix(&r.run_id);
         let mut keys = self.blobs.list(&prefix).await?;
@@ -399,7 +489,24 @@ impl<B: Blobs, T: Artifacts> Packager<B, T> {
             };
             let file = work.path().join(format!("evidence-{i}"));
             if self.blobs.get_to_file(key, &file).await?.is_some() {
-                rest.insert(rel, Body::File(file));
+                // The zip's copy of the plan's record also says what the zip holds; every other evidence object, and the record
+                // of a zip with no such file, is copied as the bucket holds it.
+                let body = match zip_holds.as_deref() {
+                    Some(holds) if rel == PLAN_RECORD => {
+                        match record_with_zip_holds(&file, holds) {
+                            Some(bytes) => Body::Bytes(bytes),
+                            None => {
+                                eprintln!(
+                                    "packager: run {}: {PLAN_RECORD} is not a record the sentence on what the zip holds can join; the zip holds it as the bucket does",
+                                    r.run_id
+                                );
+                                Body::File(file)
+                            }
+                        }
+                    }
+                    _ => Body::File(file),
+                };
+                rest.insert(rel, body);
             }
         }
 
@@ -444,6 +551,41 @@ impl<B: Blobs, T: Artifacts> Packager<B, T> {
             size_bytes,
             pr_url: r.pr_url.clone(),
         })
+    }
+
+    /// The sentence on a workflow file or a root build specification that the zip of a zip-only run holds
+    /// (`harness_protocol::direct::zip_holds`), read from the changes of the bundle being packaged: the paths the bundle validator reports
+    /// under `findings` for such a run (changed between the base it judged from and the head, present at the head). The base is
+    /// `judgedBaseSha`, the plan's `validate.baseSha`, or the empty tree without one, so the sentence names the files the run card names,
+    /// also for a follow-up of a run that was not delivered, whose judged range begins before the staged base. `None` for a pull-request
+    /// run and for a zip with no such file. The sentence is an aid to the reader of the zip: a read of the changes that fails is logged
+    /// and never fails the package.
+    async fn zip_holds(&self, repo: &Path, r: &PackageRequest) -> Option<String> {
+        if r.target != DeliveryTarget::Zip {
+            return None;
+        }
+        let base = r.judged_base_sha.as_deref().unwrap_or(EMPTY_TREE);
+        let changes = match self.git.diff_tree(repo, base, &r.head_sha).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "packager: run {}: the changes of the zip were not read, so EVIDENCE.md names no workflow file: {e}",
+                    r.run_id
+                );
+                return None;
+            }
+        };
+        let paths = |kind: Protected| -> Vec<String> {
+            changes
+                .iter()
+                .filter(|c| c.status != 'D' && protected(&c.path) == Some(kind))
+                .map(|c| c.path.clone())
+                .collect()
+        };
+        harness_protocol::direct::zip_holds(
+            &paths(Protected::Workflow),
+            &paths(Protected::Buildspec),
+        )
     }
 
     /// Uploads `file` to `key` with its SHA-256 and records the `ART#<id>` item.

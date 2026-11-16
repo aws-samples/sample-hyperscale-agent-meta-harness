@@ -75,20 +75,10 @@ fn sent_text(mem: &Mem, n: usize) -> String {
     assert!(!nonce.is_empty());
     let text = text.replace(&nonce, "<nonce>");
     let text = hide(&hide(&text, "failover", '[', ']'), "model", '{', '}');
-    // The invocation also says how the run delivers, and `tests/b847_delivery_word.rs` reads that member. The golden text is the
-    // invocation without it: the member is taken out here, so the committed file stays byte for byte the one it was.
-    let text = without_delivery(&text);
+    // The invocation names no delivery (the worker reads how the run delivers from the stored request), so the golden text is the
+    // invocation as it is: the bytes a worker of an earlier release reads.
+    assert!(!text.contains("\"delivery\""), "{text}");
     hide_string(&hide_string(&text, "packagesToken"), "AccessKeyId")
-}
-
-/// `text` without its member `,"delivery":{...}` (an object with no object inside it). An invocation that carries none fails the test.
-fn without_delivery(text: &str) -> String {
-    let key = ",\"delivery\":{";
-    let start = text
-        .find(key)
-        .unwrap_or_else(|| panic!("no delivery in {text}"));
-    let end = start + text[start..].find('}').unwrap() + 1;
-    format!("{}{}", &text[..start], &text[end..])
 }
 
 /// `text` with the string value of `"<member>":"..."` replaced by `<member>`: the stand-in package token and access key ID are no secrets,

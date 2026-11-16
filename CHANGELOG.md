@@ -6,6 +6,52 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.22] - 2026-11-16
+
+### Added
+
+- `run.delivery_note`, on by default, sets whether the harness tells the engine how the run delivers. `ham config set run.delivery_note off` leaves the block out, so the engine reads your prompt first.
+- A run that `ham resume` or `/retry` starts keeps the delivery-note setting of the run it comes from. A follow-up with `ham continue` uses the setting your config has when you start it.
+- A stage of an older release refuses a start with `run.delivery_note` off. `ham` names the key and the two ways out: `ham config unset run.delivery_note`, or an update of the stage.
+- The delivered zip says what the engine was told about the delivery: `EVIDENCE.md` quotes the block, and `evidence/direct.json` holds it as `deliveryNote`. A session that ended before its first prompt records no block.
+- For a zip-only run whose zip holds a workflow file or a root `buildspec.yml`, the Detail row of `EVIDENCE.md` ends with the sentence the run card shows, and `evidence/direct.json` in the zip holds it as `zipHolds`.
+- When a session is asked to end and its copy cannot be saved, `ham watch` and the run screen say whether the last saved copy is from before that request or that the run has no saved copy. The run screen says when a later try saved a copy after the request.
+- The run screen's title and status block add `session asked to end`, `session silent` or `waiting for session <n>` after `active` while no session answers.
+- `ham watch --json` includes the notices about copies since the newest stored copy in `copyNotices`, with `at`, `text` and `endRequest` members. A view without such notices has no `copyNotices`.
+- The run screen's delivery card has an `Outside` row that counts engine tokens used outside prompts that answered, including goal-check rounds and failed prompts. It appears after the stored conversation is read in the background, later for long runs. `ham watch` and `ham pull` do not show this row.
+- The screen of a paused or stalled run names `R` and says what it resumes: that run, a count of runs, or all paused and stalled runs.
+
+### Changed
+
+- The worker reads how a run delivers from the run's stored request, and the service no longer writes it into the request of every session. When the worker image alone is rolled back, a run that keeps its defaults starts again, and the earlier image tells the engine nothing about the delivery. A run with a setting the earlier image does not know, such as `run.delivery_note` off, does not start there. One deploy of the earlier release, which rolls the service and the worker image back together, stays the supported way back.
+- The guide says that the block on how the run delivers also comes before the first prompt of a fresh chat inside a session, and that a prompt that begins with a slash follows the block like any other prompt.
+- The clean-checkout test report no longer runs again a test command that the run log recorded as failed when a later logged run of the same suite passed. The Tests line then gives the passing count, and `evidence/test-report.json` names the command that was not run again.
+- For the test report, the same suite means the same test runner with the same words and options. Only options that neither select tests nor can fail a run whose tests pass, such as `pytest -q` or `go test -count=1`, are left out of the comparison. A later run that left tests out, or that dropped a strict option such as `cargo test --locked` or `pytest -W error`, does not stand for the failed command.
+- The lifecycle pack starts a long background run so that its shell writes the exit code into an end file, and waits for that file with a command bounded at 100 seconds, under the default command limit of both engines. Each repeat of the wait carries the next number, and the `lifecycle-check` skill uses the same two commands for the first call of the scanner kit.
+- The default rules file tells a session to wait for a long build and for the first call of the scanner kit the same way: an end file, a command bounded at 100 seconds, and a new number for every repeat. Before, it asked for one blocking command. `ham rules init` updates a rules file that was never edited and leaves an edited file alone.
+- The silent-session notice begins "No event from the run's session since <time>". Before, it began "No word from the run's session since". The guide distinguishes the newest event `ham` read from the last heartbeat the service received.
+- An open question whose session is asked to end shows "<engine> needs you · its session was asked to end" instead of minutes left. `ham watch` and the status block say that an ended session cannot receive an answer and whether a new session will ask again.
+- Questions are numbered across a run's sessions. Before, each session's first question was numbered 1.
+- The status block of a zip-only run reads "PR none: this run delivers a zip" while the run works. Once a run has ended without a pull request it reads "PR none: this run delivered a zip" or "PR none". Before, both read "PR none yet".
+- A run that has ended offers no cancel in the terminal app: the box title, the key lines and the command list leave it out, and `c` says that the run has ended.
+- `ham pr` says that a paused or stalled run that delivered a zip has no pull request by design, and that a run that ended blocked or was cleared opens none.
+- The guide explains that Tokens counts engine tokens across all sessions, how much of a run's total time is work time, whose allowlist entries `ham doctor` lists with several backends, and that a "did not start" card is kept only while `ham` stays open.
+
+### Fixed
+
+- In the terminal app, a second `R` on a run's screen runs the previewed `/resume --all`. Before, the second key press did nothing.
+- The offer "Retry blocked run?" wraps its sentences instead of cutting them. Its line "Enter starts it · Esc cancels" stays in view on a short screen.
+- The typing key line of a blocked run names the retry in full at 80 columns: "Esc browse (r retry)".
+- The notice of a retry or a follow-up that did not start says "your text is kept" only when the box holds a text.
+- `ham runs --json` writes a finished run's `phase` as `delivered`, matching `ham runs` and `ham watch --json`. Before, it wrote `delivering` with `status` set to `complete`.
+- `ham doctor` indents repository allowlist entries under the `allowlist` line. Before, they appeared after the last check line.
+- While a copy notice stands, `ham watch` does not print a `saved:` line for a copy from before the notice. Before, that line could appear up to a minute later and suggest a newer copy. After a notice that is no request to end, it says once that the last saved copy is from before the notice and names the command that downloads it.
+- The card's `Lost` row and the run screen's past-tense sentence show both the session's last heartbeat and when the service called it lost. Before, they showed only the service's decision time.
+- The run screen's stored conversation no longer ends with "[the last session's conversation was not closed: its last lines may be missing]" when the run's last session closed its conversation.
+- `ham watch` prints "The run's session answers again." whenever a session starts after a lost session it reported. Before, it printed this only when one read included both the lost session and the new session.
+- The zip of a follow-up of a run that was not delivered names the same workflow files in `EVIDENCE.md` as the run card.
+- The service tries once more to write the event that says a session was lost when the first write fails. The run goes on into its next session either way.
+
 ## [5.21] - 2026-11-15
 
 ### Added

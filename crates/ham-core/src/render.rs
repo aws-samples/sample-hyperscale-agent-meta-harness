@@ -48,6 +48,10 @@ pub struct FinalCard {
     /// The number of the run's last session, when the run went on in a new session after the first one ended (2 or more); `None` for a run of one
     /// session, and for a detail the client could not read. The card then has a `Session` row that says how often the run continued.
     pub session: Option<u32>,
+    /// How many of the tokens of [`FinalCard::usage`] the engine used outside the prompts that answered (the goal-check rounds
+    /// and the prompts that failed): the total minus the sum of the stored conversation (`StoredChat::answered_tokens`). `None` where
+    /// no stored conversation was read whole (line mode reads none); the card then has no `Outside` row.
+    pub outside_prompts: Option<u64>,
 }
 
 /// The `Session` row of the card: which session the run ended in and how often it continued in a new one.
@@ -109,8 +113,9 @@ pub fn phase_shown(status: Option<GoalStatus>, phase: Option<GoalPhase>) -> Opti
 /// The phase of a run as the command-line surfaces write it (`ham runs`, `ham status`, `ham watch`, the card the command prints): the stored
 /// phase, except that a `complete` run whose last stored phase is `delivering` reads `delivered`. The service writes `delivering` once
 /// and moves the status to `complete` without writing a phase again, so the stored word kept saying a delivery was going on hours after the zip
-/// was in the bucket. Every other pair is written as stored (a `blocked` run still says where it stopped), and the JSON of the API and of
-/// `ham runs --json` keep the stored value. The `--json` view of `ham watch` is built by the client and writes the word its line writes.
+/// was in the bucket. Every other pair is written as stored (a `blocked` run still says where it stopped), and the JSON of the API keeps
+/// the stored value. The `--json` views of `ham watch` and of `ham runs` are built by the client and write the word their
+/// lines write.
 pub fn phase_listed(status: Option<GoalStatus>, phase: Option<GoalPhase>) -> String {
     match (status, phase) {
         (Some(GoalStatus::Complete), Some(GoalPhase::Delivering)) => "delivered".to_string(),
@@ -230,6 +235,9 @@ pub const LINK_LABEL: &str = "Link      ";
 
 /// The label of the card's test report line (`FinalCard::tests`).
 pub const TESTS_LABEL: &str = "Tests     ";
+
+/// The label of the card's row for the tokens outside the answered prompts (`FinalCard::outside_prompts`).
+pub const OUTSIDE_LABEL: &str = "Outside   ";
 
 /// The label of the card's flow line (`FinalCard::flow`).
 pub const FLOW_LABEL: &str = "Flow      ";
@@ -448,6 +456,12 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
     }
     if let Some(u) = card.usage {
         lines.push(u.line());
+        // The part of the total that no answered prompt reported, on a row of its own.
+        if let Some(n) = card.outside_prompts.filter(|n| *n > 0 && *n < u.tokens) {
+            lines.push(format!(
+                "{OUTSIDE_LABEL}{n} of these tokens were used outside the prompts that answered (goal-check rounds, failed prompts)"
+            ));
+        }
     }
     if let Some(t) = card.tests.as_deref().filter(|t| !t.trim().is_empty()) {
         lines.push(format!("{TESTS_LABEL}{t}"));

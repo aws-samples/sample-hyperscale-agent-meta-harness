@@ -478,7 +478,7 @@ fn error_messages_name_the_rule_and_never_a_value() {
 
 #[test]
 fn the_body_limit_and_the_constants_are_the_contract_values() {
-    assert_eq!(PROTOCOL_VERSION, "1.61.0");
+    assert_eq!(PROTOCOL_VERSION, "1.62.0");
     assert_eq!(DIRECT_AGENT_ID, "direct");
     assert_eq!(DIRECT_TURN, 1);
     assert_eq!(DIRECT_TASK_ID, "root");
@@ -889,6 +889,7 @@ fn direct_evidence_round_trips_and_leaves_unset_members_out() {
         review: None,
         flow: None,
         engine: None,
+        delivery_note: None,
     };
     let v = serde_json::to_value(&e).unwrap();
     assert_eq!(

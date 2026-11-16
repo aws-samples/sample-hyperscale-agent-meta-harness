@@ -609,6 +609,8 @@ fn evidence(
             review: None,
             flow: None,
             engine: request.engine.filter(|e| *e != Engine::DEFAULT),
+            // What the engine was told about the delivery is the worker's record; a run with no summary has none.
+            delivery_note: None,
         },
     }
 }
@@ -946,6 +948,16 @@ where
     });
     if let Some(b) = &base_sha {
         package["baseSha"] = json!(b);
+    }
+    // A run that delivers a zip alone says so to the packager as it does to the validator. The packager then names in EVIDENCE.md
+    // a workflow file or a root build specification the zip holds, in the words the run card shows. It reads the changes from the commit
+    // the validator judges from, so both name
+    // the same files; without one both read every file of the head. A repository run sends neither member.
+    if matches!(run.target, RunTarget::S3Only) {
+        package["target"] = json!("zip");
+        if let Some(b) = &judged.base {
+            package["judgedBaseSha"] = json!(b);
+        }
     }
 
     // Agentd measures a run from the DOX starter commit it made on the head the repository had, and records that commit as `summary.git.baseSha`.

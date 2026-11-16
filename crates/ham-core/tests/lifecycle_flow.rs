@@ -84,21 +84,30 @@ const OLD_QUICK_1_12_0: &str =
 const OLD_FULL_1_15_0: &str =
     include_str!("../../../fixtures/lifecycle/pack-earlier/1.15.0-AGENTS-full.md.txt");
 
+// The three texts of the contract in pack 1.16.0, before the wait on a background run became a wait for the end file the run writes: the pack lists `auto`, and
+// `lock.py --earlier` lists `full` and `quick`.
+const OLD_AUTO_1_16_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.16.0-AGENTS.md.txt");
+const OLD_FULL_1_16_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.16.0-AGENTS-full.md.txt");
+const OLD_QUICK_1_16_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.16.0-AGENTS-quick.md.txt");
+
 const PINS: [(LifecycleFlow, usize, &str); 3] = [
     (
         LifecycleFlow::Full,
-        9079,
-        "9c0386ac318aaa82d7bd08dfb80f21fa4d5981eecc22007b95cf3d2ccdd2621f",
+        9078,
+        "91bb368d9b77213c357b4e5fb45d92747a5bebb0ba93995381871d3f4ac196a1",
     ),
     (
         LifecycleFlow::Quick,
-        6574,
-        "2a6151223027d9faa42b15878deea40e30af47271b697109211c1d106c6e4970",
+        6573,
+        "818b41f8d67d11cd24b4eaffef34dc4e15553be7b9debc21b2c5c7aeab185ac3",
     ),
     (
         LifecycleFlow::Auto,
-        11599,
-        "0869aca4b1ee47dfeefa1d90ca9b2f00993405997a336e80db80783623eb8e07",
+        11598,
+        "679cdcbc41aaa2dca0917f74a6573d638201af7765e13c69ff35042306586ba6",
     ),
 ];
 
@@ -132,9 +141,9 @@ fn with(word: &str) -> Config {
 
 #[test]
 fn the_registry_has_one_row_for_it_after_the_final_message_row() {
-    assert_eq!(Key::ALL.len(), 48);
-    assert_eq!(ROWS.len(), 48);
-    assert_eq!(KEYS.len(), 48);
+    assert_eq!(Key::ALL.len(), 49);
+    assert_eq!(ROWS.len(), 49);
+    assert_eq!(KEYS.len(), 49);
     assert_eq!(Key::ALL[21], Key::RunFinalMessage);
     assert_eq!(Key::ALL[22], Key::RunLifecycleFlow);
     let row = Key::RunLifecycleFlow.row();
@@ -493,8 +502,8 @@ fn the_history_names_the_1_2_0_contract_and_an_install_of_any_flow_replaces_it()
 }
 
 #[test]
-fn the_pack_is_version_1_16_0_and_its_contract_is_the_auto_text() {
-    assert_eq!(pack::version(), "1.16.0");
+fn the_pack_is_version_1_17_0_and_its_contract_is_the_auto_text() {
+    assert_eq!(pack::version(), "1.17.0");
     let lock: serde_json::Value = serde_json::from_str(pack::LOCK).unwrap();
     assert_eq!(
         lock["files"]["AGENTS.md"].as_str(),
@@ -753,6 +762,53 @@ fn the_history_names_the_three_1_4_0_texts_and_an_install_of_any_flow_replaces_t
                 Installed::KeptEdited,
                 "{label} edited, asked for {}",
                 flow.word()
+            );
+        }
+    }
+}
+
+#[test]
+fn b826_the_history_names_the_three_1_16_0_texts_and_an_install_of_any_flow_replaces_them() {
+    // Pack 1.17.0 changed all three texts: a long run is started so that it writes an end file, and the wait is for that file. A machine that holds an unedited 1.16.0 text of any flow gets
+    // the new one from `ham rules init`, whichever flow it asks for, and an edited copy is kept.
+    for (label, old) in [
+        ("auto", OLD_AUTO_1_16_0),
+        ("full", OLD_FULL_1_16_0),
+        ("quick", OLD_QUICK_1_16_0),
+    ] {
+        assert_eq!(
+            History::pack().earlier_version("AGENTS.md", old.as_bytes()),
+            Some("1.16.0"),
+            "{label}"
+        );
+        assert!(old.contains("tail --pid=<pid>"), "{label}");
+        for flow in LifecycleFlow::ALL {
+            let rule = scratch(&format!("rule-1-16-0-{label}-{}", flow.word()));
+            std::fs::write(rule.join(pack::CONTRACT_RULE), old).unwrap();
+            assert_eq!(
+                pack::install_rule(&rule, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+                Installed::Updated {
+                    was: "1.16.0".to_string()
+                },
+                "an unedited 1.16.0 {label} text, asked for {}",
+                flow.word()
+            );
+            let now = std::fs::read_to_string(rule.join(pack::CONTRACT_RULE)).unwrap();
+            assert_eq!(now, pack::contract_text(flow));
+            assert!(!now.contains("--pid"), "{label}");
+            assert!(now.contains("until test -s /tmp/run.end"), "{label}");
+            let mine = scratch(&format!("rule-edited-1-16-0-{label}-{}", flow.word()));
+            let edited = format!("{old}\nMy own line.\n");
+            std::fs::write(mine.join(pack::CONTRACT_RULE), &edited).unwrap();
+            assert_eq!(
+                pack::install_rule(&mine, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+                Installed::KeptEdited,
+                "an edited 1.16.0 {label} text, asked for {}",
+                flow.word()
+            );
+            assert_eq!(
+                std::fs::read_to_string(mine.join(pack::CONTRACT_RULE)).unwrap(),
+                edited
             );
         }
     }

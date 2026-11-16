@@ -272,14 +272,24 @@ fn jitter(min: Duration, max: Duration) -> Duration {
 
 /// One try again of a store call that failed for a reason a second try can change. A call that can never work (`Invalid`) is not tried
 /// again.
-async fn retry_once<T, F, Fut>(budget: &TagBudget, mut call: F) -> Res<T>
+async fn retry_once<T, F, Fut>(budget: &TagBudget, call: F) -> Res<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Res<T>>,
+{
+    retry_once_after(budget.backoff_min, budget.backoff_max, call).await
+}
+
+/// [`retry_once`] with the pause named by the caller: for a call outside the tag branch that must not give up on a passing fault (the word about
+/// a lost session, `slices::tell_lost`). The pause is between `min` and `max`.
+pub(crate) async fn retry_once_after<T, F, Fut>(min: Duration, max: Duration, mut call: F) -> Res<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Res<T>>,
 {
     match call().await {
         Err(RunSessionError::Conflict(_) | RunSessionError::Unavailable(_)) => {
-            tokio::time::sleep(jitter(budget.backoff_min, budget.backoff_max)).await;
+            tokio::time::sleep(jitter(min, max)).await;
             call().await
         }
         other => other,

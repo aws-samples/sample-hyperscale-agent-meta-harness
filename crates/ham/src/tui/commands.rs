@@ -71,7 +71,10 @@ pub struct Panel {
     scroll: usize,
     /// Long lines wrap (a refusal) rather than being cut at the edge (a table).
     wrap: bool,
-    /// The rows and the total at the last draw, for the scroll keys.
+    /// The line of an offer that names its keys (`Enter starts it · Esc cancels`): the last row of the panel whatever the scroll, so the
+    /// key that starts a billable run is in view on a screen too short for the whole offer. `lines` holds the rest.
+    keys: Option<String>,
+    /// The rows and the total at the last draw, for the scroll keys: the rows that scroll, without the line of the keys.
     rows: Cell<usize>,
     total: Cell<usize>,
 }
@@ -91,6 +94,7 @@ impl Panel {
             bearer: None,
             scroll: 0,
             wrap,
+            keys: None,
             rows: Cell::new(0),
             total: Cell::new(0),
         }
@@ -125,6 +129,18 @@ impl Panel {
     pub fn info(title: &str, text: &str) -> Self {
         let lines = text.lines().map(sanitize_line).collect();
         Self::new(sanitize_line(title), lines, State::Info, false)
+    }
+
+    /// An offer the person confirms or withdraws: its lines are sentences, so they wrap at word
+    /// boundaries and stay whole, where [`Panel::info`] cuts the rows of a table at the edge. The last line of `text` names the keys of
+    /// the offer: it stays the last row of the panel while the sentences above it scroll, so a screen too short for the whole offer
+    /// still shows the key that starts what is offered.
+    pub fn offer(title: &str, text: &str) -> Self {
+        let mut lines: Vec<String> = text.lines().map(sanitize_line).collect();
+        let keys = lines.pop();
+        let mut panel = Self::new(sanitize_line(title), lines, State::Info, true);
+        panel.keys = keys;
+        panel
     }
 
     /// The panel's title, as drawn between the border's corners.
@@ -171,10 +187,18 @@ impl Panel {
         rows
     }
 
+    /// The rows of the line that names the keys of an offer at `width` columns: none for any other panel.
+    fn key_rows(&self, width: usize) -> Vec<String> {
+        self.keys
+            .as_deref()
+            .map(|k| wrap_text(k, width))
+            .unwrap_or_default()
+    }
+
     /// The height the panel asks for in a screen `area`: its rows and the border, at least 3, at most two fifths of the screen.
     pub fn height(&self, area: Rect) -> u16 {
         let inner = usize::from(area.width.saturating_sub(2)).max(1);
-        let wanted = self.displayed(inner).len().max(1) + 2;
+        let wanted = (self.displayed(inner).len() + self.key_rows(inner).len()).max(1) + 2;
         let most = usize::from((area.height * 2 / 5).max(5));
         u16::try_from(wanted.clamp(3, most)).unwrap_or(3)
     }
@@ -196,7 +220,11 @@ impl Panel {
         f.render_widget(Clear, area);
         let inner_w = usize::from(area.width.saturating_sub(2)).max(1);
         let rows = self.displayed(inner_w);
-        let shown = usize::from(area.height.saturating_sub(2)).max(1);
+        // The keys of an offer keep the last rows of the panel; the sentences above them scroll in what is left.
+        let keys = self.key_rows(inner_w);
+        let inner_h = usize::from(area.height.saturating_sub(2)).max(1);
+        let kept = keys.len().min(inner_h);
+        let shown = inner_h - kept;
         self.rows.set(shown);
         self.total.set(rows.len());
         let start = self.scroll.min(rows.len().saturating_sub(shown));
@@ -213,6 +241,9 @@ impl Panel {
         };
         let hint = if self.bearer.is_some() {
             format!(" o opens the link · {close} ")
+        } else if shown == 0 && !rows.is_empty() {
+            // A panel with room for the keys of its offer alone: the page keys still move through the sentences.
+            format!(" {scroll} · {close} ")
         } else if rows.len() > shown {
             format!(
                 " {}-{} of {} · {scroll} · {close} ",
@@ -231,6 +262,7 @@ impl Panel {
             .iter()
             .skip(start)
             .take(shown)
+            .chain(keys.iter().take(kept))
             .map(|r| Line::from(r.clone()))
             .collect();
         f.render_widget(Paragraph::new(body).block(block), area);
