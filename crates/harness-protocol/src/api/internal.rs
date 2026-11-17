@@ -57,6 +57,13 @@ pub struct HeartbeatRequest {
     pub run_id: String,
     pub agent_id: String,
     pub turn: u32,
+    /// Protocol 1.63.0: `true` on the one heartbeat a worker sends when it hears, while the engine works, that its session is being
+    /// ended. The request then carries the completion key. worker-api acts on it only for the session the run is in, with a valid key and
+    /// an open turn, and only when the run reads a stopped session's storage back (`recoverAfterStop`): it fences that session and ends the
+    /// wait for it with a `sessionEnded` output. Absent on every other heartbeat, which is the text it always was; a worker-api of an
+    /// earlier release ignores the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

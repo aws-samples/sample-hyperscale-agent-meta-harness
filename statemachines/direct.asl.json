@@ -1,5 +1,5 @@
 {
-  "Comment": "hamh-direct-run: one coding run, in as many microVM sessions (slices) as its total time needs. Input {runId} from control-api. run-session decides every step; this machine only sequences them: ask for the run's name without waiting for it, stage the repository, start slice n and wait for it, ask run-session how the slice ended (NextSlice), start slice n+1 from the work it left or go on to plan and validate the delivery, open the pull request, package the zip and finalize. A lost or timed-out session still delivers its last snapshot. The loop is bounded: a run has at most 256 slices and delivers once, after the last.",
+  "Comment": "hamh-direct-run: one coding run, in as many microVM sessions (slices) as its total time needs. Input {runId} from control-api. run-session decides every step; this machine only sequences them: ask for the run's name without waiting for it, stage the repository, start slice n and wait for it, have run-session read back the storage of a session that left no result (Recover), ask run-session how the slice ended (NextSlice), start slice n+1 from the work it left or go on to plan and validate the delivery, open the pull request, package the zip and finalize. A lost or timed-out session still delivers its last snapshot. The loop is bounded: a run has at most 256 slices and delivers once, after the last.",
   "StartAt": "Name",
   "TimeoutSeconds": 2628000,
   "States": {
@@ -209,7 +209,7 @@
     },
     "StartSession": {
       "Type": "Task",
-      "Comment": "run-session binds the agent, mints the credentials and invokes the microVM for slice $.loop.slice, then the state waits for worker-api's SendTaskSuccess with the newest task token. A lost session (no heartbeat for 600 s) or the state timeout is caught like any end of the slice: NextSlice decides what follows.",
+      "Comment": "run-session binds the agent, mints the credentials and invokes the microVM for slice $.loop.slice, then the state waits for worker-api's SendTaskSuccess with the newest task token. A lost session (no heartbeat for 600 s) or the state timeout is caught like any end of the slice: HasResult sends a session that left no result to Recover, and NextSlice decides what follows.",
       "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
       "Parameters": {
         "FunctionName": "${RunSessionArn}",
@@ -245,6 +245,44 @@
             "States.ALL"
           ],
           "ResultPath": "$.session.failure",
+          "Next": "HasResult"
+        }
+      ],
+      "Next": "HasResult"
+    },
+    "HasResult": {
+      "Type": "Choice",
+      "Comment": "A session that ended with a result (a turn-complete, which names the run) goes straight to NextSlice. Every other end (the worker's notice that the session is being ended, a stopped heartbeat, a failed or timed-out state) left no result: its storage is read back first.",
+      "Choices": [
+        {
+          "Variable": "$.session.turn.runId",
+          "IsPresent": true,
+          "Next": "NextSlice"
+        }
+      ],
+      "Default": "Recover"
+    },
+    "Recover": {
+      "Type": "Task",
+      "Comment": "The session left no result. run-session fences it, stops it and reads its storage back into one copy, within 120 s. Whatever happens here, NextSlice decides: a failure or a timeout of this state is a recovery that was missed, never a failed run.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RunSessionArn}",
+        "Payload": {
+          "op": "recover",
+          "runId.$": "$.runId",
+          "session.$": "$.session",
+          "loop.$": "$.loop"
+        }
+      },
+      "ResultPath": null,
+      "TimeoutSeconds": 150,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": null,
           "Next": "NextSlice"
         }
       ],

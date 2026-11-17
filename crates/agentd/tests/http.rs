@@ -374,6 +374,7 @@ async fn events_and_heartbeats_are_signed_posts_to_the_internal_api() {
         run_id: "run1".into(),
         agent_id: "a1".into(),
         turn: 1,
+        ending: None,
     })
     .await
     .unwrap();

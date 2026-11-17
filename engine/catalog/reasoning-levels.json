@@ -5,7 +5,7 @@
  "recordedAtByModel": {
   "fable": "2026-11-10T01:05:55Z"
  },
- "engine": "Cline 3.0.71 series with the 15 patches of engine/cline (tree f8990b674540)",
+ "engine": "Cline 3.0.71 series with the 15 patches of engine/cline (tree bb25f432eac0)",
  "idleLimitS": 360.4,
  "cells": [
   {

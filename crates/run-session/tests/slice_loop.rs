@@ -698,6 +698,7 @@ fn plan_for(n: u32) -> Vec<u8> {
             key: s3::repo_bundle_key(RUN),
             head: Some(BASE.to_string()),
         },
+        recovery: None,
         base_sha: Some(BASE.to_string()),
         sessions_before: n - 1,
         brief: None,
@@ -838,6 +839,9 @@ async fn b688_an_agent_item_written_before_the_completion_key_keeps_naming_none_
 
 /// The limit of the short live stage.
 const SHORT_S: u32 = 60;
+/// What the decision about a lost session waits before it is made (`OLD_WORKER_TAIL_S`, 75 s).
+#[allow(clippy::cast_possible_truncation)]
+const LOST_WAIT_S: u32 = harness_protocol::direct::OLD_WORKER_TAIL_S as u32;
 /// The run a follow-up continues.
 const FIRST_RUN: &str = "01M4X3Q7R9S0V1W2X3Y4Z5A6B8";
 
@@ -1052,7 +1056,8 @@ async fn b773_each_session_asks_for_a_package_token_that_runs_from_its_own_start
 #[tokio::test(flavor = "multi_thread")]
 async fn b773_a_session_lost_among_five_restarts_from_its_snapshot_and_the_chain_of_heads_goes_on()
 {
-    let mem = seeded_short(Some(3_000));
+    // The decision about the lost session waits 75 s for the stopped machine's last copy, and the run's total pays for that wait.
+    let mem = seeded_short(Some(3_000 + LOST_WAIT_S));
     let mut w = SliceWorld::new(
         &mem,
         vec![
@@ -1356,8 +1361,9 @@ fn b773_the_run_machine_outlasts_the_longest_total_time_and_the_session_wait_out
 #[tokio::test(flavor = "multi_thread")]
 async fn b773_a_sixty_second_session_lost_before_any_snapshot_restarts_from_the_last_bundle() {
     // A session lost before its first snapshot has none: the next session restores the bundle of the session before the lost one,
-    // and only the lost session's own minute is gone.
-    let mem = seeded_short(Some(3_000));
+    // and only the lost session's own minute is gone. The decision about it waits 75 s for the stopped machine's last copy, and the
+    // run's total pays for that wait.
+    let mem = seeded_short(Some(3_000 + LOST_WAIT_S));
     let mut w = SliceWorld::new(
         &mem,
         vec![

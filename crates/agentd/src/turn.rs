@@ -113,7 +113,14 @@ pub(crate) async fn reap_engine(child: &mut tokio::process::Child, grace: u64) -
 fn closed_diagnostic(exit: &Exit, capture: &StderrCapture) -> Option<(String, String)> {
     let words = describe_exit(exit);
     let tail = match capture.tail() {
-        Ok(raw) => engine_diagnostic::scrub(&raw.bytes, raw.cut),
+        // The line the harness's own plugin writes when its hook is in place is not the engine's last words.
+        Ok(raw) => engine_diagnostic::scrub(
+            &crate::engine::without_lines_starting(
+                &raw.bytes,
+                crate::engine::config::HARNESS_LINE_PREFIX,
+            ),
+            raw.cut,
+        ),
         Err(e) => {
             let unreadable = engine_diagnostic::unreadable_body(&words, &e.to_string());
             return Some((unreadable.clone(), unreadable));
@@ -153,5 +160,48 @@ fn add_usage(a: Usage, b: Usage) -> Usage {
         output_tokens: a.output_tokens + b.output_tokens,
         cache_read_input_tokens: a.cache_read_input_tokens + b.cache_read_input_tokens,
         cache_write_input_tokens: a.cache_write_input_tokens + b.cache_write_input_tokens,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::closed_note;
+    use crate::engine::{Exit, capture_of};
+
+    fn note(log: &str, exit: &Exit) -> Option<String> {
+        // The folder `TMPDIR` names (every run of this project's tests sets it), else the working directory: agentd's sources make no file
+        // in a directory that other processes share, and its unit tests keep to that (`tests/sandbox_shared_tmp.rs`).
+        let dir = std::env::var_os("TMPDIR")
+            .map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from)
+            .join(format!(
+                "b800-turn-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+        std::fs::create_dir_all(&dir).expect("scratch folder");
+        let path = dir.join("engine-stderr.log");
+        std::fs::write(&path, log).expect("log");
+        closed_note(exit, &capture_of(&path).expect("handle"))
+    }
+
+    /// The line the harness's own plugin writes when its hook is in place is not the engine's last words. A log that holds nothing
+    /// else reads as the empty log it was before the plugin existed; an engine warning beside it is what the detail shows.
+    #[test]
+    fn b800_the_ready_line_is_not_the_engines_last_words() {
+        let ready = "hamh.shell-limit: ready 600000\n";
+        assert_eq!(note(ready, &Exit::Code(0)), None);
+        assert_eq!(note(&format!("{ready}{ready}"), &Exit::Code(0)), None);
+        let failed = note(ready, &Exit::Code(1)).expect("an exit other than 0 has a note");
+        assert!(failed.contains("stderr empty"), "{failed}");
+        assert!(!failed.contains("hamh.shell-limit"), "{failed}");
+        let warned = note(
+            &format!("level=WARN message=\"failed to load plugin\"\n{ready}"),
+            &Exit::Code(1),
+        )
+        .expect("a note");
+        assert!(warned.contains("failed to load plugin"), "{warned}");
+        assert!(!warned.contains("ready 600000"), "{warned}");
     }
 }

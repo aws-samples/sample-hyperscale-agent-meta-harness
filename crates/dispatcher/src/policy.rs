@@ -42,6 +42,10 @@ pub enum PolicyError {
     BadRegion(String),
     #[error("session policy is {0} characters; STS allows {MAX_SESSION_POLICY_CHARS}")]
     TooLong(usize),
+    #[error(
+        "{0:?} is not one object of the harness bucket (a bucket name, or a key of [A-Za-z0-9._/-])"
+    )]
+    BadObject(String),
 }
 
 fn model_chars_ok(s: &str) -> bool {
@@ -206,6 +210,60 @@ pub fn session_policy_for_routes(routes: &[(&str, &str)]) -> Result<String, Poli
             "Sid": "LeasedMantle", "Effect": "Allow", "Action": "bedrock-mantle:CreateInference", "Resource": "*",
         }));
     }
+    let text = json!({ "Version": "2012-10-17", "Statement": statements }).to_string();
+    let n = text.chars().count();
+    if n > MAX_SESSION_POLICY_CHARS {
+        return Err(PolicyError::TooLong(n));
+    }
+    Ok(text)
+}
+
+/// A bucket name: 3 to 63 characters of `a-z0-9.-`.
+fn bucket_ok(s: &str) -> bool {
+    (3..=63).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-'))
+}
+
+/// A key that names one object: no wildcard and no character an ARN could read as more than a name.
+fn object_key_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'))
+}
+
+/// The inline session policy of the credentials that read a stopped session's storage back: a PUT of the one read-back object
+/// `key`, a GET of the one saved copy `baseline_key` it is compared with (left out when there is none to fetch), and the two data-key
+/// actions the bucket's encryption needs. Nothing else: no other object, no listing, no internal API, no model. The effective rights are
+/// the intersection with `harness-worker-session`'s own policy, which is why the data-key actions are named here (as [`ROLE_GRANTS`]
+/// names them for a working session) and why they stay bound to S3 by the role's own condition. A bucket or a key that could name more
+/// than one object is refused.
+pub fn recovery_policy(
+    bucket: &str,
+    key: &str,
+    baseline_key: Option<&str>,
+) -> Result<String, PolicyError> {
+    if !bucket_ok(bucket) {
+        return Err(PolicyError::BadObject(bucket.to_string()));
+    }
+    for k in std::iter::once(key).chain(baseline_key) {
+        if !object_key_ok(k) {
+            return Err(PolicyError::BadObject(k.to_string()));
+        }
+    }
+    let mut statements = vec![json!({
+        "Sid": "PutReadBack", "Effect": "Allow", "Action": "s3:PutObject",
+        "Resource": format!("arn:aws:s3:::{bucket}/{key}"),
+    })];
+    if let Some(baseline) = baseline_key {
+        statements.push(json!({
+            "Sid": "GetBaseline", "Effect": "Allow", "Action": "s3:GetObject",
+            "Resource": format!("arn:aws:s3:::{bucket}/{baseline}"),
+        }));
+    }
+    statements.push(json!({
+        "Sid": "DataKey", "Effect": "Allow", "Action": ["kms:GenerateDataKey", "kms:Decrypt"], "Resource": "*",
+    }));
     let text = json!({ "Version": "2012-10-17", "Statement": statements }).to_string();
     let n = text.chars().count();
     if n > MAX_SESSION_POLICY_CHARS {

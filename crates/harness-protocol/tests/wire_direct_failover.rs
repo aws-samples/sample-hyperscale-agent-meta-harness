@@ -75,7 +75,7 @@ fn spec(id: &str) -> DirectModelSpec {
 
 #[test]
 fn the_protocol_is_1_38_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.62.0");
+    assert_eq!(PROTOCOL_VERSION, "1.63.0");
 }
 
 // ---- the request ------------------------------------------------------------------------------------------------------

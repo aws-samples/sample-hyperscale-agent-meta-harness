@@ -44,6 +44,8 @@ fn download(size: u64) -> SnapshotDownload {
         run_status: GoalStatus::Active,
         final_copy: false,
         engine: None,
+        recovered: false,
+        session: None,
     }
 }
 

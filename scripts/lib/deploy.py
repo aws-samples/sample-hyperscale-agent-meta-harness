@@ -1869,7 +1869,9 @@ class Deployer:
 
     def guard(self) -> None:
         """Every run pins the worker runtime version it started on; a new version waits.: under a caller's lock that lets the stage start runs (the line
-        `starts=yes`) a run can start at any moment of the deploy, so a look that finds no run decides nothing: the new version is refused (`new-runs`, wait=no)."""
+        `starts=yes`) a run can start at any moment of the deploy, so a look that finds no run decides nothing: the new version is refused (`new-runs`, wait=no).
+        The read of a stopped session's storage is the state `Recover` of the run's own execution, and the decision after it is made in that
+        execution too. A run whose session is being read back is a running run: the guard refuses a new worker runtime version until it ends."""
         if self.lock_starts:
             raise Fail("new-runs", "this deploy would make a new worker runtime version, and the update lets the stage start runs while it deploys (the deploy lock says "
                        "starts=yes): a run that starts during the deploy would be pinned to a runtime version that goes.",

@@ -673,7 +673,9 @@ async fn a_runs_detail_carries_its_cost_by_model_and_engine_once_a_turn_reports_
     f.usage.lock().unwrap().insert(id.clone(), RunUsage { agents: vec![agent], turns: vec![
         turn(1, Some(json!({"inputTokens": 1_000_000, "outputTokens": 100_000, "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}))),
         turn(2, None),
-    ] });
+    ],
+    answered: Default::default(),
+});
     let out = detail_of(&f, &id).await;
     assert_eq!(out.status, 200, "{}", out.body);
     let detail: RunDetail = serde_json::from_str(&out.body).unwrap();
@@ -744,6 +746,7 @@ async fn a_runs_detail_reports_the_tokens_its_turns_used() {
                 // A turn that reported nothing adds nothing.
                 turn("direct", 3, None),
             ],
+            answered: Default::default(),
         },
     );
     let detail: RunDetail = serde_json::from_str(&detail_of(&f, &id).await.body).unwrap();
@@ -1873,4 +1876,57 @@ fn b633_a_route_added_to_the_handler_without_a_row_fails_the_walk() {
         routes_without_a_row(&runless, &rows),
         vec!["GET /v1/ping".to_string()]
     );
+}
+
+/// `GET /v1/runs/{runId}` carries the tokens of the prompts that answered in its cost when every turn of the total declared a
+/// number, and no member otherwise.
+#[tokio::test]
+async fn b846_the_run_detail_carries_the_answered_tokens_of_its_cost() {
+    let f = Fake::default();
+    let id = started_run(&f, "k-b846-answered").await;
+    let agent: harness_protocol::store::AgentItem = serde_json::from_value(json!({
+        "runId": id, "agentId": "direct", "taskId": "root", "attempt": 1,
+        "runtimeArn": "arn:aws:bedrock-agentcore:x",
+        "runtimeSessionId": "s", "generation": 1, "engine": "cline", "engineVersion": "3.0.71", "transport": "acp",
+        "modelId": "global.anthropic.claude-sonnet-5-5", "pool": "direct", "status": "stopped", "version": 1
+    }))
+    .unwrap();
+    let turn = |n: u32| -> harness_protocol::store::TurnItem {
+        serde_json::from_value(json!({
+            "runId": id, "agentId": "direct", "n": n, "taskTokenCiphertext": "", "startedAt": "2026-09-27T00:00:00Z",
+            "rulesDigest": "", "version": 1,
+            "usage": {"inputTokens": 1_000_000, "outputTokens": 0, "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0}
+        }))
+        .unwrap()
+    };
+    let usage_with = |numbers: &[(u32, u64)]| RunUsage {
+        agents: vec![agent.clone()],
+        turns: vec![turn(1), turn(2)],
+        answered: numbers
+            .iter()
+            .map(|(n, tokens)| (("direct".to_string(), *n), *tokens))
+            .collect(),
+    };
+    f.usage
+        .lock()
+        .unwrap()
+        .insert(id.clone(), usage_with(&[(1, 813_995), (2, 913_896)]));
+    let out = detail_of(&f, &id).await;
+    assert_eq!(out.status, 200, "{}", out.body);
+    let body: Value = serde_json::from_str(&out.body).unwrap();
+    assert_eq!(
+        body["tokensUsed"],
+        json!(2_000_000),
+        "TRIGGER PRESENT: {body}"
+    );
+    assert_eq!(body["cost"]["answeredTokens"], json!(1_727_891), "{body}");
+    // Session 2 declared no number (a worker that predates the member): the cost stands and carries no number.
+    f.usage
+        .lock()
+        .unwrap()
+        .insert(id.clone(), usage_with(&[(1, 813_995)]));
+    let out = detail_of(&f, &id).await;
+    let body: Value = serde_json::from_str(&out.body).unwrap();
+    assert_eq!(body["tokensUsed"], json!(2_000_000), "{body}");
+    assert!(body["cost"].get("answeredTokens").is_none(), "{body}");
 }

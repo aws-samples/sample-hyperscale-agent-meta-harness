@@ -188,7 +188,7 @@ fn goto(app: &mut App, clock: &mut Clock, label: &str) {
 
 /// The height of the window that holds the whole list of the Settings screen.
 // Added one row, the delivery note.
-const WHOLE_LIST_ROWS: u16 = 64;
+const WHOLE_LIST_ROWS: u16 = 65;
 
 /// The screen at 120 columns and [`WHOLE_LIST_ROWS`] rows.
 fn screen(app: &App) -> String {
@@ -502,7 +502,7 @@ fn the_locked_line_text_equals_the_harness_protocol_table() {
         assert_eq!((client.label, client.reason), (table.label, table.reason));
     }
     // The screen's registry rows are untouched by the new group.
-    assert_eq!(ROWS.len(), 49);
+    assert_eq!(ROWS.len(), 50);
 }
 
 // ---- the OpenCode group -------------------------------------------------------------------------------------------------------

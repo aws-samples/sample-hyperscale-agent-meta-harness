@@ -89,12 +89,20 @@ fn b776w_the_run_ceiling_fits_the_state_machine_and_its_event_history() {
         u64::from(MAX_SLICES) >= 2 * full,
         "{MAX_SLICES} slices cannot hold {full} full sessions and their restarts"
     );
-    // The loop is StartSession, NextSlice, SliceChoice and ResetSession; the history keeps 25,000 events, and the preparation and the end take 200.
+    // The loop is StartSession, HasResult, Recover, NextSlice, SliceChoice and ResetSession; the history keeps 25,000 events, and
+    // the preparation and the end take 200.
     let states = &def["States"];
-    let per_slice: u64 = ["StartSession", "NextSlice", "SliceChoice", "ResetSession"]
-        .iter()
-        .map(|n| worst_events(&states[*n]))
-        .sum();
+    let per_slice: u64 = [
+        "StartSession",
+        "HasResult",
+        "Recover",
+        "NextSlice",
+        "SliceChoice",
+        "ResetSession",
+    ]
+    .iter()
+    .map(|n| worst_events(&states[*n]))
+    .sum();
     let history = u64::from(MAX_SLICES) * per_slice + 200;
     assert!(
         history <= 25_000,

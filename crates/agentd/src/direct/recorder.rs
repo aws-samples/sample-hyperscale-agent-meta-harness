@@ -397,11 +397,22 @@ fn exit_code_of(text: &str) -> Option<i64> {
     last
 }
 
-/// True when the output says the shell cut the command (`Command timed out after 30000ms`).
-fn timed_out(text: &str) -> bool {
-    text.find("Command timed out after ")
-        .map(|k| &text[k + "Command timed out after ".len()..])
-        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+/// A shell call that named no time limit and that the engine cut at another number than the run's limit, in milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitMiss {
+    pub cut_ms: u64,
+    pub limit_ms: u64,
+}
+
+/// Whether an update's `rawInput` names a time limit of the model's own: `None` when the update carries no input of a command (the pending
+/// frame of an engine whose input is late, a final frame), else whether the input holds a non-null `timeout` or `background: true`.
+fn names_limit(update: &Value) -> Option<bool> {
+    let input = update.get("rawInput")?.as_object()?;
+    input.get("command")?;
+    Some(
+        input.get("timeout").is_some_and(|t| !t.is_null())
+            || input.get("background").and_then(Value::as_bool) == Some(true),
+    )
 }
 
 /// What the result of a call says, read from its `rawOutput` or its `content`.
@@ -541,6 +552,8 @@ struct Entry {
     structured_failed: bool,
     timed_out: bool,
     test_like: bool,
+    /// Whether the model named a time limit for the call ([`names_limit`]); `None` until an update of the call carried its input.
+    named_limit: Option<bool>,
 }
 
 /// The bounded record of the run's tool calls and messages. See the module documentation.
@@ -560,6 +573,11 @@ pub struct Recorder {
     /// The engine the calls come from (the profile name): its tool table says how a title is read and which tools are checked. Empty reads the
     /// table of the qualified engine ([`crate::engine::tools::engine_tools`]).
     engine: String,
+    /// The run's command time limit in milliseconds, for an engine whose cut names the limit that applied; `None` switches the check of
+    /// a cut at another number off.
+    command_limit_ms: Option<u64>,
+    /// The newest cut at another number than the run's limit, until [`Self::take_limit_miss`] hands it out.
+    limit_miss: Option<LimitMiss>,
 }
 
 impl Recorder {
@@ -581,6 +599,22 @@ impl Recorder {
     /// Names the engine the calls come from.
     pub fn set_engine(&mut self, engine: &str) {
         self.engine = engine.to_string();
+    }
+
+    /// The run's command time limit in milliseconds; `None` switches the check of a cut at another number off.
+    pub fn with_command_limit(mut self, limit_ms: Option<u64>) -> Self {
+        self.set_command_limit(limit_ms);
+        self
+    }
+
+    /// See [`Self::with_command_limit`].
+    pub fn set_command_limit(&mut self, limit_ms: Option<u64>) {
+        self.command_limit_ms = limit_ms;
+    }
+
+    /// A call that named no limit and was cut at another number than the run's limit, once.
+    pub fn take_limit_miss(&mut self) -> Option<LimitMiss> {
+        self.limit_miss.take()
     }
 
     /// Replaces the secret values with a set of its own holding `secrets` (the collector's `with_secrets`).
@@ -691,6 +725,7 @@ impl Recorder {
             structured_failed: false,
             timed_out: false,
             test_like,
+            named_limit: names_limit(update),
         };
         // Some engines send the final status with the call itself.
         if matches!(entry.rec.engine_status.as_str(), "completed" | "failed") {
@@ -716,17 +751,38 @@ impl Recorder {
         if let Some(status) = update.get("status").and_then(Value::as_str) {
             entry.rec.engine_status = head_chars(status, 24);
         }
+        // The input of an engine whose input is late arrives with the first `in_progress` update; the final update's input is null.
+        if let Some(named) = names_limit(update) {
+            entry.named_limit = Some(named);
+        }
         self.settle(&mut entry, update);
         self.ring[idx] = entry;
     }
 
     /// Reads the output of an update into the entry and, when the engine's status is final, decides the verdict.
     fn settle(&mut self, entry: &mut Entry, update: &Value) {
-        let out = if let Some(raw) = update.get("rawOutput").filter(|v| !v.is_null()) {
+        // An engine whose answer is in the content blocks keeps only its own metadata in `rawOutput`: its output is read from the blocks.
+        let in_content = engine_tools(&self.engine).title.input_is_late();
+        let blocks = update.get("content").filter(|c| in_content && c.is_array());
+        let out = if let Some(content) = blocks {
+            Some(read_content(content))
+        } else if let Some(raw) = update.get("rawOutput").filter(|v| !v.is_null()) {
             Some(read_raw_output(raw))
         } else {
             update.get("content").map(read_content)
         };
+        if in_content {
+            // The second engine: a cut is the engine's own flag in the final update, which a command's output cannot set.
+            if let Some(cut) = crate::engine::faults::opencode_cut(update) {
+                entry.timed_out = true;
+                if let (Some(cut_ms), Some(false), Some(limit_ms)) =
+                    (cut.ms, entry.named_limit, self.command_limit_ms)
+                    && cut_ms != limit_ms
+                {
+                    self.limit_miss = Some(LimitMiss { cut_ms, limit_ms });
+                }
+            }
+        }
         let mut full_tail: Option<String> = None;
         if let Some(out) = out {
             let text = tail_bytes(&out.text, PRE_REDACT_OUTPUT_BYTES);
@@ -736,7 +792,9 @@ impl Recorder {
                 .trim_start()
                 .to_string();
             entry.rec.exit_code = exit_code_of(&out.text);
-            entry.timed_out = timed_out(&out.text);
+            if !in_content {
+                entry.timed_out = crate::engine::faults::cline_cut(&out.text);
+            }
             entry.structured_failed = out.failed;
             entry.rec.error = out
                 .error

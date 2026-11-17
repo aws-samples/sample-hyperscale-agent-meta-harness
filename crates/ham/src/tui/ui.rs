@@ -499,6 +499,7 @@ impl App {
                 if let Some(n) = selected_run.and_then(|r| r.needs_input.as_ref()) {
                     note.push_str(&format!(" · needs input: {}", s(&n.title)));
                 }
+                note.push_str(&runs_note_session(selected_run));
                 note + &tags_part + &link_part + &hidden
             }
             (None, false) => {
@@ -1252,12 +1253,26 @@ impl App {
     }
 
     /// How many of the run's tokens the engine used outside the prompts that answered (the goal-check rounds, the prompts that
-    /// failed): the total the stage reported minus the sum of the stored conversation, when that conversation is whole
-    /// (`StoredChat::answered_tokens`) and the difference is above zero. The delivery card shows it on its `Outside` row.
-    fn outside_prompts(&self, usage: Option<ham_core::render::CardUsage>) -> Option<u64> {
-        let total = usage?.tokens;
+    /// failed), for the `Outside` row of the delivery card. The service's number decides when the detail carries one
+    /// (`cost.answeredTokens`: `base` holds the difference, `crate::pull::outside_prompts`), also when it leaves nothing outside:
+    /// it covers exactly the sessions whose usage is in the total. Without it the row is the total the stage reported minus the
+    /// sum of the stored conversation, when that conversation is whole (`StoredChat::answered_tokens`) and the difference is
+    /// above zero.
+    fn outside_prompts(&self, base: &ham_core::render::FinalCard) -> Option<u64> {
+        if self.service_answered_tokens().is_some() {
+            return base.outside_prompts;
+        }
+        let total = base.usage?.tokens;
         let answered = self.answered_tokens()?;
         total.checked_sub(answered).filter(|n| *n > 0)
+    }
+
+    /// The tokens of the prompts that answered as the service gave them with the detail of the run on screen.
+    pub(crate) fn service_answered_tokens(&self) -> Option<u64> {
+        self.detail
+            .as_ref()
+            .and_then(|d| d.cost.as_ref())
+            .and_then(|c| c.answered_tokens)
     }
 
     /// The run on screen goes on and its session said that it was asked to end (`RunView::end_asked`): an open question is
@@ -1360,7 +1375,7 @@ impl App {
                     let shown = ham_core::render::FinalCard {
                         tests: self.tests.clone(),
                         flow: self.flow.clone(),
-                        outside_prompts: self.outside_prompts(base.usage),
+                        outside_prompts: self.outside_prompts(&base),
                         ..base
                     };
                     let whole = self.with_clone_state(final_card_shown(v, &shown), &v.run_id);
@@ -2247,7 +2262,17 @@ fn runs_note_tags(tags: &[String]) -> String {
     }
 }
 
-/// The Runs screen's note line: the count, how many runs wait for an answer, and what the selected one waits for.
+/// What the service says about the session of the selected run, as the rows of `ham runs` say it: ` · cancel recorded`
+/// when the user's cancel is recorded, else ` · session silent since 07:05 UTC`; empty for every other run. The STATUS cell is too
+/// narrow for the words and keeps the status.
+fn runs_note_session(selected: Option<&harness_protocol::api::v1::RunSummary>) -> String {
+    selected
+        .and_then(ham_core::cancel_note::row_trailer)
+        .map_or_else(String::new, |words| format!(" · {}", s(&words)))
+}
+
+/// The Runs screen's note line: the count, how many runs wait for an answer, what the selected one waits for, and what the service
+/// says about its session.
 fn runs_note(runs: &[harness_protocol::api::v1::RunSummary], selected: usize) -> String {
     let mut note = format!("{} runs", runs.len());
     let waiting = runs.iter().filter(|r| r.needs_input.is_some()).count();
@@ -2263,6 +2288,7 @@ fn runs_note(runs: &[harness_protocol::api::v1::RunSummary], selected: usize) ->
     if let Some(n) = runs.get(selected).and_then(|r| r.needs_input.as_ref()) {
         note.push_str(&format!(" · needs input: {}", s(&n.title)));
     }
+    note.push_str(&runs_note_session(runs.get(selected)));
     // Why the selected run stopped, in the service's own words and the session it ended in.
     if let Some(r) = runs.get(selected)
         && matches!(

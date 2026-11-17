@@ -51,6 +51,8 @@ pub struct StoredChat {
     state: Option<TranscriptState>,
     older: Option<u64>,
     newer: Option<String>,
+    /// When the service invoked the run's last session (Unix seconds), as the newest page that said so reported it.
+    last_session_invoked: Option<i64>,
 }
 
 /// The words of a gap. Numbers only: nothing a record says is repeated.
@@ -83,6 +85,13 @@ impl StoredChat {
         }
         self.completeness = page.completeness.clone();
         self.state = Some(page.state);
+        if let Some(t) = page
+            .last_session_invoked_at
+            .as_deref()
+            .and_then(parse_utc_unix)
+        {
+            self.last_session_invoked = Some(t);
+        }
         match how {
             Read::First => {
                 self.older = page.prev;
@@ -127,7 +136,13 @@ impl StoredChat {
     /// outside the prompts that answered: the goal-check rounds and the prompts that failed.
     pub fn answered_tokens(&self) -> Option<u64> {
         let whole = self.can_be_whole() && self.older.is_none() && self.newer.is_none();
-        if !whole {
+        // A declared open tail, of the last session or of an earlier one, is a hole whatever the state says: the prompts that
+        // answered in it are not held, so their sum would be too small.
+        let open_tail = self
+            .completeness
+            .iter()
+            .any(|e| e.kind == GapKind::TailUnknown);
+        if !whole || open_tail {
             return None;
         }
         self.records
@@ -239,6 +254,13 @@ impl StoredChat {
             }
         }
         holes.sort_by(|a, b| (a.from, a.to, &a.order).cmp(&(b.from, b.to, &b.order)));
+        // The later of what the run's events say and what the service says about when the last session began. The service's
+        // time is there for a run whose events were not read, and for a last session that wrote no start event and was never
+        // called lost.
+        let last_session_began = match (last_session_began, self.last_session_invoked) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
         let mut pj = Projector {
             last_session_began,
             ..Projector::default()

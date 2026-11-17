@@ -135,6 +135,7 @@ impl Rig {
             classified: &classified,
             files_changed: Some(1),
             interrupted: false,
+            engine_working: false,
             time_left: Duration::from_millis(left_ms),
             tool_calls: 1,
         };
@@ -164,6 +165,7 @@ impl Rig {
             classified: &classified,
             files_changed: Some(1),
             interrupted: false,
+            engine_working: false,
             time_left: Duration::from_secs(10_000),
             tool_calls: 1,
         };
@@ -200,6 +202,7 @@ async fn a_claim_that_comes_back_after_the_session_changed_is_given_back_and_not
             classified: &classified,
             files_changed: Some(1),
             interrupted: false,
+            engine_working: false,
             time_left: Duration::from_secs(10_000),
             tool_calls: 1,
         };

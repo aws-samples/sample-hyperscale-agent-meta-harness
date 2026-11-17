@@ -373,6 +373,10 @@ pub struct RunView {
     /// The seconds between two events the session in progress promised at its start (`beatS` of `turn.started`); `None` for a
     /// worker that writes no beat.
     pub beat_s: Option<u64>,
+    /// The service said in its `session.started` event that it reads a stopped session's storage back for this run
+    /// (`storageReadBack`). False for a run that switched the read off, for a machine that keeps no storage, and on a stage of a
+    /// release before the read: the notice of a silent session then promises none.
+    pub reads_back: bool,
     /// The number of the session in progress, when its `turn.started` named it.
     pub session_now: Option<u32>,
     /// A session has started and neither ended nor been called lost.
@@ -393,11 +397,17 @@ pub struct RunView {
     /// copy of a request to end again every few seconds while its process runs on. False without such a word, and again after a
     /// later one.
     pub saved_after_end_asked: bool,
+    /// The user's cancel as the service recorded it (its `run.waiting` event of kind `cancel-recorded`; the first one of the
+    /// run). It stays on the view; [`RunView::cancel_recorded`] answers it while the run goes on.
+    pub cancel: Option<crate::cancel_note::CancelNote>,
 }
 
 /// What a run that goes on is missing while no session of it is known to answer. The status stays `active` all the while.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionGap {
+    /// The user's cancel is recorded: the run starts no further session and ends when its session has answered or is called
+    /// lost. It wins over the other three: whatever the session does, the run is ending.
+    Cancelling,
     /// The worker said that its session was asked to end.
     Ending,
     /// The session in progress has been silent for two beats or more.
@@ -407,9 +417,10 @@ pub enum SessionGap {
 }
 
 impl SessionGap {
-    /// The words beside the status: `session asked to end`, `session silent`, `waiting for session 2`.
+    /// The words beside the status: `cancel recorded`, `session asked to end`, `session silent`, `waiting for session 2`.
     pub fn words(&self) -> String {
         match self {
+            Self::Cancelling => crate::cancel_note::RECORDED_WORDS.to_string(),
             Self::Ending => "session asked to end".to_string(),
             Self::Silent => "session silent".to_string(),
             Self::Awaiting(n) => format!("waiting for session {n}"),
@@ -480,6 +491,10 @@ impl RunView {
         if self.has_ended() {
             return None;
         }
+        // A recorded cancel says more than what the session does: the run starts no further session and is ending.
+        if self.cancel.is_some() {
+            return Some(SessionGap::Cancelling);
+        }
         if let Some(next) = self.awaiting_session() {
             return Some(SessionGap::Awaiting(next));
         }
@@ -487,6 +502,15 @@ impl RunView {
             return Some(SessionGap::Silent);
         }
         self.end_asked.as_ref().map(|_| SessionGap::Ending)
+    }
+
+    /// The user's cancel that the service recorded, while the run goes on: the run starts no further session and ends when its
+    /// session has answered or is called lost. `None` for a run without one and for a run that has ended (the record is history then).
+    pub fn cancel_recorded(&self) -> Option<&crate::cancel_note::CancelNote> {
+        if self.has_ended() {
+            return None;
+        }
+        self.cancel.as_ref()
     }
 
     /// The note of a run whose session said that it was asked to end ([`RunView::end_asked`]): when, what is true about the
@@ -515,7 +539,10 @@ impl RunView {
         );
         if self.input.waiting().is_some() {
             note.push(' ');
-            note.push_str(&crate::input::asked_by_ending_session(self.lost_in_a_row));
+            note.push_str(&crate::input::asked_by_ending_session(
+                self.lost_in_a_row,
+                self.cancel.is_some(),
+            ));
         }
         Some(note)
     }
@@ -575,6 +602,9 @@ impl RunView {
             secs,
             saved_at: self.saved.as_ref().map(|c| c.at.clone()),
             would_end: (would >= MAX_LOST_SLICES).then_some(would),
+            reads_back: self.reads_back,
+            // A run whose cancel is recorded starts no further session.
+            cancelled_at: self.cancel.as_ref().map(|c| c.requested_at.clone()),
         })
     }
 
@@ -844,6 +874,7 @@ impl RunState {
             lost: Vec::new(),
             heard_at: None,
             beat_s: None,
+            reads_back: false,
             session_now: None,
             session_open: false,
             lost_in_a_row: 0,
@@ -851,6 +882,7 @@ impl RunState {
             silent: None,
             end_asked: None,
             saved_after_end_asked: false,
+            cancel: None,
         };
         let mut tools = ToolTracker::default();
         for e in self.events.values() {
@@ -1073,6 +1105,11 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
                 v.lost.push(lost);
                 let excess = v.lost.len().saturating_sub(crate::lost_session::MAX_KEPT);
                 v.lost.drain(..excess);
+            } else if let Some(note) = crate::cancel_note::CancelNote::parse(e)
+                && v.cancel.is_none()
+            {
+                // The service's word that the user's cancel is recorded. It changes no status; the first one of the run stands.
+                v.cancel = Some(note);
             }
         }
         EventType::RunCreated => {
@@ -1083,6 +1120,12 @@ fn fold(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         }
         EventType::SessionStarted => {
             engine_started(v, e);
+            // Only the service's own event is believed, and only its `true`.
+            if e.authority == Authority::Harness
+                && typed::<bool>(e, "storageReadBack") == Some(true)
+            {
+                v.reads_back = true;
+            }
             let id = str_field(e, "agentId").or(agent_id);
             if let Some(id) = id {
                 let line = agent(v, &id);

@@ -113,6 +113,9 @@ pub struct Inner {
     /// The same move, made while the next `invoke` runs (also when that invoke then fails or is answered with something unreadable): every read
     /// after it sees the new status.
     pub flip_run_on_invoke: Mutex<Option<GoalStatus>>,
+    /// The user's cancel is recorded on the Run item (this time) after this many more reads of the item: the read that brings the
+    /// count to zero still sees no cancel, every later read sees it.
+    pub cancel_run_after_reads: Mutex<Option<(u32, String)>>,
     /// Every `delete_provider_session` as (provider id, session id).
     pub provider_deletes: Mutex<Vec<(String, String)>>,
     /// `delete_provider_session` answers `false`: the session had already ended.
@@ -184,7 +187,21 @@ pub struct Inner {
     pub name_race: Mutex<Option<String>>,
     /// The next `put_run_name` that stores its name loses its answer: the write happened and the caller sees an error.
     pub lose_name_response: Mutex<bool>,
+    /// What the worker of a read answers, in order (`Sessions::invoke` with a body of kind `recover`). With none left the call is
+    /// refused with HTTP 400, as a worker image that predates the read refuses the body.
+    pub recover_replies: Mutex<VecDeque<Result<Vec<u8>, RunSessionError>>>,
+    /// Every body of kind `recover` the fake AgentCore received, with its target (runtime ARN, qualifier, session id).
+    pub recover_bodies: Mutex<Vec<RecoverCall>>,
+    /// The call of the old session id never answers.
+    pub recover_hangs: Mutex<bool>,
+    /// `stop` never answers.
+    pub stop_hangs: Mutex<bool>,
+    /// The calls of a read in the order they happened: `fence`, `stop`, `mint` (the recovery credentials only), `invoke`.
+    pub recovery_calls: Mutex<Vec<String>>,
 }
+
+/// One call of kind `recover` as the fake AgentCore received it: its body and its target (runtime ARN, qualifier, session id).
+pub type RecoverCall = (Vec<u8>, (String, String, String));
 
 /// A change another writer makes to the tag attributes of the item just before a write of the code under test.
 pub type TagHook = Box<dyn FnOnce(&mut TagItem) + Send>;
@@ -250,6 +267,38 @@ pub fn set_clock(ms: u64) {
     *CLOCK.lock().unwrap() = ms;
 }
 
+static PAUSES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+/// What happens in the world while the next wait of an op lasts ([`during_the_next_pause`]).
+static DURING_PAUSE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+
+/// The wait every `Mem` config hands the ops: it moves the clock by the time asked for and returns at once, and it does so only
+/// when it is polled, so a wait that loses a race against a call that answers moves nothing.
+fn pause(ms: u64) -> run_session::ops::Pause {
+    Box::pin(async move {
+        *CLOCK.lock().unwrap() += ms;
+        PAUSES.lock().unwrap().push(ms);
+        let during = DURING_PAUSE.lock().unwrap().take();
+        if let Some(happens) = during {
+            happens();
+        }
+    })
+}
+
+/// `happens` runs once, while the next wait of an op lasts (when that wait is polled): what another function of the service
+/// writes while this one waits.
+pub fn during_the_next_pause(happens: impl FnOnce() + Send + 'static) {
+    *DURING_PAUSE.lock().unwrap() = Some(Box::new(happens));
+}
+
+/// Every wait the ops made since the last [`clear_pauses`], in milliseconds.
+pub fn pauses() -> Vec<u64> {
+    PAUSES.lock().unwrap().clone()
+}
+
+pub fn clear_pauses() {
+    PAUSES.lock().unwrap().clear();
+}
+
 impl Mem {
     pub fn config(&self) -> Config {
         Config {
@@ -285,6 +334,7 @@ impl Mem {
             slice_deadline_s: *self.0.slice_deadline_cfg.lock().unwrap(),
             provider_silence_s: *self.0.provider_silence_cfg.lock().unwrap(),
             clock_ms: clock,
+            pause,
         }
     }
 
@@ -645,6 +695,22 @@ impl Mem {
         *self.0.flip_run_after_reads.lock().unwrap() = Some((reads, to));
     }
 
+    /// The user's keep-the-work cancel, as control-api records it on the Run item.
+    pub fn set_cancel(&self, at: &str) {
+        self.0
+            .runs
+            .lock()
+            .unwrap()
+            .get_mut(RUN)
+            .unwrap()
+            .cancel_requested_at = Some(at.to_string());
+    }
+
+    /// A cancel is recorded after `reads` more reads of the Run item (the read that makes the count zero still sees none).
+    pub fn cancel_run_after_reads(&self, reads: u32, at: &str) {
+        *self.0.cancel_run_after_reads.lock().unwrap() = Some((reads, at.to_string()));
+    }
+
     /// A discard lands while the next invoke runs.
     pub fn flip_run_on_invoke(&self, to: GoalStatus) {
         *self.0.flip_run_on_invoke.lock().unwrap() = Some(to);
@@ -761,6 +827,7 @@ impl Mem {
             provider_sharing: None,
             snapshot_every_s: None,
             delivery_note: None,
+            recover_after_stop: None,
         };
         let body = serde_json::to_vec(&request).unwrap();
         self.0
@@ -850,6 +917,11 @@ impl Mem {
 
     pub fn blob(&self, key: &str) -> Option<Vec<u8>> {
         self.0.blobs.lock().unwrap().get(key).cloned()
+    }
+
+    /// The object at `key` is gone from the bucket.
+    pub fn remove_blob(&self, key: &str) {
+        self.0.blobs.lock().unwrap().remove(key);
     }
 
     /// A PUT to a versioned bucket. `body` becomes a new version of `key` and the current object; returns the version id.
@@ -1070,6 +1142,65 @@ impl Mem {
         self.0.stops.lock().unwrap().clone()
     }
 
+    /// The worker of the next read answers `answer`.
+    pub fn recover_answers(&self, answer: &Value) {
+        self.0
+            .recover_replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(serde_json::to_vec(answer).unwrap()));
+    }
+
+    /// The next call of the old session id fails with `e`.
+    pub fn recover_fails(&self, e: RunSessionError) {
+        self.0.recover_replies.lock().unwrap().push_back(Err(e));
+    }
+
+    /// The call of the old session id never answers from now on.
+    pub fn recover_hangs(&self) {
+        *self.0.recover_hangs.lock().unwrap() = true;
+    }
+
+    /// `stop` never answers from now on.
+    pub fn stop_hangs(&self) {
+        *self.0.stop_hangs.lock().unwrap() = true;
+    }
+
+    /// Every body of kind `recover` the fake AgentCore received.
+    pub fn recover_bodies(&self) -> Vec<Value> {
+        self.0
+            .recover_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(b, _)| serde_json::from_slice(b).unwrap())
+            .collect()
+    }
+
+    /// The target of every call of kind `recover`: (runtime ARN, qualifier, session id).
+    pub fn recover_targets(&self) -> Vec<(String, String, String)> {
+        self.0
+            .recover_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, t)| t.clone())
+            .collect()
+    }
+
+    /// The calls of a read in the order they happened.
+    pub fn recovery_calls(&self) -> Vec<String> {
+        self.0.recovery_calls.lock().unwrap().clone()
+    }
+
+    /// A read-back bundle of session `turn` whose header names `head`; returns the S3 SHA-256 checksum of the object (base64).
+    pub fn put_recovery_bundle(&self, turn: u32, head: &str) -> String {
+        let body = format!("# v2 git bundle\n{head} refs/heads/snapshot\n\nPACK").into_bytes();
+        let sum = harness_protocol::output_pins::OutputPin::for_body(&body, None).sha256_base64();
+        self.put_blob(&s3::recovery_bundle_key(RUN, turn), body);
+        sum
+    }
+
     pub fn message_closes(&self) -> Vec<(String, usize)> {
         self.0.message_closes.lock().unwrap().clone()
     }
@@ -1094,6 +1225,21 @@ impl Store for Mem {
             } else {
                 *left -= 1;
             }
+        }
+        let mut cancel = self.0.cancel_run_after_reads.lock().unwrap();
+        let landed = match cancel.as_mut() {
+            Some((left, at)) if *left <= 1 => Some(at.clone()),
+            Some((left, _)) => {
+                *left -= 1;
+                None
+            }
+            None => None,
+        };
+        if let Some(at) = landed {
+            if let Some(run) = runs.get_mut(run_id) {
+                run.cancel_requested_at = Some(at);
+            }
+            *cancel = None;
         }
         Ok(seen)
     }
@@ -1168,6 +1314,40 @@ impl Store for Mem {
         *stored = next.clone();
         self.0.agent_writes.lock().unwrap().push(next.clone());
         Ok(true)
+    }
+    async fn fence_agent(&self, _run_id: &str, agent_id: &str, generation: u32) -> Res<bool> {
+        self.failing("fence_agent")?;
+        self.0.recovery_calls.lock().unwrap().push("fence".into());
+        let mut agents = self.0.agents.lock().unwrap();
+        let Some(agent) = agents.get_mut(agent_id) else {
+            return Ok(false);
+        };
+        if agent.session_generation != Some(generation) {
+            return Ok(false);
+        }
+        let Some(creds) = agent.creds.as_mut() else {
+            return Ok(false);
+        };
+        creds.revoked = true;
+        agent.fenced_generation = Some(generation);
+        agent.version += 1;
+        Ok(true)
+    }
+    async fn set_recovered_copy(
+        &self,
+        run_id: &str,
+        copy: &harness_protocol::store::RecoveredCopyRef,
+    ) -> Res<()> {
+        self.failing("set_recovered_copy")?;
+        if let Some(run) = self.0.runs.lock().unwrap().get_mut(run_id)
+            && run
+                .recovered_copy
+                .as_ref()
+                .is_none_or(|c| c.session < copy.session)
+        {
+            run.recovered_copy = Some(Box::new(copy.clone()));
+        }
+        Ok(())
     }
     async fn set_run_slice(&self, run_id: &str, slice: u32) -> Res<()> {
         self.failing("set_run_slice")?;
@@ -1680,6 +1860,9 @@ impl PackageTokens for Mem {
 
 impl Minter for Mem {
     async fn mint(&self, plan: &MintPlan) -> Result<ProcessCredentials, MintError> {
+        if plan.source_identity == "recovery" {
+            self.0.recovery_calls.lock().unwrap().push("mint".into());
+        }
         self.0.minted.lock().unwrap().push(plan.clone());
         Ok(ProcessCredentials {
             version: 1,
@@ -1730,6 +1913,42 @@ impl Sessions for Mem {
         Ok(self.0.endpoints.lock().unwrap().get(name).cloned())
     }
     async fn invoke(&self, arn: &str, qualifier: &str, session: &str, body: &[u8]) -> Res<Vec<u8>> {
+        // A read of a stopped session's storage is a call of its own kind; it is kept apart from the turns the fake counts.
+        let recover = serde_json::from_slice::<Value>(body)
+            .ok()
+            .is_some_and(|v| v.get("kind") == Some(&json!("recover")));
+        if recover {
+            self.0.recovery_calls.lock().unwrap().push("invoke".into());
+            self.0.recover_bodies.lock().unwrap().push((
+                body.to_vec(),
+                (arn.to_string(), qualifier.to_string(), session.to_string()),
+            ));
+            let hangs = *self.0.recover_hangs.lock().unwrap();
+            if hangs {
+                return std::future::pending().await;
+            }
+            let next = self.0.recover_replies.lock().unwrap().pop_front();
+            return match next {
+                // A scripted answer whose attempt id is the word `<attempt>` names the attempt of the request, as a worker does.
+                Some(Ok(reply)) => Ok(
+                    match (
+                        serde_json::from_slice::<Value>(&reply),
+                        serde_json::from_slice::<Value>(body),
+                    ) {
+                        (Ok(mut r), Ok(b)) if r.get("attemptId") == Some(&json!("<attempt>")) => {
+                            r["attemptId"] = b["attemptId"].clone();
+                            serde_json::to_vec(&r).unwrap()
+                        }
+                        _ => reply,
+                    },
+                ),
+                Some(Err(e)) => Err(e),
+                None => Err(RunSessionError::Invalid(
+                    "Received error (400) from runtime: body is not a DirectInvocationRequest"
+                        .into(),
+                )),
+            };
+        }
         // The machine can be created and the run discarded while the call is in flight, and the call can still end in an error.
         if let Some(to) = self.0.flip_run_on_invoke.lock().unwrap().take() {
             for run in self.0.runs.lock().unwrap().values_mut() {
@@ -1757,6 +1976,11 @@ impl Sessions for Mem {
         .unwrap())
     }
     async fn stop(&self, _arn: &str, qualifier: &str, session: &str) -> Res<bool> {
+        self.0.recovery_calls.lock().unwrap().push("stop".into());
+        let hangs = *self.0.stop_hangs.lock().unwrap();
+        if hangs {
+            return std::future::pending().await;
+        }
         self.failing("stop")?;
         self.0
             .stops

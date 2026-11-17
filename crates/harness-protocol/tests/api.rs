@@ -50,6 +50,7 @@ fn route_tables_list_every_documented_route() {
             "/internal/message-claim",
             "/internal/message-seal",
             "/internal/message-outcome",
+            "/internal/message-history",
             "/internal/research/search",
             "/internal/research/fetch",
             "/internal/research/repo",
@@ -65,7 +66,7 @@ fn route_tables_list_every_documented_route() {
         .collect();
     ids.sort_unstable();
     ids.dedup();
-    assert_eq!(ids.len(), 30, "operation ids are unique");
+    assert_eq!(ids.len(), 31, "operation ids are unique");
 }
 
 #[test]

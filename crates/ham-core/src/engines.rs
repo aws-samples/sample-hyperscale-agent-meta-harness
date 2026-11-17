@@ -365,7 +365,7 @@ const CLINE_TEXTS: [SettingText; 5] = [
 const OPENCODE_TEXTS: [SettingText; 1] = [SettingText {
     path: "commands.timeout_seconds",
     label: "Command time limit",
-    help: "How long one shell command may run before OpenCode stops it, from 1 to 1800 seconds. The default is 600.",
+    help: "How long a shell command that sets no time limit of its own may run before OpenCode stops it, from 1 to 1800 seconds. The default is 600.",
     default_shown: "600 s",
 }];
 

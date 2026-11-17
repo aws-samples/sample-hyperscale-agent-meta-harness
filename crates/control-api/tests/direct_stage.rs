@@ -1,16 +1,17 @@
 //! Run control of a direct run:
 //!
-//! - `POST /v1/runs/{id}/cancel` stops Cline and keeps the work: it queues a Cancel control for the `direct` agent and
-//!   changes nothing else (the run stays `active`, the execution runs on, agentd ends the prompt within 10 s and the
-//!   machine delivers what exists). `?discard=true` is the hard cancel: `cleared` plus a stopped execution. A run with no
-//!   live agent yet has no work to keep and is cleared;
+//! - `POST /v1/runs/{id}/cancel` stops Cline and keeps the work: it records the cancel on the Run item,
+//!   queues a Cancel control for the `direct` agent and changes no status (the run stays
+//!   `active`, the execution runs on, agentd ends the prompt within 10 s and the machine delivers what exists).
+//!   `?discard=true` is the hard cancel: `cleared` plus a stopped execution. A run with no Agent item yet has no work to
+//!   keep and is cleared;
 //! - `GET /v1/models` lists the six models of `models.json` without reading the DynamoDB catalog.
 
 #![allow(clippy::unwrap_used)]
 
 use control_api::direct_models::builtin;
 use control_api::handler::{
-    Blobs, DeployedAs, Deps, Execution, Store, StoreError, V1Request, handle,
+    Blobs, CancelWrite, DeployedAs, Deps, Execution, Store, StoreError, V1Request, handle,
 };
 use harness_protocol::api::internal::PendingControl;
 use harness_protocol::api::v1::{DownloadUrlResponse, ModelsResponse, RunControlResponse};
@@ -145,6 +146,24 @@ impl Store for &Fake {
             return Err(StoreError::Unavailable("throttled".into()));
         }
         Ok(self.agents.clone())
+    }
+    /// The record of a cancel that keeps the work, as the table keeps it: once, for an active run. Its event is not among
+    /// `events`, which holds what `update_run` wrote.
+    async fn record_cancel(
+        &self,
+        _: &str,
+        at: &str,
+        _: &Envelope,
+    ) -> Result<CancelWrite, StoreError> {
+        let mut run = self.run.lock().unwrap();
+        if run.status != GoalStatus::Active {
+            return Ok(CancelWrite::NotActive);
+        }
+        if let Some(first) = &run.cancel_requested_at {
+            return Ok(CancelWrite::Already(first.clone()));
+        }
+        run.cancel_requested_at = Some(at.to_string());
+        Ok(CancelWrite::Recorded)
     }
     async fn update_run(
         &self,
@@ -302,17 +321,25 @@ async fn only_the_word_true_discards() {
 }
 
 #[tokio::test]
-async fn a_run_with_no_live_agent_has_no_work_to_keep_and_is_cleared() {
-    for agents in [vec![], vec![agent("stopped")], vec![agent("failed")]] {
+async fn a_run_with_no_agent_item_has_no_work_to_keep_and_is_cleared() {
+    let f = Fake::direct(vec![]);
+    let (status, v) = cancel(&f, &[]).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(f.run.lock().unwrap().status, GoalStatus::Cleared);
+    assert_eq!(
+        f.stopped.lock().unwrap().len(),
+        1,
+        "the execution is stopped"
+    );
+    // An Agent item in any state means a session ran: the cancel is recorded and nothing is cleared (the run may be delivering
+    // after its session was stopped).
+    for agents in [vec![agent("stopped")], vec![agent("failed")]] {
         let f = Fake::direct(agents);
         let (status, v) = cancel(&f, &[]).await;
         assert_eq!(status, 200, "{v}");
-        assert_eq!(f.run.lock().unwrap().status, GoalStatus::Cleared);
-        assert_eq!(
-            f.stopped.lock().unwrap().len(),
-            1,
-            "the execution is stopped"
-        );
+        assert_eq!(f.run.lock().unwrap().status, GoalStatus::Active);
+        assert!(f.run.lock().unwrap().cancel_requested_at.is_some());
+        assert!(f.stopped.lock().unwrap().is_empty());
     }
 }
 
@@ -504,12 +531,11 @@ async fn a_lost_race_is_a_conflict_and_failures_ask_for_a_retry() {
         controls_down: true,
         ..Fake::direct(vec![agent("running")])
     };
+    // The cancel is recorded before the control is queued, so a control that cannot be queued does not fail it: the session
+    // hears of the cancel on its next events answer.
     let (code, body) = cancel(&f, &[]).await;
-    assert_eq!(code, 503, "{body}");
-    assert!(
-        body["message"].as_str().unwrap().contains("retry ham stop"),
-        "{body}"
-    );
+    assert_eq!(code, 200, "{body}");
+    assert!(f.run.lock().unwrap().cancel_requested_at.is_some());
 
     let f = Fake {
         agents_down: true,

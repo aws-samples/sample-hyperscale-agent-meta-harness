@@ -59,6 +59,7 @@ pub fn config_from_lookup(
         slice_deadline_s,
         provider_silence_s,
         clock_ms: system_clock_ms,
+        pause: crate::ops::system_pause,
     })
 }
 

@@ -141,11 +141,14 @@ impl App {
 
     /// The delivery card of the run on screen has a `Tokens` row (the run has ended, its zip is on the card and the stage
     /// reported usage), and the stored conversation can still give the tokens of the prompts that answered once it is read whole
-    /// (`StoredChat::can_be_whole`). Its older chunks are then read as the timer fires: the conversation is opened at its end with one
+    /// (`StoredChat::can_be_whole`), and the service gave no number for them (`App::service_answered_tokens`). Its older chunks are
+    /// then read as the timer fires: the conversation is opened at its end with one
     /// page, and the sum that the `Outside` row needs was never there for a long run unless the view had been scrolled to the first
     /// line.
     fn card_wants_whole(&self) -> bool {
-        !self.run_is_live()
+        // The service gave the number for the row: no stored conversation is needed for it.
+        self.service_answered_tokens().is_none()
+            && !self.run_is_live()
             && self.hist.stored.can_be_whole()
             && self.cached.as_ref().is_some_and(|v| v.zip.is_some())
             && matches!(

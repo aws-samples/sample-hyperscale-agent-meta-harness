@@ -1,4 +1,4 @@
-# Cline fork: tag cli-v3.0.71 plus patches 0001-0015, built once per promotion on
+# Cline fork: tag cli-v3.0.71 plus patches 0001-0016, built once per promotion on
 # CodeBuild ARM and installed at /opt/harness/bin/cline in every worker image. Transport A
 # (ACP) only for now; transport B is added with its agentd support.
 # Rows follow; classes agree with harness-core policy::GATING_ROWS (QG-C).
@@ -11,7 +11,7 @@ envRemove = ["AWS_BEARER_TOKEN_BEDROCK", "CLINE_API_KEY"]
 [binary]
 path = "/opt/harness/bin/cline"
 # The promoted linux-arm64 artifact (engine/lock.toml [cline].binarySha256).
-sha256 = "248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da"
+sha256 = "6cb5fad761a0def661c1b95169f7682699b75ab7bc8902060d6c7af46db18a39"
 
 # The hardened environment as amended.
 [env]

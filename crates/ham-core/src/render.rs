@@ -49,8 +49,10 @@ pub struct FinalCard {
     /// session, and for a detail the client could not read. The card then has a `Session` row that says how often the run continued.
     pub session: Option<u32>,
     /// How many of the tokens of [`FinalCard::usage`] the engine used outside the prompts that answered (the goal-check rounds
-    /// and the prompts that failed): the total minus the sum of the stored conversation (`StoredChat::answered_tokens`). `None` where
-    /// no stored conversation was read whole (line mode reads none); the card then has no `Outside` row.
+    /// and the prompts that failed): the total minus the number the service gives for the answered prompts (`RunCost.answeredTokens`),
+    /// in line mode and on the run screen; without that number, the total minus the sum of the stored conversation
+    /// (`StoredChat::answered_tokens`), on the run screen only (line mode reads no stored conversation). `None` where neither is
+    /// known; the card then has no `Outside` row.
     pub outside_prompts: Option<u64>,
 }
 

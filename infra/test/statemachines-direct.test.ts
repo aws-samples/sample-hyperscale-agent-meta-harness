@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 // Direct run: the structure of statemachines/direct.asl.json, the run machine of stage `direct`.
-// The machine is 23 states and 12 Tasks (the last a Fail state); run-session decides every step and the machine only routes. After each session
-// `NextSlice` asks run-session whether another follows, and the one cycle of the graph (NextSlice, SliceChoice, ResetSession, StartSession) is that loop.
+// The machine is 25 states and 13 Tasks (the last a Fail state); run-session decides every step and the machine only routes. After each session
+// `NextSlice` asks run-session whether another follows, and the one cycle of the graph (StartSession, HasResult, Recover, NextSlice, SliceChoice,
+// ResetSession) is that loop. A session that left no result passes `Recover` on its way to `NextSlice`.
 // The behavior of the paths is tested in crates/run-session/tests/machine.rs and slice_loop.rs, which walk this same file over fakes of its four Lambdas.
 const ASL = new URL("../../statemachines/direct.asl.json", import.meta.url);
 const text = readFileSync(ASL, "utf8");
@@ -22,9 +23,9 @@ function targets(st: any): string[] {
 }
 
 describe("direct.asl.json: shape", () => {
-  test("23 states, 12 of them Tasks, and the machine has a timeout of the longest total a run may ask for plus the delivery", () => {
-    expect(names.length).toBe(23);
-    expect(names.filter((n) => states[n].Type === "Task").length).toBe(12);
+  test("25 states, 13 of them Tasks, and the machine has a timeout of the longest total a run may ask for plus the delivery", () => {
+    expect(names.length).toBe(25);
+    expect(names.filter((n) => states[n].Type === "Task").length).toBe(13);
     expect(def.StartAt).toBe("Name");
     // 30 days (MAX_MAX_RUN_S) and ten hours for the stage preparation and the delivery
     expect(def.TimeoutSeconds).toBe(30 * 24 * 3600 + 36_000);
@@ -144,9 +145,34 @@ describe("direct.asl.json: the session state", () => {
     expect(start.Parameters.Payload.op).toBe("start-session");
   });
 
-  test("a lost session, a timeout and every other failure go to NextSlice with the failure kept", () => {
-    expect(start.Catch).toEqual([{ ErrorEquals: ["States.ALL"], ResultPath: "$.session.failure", Next: "NextSlice" }]);
-    expect(start.Next).toBe("NextSlice");
+  test("a lost session, a timeout and every other failure go on to HasResult with the failure kept", () => {
+    expect(start.Catch).toEqual([{ ErrorEquals: ["States.ALL"], ResultPath: "$.session.failure", Next: "HasResult" }]);
+    expect(start.Next).toBe("HasResult");
+  });
+
+  test("a session with a result goes to NextSlice, and every other end goes to Recover first", () => {
+    expect(states.HasResult.Type).toBe("Choice");
+    expect(states.HasResult.Choices).toEqual([{ Variable: "$.session.turn.runId", IsPresent: true, Next: "NextSlice" }]);
+    expect(states.HasResult.Default).toBe("Recover");
+    // What the gate reads is what Init and ResetSession write: an empty object, which holds no runId.
+    expect(states.Init.Parameters.session).toEqual({ turn: {}, failure: {} });
+    expect(states.ResetSession.Parameters.session).toEqual({ turn: {}, failure: {} });
+  });
+
+  test("Recover has no Retry and a timeout of 150 s, drops its answer and its failure, and always goes on to NextSlice", () => {
+    const r = states.Recover;
+    expect(r.Type).toBe("Task");
+    expect(r.Resource).toBe("arn:aws:states:::lambda:invoke");
+    expect(r.Parameters).toEqual({
+      FunctionName: "${RunSessionArn}",
+      Payload: { op: "recover", "runId.$": "$.runId", "session.$": "$.session", "loop.$": "$.loop" },
+    });
+    expect(r.Retry).toBeUndefined();
+    expect(r.TimeoutSeconds).toBe(150);
+    expect(r.ResultPath).toBeNull();
+    expect(r.ResultSelector).toBeUndefined();
+    expect(r.Catch).toEqual([{ ErrorEquals: ["States.ALL"], ResultPath: null, Next: "NextSlice" }]);
+    expect(r.Next).toBe("NextSlice");
   });
 
   test("the slice to start is the loop's, and Init starts the loop at slice 1 with nothing counted", () => {
@@ -229,11 +255,11 @@ describe("direct.asl.json: retries, catches and timeouts", () => {
     expect(states.PushPullRequest.Catch[0].Next).toBe("PrFailed");
     expect(states.PushPullRequest.Catch[0].ResultPath).toBe("$.prFailure");
     for (const n of lambdaTasks) {
-      if (n === "PushPullRequest" || n === "StartSession" || n === "NextSlice" || n === "Blocked" || n === "Name") continue;
+      if (n === "PushPullRequest" || n === "StartSession" || n === "Recover" || n === "NextSlice" || n === "Blocked" || n === "Name") continue;
       for (const c of states[n].Catch ?? []) expect(c.Next, n).toBe("Blocked");
     }
     // The one exception: a label is not worth a blocked run, so a Name that fails goes on to Prepare with the input it had.
-    const exceptions = lambdaTasks.flatMap((n) => (states[n].Catch ?? []).filter((c: any) => !["Blocked", "Plan", "NextSlice", "PrFailed", "RunMachineFailed"].includes(c.Next)).map((c: any) => `${n} -> ${c.Next}`));
+    const exceptions = lambdaTasks.flatMap((n) => (states[n].Catch ?? []).filter((c: any) => !["Blocked", "Plan", "HasResult", "NextSlice", "PrFailed", "RunMachineFailed"].includes(c.Next)).map((c: any) => `${n} -> ${c.Next}`));
     expect(exceptions).toEqual(["Name -> Prepare"]);
   });
 
@@ -251,12 +277,12 @@ describe("direct.asl.json: retries, catches and timeouts", () => {
 
   test("which function each Task calls", () => {
     const fn = (n: string) => states[n].Parameters.FunctionName;
-    expect(["Name", "Prepare", "StartSession", "NextSlice", "Plan", "Finalize", "Blocked"].map(fn)).toEqual(Array(7).fill("${RunSessionArn}"));
+    expect(["Name", "Prepare", "StartSession", "Recover", "NextSlice", "Plan", "Finalize", "Blocked"].map(fn)).toEqual(Array(8).fill("${RunSessionArn}"));
     expect(["CreateRepo", "StageRepo", "PushPullRequest"].map(fn)).toEqual(Array(3).fill("${RepoGatewayArn}"));
     expect(fn("ValidateBundle")).toBe("${BundleValidatorArn}");
     expect(fn("Package")).toBe("${PackagerArn}");
-    const ops = Object.fromEntries(["Name", "Prepare", "StartSession", "NextSlice", "Plan", "Finalize", "Blocked"].map((n) => [n, states[n].Parameters.Payload.op]));
-    expect(ops).toEqual({ Name: "name-run", Prepare: "prepare", StartSession: "start-session", NextSlice: "next-slice", Plan: "plan-delivery", Finalize: "finalize", Blocked: "mark-blocked" });
+    const ops = Object.fromEntries(["Name", "Prepare", "StartSession", "Recover", "NextSlice", "Plan", "Finalize", "Blocked"].map((n) => [n, states[n].Parameters.Payload.op]));
+    expect(ops).toEqual({ Name: "name-run", Prepare: "prepare", StartSession: "start-session", Recover: "recover", NextSlice: "next-slice", Plan: "plan-delivery", Finalize: "finalize", Blocked: "mark-blocked" });
   });
 });
 

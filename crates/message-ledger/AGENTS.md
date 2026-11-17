@@ -7,7 +7,7 @@
 - The rules are written once.
 - control-api uses `admit`, `withdraw`, `list`, and `get`.
 - control-api closes messages on cancel.
-- worker-api uses session report, claim, seal, outcome, and the hand-out.
+- worker-api uses session report, claim, seal, outcome, the hand-out, and the read of the delivered messages.
 - run-session closes messages at finalize.
 - `harness_protocol::messages` holds wire and item types.
 
@@ -96,6 +96,13 @@
   - `rate-limited` returns 429.
   - The operations include `withdraw`, `get_message`, and `list`.
   - `notices` uses one read of one item.
+  - `delivered` reads the run's message items once and writes nothing.
+  - It returns the messages in state `delivered`, in the order admitted, with id, order number, reported turn and stored text.
+  - It names apart, as `unconfirmed`, the messages in state `dispatching` or `delivery-unknown`, in the order admitted, with id, order number and stored text: a worker claimed them and no report of the delivery arrived.
+  - It keeps both parts together within `MAX_HISTORY_TEXT_BYTES` (`bound_history_with`): whole messages, the oldest of either part cut first and counted.
+  - It takes no generation and no session, makes no control item and replaces no incarnation.
+  - A message whose `submitted` report never arrived is never among the delivered ones: it is `dispatching`, then `delivery-unknown`, and unconfirmed in both states. A confirmed copy makes it `superseded`, and it leaves the answer.
+  - A pending, held, withdrawn, rejected, superseded or failed message is in neither part.
   - The operations include `report_session`, `claim`, `seal`, and `outcome`.
   - `close` takes `CloseReason::Finalize` or `Cancel`.
 

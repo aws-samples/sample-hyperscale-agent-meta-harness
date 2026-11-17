@@ -81,6 +81,7 @@ fn claim(run_id: &str) -> IdempotencyItem {
 
 fn run_item() -> RunItem {
     RunItem {
+        cancel_requested_at: None,
         run_id: RUN.into(),
         owner_principal_arn: OWNER.into(),
         prompt_sha256: "cd".repeat(32),
@@ -103,6 +104,7 @@ fn run_item() -> RunItem {
         slice: None,
         max_run_s: None,
         engine: None,
+        recovered_copy: None,
     }
 }
 
@@ -1619,4 +1621,60 @@ async fn b804_admit_the_adapter_reads_the_one_lock_parameter_with_the_time_ssm_w
             "the singular GetParameter, on the one parameter, and nothing else"
         );
     }
+}
+
+/// The usage read gives what each Turn item's stored conversation summary declares as the tokens of the prompts that
+/// answered. The attribute names are typed here as worker-api writes them (`transcript`, `answeredTokens`; its test
+/// `b846_the_summary_is_stored_with_its_answered_tokens` pins the write), not taken from a constant of the product.
+#[tokio::test]
+async fn b846_run_usage_reads_the_answered_tokens_of_each_turn() {
+    let agent = json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "AGENT#direct"}, "runId": {"S": RUN},
+        "agentId": {"S": "direct"}, "taskId": {"S": "root"}, "attempt": {"N": "1"}, "runtimeArn": {"S": "arn"},
+        "runtimeSessionId": {"S": "s"}, "generation": {"N": "1"}, "engine": {"S": "cline"}, "engineVersion": {"S": "1"},
+        "transport": {"S": "acp"}, "modelId": {"S": "us.anthropic.claude-sonnet-5"}, "pool": {"S": "p"},
+        "status": {"S": "running"}, "version": {"N": "1"}});
+    let turn = |n: u32, transcript: Option<Value>| {
+        let mut item = json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": format!("TURN#direct#{n:06}")}, "runId": {"S": RUN},
+        "agentId": {"S": "direct"}, "n": {"N": n.to_string()}, "taskTokenCiphertext": {"S": "c"},
+        "startedAt": {"S": "2026-09-27T00:00:00Z"}, "rulesDigest": {"S": "d"}, "version": {"N": "1"},
+        "usage": {"M": {"inputTokens": {"N": "10"}, "outputTokens": {"N": "2"}, "cacheReadInputTokens": {"N": "0"},
+                        "cacheWriteInputTokens": {"N": "0"}}}});
+        if let Some(t) = transcript {
+            item["transcript"] = t;
+        }
+        item
+    };
+    let agents = json!({"Items": [agent]}).to_string();
+    let turns = json!({"Items": [
+        // Session 1: a summary with the number. Session 2: the summary of a worker that predates the member. Session 3: no summary.
+        turn(1, Some(json!({"M": {"lastTranscriptSeq": {"N": "2"}, "entries": {"L": []}, "answeredTokens": {"N": "813995"}}}))),
+        turn(2, Some(json!({"M": {"lastTranscriptSeq": {"N": "6"}, "entries": {"L": []}}}))),
+        turn(3, None)
+    ]})
+    .to_string();
+    let r = replay(vec![(200, &agents), (200, &turns)]);
+    let store = ddb(&r);
+    let u = store.run_usage(RUN).await.unwrap();
+    assert_eq!(
+        u.turns.iter().map(|t| t.n).collect::<Vec<_>>(),
+        [1, 2, 3],
+        "TRIGGER PRESENT: the three Turn items are read"
+    );
+    assert_eq!(u.turns[0].usage.unwrap().input_tokens, 10);
+    assert_eq!(
+        u.answered,
+        std::collections::BTreeMap::from([(("direct".to_string(), 1), 813_995)])
+    );
+    // Still one Query of the Turn items.
+    let b = bodies(&r);
+    assert_eq!(
+        b.len(),
+        2,
+        "one read of the Agent items and one of the Turn items"
+    );
+    assert_eq!(
+        b[1]["ExpressionAttributeValues"][":sk"],
+        json!({"S": "TURN#"})
+    );
+    assert_eq!(b[1]["ConsistentRead"], true);
 }

@@ -270,7 +270,7 @@ pub const ENTRIES: &[Entry] = &[
     ),
     sub(
         "cancel",
-        "<runId>",
+        "<runId> [--discard]",
         "Ask the coding agent to stop; the work so far is kept",
         Fx::REMOTE_MUTATION,
         Required,
@@ -294,7 +294,7 @@ pub const ENTRIES: &[Entry] = &[
     ),
     sub(
         "pull",
-        "<runId> [--artifact zip|partial|evidence | --snapshot]",
+        "<runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n>]",
         "Download a run's result to this machine; a stopped download resumes",
         Fx::LOCAL_WRITE,
         Required,

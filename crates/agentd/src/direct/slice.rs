@@ -14,8 +14,9 @@ use crate::direct::input::{DigestSources, StopWhy, digest, new_session_prompt};
 use crate::direct::snapshot::GitSource;
 use crate::workspace::{Worktree, git_with_env};
 use harness_protocol::direct::{
-    DirectInvocationRequest, DirectOutcome, DirectSlice, MAX_NEEDS_INPUT_FILES,
+    DirectInvocationRequest, DirectOutcome, DirectSlice, MAX_NEEDS_INPUT_FILES, s3,
 };
+use harness_protocol::runtime::RepoSource;
 use std::path::Path;
 
 /// A later slice of a run: the invocation's slice member, with the turn.
@@ -30,6 +31,9 @@ pub struct Restored {
     pub sessions_before: u32,
     /// The earlier slice's last message, quoted to the new session as data.
     pub brief: Option<String>,
+    /// The session whose storage this session's work was read back from, when the session starts from files the service read
+    /// back: the invocation's repository is then that session's read-back bundle. `None` for a start from a saved copy.
+    pub read_back_from: Option<u32>,
 }
 
 impl Restored {
@@ -39,12 +43,23 @@ impl Restored {
         if req.turn < 2 {
             return None;
         }
+        // The read-back bundle of an earlier session of this run, compared whole (the arrival check takes no other key under
+        // that prefix).
+        let read_back_from = match &req.repo {
+            RepoSource::S3Bundle { uri, .. } => s3::split_uri(uri).and_then(|(_, key)| {
+                (1..req.turn)
+                    .rev()
+                    .find(|n| key == s3::recovery_bundle_key(&req.run_id, *n))
+            }),
+            _ => None,
+        };
         Some(Restored {
             turn: req.turn,
             base_sha: s.base_sha.clone()?,
             restore_head: s.restore_head.clone()?,
             sessions_before: s.sessions_before.unwrap_or(req.turn - 1),
             brief: s.brief.clone().filter(|b| !b.trim().is_empty()),
+            read_back_from,
         })
     }
 }
@@ -83,7 +98,8 @@ fn short(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 
-/// The first prompt of the new session: the harness's words, the task as the user first wrote it, the facts of the work tree (commits since the
+/// The first prompt of the new session: the harness's words, the task as the user first wrote it, the messages the user sent to the run that
+/// were delivered in an earlier session, the facts of the work tree (commits since the
 /// base, the changed files, `PROGRESS.md`) and the earlier session's last message as quoted data. The digest and the task are also written to the
 /// context directory outside the work tree, which the prompt names.
 pub async fn first_prompt(
@@ -105,7 +121,12 @@ pub async fn first_prompt(
     if let Ok(git) = GitSource::open(agent_data, &wt.repo, base).await {
         git.facts().await.fill(&mut src);
     }
-    let d = digest(&src, DIGEST_BUDGET_BYTES);
+    // What the user said to the run in the sessions before this one. The message module read the record those sessions left into the
+    // context directory when this session started; no record is no earlier message.
+    let d = digest(&src, DIGEST_BUDGET_BYTES).with_earlier(
+        &crate::direct::messages::earlier::read_local(agent_data),
+        &src.secrets,
+    );
     let session = r.sessions_before.saturating_add(1);
     // The files are a convenience: the prompt carries an inline summary, so a context directory that cannot be written costs nothing here.
     let context_path = match ContextDir::create(agent_data) {
@@ -116,19 +137,38 @@ pub async fn first_prompt(
         }
         Err(_) => agent_data.join(crate::direct::context::CONTEXT_DIR),
     };
+    // The invocation does not say how the earlier session ended, so the words of a start from a saved copy hold for a session that
+    // handed over at its time limit and for one the service lost and started again from the last saved copy. A start from files
+    // the service read back says so: such a session left no result (it was stopped from outside, or it was lost), and what this
+    // session starts from is what that session's storage held, not a saved copy.
+    let (title, explain) = match r.read_back_from {
+        Some(k) => (
+            "The earlier session of this run ended without a result: it was stopped from outside, or the service lost it".to_string(),
+            format!(
+                "A session that is lost is started again. This session starts in a new machine from the files the service read back from the storage of session {k} after that session ended. They are the files that storage held; a file that was still being written may lack its last lines."
+            ),
+        ),
+        None => (
+            "The earlier session of this run ended: its machine reached its time limit, or the service lost the session".to_string(),
+            "A run lasts longer than one machine does, and a session that is lost is started again. This session starts in a new machine from the last saved copy of the earlier session's work. Changes the earlier session made after that copy may be missing."
+                .to_string(),
+        ),
+    };
     let why = StopWhy {
         reason: None,
         session,
-        // The invocation does not say how the earlier session ended, so the words hold for a session that handed over at its time
-        // limit and for one the service lost and started again from the last saved copy.
-        title: "The earlier session of this run ended: its machine reached its time limit, or the service lost the session".to_string(),
-        explain: "A run lasts longer than one machine does, and a session that is lost is started again. This session starts in a new machine from the last saved copy of the earlier session's work. Changes the earlier session made after that copy may be missing."
-            .to_string(),
+        title,
+        explain,
         stop_outcome: Some(DirectOutcome::StoppedTimeout.as_str().to_string()),
         attempts: 0,
         tool_calls: 0,
         files_changed: d.files_total(),
-        first_files: d.files().iter().take(MAX_NEEDS_INPUT_FILES).cloned().collect(),
+        first_files: d
+            .files()
+            .iter()
+            .take(MAX_NEEDS_INPUT_FILES)
+            .cloned()
+            .collect(),
     };
     let prompt = new_session_prompt(task, &why, &d, None, None, &context_path);
     // The summary in the prompt is cut to fit; the earlier session's last message is the one thing a continuation must not lose, so it is always

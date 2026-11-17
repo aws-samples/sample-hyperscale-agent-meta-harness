@@ -2827,11 +2827,17 @@ impl App {
             return vec![];
         }
         match armed.invocation().map(|i| &i.command) {
-            Some(Command::Cancel { run_id }) => vec![Effect::Cancel {
+            // The dashboard's cancel keeps the work. A typed `cancel <runId> --discard` is not this effect: the client's keys
+            // never discard a run.
+            Some(Command::Cancel {
+                run_id,
+                discard: false,
+            }) => vec![Effect::Cancel {
                 run_id: run_id.clone(),
             }],
-            // `R`: the same command as `/resume --all`; its report is the result panel's lines.
-            Some(Command::Resume { .. }) => {
+            // `R`: the same command as `/resume --all`; its report is the result panel's lines. A typed
+            // `cancel <runId> --discard` runs as the command does, and its lines are the result panel's too.
+            Some(Command::Resume { .. } | Command::Cancel { discard: true, .. }) => {
                 let (Some(invocation), argv) = (armed.invocation().cloned(), armed.argv().to_vec())
                 else {
                     return vec![];
@@ -4866,7 +4872,20 @@ impl App {
             }
             Msg::Cancelled(r) => {
                 self.notice = Some(match r {
-                    Ok(c) => format!("run {} {}", c.run_id, status_word(c.status)),
+                    // With what the service recorded, the notice says that the cancel stands and what follows.
+                    Ok(c) => match c
+                        .cancel
+                        .as_ref()
+                        .and_then(ham_core::cancel_note::CancelNote::of)
+                    {
+                        Some(note) => format!(
+                            "run {} {}. {}",
+                            c.run_id,
+                            status_word(c.status),
+                            note.notice_line(&c.run_id)
+                        ),
+                        None => format!("run {} {}", c.run_id, status_word(c.status)),
+                    },
                     Err(e) => e,
                 });
                 self.poll_effect()

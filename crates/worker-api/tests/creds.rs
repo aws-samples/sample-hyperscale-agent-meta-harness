@@ -49,6 +49,8 @@ fn agent(nonce: &str) -> AgentItem {
         capacity_provider_id: None,
         nonce_ciphertext: None,
         compute: None,
+        fenced_generation: None,
+        recover_after_stop: None,
     }
 }
 

@@ -166,8 +166,9 @@ fn no_bullet_of_the_default_rules_is_also_in_the_pack() {
 /// The same bullet with the exact command and the advice to run it in the background grows by 177 bytes; three sentences give them back (the tools
 /// diff, patch and jq in the Installed bullet, the limit of the search provider in the research bullet, and the example of a check command), so the
 /// section stays under the ceiling of 6,200.
-/// The build-output bullet and the scanner-kit bullet wait the way the lifecycle pack waits (an end file, a command bounded at 100 s, a new
-/// number for every repeat) in place of one blocking command; the two bullets grow by 101 bytes and the section measures 6,194, under the ceiling of 6,200.
+/// The build-output bullet and the scanner-kit bullet wait the way the lifecycle pack waits (an end file, a bounded command that is sent again
+/// while the file is empty) in place of one blocking command; the two bullets grow by 101 bytes and the section measures 6,194, under the ceiling of 6,200.
+/// With pack 1.18.0 the bound is the session's (`${HAMH_WAIT_S:-100}`) and no number is asked for on a repeat; the words changed, the size did not.
 /// The ceiling and the byte caps of single bullets guard our own file against silent growth. They are not a size promise to the user, whose file is checked
 /// only by the validator's request limits.
 const SECTION_MAX_BYTES: usize = 6_200;
@@ -581,9 +582,9 @@ fn the_default_rules_give_the_session_its_budget_for_build_output() {
         "in the background",
         "output in a log",
         "read the log when you need the result",
-        // The wait of the lifecycle pack, in words: an end file, a bounded command, a new call for every repeat.
+        // The wait of the lifecycle pack, in words: an end file and a command bounded by the session, sent again while the file is empty.
         "its exit code in an end file",
-        "wait for the end file with a command bounded at 100 s, sent again with a new number while the file is empty",
+        "wait for the end file with a command bounded at `${HAMH_WAIT_S:-100}` s, sent again while the file is empty",
         "3 GiB",
         "`find \"$CARGO_TARGET_DIR/debug/deps\" -type f -size +20M -mmin +20 -delete`",
     ] {

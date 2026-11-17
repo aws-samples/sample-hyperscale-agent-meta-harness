@@ -345,6 +345,38 @@
         ],
         "type": "object"
       },
+      "DeliveredMessage": {
+        "description": "A message of the user that was delivered to an engine: the text as control-api stored it when the user sent it. A reader ignores\nmembers it does not know.",
+        "properties": {
+          "deliveredTurn": {
+            "description": "The turn that carried it, as the worker reported it ([`MessageOutcome::Submitted`]).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "seq": {
+            "description": "The order the server admitted it in ([`MessageView::seq`]).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "seq",
+          "text"
+        ],
+        "type": "object"
+      },
       "Envelope": {
         "additionalProperties": false,
         "description": "One event in the run log (DynamoDB `EVT#<runId>#<shard>`, sort key `eventId`).",
@@ -653,6 +685,13 @@
           "agentId": {
             "type": "string"
           },
+          "ending": {
+            "description": "Protocol 1.63.0: `true` on the one heartbeat a worker sends when it hears, while the engine works, that its session is being\nended. The request then carries the completion key. worker-api acts on it only for the session the run is in, with a valid key and\nan open turn, and only when the run reads a stopped session's storage back (`recoverAfterStop`): it fences that session and ends the\nwait for it with a `sessionEnded` output. Absent on every other heartbeat, which is the text it always was; a worker-api of an\nearlier release ignores the member.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "runId": {
             "type": "string"
           },
@@ -677,6 +716,52 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "HistoryRequest": {
+        "additionalProperties": false,
+        "description": "`POST /internal/message-history`: at the start of a session agentd asks for the messages of the run that\nwere delivered to an engine in the sessions before it, so the first prompt of the new session can carry them as the user's own words.\nThe route only reads. The run and the agent are the caller's own (the IAM session of the worker); a body that names another run or\nagent is refused. It carries no generation and no session: the question is asked before an engine session exists, and it moves no\nmessage.",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "agentId"
+        ],
+        "type": "object"
+      },
+      "HistoryResponse": {
+        "description": "The answer of `POST /internal/message-history`: the messages of the run in state `delivered` (`messages`) and the ones that were\nhanded to an earlier session with no report of their delivery (`unconfirmed`), each in the order they were admitted, together\nwithin [`MAX_HISTORY_TEXT_BYTES`]. A message that is pending or held, or that ended any other way, is in neither: a pending one is\nstill to be delivered, and the worker sends it as a prompt of its own. A reader ignores members it does not know.",
+        "properties": {
+          "cut": {
+            "default": 0,
+            "description": "Older messages of either kind that are not in the answer: cut to keep it within its bound, the oldest first.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveredMessage"
+            },
+            "type": "array"
+          },
+          "unconfirmed": {
+            "description": "The messages of the run in state `dispatching` or `delivery-unknown`. The member is left out when there is none, and a reader\nthat does not know it reads the answer it always read.",
+            "items": {
+              "$ref": "#/components/schemas/UnconfirmedMessage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
         ],
         "type": "object"
       },
@@ -2121,6 +2206,15 @@
       "TranscriptSummary": {
         "description": "What the worker declares at `turn-complete` (protocol 1.38.0): the last chunk it stored and what it left out or lost. It is the\nworker's report, written by a process the engine can reach; the state `complete` means \"the worker reports no loss\".",
         "properties": {
+          "answeredTokens": {
+            "description": "The tokens of the prompts that answered in this session, added up by the worker where it makes the records:\n`result.usage.totalTokens` of every `prompt_result` record whose `result.stopReason` is a string, once per record, whether or\nnot the record was stored. Absent when no such record reported a number, after a sum past the largest number, and from a worker\nthat predates the member: the service then gives no number for the run. `validate` does not look at it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "entries": {
             "default": [],
             "items": {
@@ -2329,6 +2423,29 @@
         ],
         "type": "string"
       },
+      "UnconfirmedMessage": {
+        "description": "A message of the user that the ledger holds as handed to an earlier session of the run with no report of its delivery: a worker\nclaimed it and no outcome arrived (`dispatching`), or the session after it has reported itself since (`delivery-unknown`). The\nengine of that session may have received it. The text is the one control-api stored when the user sent the message. A reader\nignores members it does not know.",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "seq": {
+            "description": "The order the server admitted it in ([`MessageView::seq`]).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "seq",
+          "text"
+        ],
+        "type": "object"
+      },
       "Usage": {
         "description": "Token accounting for one turn.",
         "properties": {
@@ -2374,7 +2491,7 @@
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness internal API",
-    "version": "1.62.0"
+    "version": "1.63.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -2549,6 +2666,49 @@
           }
         ],
         "summary": "agentd claims pending messages before it sends them: one conditional write each, fenced by generation and session"
+      }
+    },
+    "/internal/message-history": {
+      "post": {
+        "operationId": "listDeliveredMessages",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "sigv4": []
+          }
+        ],
+        "summary": "agentd asks, at the start of a session, for the user's messages that were delivered in earlier sessions of the run; it reads and changes nothing"
       }
     },
     "/internal/message-outcome": {

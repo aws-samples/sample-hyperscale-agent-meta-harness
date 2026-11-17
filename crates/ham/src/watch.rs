@@ -151,6 +151,15 @@ pub fn view_json(v: &RunView) -> Value {
         if let Some(quiet) = v.silence() {
             o.insert("silentSince".into(), json!(quiet.since));
         }
+        // Only a run whose cancel the service recorded, and that has not ended, carries the time of that cancel.
+        if let Some(note) = v.cancel_recorded() {
+            o.insert("cancelRequestedAt".into(), json!(note.requested_at));
+        }
+        // Only a run whose session said that it was asked to end carries the time of that word. A copy stored afterwards does not
+        // take it away (it empties `copyNotices`); the service's word that the session was lost, and a later session's start, do.
+        if let Some(at) = &v.end_asked {
+            o.insert("endRequestedAt".into(), json!(at));
+        }
     }
     // Only a view that holds what the run said about its copies since its newest stored copy carries it: each notice with its
     // time, the worker's sentence, and whether it is the word that the session was asked to end. Line mode prints these sentences; a
@@ -393,6 +402,12 @@ impl InputMemo {
                 out.push(r.watch_line());
             }
         }
+        // The service's word that the user's cancel is recorded is told once: the run starts no further session, and what follows.
+        if let Some(note) = &v.cancel
+            && self.shown.insert(format!("cancel:{}", note.requested_at))
+        {
+            out.push(note.notice_line(&v.run_id));
+        }
         // A session the service lost is told once, with the session that starts and the copy it starts from.
         for lost in &v.lost {
             if self
@@ -436,7 +451,10 @@ impl InputMemo {
                         v.copies_failed_before_end_request(),
                     ));
                     if v.input.waiting().is_some() {
-                        out.push(ham_core::input::asked_by_ending_session(v.lost_in_a_row));
+                        out.push(ham_core::input::asked_by_ending_session(
+                            v.lost_in_a_row,
+                            v.cancel.is_some(),
+                        ));
                     }
                 } else {
                     after_notice = Some(out.len());

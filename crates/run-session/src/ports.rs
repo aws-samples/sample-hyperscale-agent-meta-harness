@@ -43,6 +43,23 @@ pub trait Store: Send + Sync {
         from_generation: u32,
         from_version: u64,
     ) -> impl Future<Output = Res<bool>> + Send;
+    /// Fences session generation `generation` of the agent, so its worker can no longer act on the run: one write sets
+    /// `fencedGeneration`, revokes the credential refresh and raises the version, and holds only while the item is still at that
+    /// generation. `true`: the generation is fenced (also when it was fenced before). `false`: the item is at another generation, has no
+    /// credential binding or does not exist, and nothing was written.
+    fn fence_agent(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+        generation: u32,
+    ) -> impl Future<Output = Res<bool>> + Send;
+    /// Names the read-back copy the run goes on from on the Run item (`recoveredCopy`). Written only while the item names none or
+    /// one of an earlier session, so the reference never moves back; a repeat, and a write that a later reference stops, are fine.
+    fn set_recovered_copy(
+        &self,
+        run_id: &str,
+        copy: &harness_protocol::store::RecoveredCopyRef,
+    ) -> impl Future<Output = Res<()>> + Send;
     /// Records the run's last slice on the Run item. Only raises the number; a repeat is harmless.
     fn set_run_slice(&self, run_id: &str, slice: u32) -> impl Future<Output = Res<()>> + Send;
     /// Claims one of the stage's Instances slots for `run_id`: `true` when the run holds one now (it had one, or there was room under

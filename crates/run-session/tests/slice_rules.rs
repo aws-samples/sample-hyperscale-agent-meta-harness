@@ -419,8 +419,8 @@ fn b689_the_plain_completion_event_is_the_complete_form_of_the_one_that_takes_a_
         run,
         1_790_000_000_000,
         GoalStatus::Complete,
-        Engine::CLINE,
         DirectOutcome::ReportedDone,
+        DirectOutcome::ReportedDone.label_for_engine(Engine::CLINE, Some("detail")),
         Some("detail".to_string()),
         vec![],
     );

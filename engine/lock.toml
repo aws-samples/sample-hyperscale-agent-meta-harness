@@ -6,16 +6,16 @@
 schema = "1"
 
 [cline]
-# The series is cli-v3.0.71 with 15 patches (tag, commit and tree below follow engine/cline/lock.toml); the binary
+# The series is cli-v3.0.71 with 16 patches (tag, commit and tree below follow engine/cline/lock.toml); the binary
 # below is the promoted linux-arm64 build of exactly that tree (engine/cline/AGENTS.md, "Promoting a series").
 tag = "cli-v3.0.71"
 commit = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
-tree = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+tree = "c75466739c34f810ccc10e1c721210215dc0de68"
 seriesLock = "engine/cline/lock.toml"
 target = "linux-arm64"
-binarySha256 = "248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da"
-artifact = "s3://cah-live-harness-700000000011/engine/cline/248ea4c01c87e9b88913d7913380721ddef173517e60514b59e9442a79e6f2da/cline"
-# FORK-BUILD PASS series=15 tree=f8990b674540 bin=248ea4c01c87 telemetry=off leaks=0
+binarySha256 = "6cb5fad761a0def661c1b95169f7682699b75ab7bc8902060d6c7af46db18a39"
+artifact = "s3://cah-live-harness-700000000011/engine/cline/6cb5fad761a0def661c1b95169f7682699b75ab7bc8902060d6c7af46db18a39/cline"
+# FORK-BUILD PASS series=16 tree=c75466739c34 bin=6cb5fad761a0 telemetry=off leaks=0
 builtBy = "CodeBuild ARM build of the pinned source"
 
 [opencode]

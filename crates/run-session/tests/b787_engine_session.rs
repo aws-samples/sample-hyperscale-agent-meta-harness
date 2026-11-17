@@ -144,7 +144,7 @@ fn b787_the_version_recorded_for_a_session_is_the_profile_version_of_its_engine(
 fn b787_session_started_names_the_engine_it_was_given() {
     let run = "01M4X3Q7R9S0V1W2X3Y4Z5A6B7";
     for (engine, word) in [(Engine::CLINE, "cline"), (Engine::OPENCODE, "opencode")] {
-        let e = events::session_started(run, 1_790_000_000_000, engine, MODEL, 1_000_000);
+        let e = events::session_started(run, 1_790_000_000_000, engine, MODEL, 1_000_000, false);
         let value = match e.payload {
             harness_protocol::envelope::Payload::Inline { value } => value,
             _ => panic!("an inline payload"),

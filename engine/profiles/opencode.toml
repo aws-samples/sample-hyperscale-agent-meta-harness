@@ -11,8 +11,7 @@ path = "/opt/harness/bin/opencode"
 # engine/lock.toml [opencode].binarySha256
 sha256 = "ce4f5e7502b6e32ccd8b05654410e8e8607b9660737222b0b1279621bcea2b03"
 
-# OpenCode kill switches; config and state live under the per-session dirs. A name that is present is no proof that it works: the egress
-# capture is that proof.
+# OpenCode kill switches; config and state live under the per-session dirs. A name that is present is no proof that it works: the egress capture is that proof.
 [env]
 OPENCODE_DISABLE_AUTOUPDATE = "1"
 OPENCODE_DISABLE_MODELS_FETCH = "1"
@@ -90,3 +89,10 @@ id = "K13-O"
 class = "gating"
 check = "credential binding on OpenCode: every Bedrock call is harness-worker-session <run>.<agent>; broker stopped fails closed"
 pass = { minPass = 1, runs = 1 }
+
+[[rows]]
+id = "K16-O"
+class = "gating"
+local = true
+check = "command time limit: without the harness's plugin a command that names no limit is cut at the engine's 120 s (the trigger); with agentd's own launch it runs past that; a hung command is cut at the run's limit with its process group; a limit the model names and a background call are kept; the limit holds after the engine reloads its services; the engine confirms it at session start; a background job started with the lifecycle pack's start line outlives a call that ends other than 0"
+pass = { minPass = 1, runs = 1, thresholds = { cutWithinS = 60.0, readyWithinS = 5.0 } }

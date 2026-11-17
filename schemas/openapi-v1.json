@@ -193,6 +193,51 @@
         },
         "type": "object"
       },
+      "CancelRecorded": {
+        "description": "A cancel that the service recorded: the member `cancel` of the answer of `POST /v1/runs/{runId}/cancel` and, with a\n`kind`, the payload of the harness's `run.waiting` event of kind [`crate::direct_input::CANCEL_RECORDED_KIND`]. The record stands whatever\nthe run's session does: the run starts no further session and delivers what exists. Three forms, by what the service knew when the cancel\narrived: a session that answers (`sessionLive`), a run that is already delivering (`delivering`), and neither (no session that answers).",
+        "properties": {
+          "delivering": {
+            "description": "The run is already delivering what exists: its session has ended and nothing will be called lost. Left out when false.",
+            "type": "boolean"
+          },
+          "lastHeartbeatAt": {
+            "description": "The last heartbeat the service received from the session, when it holds one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lostAfter": {
+            "description": "For a session that is asked to stop (`sessionLive`): the latest time at which the service calls the session lost when it stays silent\n(the later of its last heartbeat and its start, plus [`crate::direct::SESSION_LOST_AFTER_S`] seconds). It is no promise of when the\nrun ends. Absent in the other two forms.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requestedAt": {
+            "description": "When the cancel was recorded (RFC 3339 UTC): the time of the first cancel of the run; a repeated cancel answers the same time.",
+            "type": "string"
+          },
+          "session": {
+            "description": "The number of the run's session when the cancel arrived.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessionLive": {
+            "default": false,
+            "description": "The run has a session that the service has not ended and that is asked to stop. It says nothing about whether that session answers.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "requestedAt"
+        ],
+        "type": "object"
+      },
       "CatalogRow": {
         "properties": {
           "baseModelId": {
@@ -1637,6 +1682,17 @@
       "RunControlResponse": {
         "description": "Response to pause, resume and cancel.",
         "properties": {
+          "cancel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CancelRecorded"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.63.0: what the service recorded for a cancel that keeps the work, on a run that is `active` and has a session record.\nAbsent for every other answer (a run that was cleared, a discard) and from a service that predates the member: the client then prints\nthe status alone."
+          },
           "runId": {
             "type": "string"
           },
@@ -1653,6 +1709,15 @@
       "RunCost": {
         "description": "A run's token cost by model and engine: the engine-reported usage of its turns\npriced with control-api's pinned price table. The authoritative check is the Bedrock invocation\nlog keyed `<run>.<agent>`: `ham-cost-reconcile` requires the two to agree within 2%.",
         "properties": {
+          "answeredTokens": {
+            "description": "The tokens of the prompts that answered, as the workers of the run's sessions declared them\n(`TranscriptSummary.answeredTokens`), added up over exactly the turns whose usage is in `lines`. The tokens of `lines`\nminus this number are what the engine used outside the prompts that answered. Absent when one of those turns declared no\nnumber (a worker that predates the member, a session that left no summary) and when the sum passes the largest number:\nthe service then gives no number.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "lines": {
             "description": "One line per model and engine, in model order.",
             "items": {
@@ -1837,6 +1902,13 @@
             ],
             "description": "Why a cleared run ended when its `run` execution ended ABORTED, FAILED or TIMED_OUT before\nthe run finished."
           },
+          "cancelRequestedAt": {
+            "description": "Protocol 1.63.0: when the user's keep-the-work cancel of this run was recorded (the Run item's `cancelRequestedAt`). Set only\nwhile the run is `active`: the run then starts no further session and ends when its session has answered or is called lost. Absent\nfor every other run and from a service that predates the member.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "continueFrom": {
             "description": "Protocol 1.38.0: the id of the run this follow-up run continues from (`ham continue`), the run whose delivered head it started\non. Absent for an ordinary run and for every run that was stored before the member existed. It is the id alone: the request's\n`continueFrom` object (with the head control-api resolved) stays in the stored start request. `RunDetail` carries it in its `summary`.",
             "type": [
@@ -1895,6 +1967,13 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "sessionSilentSince": {
+            "description": "Protocol 1.63.0: the time of the last heartbeat the service received from the run's session, set only when the service itself\nfinds the session silent: the run is `active`, is not delivering and does not wait for the user's answer, its session is not ended,\nand that heartbeat is at least 150 seconds old by the service's clock. A session that has sent no heartbeat yet is never called\nsilent. Absent otherwise and from a service that predates the member. The client compares nothing with its own clock.",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -2224,6 +2303,13 @@
               "null"
             ]
           },
+          "recoverAfterStop": {
+            "description": "Protocol 1.63.0: `false` switches off reading a stopped session's storage back, from the user's `run.recover_after_stop`.\nOtherwise, when a session of the run is stopped from outside or stops answering, the service reads that session's own storage\nback before the next session starts and uses those files when the checks leave no doubt, and a stop the worker hears of ends the\nwait for the session early. With `false` the service makes no read and does not act on the worker's notice: the session is called\nlost after [`crate::direct::SESSION_LOST_AFTER_S`] seconds and the next one starts from the last saved copy, as in the releases\nbefore. Absent (the default) and `true` leave it on; only `false` is ever sent or stored, so a request that keeps the default is\nbyte for byte the request of protocol 1.62.0. A stage that predates the member refuses a request that holds it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "reportStepS": {
             "description": "Protocol 1.41.0: the seconds one command of the clean-checkout test report may run, from the user's `run.report_command_minutes`.\nAbsent (the default, and what every client without the setting sends) leaves the stage's own limit, 300 s unless the stage says\notherwise, and is left out of the stored request. [`crate::direct::report_step_s_ok`] is the one check: 1 to\n[`crate::direct::MAX_REPORT_STEP_S`]; control-api answers 400 outside it and agentd checks again.",
             "format": "uint32",
@@ -2460,7 +2546,7 @@
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness public API",
-    "version": "1.62.0"
+    "version": "1.63.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

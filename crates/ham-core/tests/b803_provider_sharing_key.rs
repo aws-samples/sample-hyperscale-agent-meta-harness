@@ -58,7 +58,7 @@ fn smoked() -> Models {
 
 #[test]
 fn b803_the_row_follows_the_total_run_time_and_rides_in_the_provider_sharing_member() {
-    assert_eq!(Key::ALL.len(), 49);
+    assert_eq!(Key::ALL.len(), 50);
     assert_eq!(Key::ALL[33], Key::RunProviderSharing);
     let r = Key::RunProviderSharing.row();
     assert_eq!(r.name, "run.provider_sharing");
@@ -88,7 +88,7 @@ fn b803_the_row_follows_the_total_run_time_and_rides_in_the_provider_sharing_mem
         Some(Key::RunProviderSharing)
     );
     assert!(KEYS.contains(&("run.provider_sharing", "run.provider_sharing")));
-    assert_eq!(KEYS.len(), 49);
+    assert_eq!(KEYS.len(), 50);
     assert_eq!(KEYS[33], ("run.provider_sharing", "run.provider_sharing"));
     assert_eq!(Key::ALL[34], Key::DefaultBackend);
     assert_eq!(Key::ALL[35], Key::CustomerContent);

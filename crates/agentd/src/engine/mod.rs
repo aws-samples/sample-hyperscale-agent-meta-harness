@@ -2,7 +2,7 @@
 //! optional uid split (`setpriv` to the engine user when agentd runs as root).
 //!
 //! The engine-specific code of agentd lives here and nowhere else in `src`:
-//! `config` (built-in config files and the ACP model value), `opencode` (the OpenCode arm: its session configuration, launch additions and defaults), `watchdog` (the tool-idle limit each engine starts with), `goal` (the goal plugin the loop of a run uses and the files it keeps), `layout` (where the harness's files for an engine go, how that place is protected and which kill switches the launch carries), `direct` (what an engine says
+//! `config` (built-in config files and the ACP model value), `opencode` (the OpenCode arm: its session configuration, launch additions and defaults), `watchdog` (the tool-idle limit each engine starts with), `goal` (the goal plugin the loop of a run uses and the files it keeps), `launch`, `layout` (where the harness's files for an engine go, how that place is protected and which kill switches the launch carries), `direct` (what an engine says
 //! about its rules, its launch settings and its configuration directory in a direct run), `direct_words` (the plain words of the
 //! user correction path that name the engine) and `faults` (the text an
 //! engine gives for its own timeout), `tools` (the tool names and the title convention of each engine) and `user_settings` (the user's engine settings of protocol 1.39.0, typed, and where each one is placed). The generic modules ask these by engine name.
@@ -16,6 +16,7 @@ pub mod direct_words;
 pub mod exit;
 pub mod faults;
 pub mod goal;
+pub mod launch;
 pub mod layout;
 pub mod opencode;
 pub mod stderr;
@@ -24,7 +25,7 @@ pub mod user_settings;
 pub mod watchdog;
 
 pub use exit::{Exit, describe_exit, exit_of};
-pub use stderr::{RawTail, StderrCapture, prev_stderr_path};
+pub use stderr::{RawTail, StderrCapture, prev_stderr_path, without_lines_starting};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,17 @@ pub struct LaunchSpec {
     pub run_as: Option<(u32, u32)>,
     /// The Landlock sandbox to start the process in, through `agentd sandbox-exec`. Never set together with `run_as`.
     pub sandbox: Option<crate::sandbox::Sandbox>,
+}
+
+/// agentd's kind of handle on an engine error log that is already there, for a reader that did not start the engine itself (a test, a tool):
+/// the file is opened once, never through a link, and read through that handle afterwards.
+pub fn capture_of(log: &Path) -> std::io::Result<StderrCapture> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(log)
+        .map(StderrCapture::new)
 }
 
 /// `argv[0]` resolved against the search path when it has no slash.

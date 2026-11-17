@@ -12,6 +12,13 @@
 //! A slice that was lost is also told to the run's events ([`announce_lost`]): one `run.waiting` event of the harness that names
 //! the session, why it was lost and what follows, so a client can say it while the run goes on.
 //!
+//! A cancel that sticks. The user's keep-the-work cancel is one attribute of the Run item (`cancelRequestedAt`, written by control-api).
+//! `next-slice` reads the Run item again right before its decision, after everything that takes time, and with the record set it starts
+//! no further session: a verdict to go on, and every end the loop would count itself (a lost session, a failed restore, no progress, no time
+//! left), becomes "deliver" with the reason [`EndReason::Cancelled`]. An end the engine made and the run's total time keep their own reason.
+//! `start-session` refuses a slice that was not invoked yet, so a cancel that lands after a stored decision to go on still starts nothing:
+//! the machine's Catch leads back to `next-slice` for that slice, whose decision is made fresh. `plan-delivery` reads the record too.
+//!
 //! What the loop guarantees: the service writes the plan of slice n+1 only after it stopped the session of slice n and read how slice n ended;
 //! the Agent item moves to slice n+1 (new session id, new refresh nonce) before the new session is invoked, so the old session can neither refresh
 //! its credentials nor pass worker-api's generation check; work that was in the tree at the deadline is committed and bundled by agentd before it
@@ -22,18 +29,20 @@ use crate::finalize::stop_agent_machine;
 use crate::ops::{Deps, SessionState};
 use crate::ports::{Blobs, PackageTokens, Res, Sessions, Store, Tokens};
 use crate::prepare::read_request;
+use crate::recover::{self, RecoveryResult, STATE_ABANDONED, STATE_COPIED, STATE_SKIPPED};
 use ham_core::lost_session::{
-    CAUSE_NO_HEARTBEAT, CAUSE_NO_RESULT, FROM_COPY, FROM_START, KIND, SessionLost, THEN_END,
-    THEN_RESTART,
+    CAUSE_END_REQUESTED, CAUSE_NO_HEARTBEAT, CAUSE_NO_RESULT, CAUSE_RESTORE_FAILED, FROM_COPY,
+    FROM_RECOVERED, FROM_START, KIND, LostRecovery, SessionLost, THEN_END, THEN_RESTART,
 };
 use harness_protocol::api::internal::TurnCompleteRequest;
 use harness_protocol::common::is_utc_timestamp;
 use harness_protocol::direct::{
     DEFAULT_MAX_RUN_S, DIRECT_AGENT_ID, DirectOutcome, DirectSummary, MAX_DIRECT_TIMEOUT_S,
     MAX_EMPTY_SLICES, MAX_LOST_SLICES, MAX_SLICE_BRIEF_BYTES, MAX_SLICES, MIN_SLICE_ENGINE_S,
-    SLICE_RESERVE_S, max_run_s_ok, s3,
+    OLD_WORKER_TAIL_S, SLICE_RESERVE_S, SessionEnded, max_run_s_ok, s3,
 };
 use harness_protocol::goal::GoalStatus;
+use harness_protocol::store::{AgentItem, RecoveredCopyRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use worker_api::handler::Minter;
@@ -52,6 +61,9 @@ pub enum EndReason {
     NoProgress,
     /// The run was ended by someone else (discarded) while the loop ran; `finalize` keeps its status.
     RunEnded,
+    /// The user's keep-the-work cancel is recorded on the Run item, and the slice ended without a session that goes on. No further
+    /// session is started and what exists is delivered; `finalize` ends such a run `complete`.
+    Cancelled,
 }
 
 impl EndReason {
@@ -63,6 +75,7 @@ impl EndReason {
             Self::RestoreFailed => "restore_failed",
             Self::NoProgress => "no_progress",
             Self::RunEnded => "run_ended",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -136,6 +149,11 @@ pub struct SlicePlan {
     /// No slice follows this one.
     pub last: bool,
     pub restore: Restore,
+    /// The copy the service read back from the storage of the session before and chose to start this session from, when it chose
+    /// one. `restore` stays what the session would restore without it (the saved copy), so a reader that does not know this member starts
+    /// from the saved copy. `start-session` takes this copy when the member is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<PlanRecovery>,
     /// The run's original base commit (`staged.baseSha`), when the stage reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_sha: Option<String>,
@@ -144,6 +162,14 @@ pub struct SlicePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<String>,
     pub planned_at_ms: u64,
+}
+
+/// The read-back copy a plan names: its key in the harness bucket and the commit the restored repository must be at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRecovery {
+    pub key: String,
+    pub head: String,
 }
 
 /// How a slice ended.
@@ -185,6 +211,280 @@ pub struct SliceEnd {
     /// The last heartbeat worker-api had recorded for a lost slice when the decision was made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_heartbeat_at: Option<String>,
+    /// When the service took the worker's notice that the session is being ended, for a slice that ended with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    /// What was decided about the copy read back from this slice's storage. Absent when no read concerned the slice (it ended with
+    /// a result, or it never ran on a machine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryDecision>,
+    /// The time of the user's cancel, when the loop ended for it ([`EndReason::Cancelled`]); kept with the decision, so the event
+    /// that announces a lost slice says the same however often it is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at: Option<String>,
+}
+
+/// What `next-slice` decided about the copy read back from a lost slice's storage. The decision is made once, with the end record.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryDecision {
+    /// A read of the storage began (the service wrote an attempt record).
+    pub tried: bool,
+    /// The run goes on from the copy read back: the next slice starts from it, or the run delivers it when it ends here.
+    pub used: bool,
+    /// Why the copy read back is not used, as one word, when a word says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The key of the read-back object, when one is in the bucket. It stays there whether it is used or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The commit of the copy read back, when the worker stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_write_at: Option<String>,
+    /// The files of which the saved copy holds more than the storage did, when there are any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regressed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regressed_path: Option<String>,
+}
+
+/// What `next-slice` finds when it decides: the read-back object and the run's newest saved copy as they are at that moment.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReadNow {
+    /// The key of the read-back object, when the bucket holds it.
+    pub key: Option<String>,
+    /// The commit the first bytes of that object name, when they name one.
+    pub object_head: Option<String>,
+    /// The commit of the run's newest saved copy now (the baseline, read again after the stopped machine had its last word).
+    pub baseline_head: Option<String>,
+}
+
+/// The use rule. The copy read back is used only when nothing leaves a doubt: the worker stored it and the object is whole; it has a
+/// parent (a tree without readable history is kept and never started from); two passes over the tree agreed; the comparison with the
+/// saved copy was made; the tree differs from the saved copy's; the storage's marker names exactly the saved copy's commit, and its number
+/// when both are known; no file of the saved copy holds more than the storage did; no file of the storage is the version below the saved
+/// copy's; the saved copy has not moved since the read; and the object still names the commit. Anything else is doubt, and the run goes on
+/// from the saved copy. Lineage is never judged by a time stamp. The result's own miss or skip keeps its reason word; a doubt for which no
+/// word is settled has none.
+pub fn use_recovery(result: &RecoveryResult, now: &ReadNow) -> RecoveryDecision {
+    let copy = result.copy.as_ref();
+    let mut d = RecoveryDecision {
+        tried: result.attempt_id.is_some(),
+        used: false,
+        reason: None,
+        key: now.key.clone(),
+        head: copy.map(|c| c.head_sha.clone()),
+        newest_write_at: copy.and_then(|c| c.newest_write_at.clone()),
+        regressed: None,
+        regressed_path: None,
+    };
+    let no = |mut d: RecoveryDecision, reason: Option<&str>| {
+        d.reason = reason.map(str::to_string);
+        d
+    };
+    if result.state != STATE_COPIED {
+        let reason = result
+            .reason
+            .clone()
+            .or_else(|| (result.state == STATE_ABANDONED).then(|| STATE_ABANDONED.to_string()));
+        d.reason = reason;
+        return d;
+    }
+    let (Some(copy), Some(baseline)) = (copy, result.baseline.as_ref()) else {
+        return no(d, Some("not-whole"));
+    };
+    if now.key.is_none() {
+        return no(d, Some("not-whole"));
+    }
+    // A saved copy that landed after the read wins, whatever the read found: the worker compared with the copy before it.
+    if now.baseline_head.as_deref() != Some(baseline.head_sha.as_str()) {
+        return no(d, Some("superseded"));
+    }
+    // No word is settled for a copy without a parent: it is kept, and no slice starts from it.
+    if copy.parent_sha.is_none() {
+        return no(d, None);
+    }
+    if !copy.stable {
+        return no(d, Some("unstable"));
+    }
+    // No word is settled for a comparison that was not made: an unknown comparison is never read as "nothing is older".
+    let Some(cmp) = result.comparison.as_ref().filter(|c| c.done()) else {
+        return no(d, None);
+    };
+    if cmp.same_as_baseline {
+        return no(d, Some("nothing-newer"));
+    }
+    let marker_ok = copy.marker.as_ref().is_some_and(|m| {
+        m.head_sha == baseline.head_sha && baseline.count.is_none_or(|count| count == m.count)
+    });
+    if !marker_ok {
+        return no(d, Some("storage-older"));
+    }
+    if cmp.regressed > 0 {
+        d.regressed = Some(cmp.regressed);
+        d.regressed_path = cmp.regressed_paths.first().cloned();
+        return no(d, Some("older-file"));
+    }
+    // No word is settled for a file that is the version below the saved copy's: it is doubt, and the saved copy wins.
+    if cmp.rewritten > 0 {
+        return no(d, None);
+    }
+    if now.object_head.as_deref() != Some(copy.head_sha.as_str()) {
+        return no(d, Some("not-whole"));
+    }
+    d.used = true;
+    d
+}
+
+/// Whether the read of slice `n`'s storage proves that the slice restored the read-back copy its plan named and went to work on
+/// it: the storage's marker, which the worker writes right after its restore check passed and before the engine starts, names this
+/// slice and that commit.
+fn restore_proven(result: &RecoveryResult, n: u32, planned: Option<&PlanRecovery>) -> bool {
+    let marker = result.copy.as_ref().and_then(|c| c.marker.as_ref());
+    match (marker, planned) {
+        (Some(m), Some(p)) => m.session == n && m.head_sha == p.head,
+        _ => false,
+    }
+}
+
+/// The result of the read of slice `n`'s storage, once the stopped machine has had its last word. A copy the old machine was
+/// uploading when it was stopped can still land for about a minute, and it can hold more of a file that was open than the storage does,
+/// so nothing is decided before [`OLD_WORKER_TAIL_S`] after the service first knew that the session was ending: the worker's notice, else
+/// the start of the service's own stop. The wait is the same whether the read looks usable or not. An attempt that left no result is
+/// closed as abandoned first, so a result that arrives late is never used. No wait for a read that was skipped (the run switched it off,
+/// its machine keeps no storage, the run is over) and for a slice that never ran on a machine.
+async fn await_read<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+    n: u32,
+    agent: Option<&AgentItem>,
+    ended: Option<&SessionEnded>,
+    stop_began_ms: u64,
+) -> Res<Option<RecoveryResult>>
+where
+    S: Store,
+    B: Blobs,
+{
+    let cfg = &deps.cfg;
+    let mut result = recover::read_result(&deps.blobs, run_id, n).await?;
+    if result.as_ref().is_some_and(|r| r.state == STATE_SKIPPED) {
+        return Ok(result);
+    }
+    let attempt = recover::read_attempt(&deps.blobs, run_id, n).await?;
+    if attempt.is_none() && result.is_none() {
+        // No read was made (an execution of the machine from before the read, or a read that failed before its first record). The wait
+        // still applies to a session that ran on a machine with storage of its own, in a run that reads storage back.
+        let reads_back = agent.is_some_and(|a| {
+            a.recover_after_stop != Some(false)
+                && a.session_generation == Some(n)
+                && a.compute.as_deref() != Some(crate::compute::Compute::Instances.word())
+        });
+        let invoked = deps
+            .store
+            .get_turn(run_id, DIRECT_AGENT_ID, n)
+            .await?
+            .is_some_and(|t| t.invoked_at.is_some());
+        if !(reads_back && invoked) {
+            return Ok(None);
+        }
+    }
+    if let (Some(a), None) = (&attempt, &result) {
+        result = Some(close_abandoned(deps, run_id, n, a).await?);
+    }
+    let known_ms = attempt
+        .as_ref()
+        .and_then(|a| a.end_known_at_ms)
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(|r| r.stop.as_ref())
+                .map(|s| s.started_at_ms)
+        })
+        .or_else(|| attempt.as_ref().map(|a| a.started_at_ms))
+        .or_else(|| ended.and_then(|e| crate::run_ended::parse_rfc3339_ms(&e.at)))
+        .unwrap_or(stop_began_ms);
+    let wait = (known_ms + OLD_WORKER_TAIL_S * 1000).saturating_sub(cfg.now_ms());
+    if wait > 0 {
+        cfg.wait_ms(wait).await;
+    }
+    // The state `Recover` can end on its Catch while the function has not written its first record yet (an error of the invoke, a
+    // slow start): the read then goes on beside this op. So when no record was found before the wait, the records are read once more
+    // after it. A result that landed is the read's. An attempt without one is closed as abandoned, so a result that arrives later
+    // is never used, and the decision then looks for the object and names a copy the read stored.
+    if result.is_none() {
+        result = recover::read_result(&deps.blobs, run_id, n).await?;
+        if result.is_none()
+            && let Some(a) = recover::read_attempt(&deps.blobs, run_id, n).await?
+        {
+            result = Some(close_abandoned(deps, run_id, n, &a).await?);
+        }
+    }
+    Ok(result)
+}
+
+/// Closes the read of slice `n`'s storage that began with attempt `a` and left no result: the result `abandoned` is written
+/// once, so whatever the read writes later is not used. Returns the result that stands, which is the read's own when it landed first.
+async fn close_abandoned<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+    n: u32,
+    a: &recover::RecoveryAttempt,
+) -> Res<RecoveryResult>
+where
+    B: Blobs,
+{
+    let closed = RecoveryResult {
+        schema_version: recover::SCHEMA_VERSION,
+        run_id: run_id.to_string(),
+        session: n,
+        attempt_id: Some(a.attempt_id.clone()),
+        state: STATE_ABANDONED.to_string(),
+        reason: Some(STATE_ABANDONED.to_string()),
+        cause: a.cause.clone(),
+        end_known_at_ms: a.end_known_at_ms,
+        stop: None,
+        baseline: None,
+        copy: None,
+        comparison: None,
+        invoke: None,
+        worker: None,
+        started_at_ms: a.started_at_ms,
+        ended_at_ms: deps.cfg.now_ms(),
+    };
+    write_once(&deps.blobs, &s3::recovery_result_key(run_id, n), closed).await
+}
+
+/// The decision about the copy read back from slice `n`, against the object and the saved copy as they are now. A read of the
+/// object that fails says nothing about it: the object is then neither named nor used, and the run goes on from the saved copy.
+async fn decide_read<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    n: u32,
+    result: &RecoveryResult,
+    baseline_now: Option<&str>,
+) -> RecoveryDecision {
+    let key = s3::recovery_bundle_key(run_id, n);
+    let exists = blobs.exists(&key).await.unwrap_or(false);
+    let object_head = if exists {
+        blobs
+            .get_prefix(&key, ham_core::snapshot::HEADER_BYTES)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|h| ham_core::snapshot::bundle_head(&h).ok())
+    } else {
+        None
+    };
+    use_recovery(
+        result,
+        &ReadNow {
+            key: exists.then_some(key),
+            object_head,
+            baseline_head: baseline_now.map(str::to_string),
+        },
+    )
 }
 
 impl SliceEnd {
@@ -343,7 +643,7 @@ fn invalid(what: &str, e: impl std::fmt::Display) -> RunSessionError {
 }
 
 /// The record at `key`, when it exists and reads as `T`.
-async fn read_record<B: Blobs, T: for<'de> Deserialize<'de>>(
+pub(crate) async fn read_record<B: Blobs, T: for<'de> Deserialize<'de>>(
     blobs: &B,
     key: &str,
 ) -> Res<Option<T>> {
@@ -356,7 +656,7 @@ async fn read_record<B: Blobs, T: for<'de> Deserialize<'de>>(
 }
 
 /// Writes `record` at `key` once and returns the record that stands: this one, or the one an earlier attempt wrote.
-async fn write_once<B: Blobs, T: Serialize + for<'de> Deserialize<'de>>(
+pub(crate) async fn write_once<B: Blobs, T: Serialize + for<'de> Deserialize<'de>>(
     blobs: &B,
     key: &str,
     record: T,
@@ -374,7 +674,7 @@ pub async fn read_plan<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<
     read_record(blobs, &s3::slice_record_key(run_id, n)).await
 }
 
-async fn read_end<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<SliceEnd>> {
+pub(crate) async fn read_end<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<SliceEnd>> {
     read_record(blobs, &end_key(run_id, n)).await
 }
 
@@ -413,6 +713,7 @@ where
             key: s3::repo_bundle_key(run_id),
             head: None,
         },
+        recovery: None,
         base_sha: staged
             .get("baseSha")
             .and_then(Value::as_str)
@@ -439,7 +740,7 @@ pub fn brief_of(message: &str) -> Option<String> {
 }
 
 /// The last snapshot a slice saved: the commit its bundle names; the record's commit only for a bundle whose header cannot be read.
-async fn snapshot_of<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<Restore>> {
+pub(crate) async fn snapshot_of<B: Blobs>(blobs: &B, run_id: &str, n: u32) -> Res<Option<Restore>> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Json {
@@ -535,6 +836,7 @@ where
     let n = prev.slice.max(1);
     // 1. a decision is made once; its word to the run's events is written again, the same
     if let Some(end) = read_end(&deps.blobs, run_id, n).await? {
+        note_recovered(deps, run_id, &end).await;
         tell_lost(deps, run_id, &end).await;
         return Ok(end.state());
     }
@@ -559,25 +861,44 @@ where
 
     // 2. the slice's machine is stopped before anything is decided from what it left: nothing of this slice writes after the decision
     let mut last_heartbeat_at = None;
-    if let Some(agent) = deps.store.get_agent(run_id, DIRECT_AGENT_ID).await? {
+    let agent = deps.store.get_agent(run_id, DIRECT_AGENT_ID).await?;
+    if let Some(agent) = &agent {
         // The last heartbeat of this slice's session, while the Agent item still names it.
         if kind == EndKind::Lost && agent.session_generation.is_none_or(|g| g == n) {
             last_heartbeat_at = agent.heartbeat_at.clone().filter(|t| is_utc_timestamp(t));
         }
-        stop_agent_machine(deps, &agent).await?;
+        stop_agent_machine(deps, agent).await?;
     }
-    // Why a lost slice was lost: its heartbeat stopped, or it ended without a result for another reason.
-    let lost_cause = if kind == EndKind::Lost {
-        let age = crate::plan_delivery::session_age_s(deps, run_id, n, now).await?;
-        let cause = if crate::plan_delivery::heartbeat_stopped(session, age) {
-            CAUSE_NO_HEARTBEAT
+    // Why a lost slice was lost: its worker gave notice that the session is being ended, its heartbeat stopped, or it ended
+    // without a result for another reason. A notice is no proof that the machine stopped, which is why the cause is not called a stop.
+    let ended = session.ended().filter(|_| kind == EndKind::Lost);
+    let mut lost_cause = if kind == EndKind::Lost {
+        let cause = if ended.is_some() {
+            CAUSE_END_REQUESTED
         } else {
-            CAUSE_NO_RESULT
+            let age = crate::plan_delivery::session_age_s(deps, run_id, n, now).await?;
+            if crate::plan_delivery::heartbeat_stopped(session, age) {
+                CAUSE_NO_HEARTBEAT
+            } else {
+                CAUSE_NO_RESULT
+            }
         };
         Some(cause.to_string())
     } else {
         None
     };
+    let ended_at = ended
+        .as_ref()
+        .map(|e| e.at.clone())
+        .filter(|t| is_utc_timestamp(t));
+    // What came of the read of this slice's storage, after the stopped machine had its last word. The clock is read again: the
+    // decision, the time the run has used and the plan of the next slice are of the moment after the wait.
+    let read = if kind == EndKind::Lost {
+        await_read(deps, run_id, n, agent.as_ref(), ended.as_ref(), now).await?
+    } else {
+        None
+    };
+    let now = deps.cfg.now_ms();
 
     // 3. what the slice left, and whether it moved the work
     let own = best_head(
@@ -589,11 +910,54 @@ where
     )
     .await?;
     let restored = plan.as_ref().map(|p| p.restore.clone());
-    // The head the slice started on: the commit it restored, or the staged base for a slice that restored the base itself.
-    let started_on = plan
+    // The read-back copy this slice was planned to start from, when its plan names one.
+    let planned_recovery = plan.as_ref().and_then(|p| p.recovery.clone());
+    // The head the slice started on: the read-back copy its plan names, else the commit it restored, or the staged base for a slice that
+    // restored the base itself.
+    let started_on = planned_recovery
         .as_ref()
-        .and_then(|p| p.restore.head.clone().or_else(|| p.base_sha.clone()));
+        .map(|r| r.head.clone())
+        .or_else(|| {
+            plan.as_ref()
+                .and_then(|p| p.restore.head.clone().or_else(|| p.base_sha.clone()))
+        });
     let progress = own.as_ref().is_some_and(|o| o.head != started_on);
+    // The decision about the copy read back, against the newest saved copy as it is now: the copy this slice saved (read after
+    // the wait, so a copy that landed late is seen), else what the slice started from.
+    let baseline_now = own
+        .as_ref()
+        .and_then(|o| o.head.clone())
+        .or_else(|| started_on.clone());
+    let decision = match &read {
+        Some(result) => {
+            Some(decide_read(&deps.blobs, run_id, n, result, baseline_now.as_deref()).await)
+        }
+        None => None,
+    };
+    // A slice that was planned to start from a read-back copy and provably never worked on it: its worker said it could not
+    // restore the copy, its start was refused before any machine was called, or it was lost with no copy of its own and the read of its
+    // storage found no marker that names the slice and the restored commit. Such a slice is not charged as a lost session, and the next
+    // one starts from the saved copy: a read-back copy that cannot be started from costs one start and never the run.
+    //
+    // Only a storage that was read is proof. A read that missed, was abandoned or skipped, or that never began, says nothing about
+    // what the slice did: whether it worked is then not known, and not known is never read as "never worked". That slice is a lost
+    // session like any other, and the run goes on from the read-back copy the slice started from, which is the newest copy the service
+    // found whole; an older saved copy never replaces it without proof.
+    let proven = read
+        .as_ref()
+        .is_some_and(|r| restore_proven(r, n, planned_recovery.as_ref()));
+    let storage_read = read.as_ref().is_some_and(|r| r.state == STATE_COPIED);
+    let left_nothing = own.is_none();
+    // Whether a record says that the machine of this slice was called. It is asked only for a lost slice that was planned to start
+    // from a read-back copy and left nothing of its own; the rule below reads it once the Run item has been read again.
+    let invoked = match (&planned_recovery, kind) {
+        (Some(_), EndKind::Lost) if left_nothing => deps
+            .store
+            .get_turn(run_id, DIRECT_AGENT_ID, n)
+            .await?
+            .is_some_and(|t| t.invoked_at.is_some()),
+        _ => true,
+    };
     let (request, _) = read_request(&deps.store, &deps.blobs, run_id).await?;
     let total = total_s(request.max_run_s);
     let started_ms = deps
@@ -610,14 +974,76 @@ where
         None
     };
 
-    // 4. the decision
+    // 4. the decision. The Run item is read again here, after everything above that can take time (the stop of the machine, the
+    // reads of the bucket), so a cancel or a discard that landed since the top of the op is seen before the decision is stored.
+    let fresh = deps
+        .store
+        .get_run(run_id)
+        .await?
+        .ok_or_else(|| RunSessionError::Invalid(format!("run {run_id} has no Run item")))?;
+    // With: a slice that was never invoked while the user's keep-the-work cancel is recorded did not fail on the copy. Its
+    // start was refused for the cancel, or failed before the cancel landed, so the copy was never tried. The run ends here for the
+    // cancel and delivers that copy, the newest one the service found whole: `plan-delivery` skips the read-back copy of a plan only
+    // for a slice whose cause says that it could not start from it.
+    let cancel_recorded = fresh.status == GoalStatus::Active && fresh.cancel_requested_at.is_some();
+    let never_worked = match (&planned_recovery, kind) {
+        (Some(_), EndKind::RestoreFailed) => true,
+        (Some(_), EndKind::Lost) if left_nothing => {
+            (!invoked && !cancel_recorded) || (storage_read && !proven)
+        }
+        _ => false,
+    };
+    if never_worked {
+        lost_cause = Some(CAUSE_RESTORE_FAILED.to_string());
+    }
     let mut verdict = decide(prev, kind, progress, timing.is_some());
-    if run.status != GoalStatus::Active {
+    if never_worked {
+        // The limit of lost sessions in a row counts sessions that worked. With time left the run goes on; without, it ends as it would.
+        verdict = match verdict {
+            Verdict::Deliver { empty, reason, .. } if timing.is_none() => Verdict::Deliver {
+                lost: prev.lost,
+                empty,
+                reason,
+            },
+            Verdict::Next { empty, .. } | Verdict::Deliver { empty, .. } => Verdict::Next {
+                lost: prev.lost,
+                empty,
+            },
+        };
+    }
+    let mut cancelled_at = None;
+    if fresh.status != GoalStatus::Active {
         verdict = Verdict::Deliver {
             lost: prev.lost,
             empty: prev.empty,
             reason: Some(EndReason::RunEnded),
         };
+    } else if let Some(at) = fresh.cancel_requested_at.clone() {
+        // The user's keep-the-work cancel is recorded: no further session. A verdict to go on, and an end the loop counts itself (the
+        // lost-session limit, a failed restore, no progress, no time left), delivers what exists for the cancel. An end the engine made
+        // and the run's total time keep their own reason.
+        let cancelled = |lost, empty| Verdict::Deliver {
+            lost,
+            empty,
+            reason: Some(EndReason::Cancelled),
+        };
+        verdict = match (verdict, kind) {
+            (Verdict::Next { lost, empty }, _) => cancelled(lost, empty),
+            (
+                Verdict::Deliver { lost, empty, .. },
+                EndKind::Lost | EndKind::RestoreFailed | EndKind::Handoff,
+            ) => cancelled(lost, empty),
+            (other, _) => other,
+        };
+        if matches!(
+            verdict,
+            Verdict::Deliver {
+                reason: Some(EndReason::Cancelled),
+                ..
+            }
+        ) {
+            cancelled_at = Some(at);
+        }
     }
     let head = turn.as_ref().and_then(|t| t.last_commit_sha.clone());
     let end = match verdict {
@@ -636,6 +1062,9 @@ where
             decided_at_ms: now,
             lost_cause,
             last_heartbeat_at,
+            ended_at,
+            recovery: decision,
+            cancel_requested_at: cancelled_at,
         },
         Verdict::Next { lost, empty } => {
             // The commit every later slice is told as the run's base: the original base.
@@ -648,6 +1077,22 @@ where
                     .filter(|s| sha_ok(s))
                     .map(str::to_string)
             });
+            // The read-back copy the next slice starts from. It is the one read from this slice's storage when the decision uses
+            // it. Else it is the one this slice itself started from, when the slice was lost and left no copy of its own, unless the
+            // slice provably never worked on it: the work is still only in that copy, whether the slice is known to have restored it
+            // or its start is not known. A slice that never worked on its read-back copy hands none on. `restore` below stays what
+            // the rule gave before the read existed, so a reader that does not know the member starts from the saved copy.
+            let next_recovery = match (&decision, &planned_recovery) {
+                (Some(d), _) if d.used => d
+                    .key
+                    .clone()
+                    .zip(d.head.clone())
+                    .map(|(key, head)| PlanRecovery { key, head }),
+                (_, Some(carried)) if kind == EndKind::Lost && left_nothing && !never_worked => {
+                    Some(carried.clone())
+                }
+                _ => None,
+            };
             // The next slice starts from the best head there is: what this slice left, else what it restored (a replay), else the base.
             let restore = match (own, restored) {
                 (Some(o), _) => o,
@@ -669,6 +1114,7 @@ where
             };
             if base_sha.is_none() || restore.head.is_none() {
                 SliceEnd {
+                    cancel_requested_at: None,
                     slice: n,
                     kind,
                     cont: false,
@@ -683,6 +1129,8 @@ where
                     decided_at_ms: now,
                     lost_cause,
                     last_heartbeat_at,
+                    ended_at,
+                    recovery: decision,
                 }
             } else {
                 let timing = timing.ok_or_else(|| {
@@ -693,6 +1141,7 @@ where
                     engine_s: timing.engine_s,
                     last: timing.last,
                     restore,
+                    recovery: next_recovery,
                     base_sha,
                     sessions_before: n,
                     brief: summary
@@ -703,6 +1152,7 @@ where
                 };
                 write_once(&deps.blobs, &s3::slice_record_key(run_id, n + 1), next).await?;
                 SliceEnd {
+                    cancel_requested_at: None,
                     slice: n,
                     kind,
                     cont: true,
@@ -713,13 +1163,59 @@ where
                     decided_at_ms: now,
                     lost_cause,
                     last_heartbeat_at,
+                    ended_at,
+                    recovery: decision,
                 }
             }
         }
     };
     let end = write_once(&deps.blobs, &end_key(run_id, n), end).await?;
+    note_recovered(deps, run_id, &end).await;
     tell_lost(deps, run_id, &end).await;
     Ok(end.state())
+}
+
+/// Names the read-back copy a stored decision uses on the Run item (`recoveredCopy`), where the download route finds the copy the
+/// run goes on from. Like the word about a lost session it never changes what the run does: a failure is tried once more and then
+/// logged, and a repeated `next-slice` writes it again. A copy that is not used is not named there: it is found by its slice's key.
+async fn note_recovered<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+    end: &SliceEnd,
+) where
+    S: Store,
+    B: Blobs,
+{
+    let Some((key, head)) = end
+        .recovery
+        .as_ref()
+        .filter(|d| d.used)
+        .and_then(|d| d.key.clone().zip(d.head.clone()))
+    else {
+        return;
+    };
+    let noted = crate::tag_run::retry_once_after(LOST_WORD_PAUSE.0, LOST_WORD_PAUSE.1, || async {
+        let copy = recover::read_result(&deps.blobs, run_id, end.slice)
+            .await?
+            .and_then(|r| r.copy);
+        let reference = RecoveredCopyRef {
+            session: end.slice,
+            key: key.clone(),
+            version_id: copy.as_ref().and_then(|c| c.version_id.clone()),
+            head_sha: head.clone(),
+            at: dispatcher::items::rfc3339(end.decided_at_ms / 1000),
+            newest_write_at: copy.as_ref().and_then(|c| c.newest_write_at.clone()),
+            bundle_bytes: copy.as_ref().map_or(0, |c| c.bundle_bytes),
+        };
+        deps.store.set_recovered_copy(run_id, &reference).await
+    })
+    .await;
+    if let Err(e) = noted {
+        println!(
+            "{}",
+            serde_json::json!({ "warning": "recovered-copy-reference", "runId": run_id, "session": end.slice, "reason": e.to_string() })
+        );
+    }
 }
 
 /// The pause before the second try of the word about a lost session ([`tell_lost`]): the pause of the store calls of the tag branch.
@@ -763,33 +1259,74 @@ where
     S: Store,
     B: Blobs,
 {
-    if end.kind != EndKind::Lost || end.end_reason == Some(EndReason::RunEnded) {
+    // A slice that could not start from the files read back is told too: the run goes on from the saved copy, and says so.
+    let failed_start = end.lost_cause.as_deref() == Some(CAUSE_RESTORE_FAILED);
+    if !(end.kind == EndKind::Lost || failed_start) || end.end_reason == Some(EndReason::RunEnded) {
         return Ok(());
     }
-    let (from, saved_at) = if end.cont {
+    // The session whose storage a read-back copy was read from: the slice that names its key, this one or an earlier one.
+    let read_from = |key: &str| {
+        (1..=end.slice)
+            .rev()
+            .find(|k| s3::recovery_bundle_key(run_id, *k) == key)
+    };
+    // A run that ends for the user's cancel announces the lost session only when a record says that the session was invoked. A
+    // slice whose start was refused for the cancel never ran and was not lost. The Turn item is a stored record, so a repeat says the same.
+    if end.end_reason == Some(EndReason::Cancelled)
+        && !deps
+            .store
+            .get_turn(run_id, DIRECT_AGENT_ID, end.slice)
+            .await?
+            .is_some_and(|t| t.invoked_at.is_some())
+    {
+        return Ok(());
+    }
+    let (from, saved_at, mut read_back_session) = if end.cont {
         match read_plan(&deps.blobs, run_id, end.slice + 1).await? {
+            // The next slice starts from files the service read back: from this slice's storage, or from an earlier slice's
+            // when this slice had started from those and left no copy of its own.
+            Some(plan) if plan.recovery.is_some() => (
+                Some(FROM_RECOVERED),
+                None,
+                plan.recovery.as_ref().and_then(|r| read_from(&r.key)),
+            ),
             Some(plan) => match plan.restore.kind {
-                RestoreKind::Base => (Some(FROM_START), None),
-                RestoreKind::Bundle => (Some(FROM_COPY), None),
+                RestoreKind::Base => (Some(FROM_START), None, None),
+                RestoreKind::Bundle => (Some(FROM_COPY), None, None),
                 RestoreKind::Snapshot => (
                     Some(FROM_COPY),
                     copy_time(&deps.blobs, run_id, end.slice, &plan.restore).await?,
+                    None,
                 ),
             },
-            None => (None, None),
+            None => (None, None, None),
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
-    // What the run delivers when it ends here: the copy this slice saved, else the work it restored. `plan-delivery` takes the same.
+    // What the run delivers when it ends here, in the order `plan-delivery` takes it: the copy read back from this slice's storage
+    // when the decision uses it, else the copy this slice saved, else the work it restored (the read-back copy its plan named, when
+    // the slice did not provably fail to start from it, else the saved copy).
     let delivers = if end.cont {
         None
+    } else if let Some(read_back) =
+        crate::plan_delivery::read_back_head(&deps.blobs, run_id, end.slice).await?
+    {
+        read_back_session = read_from(&read_back.key);
+        Some(ham_core::lost_session::DELIVERS_COPY.to_string())
     } else if crate::plan_delivery::snapshot_head(&deps.blobs, run_id, end.slice)
         .await?
         .is_some()
-        || crate::plan_delivery::restored_head(&deps.blobs, run_id, end.slice)
-            .await?
-            .is_some()
+    {
+        Some(ham_core::lost_session::DELIVERS_COPY.to_string())
+    } else if let Some(read_back) =
+        crate::plan_delivery::restored_read_back(&deps.blobs, run_id, end.slice).await?
+    {
+        read_back_session = read_from(&read_back.key);
+        Some(ham_core::lost_session::DELIVERS_COPY.to_string())
+    } else if crate::plan_delivery::restored_head(&deps.blobs, run_id, end.slice)
+        .await?
+        .is_some()
     {
         Some(ham_core::lost_session::DELIVERS_COPY.to_string())
     } else {
@@ -812,6 +1349,22 @@ where
         from: from.map(str::to_string),
         saved_at,
         delivers,
+        ended_at: end.ended_at.clone(),
+        recovery: end.recovery.as_ref().map(|d| LostRecovery {
+            tried: d.tried,
+            used: d.used,
+            reason: d.reason.clone(),
+            newest_write_at: d.newest_write_at.clone(),
+            regressed: d.regressed,
+            regressed_path: d.regressed_path.clone(),
+            // The files read back are in the bucket: the client names the command that downloads them when they are not used.
+            kept: d.key.is_some(),
+        }),
+        read_back_session,
+        // The run is named by the event's envelope, where the client reads it.
+        run_id: String::new(),
+        // The run ends because the user had stopped it.
+        cancelled_at: end.cancel_requested_at.clone(),
     };
     deps.store
         .put_event(&crate::events::session_lost(

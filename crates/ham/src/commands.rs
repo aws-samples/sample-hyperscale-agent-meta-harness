@@ -51,17 +51,27 @@ async fn cleared_copy<P: ControlPlane>(api: &Api<P>, run_id: &str) -> ClearedCop
     }
 }
 
-/// `ham cancel <runId>`: on the direct stage Cline is asked to stop and the work is kept. The exit code is 0 when the stage accepted the
-/// cancel, whatever the run's status then is: 15 is the code of a start command or a `ham watch` that follows a cleared run.
+/// `ham cancel <runId> [--discard]`: on the direct stage Cline is asked to stop and the work is kept. The exit code is 0 when the stage
+/// accepted the cancel, whatever the run's status then is: 15 is the code of a start command or a `ham watch` that follows a cleared run.
+/// The service records a cancel that keeps the work and answers what it recorded; the lines after the status line say it
+/// (`ham_core::cancel_note::CancelNote::answer_lines`): the cancel stands whatever the run's session does, when a silent session is
+/// called lost at the latest, and the command that downloads the newest saved copy. `--json` carries the record as `cancel`. An answer
+/// without one (a service that predates it, a run that was cleared) prints the status line alone. `--discard` is the explicit clear:
+/// the run is stopped now and delivers nothing, and the lines are the ones of a cleared run.
 pub async fn cmd_cancel<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
+    discard: bool,
     json: bool,
     out: &Output,
 ) -> i32 {
-    match api.cancel_run(run_id).await {
+    match api.cancel_run_with(run_id, discard).await {
         Ok(r) if json => {
-            out.out_line(json!({"runId": r.run_id, "status": r.status}));
+            let mut line = json!({"runId": r.run_id, "status": r.status});
+            if let Some(c) = &r.cancel {
+                line["cancel"] = json!(c);
+            }
+            out.out_line(line);
             0
         }
         Ok(r) => {
@@ -75,6 +85,16 @@ pub async fn cmd_cancel<P: ControlPlane>(
             if r.status == GoalStatus::Cleared {
                 let copy = cleared_copy(api, &r.run_id).await;
                 out.out_line(cleared_work(&r.run_id, &copy));
+            }
+            // What the service recorded for a cancel that keeps the work.
+            if let Some(note) = r
+                .cancel
+                .as_ref()
+                .and_then(ham_core::cancel_note::CancelNote::of)
+            {
+                for line in note.answer_lines(&r.run_id) {
+                    out.out_line(line);
+                }
             }
             0
         }

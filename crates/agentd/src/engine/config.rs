@@ -5,8 +5,105 @@
 
 use crate::emit::{EmitContext, Emitted, pretty, write};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// How long agentd looks for the engine's sign that the launch's command time limit is in force, after `session/new` answered. In every measured
+/// start the line was there when `session/new` returned, so the wait is normally none.
+pub const CONFIRM_WAIT: Duration = Duration::from_secs(5);
+/// How much of the engine's error log is read for the sign, from its start.
+pub const CONFIRM_SCAN_BYTES: usize = 256 * 1024;
+/// How often the log is read while the sign is not there.
+const CONFIRM_POLL: Duration = Duration::from_millis(250);
+
+/// How a line of the engine's error log starts that the harness's own plugin wrote: it is dropped before the log is read as the engine's last
+/// words (the detail of a dead engine, the stop digest).
+pub const HARNESS_LINE_PREFIX: &str = super::opencode::READY_PREFIX;
+
+/// What the look for the engine's sign found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    /// The launch has no such sign (an engine that needs none, a launch without the plugin).
+    NotAsked,
+    /// The line is in the engine's error log.
+    Confirmed,
+    /// The line did not come in time. `headline` is the headline of the engine's scrubbed log at that moment (for a plugin that did not load,
+    /// the engine's own warning); `None` for a log that holds no line or cannot be read.
+    Missing { headline: Option<String> },
+}
+
+/// What a run is told when the harness's own default command time limit could not be placed, and the wait bound that fits the limit the engine
+/// then applies itself (seconds).
+pub fn limit_not_placed(
+    engine: &str,
+    settings: &super::user_settings::UserSettings,
+) -> (String, u32) {
+    let own_ms = super::opencode::ENGINE_DEFAULT_LIMIT_MS;
+    let limit_s = super::direct::run_limit(engine, settings).map_or(
+        u64::from(super::user_settings::CommandSeconds::DEFAULT),
+        |l| u64::from(l.get()),
+    );
+    (
+        super::direct_words::limit_not_placed(engine, limit_s, own_ms / 1000),
+        super::direct::wait_seconds_of_ms(own_ms),
+    )
+}
+
+/// What a run is told when the engine did not confirm the command time limit of the launch `env` in time; `None` for a launch with no sign.
+pub fn limit_not_confirmed(engine: &str, env: &BTreeMap<String, String>) -> Option<String> {
+    match engine {
+        super::opencode::ENGINE => super::opencode::ready_ms(env).map(|ms| {
+            super::direct_words::limit_not_confirmed(
+                engine,
+                ms / 1000,
+                super::opencode::ENGINE_DEFAULT_LIMIT_MS / 1000,
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// The line the engine's error log holds when the launch's command time limit is in force; `None` for an engine or a launch with no such sign.
+pub fn ready_line(engine: &str, env: &BTreeMap<String, String>) -> Option<String> {
+    match engine {
+        super::opencode::ENGINE => super::opencode::ready_line(env),
+        _ => None,
+    }
+}
+
+/// Looks for the engine's own sign that this launch's command time limit is in force: the plugin's ready line in the engine's error
+/// log, read through agentd's own handle from the start of the log, every 250 ms for at most `wait`. A report only: nothing ends on it.
+pub async fn confirm_launch(
+    engine: &str,
+    env: &BTreeMap<String, String>,
+    capture: &super::StderrCapture,
+    wait: Duration,
+) -> Confirm {
+    let Some(line) = ready_line(engine, env) else {
+        return Confirm::NotAsked;
+    };
+    let end = tokio::time::Instant::now() + wait;
+    loop {
+        if capture
+            .holds_line(&line, CONFIRM_SCAN_BYTES)
+            .unwrap_or(false)
+        {
+            return Confirm::Confirmed;
+        }
+        if tokio::time::Instant::now() >= end {
+            break;
+        }
+        tokio::time::sleep(CONFIRM_POLL).await;
+    }
+    let headline = capture.tail().ok().and_then(|raw| {
+        let rest = super::without_lines_starting(&raw.bytes, HARNESS_LINE_PREFIX);
+        let tail = harness_core::engine_diagnostic::scrub(&rest, raw.cut);
+        tail.headline().map(str::to_string)
+    });
+    Confirm::Missing { headline }
+}
 
 /// The provider file the engine reads: `<data dir>/settings/providers.json`. Only this location is read.
 pub fn providers_path(data_dir: &Path) -> PathBuf {
@@ -88,6 +185,23 @@ pub fn finalize_env(
             )
         }
         _ => Ok(()),
+    }
+}
+
+/// The two knobs of a local stand-in run (`engine::launch::standalone`), which the product never sets: the model endpoint, and how long the
+/// engine keeps a folder's services without session activity. Only an engine with an arm takes them; for another engine they are an error.
+pub fn stand_in(
+    engine: &str,
+    env: &mut BTreeMap<String, String>,
+    endpoint: Option<&str>,
+    idle_timeout: Option<&str>,
+) -> io::Result<()> {
+    match engine {
+        super::opencode::ENGINE => super::opencode::stand_in(env, endpoint, idle_timeout),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "this engine has no stand-in knobs",
+        )),
     }
 }
 

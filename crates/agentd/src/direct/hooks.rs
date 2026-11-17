@@ -38,6 +38,9 @@
 //! - Votes: modules are asked in registration order. [`TurnVote::Stop`] ends the poll at once (modules after it are not asked, so a module
 //!   that claims something when it votes claims nothing). A [`TurnVote::Prompt`] is kept, a later one replaces it, so the last module has
 //!   priority among prompts; [`TurnVote::Done`] changes nothing. The order is in [`Hooks::standard`] and in `AGENTS.md`.
+//! - A module that votes [`TurnVote::Wait`] says the engine is still working by itself. The modules asked after it at that turn end read
+//!   `TurnEnd.engine_working`: a prompt one of them votes replaces the wait and goes to a busy engine, which takes it behind the
+//!   round it is working on and answers the request at once.
 //! - Event ordering is by call: a module sees the events of a run in the order the driver raised them.
 
 use crate::BoxFuture;
@@ -570,6 +573,12 @@ pub struct TurnEnd<'a> {
     /// A module interrupted the prompt ([`DriverCtl::interrupt`]): the engine answered `cancelled`, or did not answer within the grace
     /// (`raw.watched` says which). The stage ended because of the module, not the user.
     pub interrupted: bool,
+    /// A module asked before this one at this turn end voted [`TurnVote::Wait`]: the engine is still working by itself (a loop it runs, such as
+    /// the goal plugin's follow-up rounds) and no prompt of the harness is open. A prompt voted now goes to an engine that is busy: it takes
+    /// the prompt behind the round it is working on and answers the request at once. [`Hooks`] sets it while it asks the modules
+    /// in order; the driver gives `false`, the first module asked reads `false`, and at the seal, where a `Wait` is no opinion, every
+    /// module reads `false`.
+    pub engine_working: bool,
     /// What is left of the run's deadline.
     pub time_left: Duration,
     pub tool_calls: u64,
@@ -1064,13 +1073,20 @@ impl Hooks {
         let i = &self.inner;
         let what = if seal { "on_seal" } else { "on_turn_end" };
         let mut best = TurnVote::Done;
+        // A module that votes `Wait` says the engine is still working by itself. Every module asked after it in this poll is told
+        // (`TurnEnd.engine_working`), so a prompt it votes is known to go to a busy engine. At the seal a `Wait` is no opinion.
+        let mut working = !seal && end.engine_working;
         for slot in i.live() {
+            let told = TurnEnd {
+                engine_working: working,
+                ..*end
+            };
             let asked = i
                 .call(what, i.limits.decision, || {
                     if seal {
-                        slot.hook.on_seal(end)
+                        slot.hook.on_seal(&told)
                     } else {
-                        slot.hook.on_turn_end(end)
+                        slot.hook.on_turn_end(&told)
                     }
                 })
                 .await;
@@ -1080,6 +1096,7 @@ impl Hooks {
                 Ok(prompt @ TurnVote::Prompt(_)) => best = prompt,
                 // A wait gives way to a prompt, whichever module voted first; of two waits the shorter holds. At the seal it is no opinion.
                 Ok(TurnVote::Wait { until }) if !seal => {
+                    working = true;
                     best = match best {
                         TurnVote::Wait { until: other } => TurnVote::Wait {
                             until: other.min(until),

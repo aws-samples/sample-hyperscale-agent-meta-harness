@@ -70,6 +70,9 @@ pub fn run_stop(plan: &PlannedDelivery, engine_name: &str) -> Option<RunStop> {
         mode: ResumeMode::FollowUp,
     };
     match (plan.end_reason, plan.outcome) {
+        // A run that ended for the user's recorded cancel is delivered and `complete`, like every cancel that keeps the work,
+        // whatever the outcome of its last session says.
+        (Some(EndReason::Cancelled), _) => None,
         (Some(EndReason::NoProgress), _) => Some(stalled(
             "no_progress",
             "several sessions in a row ran to their time limit and changed nothing",
@@ -214,9 +217,11 @@ fn completed_detail(input: &FinalizeInput<'_>) -> Option<String> {
     if let Some(d) = &input.plan.detail {
         parts.push(d.clone());
     }
-    // A run that renewed its session says how many sessions it used.
-    if input.plan.slice > 1 {
-        parts.push(format!("The run used {} sessions.", input.plan.slice));
+    // A run that renewed its session says how many sessions it used. The sessions that were invoked; a plan made before
+    // that count existed counts its slices.
+    let sessions = input.plan.sessions.unwrap_or(input.plan.slice);
+    if sessions > 1 {
+        parts.push(format!("The run used {sessions} sessions."));
     }
     if let Some(f) = input.pr_failure {
         parts.push(format!("pull request not opened: {}", failure_reason(f)));
@@ -325,12 +330,14 @@ where
         }
     }
     deps.store
+        // The label is the plan's. The detail of this event may begin with a note about the test report, and a label built from
+        // it would not name the reason of a run that the harness ended.
         .put_event(&events::run_completed_as(
             run_id,
             ms,
             to,
-            engine,
             plan.outcome,
+            plan.label.clone(),
             completed_detail(input),
             plan.observations.clone(),
         ))
@@ -462,12 +469,17 @@ enum SnapshotLookup {
 /// stopped holds the work as `engine` left it; a copy made while the run worked is named with its time, as before; a copy of the end that
 /// equals the run's base says that no file changed. That there is no snapshot is said only for the refusals (`refused`), whose
 /// reason names ways back; any other reason of a run without a copy says by itself why there is no work.
+///
+/// When the run's newest copy is files the service read back from a stopped session's storage (`read_back` names that session),
+/// the reason names that copy and the command of its session in place of the sentences about a saved snapshot: it is what
+/// `ham pull --snapshot` downloads then, and a reason that said "no snapshot" or named the time of an older saved copy would hide it.
 fn way_back_note(
     way: &WayBack,
     run_id: &str,
     snapshot: &SnapshotLookup,
     engine: &str,
     refused: bool,
+    read_back: Option<u32>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     if way.zip_follow_up {
@@ -482,6 +494,12 @@ fn way_back_note(
     }
     if way.secret {
         parts.push(SECRET_FOLLOW_UP_NOTE.to_string());
+    }
+    if let Some(n) = read_back {
+        parts.push(format!(
+            "The run's newest copy is what the service read back from the storage of session {n} after that session ended. Download it with `ham pull {run_id} --read-back {n}`."
+        ));
+        return parts.join(" ");
     }
     match snapshot {
         SnapshotLookup::Found(s) if s.final_copy && s.unchanged => {
@@ -536,6 +554,14 @@ fn blocked_reason_raw(state: &Value) -> String {
     let session = failure(session_failure);
     let plan = state.get("plan").and_then(|p| p.get("result"));
     if let Some(r) = plan.and_then(|p| p.get("reason")).and_then(Value::as_str) {
+        // The reason of a run that ended for a recorded cancel says the cancel; the detail in brackets would say it a second time.
+        if plan
+            .and_then(|p| p.get("endReason"))
+            .and_then(Value::as_str)
+            == Some(EndReason::Cancelled.code())
+        {
+            return r.to_string();
+        }
         // A failure that names only an error, or whose cause is Step Functions' own word for a timeout (a missed heartbeat reaches here as
         // `States.Timeout`), is told in the plan's own words.
         let failed = session_failure
@@ -618,6 +644,33 @@ pub struct Blocked {
     pub reason: Option<String>,
 }
 
+/// The session whose read-back copy is the run's newest copy: the Run item names a copy the service chose, its object is in the
+/// bucket, and no session after it has saved a copy of its own. It is the copy `ham pull --snapshot` downloads then. `None` otherwise,
+/// and when the bucket cannot say: the sentences about the saved snapshot then stand as they did.
+async fn newest_copy_read_back<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    run: &harness_protocol::store::RunItem,
+) -> Option<u32> {
+    let chosen = run.recovered_copy.as_deref()?;
+    if !blobs.exists(&chosen.key).await.unwrap_or(false) {
+        return None;
+    }
+    let newest = run.slice.unwrap_or(1).max(1);
+    for later in chosen.session.saturating_add(1)..=newest {
+        if blobs
+            .exists(&harness_protocol::direct::s3::snapshot_bundle_key_t(
+                run_id, later,
+            ))
+            .await
+            .unwrap_or(true)
+        {
+            return None;
+        }
+    }
+    Some(chosen.session)
+}
+
 pub async fn mark_blocked<S, T, M, R, B, P>(
     deps: &Deps<S, T, M, R, B, P>,
     run_id: &str,
@@ -674,12 +727,14 @@ where
             Ok(None) => SnapshotLookup::None,
             Err(_) => SnapshotLookup::Unread,
         };
+        let read_back = newest_copy_read_back(&deps.blobs, run_id, &run).await;
         let note = way_back_note(
             &way,
             run_id,
             &snapshot,
             Engine::or_default(run.engine).display_name(),
             refused,
+            read_back,
         );
         if !note.is_empty() {
             if !reason.ends_with(['.', '!', '?']) {
@@ -725,16 +780,13 @@ where
             }
         }
     }
+    // The label of the run list is the label of the card (`run_blocked` builds the same): a run the harness ended names its reason
+    // in both.
+    let label = outcome.map(|o| o.label_for_engine(engine, detail.as_deref()));
     deps.store
         .put_event(&events::run_blocked(run_id, ms, engine, outcome, detail))
         .await?;
-    touch_index(
-        deps,
-        &run,
-        outcome.map(|o| o.label_text(engine)).as_deref(),
-        ms,
-    )
-    .await;
+    touch_index(deps, &run, label.as_deref(), ms).await;
     end_session(deps, run_id).await?;
     // A blocked run's conversation is searchable too; never an error.
     crate::index::best_effort(deps, run_id).await;

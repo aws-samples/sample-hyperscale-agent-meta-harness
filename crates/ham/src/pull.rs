@@ -95,6 +95,11 @@ pub fn select(artifacts: &[ArtifactView], which: &PullArtifact) -> Result<Artifa
                 "a snapshot is not an artifact; ham pull <runId> --snapshot downloads it".into(),
             ));
         }
+        PullArtifact::ReadBack(n) => {
+            return Err(PullError::NoArtifact(format!(
+                "files read back are not an artifact; ham pull <runId> --read-back {n} downloads them"
+            )));
+        }
         PullArtifact::Zip => newest(ArtifactKind::Zip),
         PullArtifact::Evidence => newest(ArtifactKind::Evidence),
         PullArtifact::Partial => newest(ArtifactKind::Partial),
@@ -798,7 +803,19 @@ pub fn run_usage(d: &RunDetail) -> Option<CardUsage> {
     })
 }
 
-/// The client facts of the final card: local path, presigned URL and expiry, tokens, USD.
+/// The tokens the engine used outside the prompts that answered (the goal-check rounds, the prompts that failed), from the
+/// service's own numbers: the total of the cost's lines minus `cost.answeredTokens`, which the service gives when every session
+/// whose usage is in the total declared the sum of its answered prompts. `None` when the service sent no number, and when the
+/// difference is not above zero. Line mode (`ham watch`, `ham pull`) has no other source for the card's `Outside` row; the run
+/// screen falls back to the stored conversation it read whole.
+pub fn outside_prompts(d: &RunDetail) -> Option<u64> {
+    let total = run_usage(d)?.tokens;
+    let answered = d.cost.as_ref()?.answered_tokens?;
+    total.checked_sub(answered).filter(|n| *n > 0)
+}
+
+/// The client facts of the final card: local path, presigned URL and expiry, tokens, USD, and the tokens outside the
+/// answered prompts when the service gave the number for them.
 pub fn card(detail: Option<&RunDetail>, pulled: Option<&Pulled>) -> FinalCard {
     FinalCard {
         local_path: pulled.map_or_else(
@@ -812,7 +829,7 @@ pub fn card(detail: Option<&RunDetail>, pulled: Option<&Pulled>) -> FinalCard {
         tests: None,
         flow: None,
         session: detail.and_then(|d| d.summary.session),
-        outside_prompts: None,
+        outside_prompts: detail.and_then(outside_prompts),
     }
 }
 

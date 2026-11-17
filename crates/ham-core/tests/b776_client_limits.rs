@@ -28,6 +28,7 @@ fn rec(n: u64, kind: &str, data: Value) -> TranscriptRecord {
 
 fn chat_of(records: Vec<TranscriptRecord>) -> StoredChat {
     let page = TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state: TranscriptState::Complete,
         records,

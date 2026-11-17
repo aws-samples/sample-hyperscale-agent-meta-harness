@@ -1,0 +1,375 @@
+From c5f5335aea103a44f5055640aab1375ebca03c39 Mon Sep 17 00:00:00 2001
+From: cline-fork-rebase <cline-fork-rebase@localhost>
+Date: Tue, 17 Nov 2026 13:20:00 +0000
+X-Harness-Test-Only: commit=c5f5335aea103a44f5055640aab1375ebca03c39 parent=9c2ac4f3094260e028c46aa1f06b2ccc5533868c tree=d9727693b6920e9c0946c305248b1c96366f5ebb
+Subject: [PATCH] test(core): a wait that is sent again is not a loop
+
+Test files only: the failing tests of the fork patch that stops the loop
+guard from counting the repeats of a tool call that blocked for a long
+time (a bounded wait on a background job, sent again while the job runs).
+
+loop-detection.test.ts (new): the exemption read from HAMH_WAIT_S and
+HAMH_WAIT_CAP_S, the threshold of half of the bound, at most 50 seconds
+and at least 5 seconds, quick identical calls counted as before, the
+repeats of a call that blocked at least the threshold not counted and not
+warned about, the waits that sessions send under the harness's bounds,
+the cap of the exempt time, a new run of identical calls after another
+call, no exemption without the harness's bound, and reset.
+session-runtime-orchestrator.test.ts: six identical waits of 240 s and of
+100 s with a bound of 240 s do not stop the run; the same calls returning
+at once or after 49 s do, and so do the waits without the bound.
+---
+ .../session-runtime-orchestrator.test.ts      | 100 ++++++++
+ .../src/runtime/safety/loop-detection.test.ts | 229 ++++++++++++++++++
+ 2 files changed, 329 insertions(+)
+ create mode 100644 sdk/packages/core/src/runtime/safety/loop-detection.test.ts
+
+diff --git a/sdk/packages/core/src/runtime/orchestration/session-runtime-orchestrator.test.ts b/sdk/packages/core/src/runtime/orchestration/session-runtime-orchestrator.test.ts
+index 0d1b725..361b267 100644
+--- a/sdk/packages/core/src/runtime/orchestration/session-runtime-orchestrator.test.ts
++++ b/sdk/packages/core/src/runtime/orchestration/session-runtime-orchestrator.test.ts
+@@ -2865,6 +2865,106 @@ describe("SessionRuntime.run — tracker wiring (P1 #3)", () => {
+ 		expect(abortCalls).toHaveLength(0);
+ 	});
+ 
++	it("does not count the repeats of a tool call that blocked for a long time when the harness sets a wait bound", async () => {
++		// A bounded wait on a background job is sent again unchanged while the job runs. Each call blocks for
++		// the whole bound; the harness names the bound in HAMH_WAIT_S.
++		const pair = (i: number): AgentRuntimeEvent[] => [
++			{
++				type: "tool-started",
++				iteration: 1,
++				toolCall: {
++					type: "tool-call",
++					toolCallId: `wait${i}`,
++					toolName: "run_commands",
++					input: { commands: ["wait-for-the-job"] },
++				},
++				snapshot: makeSnapshot(),
++			},
++			{
++				type: "tool-finished",
++				iteration: 1,
++				toolCall: {
++					type: "tool-call",
++					toolCallId: `wait${i}`,
++					toolName: "run_commands",
++					input: { commands: ["wait-for-the-job"] },
++				},
++				message: {
++					id: `m${i}`,
++					role: "tool",
++					content: [
++						{
++							type: "tool-result",
++							toolCallId: `wait${i}`,
++							toolName: "run_commands",
++							output: "",
++						},
++					],
++					createdAt: 1,
++				},
++				snapshot: makeSnapshot(),
++			},
++		];
++		// The clock moves `blockedMs` between the start and the end of every call.
++		const timed = (blockedMs: number): readonly AgentRuntimeEvent[] => {
++			const events: AgentRuntimeEvent[] = [
++				{ type: "turn-started", iteration: 1, snapshot: makeSnapshot() },
++				...[1, 2, 3, 4, 5, 6].flatMap(pair),
++			];
++			return {
++				*[Symbol.iterator]() {
++					for (const event of events) {
++						if (event.type === "tool-finished") {
++							vi.setSystemTime(Date.now() + blockedMs);
++						}
++						yield event;
++					}
++				},
++			} as unknown as readonly AgentRuntimeEvent[];
++		};
++		const runWith = async (
++			bound: string | undefined,
++			blockedMs: number,
++		): Promise<number> => {
++			const before = process.env.HAMH_WAIT_S;
++			if (bound === undefined) {
++				delete process.env.HAMH_WAIT_S;
++			} else {
++				process.env.HAMH_WAIT_S = bound;
++			}
++			vi.useFakeTimers();
++			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
++			try {
++				const { deps, abortCalls } = makeScriptedRuntime({
++					events: timed(blockedMs),
++				});
++				const session = new SessionRuntime(
++					makeAgentConfig({ execution: { maxConsecutiveMistakes: 6 } }),
++					deps,
++				);
++				await session.run("wait-for-it");
++				return abortCalls.length;
++			} finally {
++				vi.useRealTimers();
++				if (before === undefined) {
++					delete process.env.HAMH_WAIT_S;
++				} else {
++					process.env.HAMH_WAIT_S = before;
++				}
++			}
++		};
++		// Six identical waits of 240 s each with a bound of 240 s: no stop.
++		expect(await runWith("240", 240_000)).toBe(0);
++		// Waits of 100 s, the number rules files name, under the same bound: no stop either.
++		expect(await runWith("240", 100_000)).toBe(0);
++		// Calls of 49 s are under the threshold of 50 s: a loop, as before.
++		expect(await runWith("240", 49_000)).toBeGreaterThanOrEqual(1);
++		// The same six calls returning at once are a loop, as before.
++		expect(await runWith("240", 50)).toBeGreaterThanOrEqual(1);
++		// Without the harness's bound nothing is exempt, as before.
++		expect(await runWith(undefined, 240_000)).toBeGreaterThanOrEqual(1);
++	});
++
+ 	it("does not abort on productive turns (successful tool calls)", async () => {
+ 		const events: AgentRuntimeEvent[] = [
+ 			{ type: "turn-started", iteration: 1, snapshot: makeSnapshot() },
+diff --git a/sdk/packages/core/src/runtime/safety/loop-detection.test.ts b/sdk/packages/core/src/runtime/safety/loop-detection.test.ts
+new file mode 100644
+index 0000000..6ef9562
+--- /dev/null
++++ b/sdk/packages/core/src/runtime/safety/loop-detection.test.ts
+@@ -0,0 +1,229 @@
++import { describe, expect, it } from "vitest";
++import {
++	DEFAULT_WAIT_CAP_MS,
++	LoopDetectionTracker,
++	MAX_WAIT_THRESHOLD_MS,
++	MIN_WAIT_BLOCK_MS,
++	resolveWaitExemption,
++	WAIT_BOUND_ENV,
++	WAIT_CAP_ENV,
++	type WaitExemption,
++} from "./loop-detection";
++
++// One bounded wait on a background job, sent again unchanged while the job runs.
++const WAIT = {
++	name: "run_commands",
++	input: { commands: ["wait-for-the-job"] },
++};
++const OTHER = { name: "run_commands", input: { commands: ["echo next"] } };
++// What the harness's default bound of 240 seconds resolves to.
++const HARNESS: WaitExemption = { thresholdMs: 50_000, capMs: 7_200_000 };
++
++/** Inspect a call, let it block for `blockedMs`, and return the verdict of the inspection. */
++function call(
++	tracker: LoopDetectionTracker,
++	blockedMs: number,
++	what = WAIT,
++): string {
++	const verdict = tracker.inspect(what).kind;
++	tracker.finished(what, blockedMs);
++	return verdict;
++}
++
++describe("resolveWaitExemption", () => {
++	it("is absent when the harness sets no wait bound", () => {
++		expect(resolveWaitExemption({})).toBeUndefined();
++		expect(resolveWaitExemption({ [WAIT_CAP_ENV]: "600" })).toBeUndefined();
++	});
++
++	it("takes half of the wait bound, at most 50 seconds and at least 5 seconds, as the threshold", () => {
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "240" })).toEqual({
++			thresholdMs: 50_000,
++			capMs: DEFAULT_WAIT_CAP_MS,
++		});
++		// The bound of a session whose command limit could not be placed, and a bound of 100 seconds.
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "108" })?.thresholdMs).toBe(
++			50_000,
++		);
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "100" })?.thresholdMs).toBe(
++			50_000,
++		);
++		// Under a bound of 100 seconds the threshold is half of the bound.
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "54" })?.thresholdMs).toBe(
++			27_000,
++		);
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "6" })?.thresholdMs).toBe(
++			MIN_WAIT_BLOCK_MS,
++		);
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: "1" })?.thresholdMs).toBe(
++			5_000,
++		);
++		expect(MIN_WAIT_BLOCK_MS).toBe(5_000);
++		expect(MAX_WAIT_THRESHOLD_MS).toBe(50_000);
++		expect(DEFAULT_WAIT_CAP_MS).toBe(7_200_000);
++	});
++
++	it("reads the cap of the exempt time in seconds and falls back to two hours", () => {
++		expect(
++			resolveWaitExemption({ [WAIT_BOUND_ENV]: "240", [WAIT_CAP_ENV]: "600" }),
++		).toEqual({ thresholdMs: 50_000, capMs: 600_000 });
++		for (const cap of ["", "0", "abc", "1.5", "-5", "12345678"]) {
++			expect(
++				resolveWaitExemption({ [WAIT_BOUND_ENV]: "240", [WAIT_CAP_ENV]: cap }),
++			).toEqual({ thresholdMs: 50_000, capMs: DEFAULT_WAIT_CAP_MS });
++		}
++	});
++
++	it("ignores a wait bound that is not a whole number of seconds from 1 up", () => {
++		for (const bound of ["", " ", "0", "abc", "2.5", "-240", "240s"]) {
++			expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: bound })).toBeUndefined();
++		}
++		expect(resolveWaitExemption({ [WAIT_BOUND_ENV]: " 240 " })).toEqual({
++			thresholdMs: 50_000,
++			capMs: DEFAULT_WAIT_CAP_MS,
++		});
++	});
++});
++
++describe("LoopDetectionTracker and a wait that is sent again", () => {
++	it("counts identical calls that return quickly as before", () => {
++		const tracker = new LoopDetectionTracker(undefined, HARNESS);
++		expect([200, 200, 200, 200, 200].map((ms) => call(tracker, ms))).toEqual([
++			"ok",
++			"ok",
++			"soft",
++			"ok",
++			"hard",
++		]);
++	});
++
++	it("does not count a repeat of a call that blocked at least the threshold", () => {
++		const tracker = new LoopDetectionTracker(undefined, HARNESS);
++		const verdicts = Array.from({ length: 12 }, () => call(tracker, 240_000));
++		expect(verdicts).toEqual(Array(12).fill("ok"));
++		// The threshold itself is enough; one millisecond less is not.
++		const edge = new LoopDetectionTracker(undefined, HARNESS);
++		expect(
++			[50_000, 50_000, 50_000, 50_000, 50_000, 50_000].map((ms) =>
++				call(edge, ms),
++			),
++		).toEqual(Array(6).fill("ok"));
++		const under = new LoopDetectionTracker(undefined, HARNESS);
++		expect(
++			[49_999, 49_999, 49_999, 49_999, 49_999].map((ms) => call(under, ms)),
++		).toEqual(["ok", "ok", "soft", "ok", "hard"]);
++	});
++
++	it("does not count the waits that sessions send under the harness's bounds", () => {
++		// A wait of 100 seconds (the number rules files name), a model's own 110 seconds and a wait of the whole bound under
++		// the default bound of 240 seconds; 100 seconds under a bound of 108 seconds; a whole bound of 54 seconds.
++		for (const [bound, blockedMs] of [
++			["240", 100_000],
++			["240", 110_000],
++			["240", 240_000],
++			["108", 100_000],
++			["54", 54_000],
++		] as const) {
++			const tracker = new LoopDetectionTracker(
++				undefined,
++				resolveWaitExemption({ [WAIT_BOUND_ENV]: bound }),
++			);
++			expect(
++				Array.from({ length: 8 }, () => call(tracker, blockedMs)),
++				`${blockedMs} ms under a bound of ${bound} s`,
++			).toEqual(Array(8).fill("ok"));
++		}
++		// A call of 49 seconds under 240 seconds and one of 26 seconds under 54 seconds are under the threshold: a loop, as before.
++		for (const [bound, blockedMs] of [
++			["240", 49_000],
++			["54", 26_000],
++		] as const) {
++			const tracker = new LoopDetectionTracker(
++				undefined,
++				resolveWaitExemption({ [WAIT_BOUND_ENV]: bound }),
++			);
++			expect(
++				Array.from({ length: 5 }, () => call(tracker, blockedMs)),
++				`${blockedMs} ms under a bound of ${bound} s`,
++			).toEqual(["ok", "ok", "soft", "ok", "hard"]);
++		}
++	});
++
++	it("gives no warning for an exempt repeat while the count sits at the warning threshold", () => {
++		const tracker = new LoopDetectionTracker(undefined, HARNESS);
++		// Three quick identical calls: the third is the warning. It then blocks for a long time.
++		expect(call(tracker, 200)).toBe("ok");
++		expect(call(tracker, 200)).toBe("ok");
++		expect(call(tracker, 240_000)).toBe("soft");
++		// The repeats of the long wait are not counted and are not warned about again.
++		expect(call(tracker, 240_000)).toBe("ok");
++		expect(call(tracker, 200)).toBe("ok");
++		// Quick repeats count again, from where the count stood.
++		expect(call(tracker, 200)).toBe("ok");
++		expect(call(tracker, 200)).toBe("hard");
++	});
++
++	it("caps the time the exempt repeats of one run of identical calls may take", () => {
++		const tracker = new LoopDetectionTracker(undefined, {
++			thresholdMs: 120_000,
++			capMs: 600_000,
++		});
++		// 240 s and 240 s are exempt (480 s). A third would pass 600 s, so the repeats count from there.
++		expect(
++			[240_000, 240_000, 240_000, 240_000, 240_000, 240_000, 240_000].map(
++				(ms) => call(tracker, ms),
++			),
++		).toEqual(["ok", "ok", "ok", "ok", "soft", "ok", "hard"]);
++	});
++
++	it("starts a new run of identical calls, with its own cap, after another call", () => {
++		const tracker = new LoopDetectionTracker(undefined, {
++			thresholdMs: 120_000,
++			capMs: 600_000,
++		});
++		expect([240_000, 240_000, 240_000].map((ms) => call(tracker, ms))).toEqual([
++			"ok",
++			"ok",
++			"ok",
++		]);
++		expect(call(tracker, 100, OTHER)).toBe("ok");
++		expect(
++			[240_000, 240_000, 240_000, 240_000].map((ms) => call(tracker, ms)),
++		).toEqual(["ok", "ok", "ok", "ok"]);
++	});
++
++	it("exempts nothing when the harness sets no wait bound", () => {
++		const tracker = new LoopDetectionTracker(undefined, undefined);
++		expect(
++			[240_000, 240_000, 240_000, 240_000, 240_000].map((ms) =>
++				call(tracker, ms),
++			),
++		).toEqual(["ok", "ok", "soft", "ok", "hard"]);
++	});
++
++	it("does not exempt a repeat whose earlier call has not finished or was another call", () => {
++		const tracker = new LoopDetectionTracker(undefined, HARNESS);
++		// Two identical calls started side by side: the second is a repeat of a call that has not ended.
++		expect(tracker.inspect(WAIT).kind).toBe("ok");
++		expect(tracker.inspect(WAIT).kind).toBe("ok");
++		expect(tracker.inspect(WAIT).kind).toBe("soft");
++		// The end of another call says nothing about the wait.
++		tracker.finished(OTHER, 240_000);
++		expect(tracker.inspect(WAIT).kind).toBe("ok");
++		expect(tracker.inspect(WAIT).kind).toBe("hard");
++	});
++
++	it("forgets the wait on reset", () => {
++		const tracker = new LoopDetectionTracker(undefined, HARNESS);
++		call(tracker, 200);
++		call(tracker, 240_000);
++		tracker.reset();
++		expect([200, 200, 200, 200, 200].map((ms) => call(tracker, ms))).toEqual([
++			"ok",
++			"ok",
++			"soft",
++			"ok",
++			"hard",
++		]);
++	});
++});
+-- 
+2.47.3
+

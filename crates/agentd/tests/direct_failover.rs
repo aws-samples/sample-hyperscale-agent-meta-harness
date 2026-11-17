@@ -2018,3 +2018,292 @@ async fn b824_a_user_cancel_while_the_loop_waits_after_dropping_an_answer_report
     canceller.await.unwrap();
     assert_eq!(seen, words(&["sent 1", "replied 1", "dropped"]));
 }
+
+// ---- a wait that is sent again is no loop ----------------------------------------------------------------------------
+
+/// A call that blocks for `blocked_s` seconds and then completes, as a bounded wait on a background job does.
+fn waited_call(id: &str, title: &str, blocked_s: u64) -> Vec<Step> {
+    vec![
+        Step::Update(
+            json!({"sessionUpdate": "tool_call", "toolCallId": id, "title": title, "kind": "execute", "status": "pending"}),
+        ),
+        Step::Pause(blocked_s),
+        Step::Update(
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed"}),
+        ),
+    ]
+}
+
+/// The first engine's guard on a wait that was sent again, as the live proof of release 5.22 recorded it:
+/// four identical calls that each blocked for `blocked_s` seconds, then the fifth, which the guard
+/// refuses. The engine answers the refused call in the same second as a completed call whose command was aborted, and ends the prompt
+/// `cancelled`.
+fn wait_guard_stop(blocked_s: u64) -> Vec<Step> {
+    let mut v = waits_before_the_guard(blocked_s);
+    v.push(Step::Update(json!({
+        "sessionUpdate": "tool_call_update", "toolCallId": "w4", "status": "completed",
+        "rawOutput": [{"error": "Command failed: Command was aborted", "query": WAIT_TITLE, "result": "", "success": false}],
+    })));
+    v.push(Step::Cancelled);
+    v
+}
+
+/// The same stop from an engine that leaves the refused call open: the fifth call starts and the prompt ends `cancelled`.
+fn wait_guard_stop_unanswered(blocked_s: u64) -> Vec<Step> {
+    let mut v = waits_before_the_guard(blocked_s);
+    v.push(Step::Cancelled);
+    v
+}
+
+const WAIT_TITLE: &str = "run_commands: timeout 100 sh -c 'until test -s /tmp/soak.end; do sleep 1; done'; wc -l /tmp/soak.out; cat /tmp/soak.end";
+
+/// Four identical waits that each blocked for `blocked_s` seconds, and the start of the fifth.
+fn waits_before_the_guard(blocked_s: u64) -> Vec<Step> {
+    let mut v = Vec::new();
+    for i in 0..4 {
+        v.extend(waited_call(&format!("w{i}"), WAIT_TITLE, blocked_s));
+    }
+    v.push(Step::Update(
+        json!({"sessionUpdate": "tool_call", "toolCallId": "w4", "title": WAIT_TITLE, "kind": "execute", "status": "pending"}),
+    ));
+    v
+}
+
+/// [`drive`] with the bound of one wait the launch carries.
+async fn drive_waiting(script: Script, plan: PromptPlan, wait_bound: Option<u32>) -> Run {
+    let (client, wire, prompts) = engine(script, OPUS_US);
+    let activity = Activity::new();
+    let mut client = client.with_activity(activity.clone());
+    let rec = EventRecorder::new("run1", "direct");
+    let mut collector = DirectCollector::new(rec.clone()).with_wait_bound(wait_bound);
+    let end = run_direct_prompt(&mut client, &mut collector, &activity, &plan, &NoProbe).await;
+    Run {
+        end,
+        wire,
+        prompts,
+        rec,
+    }
+}
+
+fn stop_hints(run: &Run) -> Vec<(String, Option<u64>)> {
+    events_of(run, "engine-stop")
+        .iter()
+        .map(|e| {
+            (
+                e["hint"].as_str().unwrap_or_default().to_string(),
+                e["attempt"].as_u64(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_the_guard_on_a_wait_that_was_sent_again_does_not_spend_the_resume() {
+    // Two guard stops on waits of 240 s each (the bound is 240 s, so the threshold is its ceiling of 50 s), then the work ends. With one automatic
+    // resume the second stop would have ended the run.
+    let mut script = Script::new(vec![
+        wait_guard_stop(240),
+        wait_guard_stop(240),
+        done("The job ended and the work is finished."),
+    ]);
+    script.setting = Setting::Accept;
+    let run = drive_waiting(script, plan(four()), Some(240)).await;
+    assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
+    assert_eq!(
+        texts(&run),
+        [
+            PROMPT.to_string(),
+            RESUME_PROMPT_INTERRUPTED.to_string(),
+            RESUME_PROMPT_INTERRUPTED.to_string()
+        ]
+    );
+    assert_eq!(
+        stop_hints(&run),
+        [
+            ("wait-repeated".to_string(), None),
+            ("wait-repeated".to_string(), None)
+        ],
+        "neither stop is a numbered try"
+    );
+    assert!(set_calls(&run).is_empty());
+    assert!(run.end.switches.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_at_most_three_guard_stops_on_a_wait_are_forgiven_in_a_session() {
+    // A model that only waits still ends its session: three stops are forgiven, the fourth spends the one resume, the fifth ends
+    // the session. The count is the collector's, which lives for one session of a run.
+    let script = Script::new((0..7).map(|_| wait_guard_stop(240)).collect());
+    let run = drive_waiting(script, plan(four()), Some(240)).await;
+    assert_eq!(
+        classify(&run.end.raw).outcome,
+        DirectOutcome::StoppedEngineCancelled
+    );
+    assert_eq!(
+        texts(&run).len(),
+        5,
+        "the prompt, three forgiven resumes, one counted resume"
+    );
+    assert_eq!(
+        stop_hints(&run),
+        [
+            ("wait-repeated".to_string(), None),
+            ("wait-repeated".to_string(), None),
+            ("wait-repeated".to_string(), None),
+            ("loop-guard".to_string(), Some(1)),
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_identical_calls_that_return_quickly_spend_the_resume_as_before() {
+    // The same bound, and calls that return at once or block for less than the threshold of 50 s: a loop, one resume, then the end.
+    for script in [
+        Script::new((0..3).map(|_| loop_guard_stop(5)).collect()),
+        Script::new((0..3).map(|_| wait_guard_stop(49)).collect()),
+    ] {
+        let run = drive_waiting(script, plan(four()), Some(240)).await;
+        assert_eq!(
+            classify(&run.end.raw).outcome,
+            DirectOutcome::StoppedEngineCancelled
+        );
+        assert_eq!(texts(&run).len(), 2);
+        assert_eq!(stop_hints(&run), [("loop-guard".to_string(), Some(1))]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_the_threshold_is_never_under_five_seconds_and_a_launch_without_a_bound_forgives_nothing()
+ {
+    // A bound of 6 s: half of it is 3 s, the threshold stays 5 s. Calls of 4 s are a loop, calls of 5 s a wait.
+    let quick = drive_waiting(
+        Script::new((0..3).map(|_| wait_guard_stop(4)).collect()),
+        plan(four()),
+        Some(6),
+    )
+    .await;
+    assert_eq!(stop_hints(&quick), [("loop-guard".to_string(), Some(1))]);
+    let mut script = Script::new(vec![wait_guard_stop(5), wait_guard_stop(5), done("Done.")]);
+    script.setting = Setting::Accept;
+    let waited = drive_waiting(script, plan(four()), Some(6)).await;
+    assert_eq!(
+        classify(&waited.end.raw).outcome,
+        DirectOutcome::ReportedDone
+    );
+    // No bound in the launch (an engine with no arm): the stop is counted, however long the calls blocked.
+    let none = drive_waiting(
+        Script::new((0..3).map(|_| wait_guard_stop(240)).collect()),
+        plan(four()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        classify(&none.end.raw).outcome,
+        DirectOutcome::StoppedEngineCancelled
+    );
+    assert_eq!(stop_hints(&none), [("loop-guard".to_string(), Some(1))]);
+    // A stage that allows no resume at all ends at the first stop, on a wait too.
+    let mut p = plan(four());
+    p.engine_stop_resumes = 0;
+    let off = drive_waiting(
+        Script::new(vec![wait_guard_stop(240), done("never")]),
+        p,
+        Some(240),
+    )
+    .await;
+    assert_eq!(texts(&off), [PROMPT.to_string()]);
+    assert!(events_of(&off, "engine-stop").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_the_call_the_guard_refused_is_not_judged_as_a_wait() {
+    // The trigger: the engine's own answer to the refused call arrives at once (0 s). Judged as a wait it would make every guard stop a
+    // loop. Both shapes of the stop are forgiven: the refused call answered as aborted (the pinned engine), and left open.
+    assert!(
+        wait_guard_stop(240)
+            .iter()
+            .any(|s| matches!(s, Step::Update(u) if u["toolCallId"] == "w4"
+            && u["status"] == "completed" && u["rawOutput"][0]["success"] == false)),
+        "TRIGGER PRESENT: the stand-in answers the fifth call as the engine does"
+    );
+    for stop in [
+        wait_guard_stop as fn(u64) -> Vec<Step>,
+        wait_guard_stop_unanswered,
+    ] {
+        let mut script = Script::new(vec![stop(240), done("The job ended.")]);
+        script.setting = Setting::Accept;
+        let run = drive_waiting(script, plan(four()), Some(240)).await;
+        assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
+        assert_eq!(stop_hints(&run), [("wait-repeated".to_string(), None)]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_a_refused_call_does_not_excuse_calls_that_returned_quickly() {
+    // Four calls that returned at once and a fifth that the guard refused: a loop, whatever the answer to the fifth looks like.
+    for stop in [
+        wait_guard_stop as fn(u64) -> Vec<Step>,
+        wait_guard_stop_unanswered,
+    ] {
+        let run = drive_waiting(
+            Script::new(vec![stop(0), stop(0), done("never")]),
+            plan(four()),
+            Some(240),
+        )
+        .await;
+        assert_eq!(
+            classify(&run.end.raw).outcome,
+            DirectOutcome::StoppedEngineCancelled
+        );
+        assert_eq!(stop_hints(&run), [("loop-guard".to_string(), Some(1))]);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn b826_the_waits_that_sessions_send_are_passed_over_at_every_bound_a_launch_carries() {
+    // What sessions really send: the 100 s wait of a rules file of an earlier lifecycle pack under the default bound of 240 s, the same wait
+    // under the bound of a command limit that could not be placed (108 s), a model's own 110 s and 115 s, the session's bound itself, and the
+    // bound itself at a short command limit (54 s). Half of the bound alone would count the first four as a loop.
+    for (blocked_s, bound) in [
+        (100, 240),
+        (100, 108),
+        (110, 240),
+        (115, 240),
+        (240, 240),
+        (54, 54),
+    ] {
+        let mut script = Script::new(vec![wait_guard_stop(blocked_s), done("The job ended.")]);
+        script.setting = Setting::Accept;
+        let run = drive_waiting(script, plan(four()), Some(bound)).await;
+        assert_eq!(
+            classify(&run.end.raw).outcome,
+            DirectOutcome::ReportedDone,
+            "{blocked_s} s under a bound of {bound} s"
+        );
+        assert_eq!(
+            stop_hints(&run),
+            [("wait-repeated".to_string(), None)],
+            "{blocked_s} s under a bound of {bound} s"
+        );
+    }
+    // The threshold itself is enough at the default bound, and one second less is a loop.
+    let mut script = Script::new(vec![wait_guard_stop(50), done("The job ended.")]);
+    script.setting = Setting::Accept;
+    let at = drive_waiting(script, plan(four()), Some(240)).await;
+    assert_eq!(stop_hints(&at), [("wait-repeated".to_string(), None)]);
+    let under = drive_waiting(
+        Script::new((0..3).map(|_| wait_guard_stop(49)).collect()),
+        plan(four()),
+        Some(240),
+    )
+    .await;
+    assert_eq!(stop_hints(&under), [("loop-guard".to_string(), Some(1))]);
+    // Under a short bound the threshold is half of it: 27 s for 54 s. Calls of 26 s are a loop there.
+    let quick = drive_waiting(
+        Script::new((0..3).map(|_| wait_guard_stop(26)).collect()),
+        plan(four()),
+        Some(54),
+    )
+    .await;
+    assert_eq!(stop_hints(&quick), [("loop-guard".to_string(), Some(1))]);
+}

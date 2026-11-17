@@ -189,7 +189,7 @@ fn goto(app: &mut App, clock: &mut Clock, label: &str) {
 /// headings and the locked line, and the title, a blank line and the key line (it was 47 with 32 rows, 51 with 36, 56 with 41, 57 with 42 and 58 with 43, 59 with 44, 60 with 45, 61 with 46 and 62 with 47: each
 /// setting adds one line).
 // Added one row, the delivery note.
-const WHOLE_LIST_ROWS: u16 = 64;
+const WHOLE_LIST_ROWS: u16 = 65;
 
 /// The screen at 120 columns and [`WHOLE_LIST_ROWS`] rows.
 fn screen(app: &App) -> String {
@@ -259,7 +259,7 @@ fn rows_are_generated_from_the_registry_and_the_locked_line_names_the_seven_clas
         ],
         "{text}"
     );
-    assert_eq!(ROWS.len(), 49);
+    assert_eq!(ROWS.len(), 50);
     // The groups of the registry head the rows.
     for g in ["Run", "Interface", "Paths", "Run limits", "Connection"] {
         assert!(

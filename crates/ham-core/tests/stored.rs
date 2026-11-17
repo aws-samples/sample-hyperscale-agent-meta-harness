@@ -69,6 +69,7 @@ fn msg(seq: u64, n: u64, id: &str, text: &str) -> TranscriptRecord {
 
 fn page(state: TranscriptState, records: Vec<TranscriptRecord>) -> TranscriptPage {
     TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state,
         records,

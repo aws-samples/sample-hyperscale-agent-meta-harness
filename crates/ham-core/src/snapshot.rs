@@ -6,6 +6,10 @@
 //! and presigns the bundle. The worker role can write both objects, so the pair is **worker-made and not verified by the harness**
 //! ([`SNAPSHOT_TRUST_NOTE`]): matching commits show that two files agree, not who wrote them.
 //!
+//! The route also serves the files the service read back from a stopped session's storage (one bundle of the same ref, written
+//! once by the worker of the read): as the run's newest copy when the service chose them and no later session has saved one, and for
+//! one named session with `?readBack=<n>`, used or not. The answer then says `recovered` and names the `session`.
+//!
 //! `control-api` runs [`bundle_head`] on the stored bundle's first [`HEADER_BYTES`] bytes; `ham` runs [`verify_download`] on what it
 //! downloaded. A presigned URL is a bearer capability: [`SnapshotDownload`] hides it from `Debug`, and nothing logs it.
 
@@ -218,6 +222,13 @@ pub struct SnapshotDownload {
     /// from a service older than the member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
+    /// The copy is what the service read back from the storage of a session after that session ended, not a copy the session
+    /// saved while it worked. Absent for a saved copy and from a service older than the member.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recovered: bool,
+    /// The session whose storage the copy was read back from; present with `recovered`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<u32>,
 }
 
 impl std::fmt::Debug for SnapshotDownload {
@@ -235,6 +246,8 @@ impl std::fmt::Debug for SnapshotDownload {
             .field("run_status", &self.run_status)
             .field("final_copy", &self.final_copy)
             .field("engine", &self.engine)
+            .field("recovered", &self.recovered)
+            .field("session", &self.session)
             .finish()
     }
 }

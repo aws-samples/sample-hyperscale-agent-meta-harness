@@ -262,7 +262,7 @@
     },
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.62.0"
+      "protocol": "1.63.0"
     }
   },
   "wire": [

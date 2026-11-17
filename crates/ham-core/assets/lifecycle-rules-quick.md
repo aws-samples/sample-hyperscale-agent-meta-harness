@@ -51,8 +51,10 @@ Rules for every step
 - Make each new test fail with the requested symptom. Copy its failing line. Fix the test first for any other failure, such as a missing file or an
   import error.
 - Start a run over about five minutes in the background:
-  `: >/tmp/run.end; (trap 'echo $? >/tmp/run.end' EXIT; <command>) >/tmp/run.txt 2>&1 &`. Do the next independent step. With none left, wait for run.end, not a process id:
-  `timeout 100 sh -c 'until test -s /tmp/run.end; do sleep 1; done' # wait 1`; while it is empty, wait again as `# wait 2`. Keep focused tests in the foreground.
+  `: >/tmp/run.end; set -m; ( (<command>); echo $? >/tmp/run.end ) >/tmp/run.txt 2>&1 & echo $! >/tmp/run.pid; set +m`. Do the next independent step. With none left, wait:
+  `timeout ${HAMH_WAIT_S:-100} sh -c 'read p </tmp/run.pid; until test -s /tmp/run.end || ! read _ _ s _ </proc/$p/stat || test $s = Z; do sleep 1; done 2>/dev/null; test -s /tmp/run.end || echo JOB-GONE'`.
+  While run.end is empty, wait again. JOB-GONE: the job ended without a code, so read run.txt. If run.txt stops growing, read it and check that the job
+  still runs. A parallel run takes other file names. Keep focused tests in the foreground.
 - Run no destructive command outside the repository (force-push, data deletion, system changes).
 - Put no password, key, token or signed URL in a file, a log or a commit message. Never create a persistent password: use
   roles, short-lived tokens, or a random secret made at run time and kept in memory. If the task cannot work without a

@@ -34,6 +34,7 @@ pub use crate::direct_flow::*;
 pub use crate::direct_goal::*;
 pub use crate::direct_input::*;
 pub use crate::direct_limits::*;
+pub use crate::direct_recovery::*;
 pub use crate::direct_request::*;
 pub use crate::direct_review::*;
 pub use crate::direct_skills::*;
@@ -400,7 +401,7 @@ impl fmt::Display for DirectInvocationError {
             ),
             Self::BadRepo => write!(
                 f,
-                "repo must be an S3Bundle at s3://<bucket>/runs/<runId>/input/repo.bundle in the request's bucket"
+                "repo must be an S3Bundle in the request's bucket at s3://<bucket>/runs/<runId>/input/repo.bundle or, for a session after the first, at the bundle, the snapshot.bundle or the read-back recovery.bundle of an earlier session of the run"
             ),
             Self::BadDelivery => write!(
                 f,
@@ -558,16 +559,21 @@ pub fn validate_direct_invocation(
 }
 
 /// 40 lowercase hexadecimal characters: a full git commit id.
-fn commit_id_ok(s: &str) -> bool {
+pub(crate) fn commit_id_ok(s: &str) -> bool {
     s.len() == 40
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Whether `key` is the bundle or the snapshot bundle of one of the run's slices before `turn`: the work a later slice restores.
+/// Whether `key` is the bundle, the snapshot bundle or the read-back bundle of one of the run's slices before `turn`: the work a
+/// later slice restores. The key is compared whole: nothing else under `agents/recovery/` passes, nor a key of another run, of the same
+/// slice or of a later one.
 fn earlier_slice_bundle(run_id: &str, turn: u32, key: &str) -> bool {
-    (DIRECT_TURN..turn)
-        .any(|n| key == s3::bundle_key_t(run_id, n) || key == s3::snapshot_bundle_key_t(run_id, n))
+    (DIRECT_TURN..turn).any(|n| {
+        key == s3::bundle_key_t(run_id, n)
+            || key == s3::snapshot_bundle_key_t(run_id, n)
+            || key == s3::recovery_bundle_key(run_id, n)
+    })
 }
 
 /// Absent, or one of [`REASONING_LEVELS`].
@@ -701,7 +707,8 @@ impl DirectOutcome {
     }
 
     /// The label of a run of `engine` that ended with `detail`. It is the sentence of the outcome ([`label_text`](Self::label_text)), except for one case: a
-    /// `stopped_other` run whose detail begins with [`HARNESS_STOP_PREFIX`] was ended by the harness (the goal loop's stall rules), and
+    /// `stopped_other` run whose detail begins with [`HARNESS_STOP_PREFIX`] was ended by the harness,
+    /// and
     /// its label says so with the first sentence of the detail as the reason: "<Engine> stopped: the harness ended the run (<reason>)".
     /// A pure function of the three arguments; the reason is cut to [`LABEL_REASON_CHARS`] characters on one line, never quotes the
     /// engine's own words (they follow the first sentence) and is left out when it uses a word of [`BANNED_CLAIM_WORDS`].
@@ -1648,6 +1655,23 @@ pub mod s3 {
     /// `runs/<run>/slices/<n>.json`: the service's record of slice `n` (written by run-session, never by the microVM).
     pub fn slice_record_key(run_id: &str, n: u32) -> String {
         format!("runs/{run_id}/slices/{n}.json")
+    }
+    /// `runs/<run>/agents/recovery/turns/<n>/recovery.bundle`: the tree as the storage of session `n` held it after the session
+    /// ended, written once by the worker that read the storage back. It is outside `agents/direct/`, so the credentials of a working
+    /// session cannot write it.
+    pub fn recovery_bundle_key(run_id: &str, n: u32) -> String {
+        format!(
+            "{}recovery.bundle",
+            store::turn_prefix(run_id, super::RECOVERY_AGENT_ID, n)
+        )
+    }
+    /// `runs/<run>/slices/<n>-recovery.json`: the service's record that a read of session `n`'s storage began, written once.
+    pub fn recovery_attempt_key(run_id: &str, n: u32) -> String {
+        format!("runs/{run_id}/slices/{n}-recovery.json")
+    }
+    /// `runs/<run>/slices/<n>-recovery-result.json`: how that read ended, written once.
+    pub fn recovery_result_key(run_id: &str, n: u32) -> String {
+        format!("runs/{run_id}/slices/{n}-recovery-result.json")
     }
     /// The full-history bundle of `harness/<run>/direct`. worker-api refuses any other `bundleUri`.
     pub fn bundle_key(run_id: &str) -> String {

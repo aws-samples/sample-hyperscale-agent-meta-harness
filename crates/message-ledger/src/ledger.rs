@@ -11,13 +11,15 @@ use crate::error::{LedgerError, Refusal};
 use crate::table::{Cond, Item, PK, SK, Table, TableError, WriteOp, diff};
 use harness_protocol::common::is_ulid;
 use harness_protocol::messages::{
-    Admission, ClaimRefusal, ClaimResponse, ClaimedMessage, GENERATION_CLOCK_SKEW_MS,
-    MAX_CLAIM_BATCH, MAX_DETAIL_CHARS, MAX_HISTORY_STEPS, MAX_OUTSTANDING_MESSAGES,
+    Admission, ClaimRefusal, ClaimResponse, ClaimedMessage, DeliveredMessage,
+    GENERATION_CLOCK_SKEW_MS, HistoryResponse, MAX_CLAIM_BATCH, MAX_DETAIL_CHARS,
+    MAX_HISTORY_STEPS, MAX_HISTORY_TEXT_BYTES, MAX_OUTSTANDING_MESSAGES,
     MAX_OWNER_ADMISSIONS_PER_MINUTE, MAX_RETIRED_GENERATIONS, MAX_RUN_ADMISSIONS_PER_MINUTE,
     MAX_RUN_MESSAGE_BYTES, MAX_RUN_MESSAGES, MessageCtlItem, MessageItem, MessageMode,
     MessageNotice, MessageOutcome, MessageState, MessageStep, MessageView, MessagesPage,
     OWNER_RATE_TTL_S, OpenMessage, OutcomeResponse, OwnerRateItem, RejectReason, SealMode,
-    SealResponse, SendMessageRequest, SendOutcome, SessionAck, validate_send,
+    SealResponse, SendMessageRequest, SendOutcome, SessionAck, UnconfirmedMessage,
+    bound_history_with, validate_send,
 };
 use harness_protocol::store::{Key, Keyed, keys};
 use serde::Serialize;
@@ -547,6 +549,58 @@ impl<T: Table, C: Clock> Ledger<T, C> {
             epoch_no: ctl.epoch_no,
             watermark: ctl.seq,
         })
+    }
+
+    /// The messages of the run that were delivered to an engine: what a later session of the run is told the user said. Each
+    /// text is the one that was stored when the user sent the message; the order is the order the messages were admitted in; the answer
+    /// stays within [`MAX_HISTORY_TEXT_BYTES`] ([`bound_history_with`]: whole messages, the oldest cut first and counted).
+    ///
+    /// Only the state `delivered` counts as delivered. A message that was handed to a worker and has no report of its delivery
+    /// (`dispatching`, or `delivery-unknown` once the session after it has reported itself or the run closed) may have reached an
+    /// engine: the answer names it apart, as unconfirmed, with its stored text. A message that is pending or held is still to be
+    /// delivered or confirmed, and one that was withdrawn, rejected, superseded or failed reached no engine: these are in neither
+    /// part.
+    ///
+    /// One query of the run's message items. It writes nothing and takes no generation and no session, so it moves no message, makes no
+    /// control item and replaces no incarnation of agentd.
+    pub async fn delivered(&self, run_id: &str) -> Result<HistoryResponse, LedgerError> {
+        let items = self
+            .table
+            .query(&keys::run_pk(run_id), keys::MESSAGE_PREFIX)
+            .await?;
+        let mut messages: Vec<MessageItem> =
+            items.into_iter().map(from_item).collect::<Result<_, _>>()?;
+        messages.sort_by_key(|m| m.seq);
+        let mut delivered = Vec::new();
+        let mut unconfirmed = Vec::new();
+        for m in messages {
+            match m.state {
+                MessageState::Delivered => delivered.push(DeliveredMessage {
+                    message_id: m.message_id,
+                    seq: m.seq,
+                    delivered_turn: m.delivered_turn,
+                    text: m.text,
+                }),
+                MessageState::Dispatching | MessageState::DeliveryUnknown => {
+                    unconfirmed.push(UnconfirmedMessage {
+                        message_id: m.message_id,
+                        seq: m.seq,
+                        text: m.text,
+                    });
+                }
+                MessageState::Pending
+                | MessageState::Held
+                | MessageState::Withdrawn
+                | MessageState::Rejected
+                | MessageState::Superseded
+                | MessageState::Failed => {}
+            }
+        }
+        Ok(bound_history_with(
+            delivered,
+            unconfirmed,
+            MAX_HISTORY_TEXT_BYTES,
+        ))
     }
 
     /// The notices agentd is handed: the pending messages of the current session, in the order claims take them. One read of one item.

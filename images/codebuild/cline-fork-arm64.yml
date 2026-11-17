@@ -1,7 +1,7 @@
 # CodeBuild ARM (hamh-<stage>-image-build): the Cline fork's linux-arm64 build, run once per
 # promotion. Run with:
 #   scripts/codebuild-run.sh --buildspec images/codebuild/cline-fork-arm64.yml --env HARNESS_BUCKET=hamh-live-harness-<account>
-# The build must print FORK-BUILD PASS series=15; the smoke test is the first native execution of
+# The build must print FORK-BUILD PASS series=16; the smoke test is the first native execution of
 # the linux-arm64 binary. Outputs go to s3://$HARNESS_BUCKET/builds/out/cline-fork/$SOURCE_SHA/;
 # promotion to engine/cline/<sha256>/ is a separate builder step.
 version: 0.2
@@ -20,7 +20,7 @@ phases:
       - mkdir -p "$CLINE_FORK_WORK_DIR"
       - OUT="$CLINE_FORK_WORK_DIR/out-$SOURCE_SHA"
       - scripts/build-cline-fork.sh --target linux-arm64 --out "$OUT" 2>&1 | tee "$CLINE_FORK_WORK_DIR/fork-build.log"
-      - tail -n 1 "$CLINE_FORK_WORK_DIR/fork-build.log" | grep -E '^FORK-BUILD PASS series=15 '
+      - tail -n 1 "$CLINE_FORK_WORK_DIR/fork-build.log" | grep -E '^FORK-BUILD PASS series=16 '
       - '"$OUT/cline" --version | tee "$OUT/smoke-version.txt"'
       - |
         SMOKE_HOME="$CLINE_FORK_WORK_DIR/smoke-home"; mkdir -p "$SMOKE_HOME"

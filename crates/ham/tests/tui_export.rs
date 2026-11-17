@@ -347,6 +347,7 @@ fn route_page(chunks: Vec<Vec<ChunkRecord>>) -> TranscriptPage {
         }
     }
     let page = TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state: TranscriptState::Complete,
         records,

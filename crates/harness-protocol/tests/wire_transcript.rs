@@ -55,7 +55,7 @@ fn entry(
 
 #[test]
 fn the_protocol_is_1_38_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.62.0");
+    assert_eq!(PROTOCOL_VERSION, "1.63.0");
 }
 
 #[test]
@@ -123,6 +123,7 @@ fn the_summary_writes_the_members_the_route_reads() {
             entry(CompletenessKind::Conflict, Some(4), Some(4), Some(1)),
             entry(CompletenessKind::TailUnknown, Some(2), Some(2), None),
         ],
+        answered_tokens: None,
     };
     assert_eq!(
         serde_json::to_value(&s).unwrap(),
@@ -167,16 +168,19 @@ fn a_summary_is_valid_when_bounded_and_ordered() {
     let ok = TranscriptSummary {
         last_transcript_seq: Some(0),
         entries: vec![entry(CompletenessKind::Shed, Some(3), Some(5), Some(9))],
+        answered_tokens: None,
     };
     assert!(ok.validate());
     let backwards = TranscriptSummary {
         last_transcript_seq: None,
         entries: vec![entry(CompletenessKind::Shed, Some(5), Some(3), None)],
+        answered_tokens: None,
     };
     assert!(!backwards.validate(), "a range runs forward");
     let half = TranscriptSummary {
         last_transcript_seq: None,
         entries: vec![entry(CompletenessKind::Shed, Some(5), None, None)],
+        answered_tokens: None,
     };
     assert!(!half.validate(), "a range has both ends or neither");
     let many = TranscriptSummary {
@@ -184,6 +188,7 @@ fn a_summary_is_valid_when_bounded_and_ordered() {
         entries: (0..=MAX_COMPLETENESS_ENTRIES)
             .map(|_| entry(CompletenessKind::Truncated, None, None, Some(1)))
             .collect(),
+        answered_tokens: None,
     };
     assert!(
         !many.validate(),
@@ -194,6 +199,7 @@ fn a_summary_is_valid_when_bounded_and_ordered() {
         entries: (0..MAX_COMPLETENESS_ENTRIES)
             .map(|_| entry(CompletenessKind::Truncated, None, None, Some(1)))
             .collect(),
+        answered_tokens: None,
     };
     assert!(exactly.validate());
 }
@@ -218,6 +224,7 @@ fn turn_complete_carries_the_summary_only_when_there_is_one() {
     req.transcript = Some(TranscriptSummary {
         last_transcript_seq: Some(3),
         entries: vec![entry(CompletenessKind::Truncated, None, None, Some(2))],
+        answered_tokens: None,
     });
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(
@@ -462,6 +469,7 @@ fn a_summary_is_lossless_when_it_declares_only_what_was_left_out_on_purpose() {
     let only_excluded = TranscriptSummary {
         last_transcript_seq: Some(4),
         entries: vec![entry(CompletenessKind::Excluded, None, None, Some(12))],
+        answered_tokens: None,
     };
     assert!(only_excluded.is_lossless());
     for kind in [
@@ -479,12 +487,14 @@ fn a_summary_is_lossless_when_it_declares_only_what_was_left_out_on_purpose() {
                 entry(CompletenessKind::Excluded, None, None, Some(1)),
                 entry(kind, None, None, Some(1)),
             ],
+            answered_tokens: None,
         };
         assert!(!s.is_lossless(), "{kind:?}");
     }
     let invalid = TranscriptSummary {
         last_transcript_seq: None,
         entries: vec![entry(CompletenessKind::Excluded, Some(5), Some(3), None)],
+        answered_tokens: None,
     };
     assert!(
         !invalid.is_lossless(),

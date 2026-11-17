@@ -237,11 +237,35 @@ impl<P: ControlPlane> Api<P> {
     /// `POST /v1/runs/{runId}/snapshot/download-url`: the latest snapshot bundle of the run, where to get it and what it must hold. The
     /// call writes nothing; a pair that is being saved answers 409, which [`fetch_snapshot`] asks again.
     pub async fn snapshot_download(&self, run_id: &str) -> Result<SnapshotDownload, ApiError> {
+        self.copy_download(run_id, None).await
+    }
+
+    /// The same route with `?readBack=<session>`: the files the service read back from the storage of that session after it
+    /// ended, whether the run went on from them or not.
+    pub async fn read_back_download(
+        &self,
+        run_id: &str,
+        session: u32,
+    ) -> Result<SnapshotDownload, ApiError> {
+        self.copy_download(run_id, Some(session)).await
+    }
+
+    async fn copy_download(
+        &self,
+        run_id: &str,
+        read_back: Option<u32>,
+    ) -> Result<SnapshotDownload, ApiError> {
         let key = crate::start::new_nonce();
+        let path = match read_back {
+            Some(session) => {
+                format!("/v1/runs/{run_id}/snapshot/download-url?readBack={session}")
+            }
+            None => format!("/v1/runs/{run_id}/snapshot/download-url"),
+        };
         self.once(
             "SnapshotDownload",
             "POST",
-            &format!("/v1/runs/{run_id}/snapshot/download-url"),
+            &path,
             &json_headers(Some(&key)),
             b"{}",
         )
@@ -285,6 +309,12 @@ pub struct SnapshotFetched {
     pub final_copy: bool,
     /// The engine of the run, as the service names it; `None` from a service older than the member.
     pub engine: Option<String>,
+    /// The session whose storage the copy was read back from, when the copy is files the service read back after that
+    /// session ended; `None` for a copy a session saved while it worked.
+    pub read_back_from: Option<u32>,
+    /// The command asked for the files read back from one session (`--read-back <n>`), which the run may not have gone on
+    /// from; `false` when it asked for the run's newest copy.
+    pub asked_read_back: bool,
 }
 
 fn io(e: std::io::Error) -> SnapshotFetchError {
@@ -295,13 +325,14 @@ fn io(e: std::io::Error) -> SnapshotFetchError {
 async fn download_when_settled<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
+    read_back: Option<u32>,
 ) -> Result<SnapshotDownload, SnapshotFetchError> {
     let retry = api.retry();
     let mut wait = retry.base;
     let mut tries = 0;
     loop {
         tries += 1;
-        match api.snapshot_download(run_id).await {
+        match api.copy_download(run_id, read_back).await {
             Ok(d) => return Ok(d),
             Err(ApiError::Http { status: 409, error })
                 if error.code == "snapshot-updating" && tries < SNAPSHOT_TRIES =>
@@ -431,11 +462,35 @@ pub async fn fetch_snapshot<P: ControlPlane>(
     fetch_snapshot_with(api, run_id, dir, CHUNK_BYTES).await
 }
 
+/// Downloads the files the service read back from the storage of `session` into `dir` as `<runId>-read-back-<session>.bundle`,
+/// whether the run went on from them or not, with the checks of [`fetch_snapshot`].
+pub async fn fetch_read_back<P: ControlPlane>(
+    api: &Api<P>,
+    run_id: &str,
+    session: u32,
+    dir: &Path,
+) -> Result<SnapshotFetched, SnapshotFetchError> {
+    fetch_copy_with(api, run_id, Some(session), dir, CHUNK_BYTES).await
+}
+
 /// [`fetch_snapshot`] with `chunk`-byte ranges (the header the check reads is gathered from the first bytes, whatever the chunk). The bytes go to a `.part` file
 /// that is renamed only after the checks pass; a failed check leaves nothing behind. An expired URL is replaced once.
 pub async fn fetch_snapshot_with<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
+    dir: &Path,
+    chunk: u64,
+) -> Result<SnapshotFetched, SnapshotFetchError> {
+    fetch_copy_with(api, run_id, None, dir, chunk).await
+}
+
+/// The download behind [`fetch_snapshot_with`] and [`fetch_read_back`]: the run's newest copy, or with `read_back` the files read
+/// back from that session. A copy that is files read back is named `<runId>-read-back-<session>.bundle`, whichever way it was asked
+/// for; when a file of that name holds another commit, the name carries the commit too.
+async fn fetch_copy_with<P: ControlPlane>(
+    api: &Api<P>,
+    run_id: &str,
+    read_back: Option<u32>,
     dir: &Path,
     chunk: u64,
 ) -> Result<SnapshotFetched, SnapshotFetchError> {
@@ -445,10 +500,27 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
         )));
     }
     std::fs::create_dir_all(dir).map_err(io)?;
-    let mut d = download_when_settled(api, run_id).await?;
+    let mut d = download_when_settled(api, run_id, read_back).await?;
     sane(&d)?;
-    let name = match d.count {
-        Some(n) => {
+    // The files read back from one session were asked for: the answer must be about that session and nothing else.
+    if let Some(session) = read_back
+        && !(d.recovered && d.session == Some(session))
+    {
+        return Err(SnapshotFetchError::Fetch(format!(
+            "the stage did not answer with the files read back from session {session}; it may predate ham pull --read-back"
+        )));
+    }
+    let read_back_from = d.session.filter(|_| d.recovered);
+    let name = match (read_back_from, d.count) {
+        (Some(session), _) => {
+            let plain = format!("{run_id}-read-back-{session}.bundle");
+            if holds_another_copy(&dir.join(&plain), &d.head_sha) {
+                format!("{run_id}-read-back-{session}-{}.bundle", &d.head_sha[..12])
+            } else {
+                plain
+            }
+        }
+        (None, Some(n)) => {
             let plain = format!("{run_id}-snapshot-{n}.bundle");
             // A number names one copy of a run. A worker older than that rule numbers the copies of every session from 1, so a
             // file of this name can hold another copy of the run: it is kept, and this copy is named with its commit as well.
@@ -458,7 +530,7 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
                 plain
             }
         }
-        None => format!("{run_id}-snapshot-{}.bundle", &d.head_sha[..12]),
+        (None, None) => format!("{run_id}-snapshot-{}.bundle", &d.head_sha[..12]),
     };
     let dest = dir.join(&name);
     // A name nobody can guess, created exclusively: a link planted at the path is not followed and two downloads do not share a file. The
@@ -490,7 +562,7 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
                 ranges.push(range);
                 // A renewed URL is the same object's: the bytes already written, the header and the ranges still to come belong to the
                 // object the first answer described, so a renewal that describes another one ends the download.
-                let renewed = download_when_settled(api, run_id).await?;
+                let renewed = download_when_settled(api, run_id, read_back).await?;
                 sane(&renewed)?;
                 if renewed.etag != d.etag
                     || renewed.size_bytes != d.size_bytes
@@ -528,6 +600,8 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
         record_stale: d.record_stale,
         final_copy: d.final_copy,
         engine: d.engine.clone(),
+        read_back_from,
+        asked_read_back: read_back.is_some(),
     })
 }
 

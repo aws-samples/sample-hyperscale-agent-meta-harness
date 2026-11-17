@@ -920,3 +920,198 @@ async fn the_end_record_and_the_stats_count_the_updates_that_came_outside_a_prom
     let first = recs.iter().find(|r| r["kind"] == "prompt").unwrap();
     assert_eq!(first["turn_id"], json!(3));
 }
+
+// ---- the tokens of the prompts that answered ---------------------------------------------------------------------------------
+
+/// Prompt `id` and the engine's answer to it.
+fn prompt_and_answer(w: &Writer, id: u64, result: Value) {
+    w.push(
+        Dir::ToEngine,
+        &request(
+            id,
+            "session/prompt",
+            json!({"sessionId": SID, "prompt": [{"type": "text", "text": "go"}]}),
+        ),
+        false,
+    );
+    w.push(Dir::FromEngine, &response(id, result), false);
+}
+
+/// The summary declares the tokens of the prompts that answered: `result.usage.totalTokens` of every `prompt_result` record
+/// that has a string `stopReason`, once per record. It is the sum a reader of the stored conversation makes, made where the records
+/// are made, so it is the same whether or not the objects could be stored.
+#[tokio::test(start_paused = true)]
+async fn b846_the_summary_declares_answered_tokens() {
+    // Three answers: two with a stop reason and a number, and one without a stop reason, whose number does not count.
+    let three = |w: &Writer| {
+        prompt_and_answer(
+            w,
+            3,
+            json!({"stopReason": "end_turn", "usage": {"totalTokens": 813_995}}),
+        );
+        prompt_and_answer(w, 4, json!({"usage": {"totalTokens": 7}}));
+        prompt_and_answer(
+            w,
+            5,
+            json!({"stopReason": "cancelled", "usage": {"totalTokens": 913_896}}),
+        );
+    };
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    three(&w);
+    let s = w.finish().await;
+    assert_eq!(
+        kinds(&all_records(&store))
+            .iter()
+            .filter(|k| *k == "prompt_result")
+            .count(),
+        3,
+        "TRIGGER PRESENT: the three answers are stored"
+    );
+    assert_eq!(s.answered_tokens, Some(1_727_891), "{s:?}");
+    assert!(s.validate() && s.is_lossless(), "{s:?}");
+    // The number is the one a reader of the stored records adds up.
+    let read: u64 = all_records(&store)
+        .iter()
+        .filter(|(_, r)| {
+            r["kind"] == "prompt_result" && r["data"]["result"]["stopReason"].is_string()
+        })
+        .filter_map(|(_, r)| r["data"]["result"]["usage"]["totalTokens"].as_u64())
+        .sum();
+    assert_eq!(s.answered_tokens, Some(read));
+
+    // A store that always fails: the records were made, so the number is the same.
+    let down = Arc::new(MemStore::new());
+    down.fail_puts(u32::MAX);
+    let w = start(&down);
+    three(&w);
+    let s = tokio::time::timeout(Duration::from_secs(30), w.finish())
+        .await
+        .expect("finish returns within its deadline");
+    assert!(
+        down.keys().is_empty(),
+        "TRIGGER PRESENT: nothing was stored"
+    );
+    assert_eq!(s.answered_tokens, Some(1_727_891), "{s:?}");
+
+    // No answer of a prompt, and an answer without a number: no number.
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    w.push(Dir::FromEngine, &tool_call(1), false);
+    assert_eq!(w.finish().await.answered_tokens, None);
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    prompt_and_answer(&w, 3, json!({"stopReason": "end_turn"}));
+    assert_eq!(w.finish().await.answered_tokens, None);
+
+    // A sum past the largest number is unknown for good: a later answer brings no number back.
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    prompt_and_answer(
+        &w,
+        3,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": u64::MAX}}),
+    );
+    settle().await;
+    assert_eq!(
+        w.summary().answered_tokens,
+        Some(u64::MAX),
+        "TRIGGER PRESENT: the largest number is still a number"
+    );
+    prompt_and_answer(
+        &w,
+        4,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": 1}}),
+    );
+    settle().await;
+    assert_eq!(
+        w.summary().answered_tokens,
+        None,
+        "the sum passed the largest number"
+    );
+    prompt_and_answer(
+        &w,
+        5,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": 5}}),
+    );
+    assert_eq!(w.finish().await.answered_tokens, None);
+}
+
+/// Beside: the number behind the `Outside` row for the two runs that the release changes.
+///
+/// A run whose prompt the engine's own guard stopped on a wait that was sent again, and that the worker resumed without spending the
+/// automatic resume: the stopped prompt ends `cancelled` with its tokens, the resume is a prompt of its own, and each counts once.
+/// The resume does not count the stopped prompt's tokens again.
+///
+/// A run whose engine queued a user's message behind a round of its own loop and was kept: that prompt is answered at once with
+/// `end_turn` and no usage. It adds nothing, and it does not make the number unknown: the tokens of the round the engine went on with
+/// reach no prompt's answer, and they are what the `Outside` row shows.
+#[tokio::test(start_paused = true)]
+async fn b846_answered_tokens_for_a_resumed_wait_and_for_a_message_the_engine_queued() {
+    // The wait backstop: prompt 3 is stopped by the guard, prompt 4 is the resume, and a second forgiven stop and resume follow.
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    prompt_and_answer(
+        &w,
+        3,
+        json!({"stopReason": "cancelled", "usage": {"totalTokens": 913_896}}),
+    );
+    prompt_and_answer(
+        &w,
+        4,
+        json!({"stopReason": "cancelled", "usage": {"totalTokens": 20_500}}),
+    );
+    prompt_and_answer(
+        &w,
+        5,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": 61_000}}),
+    );
+    let s = w.finish().await;
+    assert_eq!(
+        kinds(&all_records(&store))
+            .iter()
+            .filter(|k| *k == "prompt_result")
+            .count(),
+        3,
+        "TRIGGER PRESENT: the two stopped prompts and the prompt that ended the work are stored"
+    );
+    assert_eq!(
+        s.answered_tokens,
+        Some(913_896 + 20_500 + 61_000),
+        "each prompt once: {s:?}"
+    );
+
+    // The kept engine: the first prompt answers with its tokens, the user's message is answered at once with no usage while the
+    // engine's round is in flight, and the prompt after the round answers with its own tokens.
+    let store = Arc::new(MemStore::new());
+    let w = start(&store);
+    prompt_and_answer(
+        &w,
+        3,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": 40_000}}),
+    );
+    prompt_and_answer(&w, 4, json!({"stopReason": "end_turn"}));
+    settle().await;
+    assert_eq!(
+        w.summary().answered_tokens,
+        Some(40_000),
+        "the queued message adds nothing and takes nothing away"
+    );
+    w.push(Dir::FromEngine, &tool_call(1), false);
+    prompt_and_answer(
+        &w,
+        5,
+        json!({"stopReason": "end_turn", "usage": {"totalTokens": 2_500}}),
+    );
+    let s = w.finish().await;
+    assert_eq!(s.answered_tokens, Some(42_500), "{s:?}");
+    // The number is the one a reader of the stored conversation adds up, so the service's sum and the client's row agree with it.
+    let read: u64 = all_records(&store)
+        .iter()
+        .filter(|(_, r)| {
+            r["kind"] == "prompt_result" && r["data"]["result"]["stopReason"].is_string()
+        })
+        .filter_map(|(_, r)| r["data"]["result"]["usage"]["totalTokens"].as_u64())
+        .sum();
+    assert_eq!(s.answered_tokens, Some(read));
+}

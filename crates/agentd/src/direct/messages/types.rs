@@ -223,6 +223,45 @@ pub enum SealOutcome {
     Sealed { watermark: u64 },
 }
 
+/// A message of the user that the control plane holds as delivered to an engine: what a later session of the run is told the
+/// user said. The text is the one the control plane stored when the user sent the message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delivered {
+    pub id: String,
+    /// The server's order (0: unknown, the order of the answer decides).
+    pub seq: u64,
+    pub text: String,
+}
+
+/// The control plane's answer to "which messages of this run were delivered to an engine": oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct History {
+    pub messages: Vec<Delivered>,
+    /// Older messages the control plane left out to stay within its bound.
+    pub cut: u32,
+    /// The messages the control plane holds as handed to an earlier session with no report of their delivery, oldest first: the
+    /// engine of that session may or may not have received them. The texts are the control plane's own.
+    pub unconfirmed: Vec<Delivered>,
+}
+
+/// Why the control plane gave no history. Neither reads as "the user sent nothing".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryError {
+    /// The control plane says that it has no such route: a service from before the route. The one answer that is final at once.
+    NoRoute(String),
+    /// No answer in time, a refusal, a store that failed, or an answer that is not the answer.
+    Failed(String),
+}
+
+impl fmt::Display for HistoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRoute(d) => write!(f, "no such route: {d}"),
+            Self::Failed(d) => write!(f, "{d}"),
+        }
+    }
+}
+
 /// A call to the store failed. `retryable` is the transport's reading (a timeout, a 5xx, a throttle); a refusal the server meant is
 /// not an error but an outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]

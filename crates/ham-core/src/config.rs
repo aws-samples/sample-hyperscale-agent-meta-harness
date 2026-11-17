@@ -254,6 +254,11 @@ pub struct RunTable {
     /// request carries it as `deliveryNote: false`. Unset and `true` leave the block on and send no member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_note: Option<bool>,
+    /// `false` switches off reading a stopped session's storage back before the next session starts, and acting on the worker's notice
+    /// that its session is being ended; the request carries it as `recoverAfterStop: false`. Unset and `true` leave both on and
+    /// send no member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recover_after_stop: Option<bool>,
 }
 
 /// The keys of `[research]`.
@@ -412,7 +417,7 @@ pub enum ConfigError {
 }
 
 /// The settable keys as `(file name, name `ham config` prints)`. A key of a table is dotted in both columns.
-pub const KEYS: [(&str, &str); 49] = [
+pub const KEYS: [(&str, &str); 50] = [
     ("apiEndpoint", "api_endpoint"),
     ("region", "region"),
     ("awsProfile", "aws_profile"),
@@ -462,6 +467,7 @@ pub const KEYS: [(&str, &str); 49] = [
     ("run.copy_every_minutes", "run.copy_every_minutes"),
     ("run.copy_every_seconds", "run.copy_every_seconds"),
     ("run.delivery_note", "run.delivery_note"),
+    ("run.recover_after_stop", "run.recover_after_stop"),
 ];
 
 /// What `ham` says of a config that sets both keys of the copy interval, when it reads the file and when `ham config set` would

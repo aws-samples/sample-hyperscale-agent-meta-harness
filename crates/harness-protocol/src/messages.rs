@@ -558,6 +558,131 @@ pub struct OutcomeResponse {
     pub state: MessageState,
 }
 
+/// The most bytes of message text one answer of `POST /internal/message-history` carries: the bound of what one session hands the next
+/// ([`crate::direct::MAX_SLICE_BRIEF_BYTES`]). The newest message is always in the answer, also when it alone is longer.
+pub const MAX_HISTORY_TEXT_BYTES: usize = crate::direct::MAX_SLICE_BRIEF_BYTES;
+
+/// `POST /internal/message-history`: at the start of a session agentd asks for the messages of the run that
+/// were delivered to an engine in the sessions before it, so the first prompt of the new session can carry them as the user's own words.
+/// The route only reads. The run and the agent are the caller's own (the IAM session of the worker); a body that names another run or
+/// agent is refused. It carries no generation and no session: the question is asked before an engine session exists, and it moves no
+/// message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryRequest {
+    pub run_id: String,
+    pub agent_id: String,
+}
+
+/// A message of the user that was delivered to an engine: the text as control-api stored it when the user sent it. A reader ignores
+/// members it does not know.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveredMessage {
+    pub message_id: String,
+    /// The order the server admitted it in ([`MessageView::seq`]).
+    pub seq: u32,
+    /// The turn that carried it, as the worker reported it ([`MessageOutcome::Submitted`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_turn: Option<u32>,
+    pub text: String,
+}
+
+/// A message of the user that the ledger holds as handed to an earlier session of the run with no report of its delivery: a worker
+/// claimed it and no outcome arrived (`dispatching`), or the session after it has reported itself since (`delivery-unknown`). The
+/// engine of that session may have received it. The text is the one control-api stored when the user sent the message. A reader
+/// ignores members it does not know.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnconfirmedMessage {
+    pub message_id: String,
+    /// The order the server admitted it in ([`MessageView::seq`]).
+    pub seq: u32,
+    pub text: String,
+}
+
+/// The answer of `POST /internal/message-history`: the messages of the run in state `delivered` (`messages`) and the ones that were
+/// handed to an earlier session with no report of their delivery (`unconfirmed`), each in the order they were admitted, together
+/// within [`MAX_HISTORY_TEXT_BYTES`]. A message that is pending or held, or that ended any other way, is in neither: a pending one is
+/// still to be delivered, and the worker sends it as a prompt of its own. A reader ignores members it does not know.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryResponse {
+    pub messages: Vec<DeliveredMessage>,
+    /// Older messages of either kind that are not in the answer: cut to keep it within its bound, the oldest first.
+    #[serde(default)]
+    pub cut: u32,
+    /// The messages of the run in state `dispatching` or `delivery-unknown`. The member is left out when there is none, and a reader
+    /// that does not know it reads the answer it always read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unconfirmed: Vec<UnconfirmedMessage>,
+}
+
+/// The answer for the delivered messages `all` (oldest first) within `max_bytes` of text: whole messages, the oldest cut first and
+/// counted. The newest message always stays, also when it alone is longer than the bound.
+pub fn bound_history(all: Vec<DeliveredMessage>, max_bytes: usize) -> HistoryResponse {
+    bound_history_with(all, Vec::new(), max_bytes)
+}
+
+/// The answer for the delivered messages and the unconfirmed ones (each oldest first) within `max_bytes` of text for both kinds
+/// together: whole messages, and the oldest of either kind, by the order they were admitted in, are cut first and counted. The newest
+/// message always stays, also when it alone is longer than the bound.
+pub fn bound_history_with(
+    delivered: Vec<DeliveredMessage>,
+    unconfirmed: Vec<UnconfirmedMessage>,
+    max_bytes: usize,
+) -> HistoryResponse {
+    // (the order admitted in, whether it is unconfirmed, its place in its list, its bytes) of every message, newest first
+    let mut order: Vec<(u32, bool, usize, usize)> =
+        Vec::with_capacity(delivered.len() + unconfirmed.len());
+    order.extend(
+        delivered
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.seq, false, i, m.text.len())),
+    );
+    order.extend(
+        unconfirmed
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.seq, true, i, m.text.len())),
+    );
+    // Newest first. The sort is stable, so messages with the same order number stay newest first by their place in their list.
+    order.reverse();
+    order.sort_by_key(|m| std::cmp::Reverse(m.0));
+    let mut keep_delivered = vec![false; delivered.len()];
+    let mut keep_unconfirmed = vec![false; unconfirmed.len()];
+    let mut bytes = 0usize;
+    let mut kept = 0usize;
+    for (_, is_unconfirmed, i, len) in &order {
+        let next = bytes.saturating_add(*len);
+        if kept > 0 && next > max_bytes {
+            break;
+        }
+        bytes = next;
+        kept += 1;
+        if *is_unconfirmed {
+            keep_unconfirmed[*i] = true;
+        } else {
+            keep_delivered[*i] = true;
+        }
+    }
+    let cut = order.len() - kept;
+    HistoryResponse {
+        messages: delivered
+            .into_iter()
+            .zip(keep_delivered)
+            .filter_map(|(m, keep)| keep.then_some(m))
+            .collect(),
+        cut: u32::try_from(cut).unwrap_or(u32::MAX),
+        unconfirmed: unconfirmed
+            .into_iter()
+            .zip(keep_unconfirmed)
+            .filter_map(|(m, keep)| keep.then_some(m))
+            .collect(),
+    }
+}
+
 /// The error codes of the message routes (the `code` of an [`crate::api::ApiError`]).
 pub mod codes {
     /// The run's Agent registered no `message.next` (or no `message.now` for a `now` message): a run on an older image.

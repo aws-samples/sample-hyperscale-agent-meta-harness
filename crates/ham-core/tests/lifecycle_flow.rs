@@ -93,21 +93,30 @@ const OLD_FULL_1_16_0: &str =
 const OLD_QUICK_1_16_0: &str =
     include_str!("../../../fixtures/lifecycle/pack-earlier/1.16.0-AGENTS-quick.md.txt");
 
+// The three texts of the contract in pack 1.17.0, before a background run got a process group of its own and its exit code only after the command returned: the
+// pack lists `auto`, and `lock.py --earlier` lists `full` and `quick`.
+const OLD_AUTO_1_17_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.17.0-AGENTS.md.txt");
+const OLD_FULL_1_17_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.17.0-AGENTS-full.md.txt");
+const OLD_QUICK_1_17_0: &str =
+    include_str!("../../../fixtures/lifecycle/pack-earlier/1.17.0-AGENTS-quick.md.txt");
+
 const PINS: [(LifecycleFlow, usize, &str); 3] = [
     (
         LifecycleFlow::Full,
-        9078,
-        "91bb368d9b77213c357b4e5fb45d92747a5bebb0ba93995381871d3f4ac196a1",
+        9366,
+        "e49debcb5294d1fe5340d5e46dcb66d3e5e51d3060f80365ef9d0e4e44391b29",
     ),
     (
         LifecycleFlow::Quick,
-        6573,
-        "818b41f8d67d11cd24b4eaffef34dc4e15553be7b9debc21b2c5c7aeab185ac3",
+        6861,
+        "22b5198b58fa64b5a4e658372933bfb29c6e0bb9f020e6fa67a25c2b58a4de71",
     ),
     (
         LifecycleFlow::Auto,
-        11598,
-        "679cdcbc41aaa2dca0917f74a6573d638201af7765e13c69ff35042306586ba6",
+        11886,
+        "7bb0e66890535ccc78233f49bb095156a68f4c00488fda39c77854032ea60301",
     ),
 ];
 
@@ -141,9 +150,9 @@ fn with(word: &str) -> Config {
 
 #[test]
 fn the_registry_has_one_row_for_it_after_the_final_message_row() {
-    assert_eq!(Key::ALL.len(), 49);
-    assert_eq!(ROWS.len(), 49);
-    assert_eq!(KEYS.len(), 49);
+    assert_eq!(Key::ALL.len(), 50);
+    assert_eq!(ROWS.len(), 50);
+    assert_eq!(KEYS.len(), 50);
     assert_eq!(Key::ALL[21], Key::RunFinalMessage);
     assert_eq!(Key::ALL[22], Key::RunLifecycleFlow);
     let row = Key::RunLifecycleFlow.row();
@@ -339,9 +348,9 @@ fn the_texts_differ_and_stay_inside_their_caps() {
         pack::contract_text(LifecycleFlow::Quick),
     );
     assert!(auto != full && auto != quick && full != quick);
-    assert!(full.len() <= 9100, "{}", full.len());
-    assert!(quick.len() <= 6600, "{}", quick.len());
-    assert!(auto.len() <= 11600, "{}", auto.len());
+    assert!(full.len() <= 9400, "{}", full.len());
+    assert!(quick.len() <= 6900, "{}", quick.len());
+    assert!(auto.len() <= 11900, "{}", auto.len());
     // Rendering is a pure function of the setting: the same word, the same bytes.
     for flow in LifecycleFlow::ALL {
         assert_eq!(pack::contract_text(flow), pack::contract_text(flow));
@@ -502,8 +511,8 @@ fn the_history_names_the_1_2_0_contract_and_an_install_of_any_flow_replaces_it()
 }
 
 #[test]
-fn the_pack_is_version_1_17_0_and_its_contract_is_the_auto_text() {
-    assert_eq!(pack::version(), "1.17.0");
+fn the_pack_is_version_1_18_0_and_its_contract_is_the_auto_text() {
+    assert_eq!(pack::version(), "1.18.0");
     let lock: serde_json::Value = serde_json::from_str(pack::LOCK).unwrap();
     assert_eq!(
         lock["files"]["AGENTS.md"].as_str(),
@@ -762,6 +771,64 @@ fn the_history_names_the_three_1_4_0_texts_and_an_install_of_any_flow_replaces_t
                 Installed::KeptEdited,
                 "{label} edited, asked for {}",
                 flow.word()
+            );
+        }
+    }
+}
+
+#[test]
+fn b826_the_history_names_the_three_1_17_0_texts_and_an_install_of_any_flow_replaces_them() {
+    // Pack 1.18.0 changed all three texts again: the job of a long run is in a process group of its own, its exit code is written only after the command returned, and the wait is
+    // bounded by the session and ends as well when the job is gone. A machine that holds an unedited 1.17.0 text of any flow gets the new one from `ham rules init`, whichever flow it
+    // asks for, and an edited copy is kept.
+    for (label, old) in [
+        ("auto", OLD_AUTO_1_17_0),
+        ("full", OLD_FULL_1_17_0),
+        ("quick", OLD_QUICK_1_17_0),
+    ] {
+        assert_eq!(
+            History::pack().earlier_version("AGENTS.md", old.as_bytes()),
+            Some("1.17.0"),
+            "{label}"
+        );
+        assert!(
+            old.contains("(trap 'echo $? >/tmp/run.end' EXIT; <command>)"),
+            "{label}"
+        );
+        assert!(old.contains("# wait 1"), "{label}");
+        for flow in LifecycleFlow::ALL {
+            let rule = scratch(&format!("rule-1-17-0-{label}-{}", flow.word()));
+            std::fs::write(rule.join(pack::CONTRACT_RULE), old).unwrap();
+            assert_eq!(
+                pack::install_rule(&rule, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+                Installed::Updated {
+                    was: "1.17.0".to_string()
+                },
+                "an unedited 1.17.0 {label} text, asked for {}",
+                flow.word()
+            );
+            let now = std::fs::read_to_string(rule.join(pack::CONTRACT_RULE)).unwrap();
+            assert_eq!(now, pack::contract_text(flow));
+            assert!(!now.contains("trap"), "{label}");
+            assert!(!now.contains("# wait"), "{label}");
+            assert!(
+                now.contains("set -m; ( (<command>); echo $? >/tmp/run.end )"),
+                "{label}"
+            );
+            assert!(now.contains("timeout ${HAMH_WAIT_S:-100} sh -c"), "{label}");
+            assert!(now.contains("echo JOB-GONE"), "{label}");
+            let mine = scratch(&format!("rule-edited-1-17-0-{label}-{}", flow.word()));
+            let edited = format!("{old}\nMy own line.\n");
+            std::fs::write(mine.join(pack::CONTRACT_RULE), &edited).unwrap();
+            assert_eq!(
+                pack::install_rule(&mine, pack::CONTRACT_RULE, pack::contract_text(flow)).unwrap(),
+                Installed::KeptEdited,
+                "an edited 1.17.0 {label} text, asked for {}",
+                flow.word()
+            );
+            assert_eq!(
+                std::fs::read_to_string(mine.join(pack::CONTRACT_RULE)).unwrap(),
+                edited
             );
         }
     }

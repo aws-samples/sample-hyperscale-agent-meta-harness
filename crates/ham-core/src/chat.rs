@@ -745,6 +745,16 @@ impl Builder {
                         NoticeKind::RunStatus,
                         &lost.sentence(),
                     ));
+                } else if let Some(note) = crate::cancel_note::CancelNote::parse(e) {
+                    // The service's word that the user's cancel is recorded and what follows, and the command of the
+                    // newest saved copy (root invariant 9). The notice row of the run screen is one row and cuts the same
+                    // line; this notice is wrapped, so the command is read here.
+                    self.close_message();
+                    self.blocks.push(Block::notice(
+                        &format!("n:{}", e.event_id),
+                        NoticeKind::RunStatus,
+                        &note.notice_line(&e.run_id),
+                    ));
                 }
             }
             EventType::TurnStarted | EventType::TurnEnded => self.close_message(),

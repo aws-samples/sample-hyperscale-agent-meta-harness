@@ -42,6 +42,12 @@ struct Fake {
     notices_down: bool,
     cancel_down: bool,
     seen: Mutex<Vec<String>>,
+    /// The user's cancel is recorded on the Run item.
+    recorded: AtomicBool,
+    /// The read of that record fails.
+    recorded_down: bool,
+    /// The controls that wait for the agent: handed out once.
+    queued: Mutex<Vec<PendingControl>>,
 }
 
 impl Fake {
@@ -54,6 +60,9 @@ impl Fake {
             notices_down: false,
             cancel_down: false,
             seen: Mutex::default(),
+            recorded: AtomicBool::new(false),
+            recorded_down: false,
+            queued: Mutex::default(),
         }
     }
     fn ledger(&self) -> Ledger<MemTable, ManualClock> {
@@ -113,7 +122,13 @@ impl Store for Fake {
         Ok(())
     }
     async fn take_controls(&self, _: &str, _: &str) -> Result<Vec<PendingControl>, StoreError> {
-        Ok(Vec::new())
+        Ok(std::mem::take(&mut *self.queued.lock().unwrap()))
+    }
+    async fn cancel_requested(&self, _: &str) -> Result<bool, StoreError> {
+        if self.recorded_down {
+            return Err(StoreError::Unavailable("run read throttled".into()));
+        }
+        Ok(self.recorded.load(Ordering::SeqCst))
     }
     async fn message_notices(&self, run: &str) -> Result<Vec<MessageNotice>, LedgerError> {
         self.seen.lock().unwrap().push(format!("notices {run}"));
@@ -775,4 +790,86 @@ async fn a_late_report_of_an_older_session_is_answered_and_changes_nothing() {
     )
     .await;
     assert_eq!((status, v["code"].as_str()), (409, Some("bad-transition")));
+}
+
+// ----: a recorded cancel is told on every events answer ------------------------------------------------------------------
+
+fn cancels(r: &EventsBatchResponse) -> usize {
+    r.pending
+        .iter()
+        .filter(|c| **c == PendingControl::Cancel)
+        .count()
+}
+
+#[tokio::test]
+async fn b853_events_answer_cancel_while_the_flag_is_set() {
+    // TRIGGER PRESENT: no record, no queued control: no Cancel.
+    let d = deps(Fake::new());
+    assert_eq!(cancels(&events(&d, None).await), 0);
+
+    // The cancel is recorded on the Run item and no control waits (a dying session took it, or its answer was lost): every answer
+    // carries one Cancel.
+    let f = Fake::new();
+    f.recorded.store(true, Ordering::SeqCst);
+    let d = deps(f);
+    for _ in 0..3 {
+        assert_eq!(cancels(&events(&d, None).await), 1);
+    }
+    // With a queued control too, still exactly one.
+    d.store.queued.lock().unwrap().push(PendingControl::Cancel);
+    assert_eq!(cancels(&events(&d, None).await), 1);
+    assert!(
+        d.store.queued.lock().unwrap().is_empty(),
+        "the queued control was taken"
+    );
+    assert_eq!(
+        cancels(&events(&d, None).await),
+        1,
+        "and the record still says it"
+    );
+    // A final flush takes no controls and is told none.
+    assert_eq!(cancels(&events(&d, Some(false)).await), 0);
+    // A message that is pending is still announced, after the Cancel.
+    call(&d, "message-session", sess(GEN, "s1")).await;
+    admit(&d, 1, "too late", MessageMode::Next).await;
+    let r = events(&d, None).await;
+    assert_eq!(
+        r.pending.first(),
+        Some(&PendingControl::Cancel),
+        "{:?}",
+        r.pending
+    );
+    assert_eq!(notices(&r).len(), 1);
+    // The claim is refused while the record stands, although no Cancel is queued.
+    let (status, v) = call(&d, "message-claim", base(GEN, "s1")).await;
+    assert_eq!(
+        (status, v["outcome"].as_str(), v["reason"].as_str()),
+        (200, Some("refused"), Some("cancel-queued")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn b853_a_failed_read_of_the_cancel_record_is_logged_and_tells_nothing() {
+    let mut f = Fake::new();
+    f.recorded.store(true, Ordering::SeqCst);
+    f.recorded_down = true;
+    let d = deps(f);
+    let body = json!({"runId": RUN, "agentId": "direct", "events": []});
+    let (out, log) = handle_logged(req("events", arn("direct"), &body), &d).await;
+    assert_eq!(out.status, 200, "{}", out.body);
+    let r: EventsBatchResponse = serde_json::from_str(&out.body).unwrap();
+    assert_eq!(cancels(&r), 0);
+    assert!(log.iter().any(|l| l.contains("cancel record")), "{log:?}");
+    // The queued control still works when the record cannot be read.
+    d.store.queued.lock().unwrap().push(PendingControl::Cancel);
+    let (out, _) = handle_logged(req("events", arn("direct"), &body), &d).await;
+    let r: EventsBatchResponse = serde_json::from_str(&out.body).unwrap();
+    assert_eq!(cancels(&r), 1);
+    // The claim goes on, with one log line.
+    call(&d, "message-session", sess(GEN, "s1")).await;
+    admit(&d, 1, "x", MessageMode::Next).await;
+    let (out, log) = handle_logged(req("message-claim", arn("direct"), &base(GEN, "s1")), &d).await;
+    assert_eq!(out.status, 200);
+    assert!(log.iter().any(|l| l.contains("cancel record")), "{log:?}");
 }

@@ -1,5 +1,5 @@
 // Orchestration stack of stage `direct`: the `run-session` Lambda, the Standard state
-// machine `hamh-direct-run` (statemachines/direct.asl.json, 20 states), and what clears a run whose execution ended ABORTED, FAILED or
+// machine `hamh-direct-run` (statemachines/direct.asl.json, 25 states), and what clears a run whose execution ended ABORTED, FAILED or
 // TIMED_OUT: the EventBridge rule `hamh-direct-run-ended` starts the small Standard machine `hamh-direct-run-ended`
 // (statemachines/direct-run-ended.asl.json), which calls run-session every five minutes until it answers. An asynchronous Lambda target
 // gives up after two retries in three minutes, so a run whose execution failed while the function could not start would stay `active`.
@@ -132,6 +132,10 @@ export class DirectOrchestrationStack extends Stack {
       { Sid: "ListForAbsentKeys", Effect: "Allow", Action: ["s3:ListBucket"], Resource: bucketArn },
       // What agentd wrote: summary.json, the final bundle, snapshot.json and snapshot.bundle (no write: the session writes them).
       { Sid: "AgentOutputs", Effect: "Allow", Action: ["s3:GetObject"], Resource: `${bucketArn}/runs/*/agents/direct/turns/*` },
+      // The copy a worker read back from a stopped session's storage. It is written under agents/recovery/ with credentials of its own (minted here,
+      // tagged agent=recovery, for one PUT), never by this role. The recover op checks the object against the worker's answer (its checksum, the commit its
+      // first bytes name), and next-slice reads those bytes again when it decides. A read only: this role gains no write under agents/.
+      { Sid: "RecoveryCopies", Effect: "Allow", Action: ["s3:GetObject"], Resource: `${bucketArn}/runs/*/agents/recovery/turns/*/recovery.bundle` },
       // plan-delivery reads the version agentd recorded for each of its three end-of-run objects, not whatever is at the key (a GET or a
       // HEAD with a versionId needs s3:GetObjectVersion). These three keys only: no snapshot, no stop digest, no other version read.
       { Sid: "PinnedAgentOutputs", Effect: "Allow", Action: ["s3:GetObjectVersion"],

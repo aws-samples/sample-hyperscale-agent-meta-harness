@@ -24,6 +24,7 @@ fn ctx(engine: &str, model: &str) -> EmitContext {
         max_output_tokens: None,
         context_tokens: None,
         compaction: None,
+        command_limit_ms: None,
     }
 }
 

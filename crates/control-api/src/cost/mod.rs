@@ -109,20 +109,37 @@ pub fn add_usage(total: &mut Usage, u: &Usage) {
 /// The run's cost from its turns' engine-reported usage, one line per model and engine (the
 /// turn's Agent item names both). `None` until a turn reports usage. A turn without usage or
 /// without its Agent item counts in `turnsWithoutUsage`; a model without a price row counts its
-/// tokens at zero USD and is named in `unpricedModels`.
-pub fn run_cost(agents: &[AgentItem], turns: &[TurnItem], prices: &PriceTable) -> Option<RunCost> {
+/// tokens at zero USD and is named in `unpricedModels`. `answered` is what the turns' stored
+/// conversation summaries declare as the tokens of the prompts that answered
+/// ([`answered_of_turns`]); `answeredTokens` is their sum over the turns that are in the lines.
+pub fn run_cost(
+    agents: &[AgentItem],
+    turns: &[TurnItem],
+    answered: &BTreeMap<(String, u32), u64>,
+    prices: &PriceTable,
+) -> Option<RunCost> {
     let by_agent: BTreeMap<&str, &AgentItem> =
         agents.iter().map(|a| (a.agent_id.as_str(), a)).collect();
     let mut lines: BTreeMap<(String, Engine), Usage> = BTreeMap::new();
     let mut without = 0u32;
+    // The tokens of the prompts that answered, over exactly the turns whose usage goes into the lines. One of them without
+    // a declared number, or a sum past the largest number, and there is no number.
+    let mut answered_sum: Option<u64> = Some(0);
     for t in turns {
         match (t.usage.as_ref(), by_agent.get(t.agent_id.as_str())) {
-            (Some(u), Some(a)) => add_usage(
-                lines
-                    .entry((model_of(&a.model_id).to_string(), a.engine))
-                    .or_default(),
-                u,
-            ),
+            (Some(u), Some(a)) => {
+                add_usage(
+                    lines
+                        .entry((model_of(&a.model_id).to_string(), a.engine))
+                        .or_default(),
+                    u,
+                );
+                answered_sum = answered_sum.and_then(|sum| {
+                    answered
+                        .get(&(t.agent_id.clone(), t.n))
+                        .and_then(|tokens| sum.checked_add(*tokens))
+                });
+            }
             _ => without += 1,
         }
     }
@@ -155,6 +172,7 @@ pub fn run_cost(agents: &[AgentItem], turns: &[TurnItem], prices: &PriceTable) -
         lines,
         turns_without_usage: without,
         unpriced_models: unpriced,
+        answered_tokens: answered_sum,
     })
 }
 
@@ -175,4 +193,20 @@ pub fn total_tokens(cost: Option<&RunCost>) -> u64 {
 /// The sum of a cost's lines (`RunDetail.costUsd`).
 pub fn total_usd(cost: &RunCost) -> f64 {
     round_usd(cost.lines.iter().map(|l| l.usd).sum())
+}
+
+/// What the Turn items of a run (raw attributes) declare as the tokens of the prompts that answered: the member
+/// `answeredTokens` of each item's stored conversation summary (`transcript`, written by worker-api at turn-complete), by agent and
+/// turn number. An item without a summary, a summary without the member (a worker that predates it) and a member that is no
+/// whole number give no entry.
+pub fn answered_of_turns(turns: &[serde_json::Value]) -> BTreeMap<(String, u32), u64> {
+    turns
+        .iter()
+        .filter_map(|turn| {
+            let agent = turn.get("agentId")?.as_str()?;
+            let n = u32::try_from(turn.get("n")?.as_u64()?).ok()?;
+            let tokens = turn.pointer("/transcript/answeredTokens")?.as_u64()?;
+            Some(((agent.to_string(), n), tokens))
+        })
+        .collect()
 }

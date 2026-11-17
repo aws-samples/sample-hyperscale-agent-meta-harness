@@ -671,6 +671,7 @@ fn the_omission_record_keeps_the_place_and_says_why() {
 #[test]
 fn a_page_serializes_with_the_documented_member_names() {
     let page = TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state: TranscriptState::Live,
         records: vec![TranscriptRecord {
@@ -850,6 +851,7 @@ fn a_summary_is_lossless_only_when_it_is_valid_and_declares_nothing_but_exclusio
     let excluded = TranscriptSummary {
         last_transcript_seq: Some(9),
         entries: vec![entry(GapKind::Excluded, Some(0), Some(9))],
+        answered_tokens: None,
     };
     assert!(excluded.is_lossless());
     for kind in [
@@ -864,6 +866,7 @@ fn a_summary_is_lossless_only_when_it_is_valid_and_declares_nothing_but_exclusio
         let s = TranscriptSummary {
             last_transcript_seq: Some(1),
             entries: vec![entry(kind, None, None)],
+            answered_tokens: None,
         };
         assert!(s.validate() && !s.is_lossless(), "{kind:?}");
     }
@@ -872,24 +875,29 @@ fn a_summary_is_lossless_only_when_it_is_valid_and_declares_nothing_but_exclusio
         TranscriptSummary {
             last_transcript_seq: None,
             entries: vec![entry(GapKind::Unreadable, None, None)],
+            answered_tokens: None,
         },
         TranscriptSummary {
             last_transcript_seq: None,
             entries: vec![entry(GapKind::Missing, None, None)],
+            answered_tokens: None,
         },
         TranscriptSummary {
             last_transcript_seq: None,
             entries: vec![entry(GapKind::Shed, Some(5), Some(4))],
+            answered_tokens: None,
         },
         TranscriptSummary {
             last_transcript_seq: None,
             entries: vec![entry(GapKind::Shed, Some(5), None)],
+            answered_tokens: None,
         },
         TranscriptSummary {
             last_transcript_seq: None,
             entries: (0..257)
                 .map(|_| entry(GapKind::Excluded, None, None))
                 .collect(),
+            answered_tokens: None,
         },
     ] {
         assert!(!bad.validate() && !bad.is_lossless(), "{bad:?}");
@@ -899,6 +907,7 @@ fn a_summary_is_lossless_only_when_it_is_valid_and_declares_nothing_but_exclusio
         entries: (0..256)
             .map(|_| entry(GapKind::Excluded, None, None))
             .collect(),
+        answered_tokens: None,
     };
     assert!(ok256.validate());
     // As stored: camelCase members.

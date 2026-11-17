@@ -28,13 +28,13 @@ CLINE_DIR = REPO / "engine" / "cline"
 LOCK = CLINE_DIR / "lock.toml"
 PATCHES = CLINE_DIR / "patches"
 
-# Pins of the Cline series (2026-10-16): cli-v3.0.71 plus 15 patches (0012 and 0013 are the Bedrock additions for GLM 5.3, 0014 keeps Bedrock tool-use inputs free of blank keys, 0015 raises the run_commands command limit from 30 s to 10 min). The numbering restarts at 0001 because the old
+# Pins of the Cline series (2026-11-17): cli-v3.0.71 plus 16 patches (0012 and 0013 are the Bedrock additions for GLM 5.3, 0014 keeps Bedrock tool-use inputs free of blank keys, 0015 raises the run_commands command limit from 30 s to 10 min, 0016 keeps a bounded wait that is sent again out of the loop guard). The numbering restarts at 0001 because the old
 # 0004 (harness system prompt) and 0010 (refusal reason) serve the old multi-agent roles and 0014 is upstream since cli-v3.0.66;
 # old -> new: 0001-0003 same, 0005-0009 -> 0004-0008, 0011-0013 -> 0009-0011. The values are computed from the rebased series by
 # engine/cline/lock.toml's generator (see engine/cline/AGENTS.md, "Rebase onto a new upstream CLI release").
 UPSTREAM_COMMIT = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
 TAG_OBJECT = "7418804b1460929f3ff701bcccc8184fb69c8e26"
-SERIES_TREE = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+SERIES_TREE = "c75466739c34f810ccc10e1c721210215dc0de68"
 PATCH_SHA256 = {
     "0001-feat-llms-route-Bedrock-Mantle-models-through-SigV4-.patch":
         "607b134cd5964dd2a3c3a907aa567a06a9057c2bfa6dfaf3cf3b387cc9089960",
@@ -66,6 +66,8 @@ PATCH_SHA256 = {
         "fedf8db1a363db3b3c33116912e9e38ea293c8622ce26b7a31e9b7b204477f15",
     "0015-fix-core-raise-the-default-command-limit-to-10-minut.patch":
         "831ab011cab700e5cb1ed0b4d96e37d3dc6f533d26397300e46591c05c93e50b",
+    "0016-fix-core-do-not-count-a-wait-that-is-sent-again-as-a.patch":
+        "225953116fa8af680e10e090431dda028e2b5d76d1fbafedd99f0d171fd754dd",
 }
 # Test-only patches: file -> (sha256, test-only commit, parent, tree after git am
 # onto the tag plus the preceding series patches).
@@ -135,6 +137,11 @@ TDD_PATCHES = {
         "f8d2de76d353bae72fc292fd6e9dc65815db59c2",
         "46733ed73dadbef5e3b3fa1396126c0c7370a776",
         "a9a46ef099c1866e3089d2375eb3270c710c6c5e"),
+    "tdd/0016-test-only.patch": (
+        "d0a66d2a94f6f631eab3e838756f09c834446707d609509d53d2dda768f637a5",
+        "c5f5335aea103a44f5055640aab1375ebca03c39",
+        "9c2ac4f3094260e028c46aa1f06b2ccc5533868c",
+        "d9727693b6920e9c0946c305248b1c96366f5ebb"),
 }
 
 EXIT_USAGE = 2
@@ -400,7 +407,7 @@ class GatedBuildRecord(Case):
                                  "--record-dir", str(rec_dir), "--image-digest", image, env_extra=env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.strip().splitlines()
-        self.assertRegex(lines[-1], r"^FORK-BUILD PASS series=15 tree=f8990b674540 bin=[0-9a-f]{12} telemetry=off leaks=0$")
+        self.assertRegex(lines[-1], r"^FORK-BUILD PASS series=16 tree=c75466739c34 bin=[0-9a-f]{12} telemetry=off leaks=0$")
         arch = target.split("-")[1]
         files = sorted(rec_dir.glob("*.json"))
         self.assertEqual(len(files), 1, files)

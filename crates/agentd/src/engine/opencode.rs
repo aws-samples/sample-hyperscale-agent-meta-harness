@@ -13,6 +13,15 @@
 //!   denial does not end the loop; only a user's rejection does). `external_directory` is `allow`: the operating system's sandbox, not the
 //!   engine's own ask, is the boundary of the tree. `question`, `plan_enter` and `plan_exit` are `deny`: they are the tools that wait for a person.
 //! - `instructions` and `skills.paths` name the placed rules and skills, which the engine-neutral layer puts in a folder the engine cannot write.
+//! - `plugins`: one entry, the folder `plugins/hamh-shell-limit` under the harness's root by its absolute path, with
+//!   `options.timeoutMs`, the run's command time limit. The pinned engine reads no variable and no configuration key for the limit of its shell
+//!   tool (120 s for a call that names none); the plugin ([`SHELL_LIMIT_PLUGIN`]) gives such a call the run's limit and changes nothing else. An
+//!   absolute folder is loaded as it is: nothing is installed and no registry is asked.
+//!
+//! Two variables belong with the plugin: `OPENCODE_PRINT_LOGS=1` and `OPENCODE_LOG_LEVEL=WARN`. With them the engine's warnings and errors, and
+//! the one line the plugin writes when its hook is in place ([`READY_PREFIX`]), reach the engine's error log, where agentd looks for the line
+//! after `session/new`. The level also applies to the engine's own log file, which then holds warnings and errors only; nothing of the harness
+//! reads that file.
 //!
 //! The document is written once, into the root the harness owns (`engine::layout`, the separate root of this engine: root-owned, read-only to
 //! the engine), named by `OPENCODE_CONFIG`, and handed over a second time in `OPENCODE_CONFIG_CONTENT`. The inline layer outranks every file the
@@ -25,6 +34,7 @@ use serde_json::{Map, Value, json};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
+use std::path::{Path, PathBuf};
 
 pub const ENGINE: &str = "opencode";
 /// The provider the engine reaches Bedrock through.
@@ -38,6 +48,30 @@ const TOOLS_URL: &str = "HAMH_TOOLS_URL";
 /// How long a tool call may run with the engine saying nothing at all before agentd gives up on it, in seconds (see `engine::watchdog`).
 /// The ACP layer of v1 shows nothing of a child session, so a helper agent that works for a long time is silent here too.
 pub const TOOL_IDLE_S: u64 = 3_600;
+
+/// The text of the plugin that gives a shell call that names no time limit the run's limit. Compiled in and written per session beside
+/// the session document, so the text and agentd cannot differ; the limit travels in the plugin's options.
+pub const SHELL_LIMIT_PLUGIN: &str = include_str!("opencode_shell_limit.js");
+/// The plugin's own id.
+pub const SHELL_LIMIT_ID: &str = "hamh.shell-limit";
+/// The plugin's folder, relative to the harness's root.
+pub const SHELL_LIMIT_DIR: &str = "plugins/hamh-shell-limit";
+/// How the line starts that the plugin writes to the engine's error log when its hook is in place; the limit in milliseconds follows.
+pub const READY_PREFIX: &str = "hamh.shell-limit: ready ";
+/// Makes the engine's server process write its log to standard error (it is discarded otherwise).
+const PRINT_LOGS: (&str, &str) = ("OPENCODE_PRINT_LOGS", "1");
+/// Warnings and errors only: the reason a plugin did not load is a warning.
+const LOG_LEVEL: (&str, &str) = ("OPENCODE_LOG_LEVEL", "WARN");
+/// The pinned engine's own limit for a shell call that names none, in milliseconds.
+pub const ENGINE_DEFAULT_LIMIT_MS: u64 = 120_000;
+/// The one sentence of a read-back that fails: it names the part and never a value or a path.
+const LIMIT_NOT_HELD: &str =
+    "engine settings: the engine's configuration does not hold the command time limit";
+
+/// The plugin's folder under the harness's root `root`.
+pub fn shell_limit_dir(root: &Path) -> PathBuf {
+    root.join(SHELL_LIMIT_DIR)
+}
 
 /// The two release lines of the engine. They read one document, but name some switches differently and lack some of each other's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,7 +185,19 @@ pub fn document(ctx: &EmitContext, line: Line) -> Value {
     if let Some(c) = compaction(ctx) {
         doc["compaction"] = c;
     }
+    if let (Line::V2, Some(ms)) = (line, ctx.command_limit_ms) {
+        // The first line gets nothing for the limit: no profile pins it and nobody ran it with a plugin.
+        doc["plugins"] = json!([{
+            "package": shell_limit_dir(&layout_root(ctx)).display().to_string(),
+            "options": { "timeoutMs": ms },
+        }]);
+    }
     doc
+}
+
+/// The harness's root of this engine for the context's config directory.
+fn layout_root(ctx: &EmitContext) -> PathBuf {
+    super::layout::config_layout(ENGINE, &ctx.config_dir).root
 }
 
 /// Writes the session document into the harness's root and names what the launch adds to the engine's environment. The profile already carries
@@ -177,12 +223,134 @@ pub fn emit(ctx: &EmitContext, line: Line) -> io::Result<Emitted> {
             );
         }
     }
-    env.insert("OPENCODE_CONFIG".into(), path.display().to_string());
+    env.insert(CONFIG_FILE.into(), path.display().to_string());
     env.insert(CONFIG_CONTENT.into(), doc.to_string());
-    Ok(Emitted {
-        files: vec![path],
-        env,
-    })
+    let mut files = vec![path];
+    if let (Line::V2, Some(_)) = (line, ctx.command_limit_ms) {
+        // The plugin's text beside the document, in the root the engine's user cannot write. A link where a folder belongs is refused: root
+        // would otherwise write behind it.
+        let dir = shell_limit_dir(&layout.root);
+        if let Some(parent) = dir.parent() {
+            super::direct::refuse_symlink(parent)?;
+        }
+        super::direct::refuse_symlink(&dir)?;
+        let plugin = dir.join("index.js");
+        super::direct::refuse_symlink(&plugin)?;
+        write(&plugin, SHELL_LIMIT_PLUGIN)?;
+        files.push(plugin);
+        env.insert(PRINT_LOGS.0.into(), PRINT_LOGS.1.into());
+        env.insert(LOG_LEVEL.0.into(), LOG_LEVEL.1.into());
+    }
+    Ok(Emitted { files, env })
+}
+
+/// Whether `doc` names the plugin, and only it, with the limit `ms`: a `plugins` member of exactly one entry whose `package` is `dir` and whose
+/// `options.timeoutMs` is `ms`.
+fn names_plugin(doc: &Value, dir: &Path, ms: u64) -> bool {
+    let Some([entry]) = doc
+        .get("plugins")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    else {
+        return false;
+    };
+    entry.get("package").and_then(Value::as_str) == dir.to_str()
+        && entry.pointer("/options/timeoutMs").and_then(Value::as_u64) == Some(ms)
+}
+
+/// The read-back of the command time limit: what [`emit`] wrote is read again before the engine starts. The inline document and the document in
+/// the file the launch names must each hold the `plugins` member with exactly the one entry (the plugin's folder under the harness's root and
+/// `ms`), and the plugin file must be a regular file whose bytes are the compiled-in text. The two log variables are diagnostics and are not
+/// looked at. Every failure is the one sentence, which names no value and no path.
+pub fn check_limit(
+    config_dir: &Path,
+    env: &BTreeMap<String, String>,
+    ms: u64,
+) -> Result<(), String> {
+    let bad = || LIMIT_NOT_HELD.to_string();
+    let dir = shell_limit_dir(&super::layout::config_layout(ENGINE, config_dir).root);
+    let inline: Value = env
+        .get(CONFIG_CONTENT)
+        .and_then(|t| serde_json::from_str(t).ok())
+        .ok_or_else(bad)?;
+    let on_disk: Value = env
+        .get(CONFIG_FILE)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .ok_or_else(bad)?;
+    if !names_plugin(&inline, &dir, ms) || !names_plugin(&on_disk, &dir, ms) {
+        return Err(bad());
+    }
+    let plugin = dir.join("index.js");
+    let regular = std::fs::symlink_metadata(&plugin).is_ok_and(|m| m.file_type().is_file());
+    if !regular || std::fs::read(&plugin).ok().as_deref() != Some(SHELL_LIMIT_PLUGIN.as_bytes()) {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+/// The line the engine's error log holds when this launch's command time limit is in force: the plugin's ready line with the limit the inline
+/// document gives it. `None` for a launch that names no such plugin or lacks one of the two log variables (the line would then never be seen).
+pub fn ready_line(env: &BTreeMap<String, String>) -> Option<String> {
+    ready_ms(env).map(|ms| format!("{READY_PREFIX}{ms}"))
+}
+
+/// The limit of [`ready_line`], in milliseconds.
+pub fn ready_ms(env: &BTreeMap<String, String>) -> Option<u64> {
+    let logs = [PRINT_LOGS, LOG_LEVEL]
+        .iter()
+        .all(|(k, v)| env.get(*k).map(String::as_str) == Some(*v));
+    if !logs {
+        return None;
+    }
+    let doc: Value = serde_json::from_str(env.get(CONFIG_CONTENT)?).ok()?;
+    let ms = doc
+        .get("plugins")?
+        .as_array()?
+        .iter()
+        .find(|e| {
+            e.get("package")
+                .and_then(Value::as_str)
+                .is_some_and(|p| p.ends_with(SHELL_LIMIT_DIR))
+        })?
+        .pointer("/options/timeoutMs")?
+        .as_u64()?;
+    Some(ms)
+}
+
+/// The file layer of the configuration: the variable that names the document on disk.
+const CONFIG_FILE: &str = "OPENCODE_CONFIG";
+
+/// Writes the two knobs of a local stand-in run into both layers of the document (the file `OPENCODE_CONFIG` names and the inline layer):
+/// `provider.amazon-bedrock.options.baseURL`, the model endpoint, and `experimental.location_idle_timeout`, how long the engine keeps a folder's
+/// services without session activity.
+pub fn stand_in(
+    env: &mut BTreeMap<String, String>,
+    endpoint: Option<&str>,
+    idle_timeout: Option<&str>,
+) -> io::Result<()> {
+    let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
+    let point = |text: &str| -> io::Result<Value> {
+        let mut doc: Value =
+            serde_json::from_str(text).map_err(|_| bad("configuration is not JSON"))?;
+        if let Some(url) = endpoint {
+            doc["provider"][PROVIDER]["options"]["baseURL"] = json!(url);
+        }
+        if let Some(idle) = idle_timeout {
+            doc["experimental"]["location_idle_timeout"] = json!(idle);
+        }
+        Ok(doc)
+    };
+    let inline = env
+        .get(CONFIG_CONTENT)
+        .ok_or_else(|| bad("the launch has no inline configuration"))?;
+    let doc = point(inline)?;
+    env.insert(CONFIG_CONTENT.into(), doc.to_string());
+    let path = env
+        .get(CONFIG_FILE)
+        .ok_or_else(|| bad("the launch names no configuration file"))?;
+    let on_disk = point(&std::fs::read_to_string(path)?)?;
+    std::fs::write(path, pretty(&on_disk))
 }
 
 /// The `mcp` member for the tool server at `url`, from the profile's template (the v1 form), in the form of `line`. The second line keeps

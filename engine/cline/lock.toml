@@ -10,7 +10,7 @@ commit = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
 
 [series]
 # `git rev-parse HEAD^{tree}` after `git am` of every patch below onto the commit.
-tree = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+tree = "c75466739c34f810ccc10e1c721210215dc0de68"
 
 [[patches]]
 file = "0001-feat-llms-route-Bedrock-Mantle-models-through-SigV4-.patch"
@@ -71,6 +71,10 @@ sha256 = "fedf8db1a363db3b3c33116912e9e38ea293c8622ce26b7a31e9b7b204477f15"
 [[patches]]
 file = "0015-fix-core-raise-the-default-command-limit-to-10-minut.patch"
 sha256 = "831ab011cab700e5cb1ed0b4d96e37d3dc6f533d26397300e46591c05c93e50b"
+
+[[patches]]
+file = "0016-fix-core-do-not-count-a-wait-that-is-sent-again-as-a.patch"
+sha256 = "225953116fa8af680e10e090431dda028e2b5d76d1fbafedd99f0d171fd754dd"
 
 # Test-only patches: the failing-test commit of each built patch,
 # exported from the fork checkout's harness/series branch. `tree` is HEAD^{tree} after
@@ -166,6 +170,13 @@ sha256 = "1092d6d2d640b450c54ffdb33a41397cc7a7fee14d53f49ffe004c159aee7164"
 commit = "f8d2de76d353bae72fc292fd6e9dc65815db59c2"
 parent = "46733ed73dadbef5e3b3fa1396126c0c7370a776"
 tree = "a9a46ef099c1866e3089d2375eb3270c710c6c5e"
+
+[[tdd]]
+file = "tdd/0016-test-only.patch"
+sha256 = "d0a66d2a94f6f631eab3e838756f09c834446707d609509d53d2dda768f637a5"
+commit = "c5f5335aea103a44f5055640aab1375ebca03c39"
+parent = "9c2ac4f3094260e028c46aa1f06b2ccc5533868c"
+tree = "d9727693b6920e9c0946c305248b1c96366f5ebb"
 
 [toolchain]
 # Release zips from https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2 (SHASUMS256.txt); upstream cli-v3.0.71 declares packageManager bun@1.4.2.

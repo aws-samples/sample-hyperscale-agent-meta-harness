@@ -341,6 +341,13 @@ async fn a_plan_that_loses_the_create_only_write_returns_the_winners_decision() 
     let winner = a.blob(&s3::evidence_key(RUN)).unwrap();
     let b = Mem::default();
     b.seed(repo_target(), "Add percent_change(a, b) with tests", MODEL);
+    // The same run as `a`: its one session was invoked.
+    call(
+        &b,
+        json!({"op": "start-session", "runId": RUN, "taskToken": "t", "staged": staged()}),
+    )
+    .await
+    .unwrap();
     b.put_snapshot("3333333333333333333333333333333333333333");
     *b.0.blob_race.lock().unwrap() = Some((s3::evidence_key(RUN), winner));
     let second = plan_with(&b, lost_session()).await.unwrap();

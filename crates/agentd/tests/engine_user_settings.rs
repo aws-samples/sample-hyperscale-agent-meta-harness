@@ -277,6 +277,7 @@ fn emit_ctx(
         max_output_tokens: Some(64_000),
         context_tokens: Some(1_000_000),
         compaction,
+        command_limit_ms: None,
     }
 }
 
@@ -500,6 +501,7 @@ fn every_accepted_document_leaves_the_locked_keys_in_force_in_the_written_files(
                             max_output_tokens: Some(8192),
                             context_tokens: Some(200_000),
                             compaction: s.compaction_block(),
+                            command_limit_ms: None,
                         };
                         emit_engine(&ctx).unwrap();
                         let mut env = BTreeMap::new();

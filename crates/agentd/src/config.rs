@@ -105,6 +105,10 @@ pub struct DirectConfig {
     pub disk_prune_mb: u64,
     /// `AGENTD_CARGO_KEEP_MIN` (default 20, 0 to 1440 minutes; 0 switches the pruning off): a cargo unit compiled in this long is never pruned.
     pub cargo_keep: Duration,
+    /// The user the marker of a session's storage and the run's folder must belong to for a read of that storage to take the
+    /// marker (`direct::marker::read`): 0, the user agentd runs as in a session's machine. No variable sets it; a test, which does not
+    /// run as that user, names its own.
+    pub marker_owner: u32,
     /// `AGENTD_DIRECT_REVIEW_ROUND` (default on; `0`, `off`, `false` or `no` switch it off for every run): the review round. A run cannot
     /// switch on what the stage switched off; the request's `review` member can switch it off for one run.
     pub review_round: bool,
@@ -274,6 +278,7 @@ impl DirectConfig {
             cargo_keep: Duration::from_secs(
                 u64::from(bounded_count("AGENTD_CARGO_KEEP_MIN", 20, 1_440)) * 60,
             ),
+            marker_owner: crate::direct::marker::TRUSTED_OWNER,
             review_round: on("AGENTD_DIRECT_REVIEW_ROUND"),
             review_guard: Duration::from_secs(
                 get("AGENTD_DIRECT_REVIEW_GUARD_S")

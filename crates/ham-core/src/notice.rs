@@ -168,6 +168,8 @@ fn engine_stop(v: &Value) -> String {
     let hint = string(v, "hint").unwrap_or("");
     let words = match hint {
         "loop-guard" => "repeated the same tool call".to_string(),
+        // The guard ended a prompt on a wait for a command that ran long; the stop spends no automatic try.
+        "wait-repeated" => "repeated a wait on a command that ran long; not counted".to_string(),
         "mistake-limit" => "too many failed turns".to_string(),
         "unexplained" => "no cause found".to_string(),
         "" => "no reason given".to_string(),
@@ -223,6 +225,15 @@ fn notify(v: &Value) -> String {
         "copy_not_saved" => match string(v, "detail").map(clean).filter(|d| !d.is_empty()) {
             Some(detail) => detail,
             None => "A copy of the work could not be saved.".to_string(),
+        },
+        // The worker's own sentence about the command time limit of a run on the second engine (not placed, not confirmed, not
+        // applied to a command). The run goes on in each case.
+        "command_limit" => match string(v, "detail")
+            .map(clean)
+            .filter(|d| !d.trim().is_empty())
+        {
+            Some(detail) => detail,
+            None => "The run's command time limit is not confirmed for this session.".to_string(),
         },
         other => with_detail(
             format!("Notice from the run ({})", clean(other)),

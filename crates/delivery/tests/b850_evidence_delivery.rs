@@ -556,3 +556,62 @@ async fn b850_a_record_that_is_no_json_object_is_copied_as_it_is() {
         );
     }
 }
+
+/// The plan's record of a run that ended because of the user's cancel holds `cancelRequestedAt` (run-session's `plan-delivery`
+/// writes it). The packager parses the record as JSON and reads single places of it, so the member travels like every other: a zip
+/// that gets the member `zipHolds` keeps what the plan wrote, the cancel time included, and every other zip holds the record as the
+/// bucket holds it.
+#[tokio::test]
+async fn b853_a_plan_record_with_the_cancel_time_is_packaged_like_any_other() {
+    let stored = serde_json::to_vec_pretty(&serde_json::json!({
+        "schemaVersion": 1, "runId": RUN, "outcome": "stopped_other",
+        "label": "Cline stopped: the harness ended the run (you stopped it at 2026-11-16 07:05 UTC while its session was not answering)",
+        "detail": "The harness ended the run: you stopped it at 2026-11-16 07:05 UTC while its session was not answering. No further session was started. The work is the last saved snapshot, taken at 2026-11-16 07:05 UTC.",
+        "headSource": "snapshot", "plannedAt": "2026-11-16T07:15:40Z", "plannedAtMs": 1_794_813_340_000u64,
+        "failure": {"error": "States.HeartbeatTimeout", "cause": ""}, "summary": null,
+        "snapshotAt": "2026-11-16T07:05:10Z", "slice": 1, "cancelRequestedAt": "2026-11-16T07:05:22Z"
+    }))
+    .unwrap();
+    // A zip that holds a workflow file: the copy gains `zipHolds` and keeps the plan's members, the cancel time among them.
+    let w = world(true);
+    w.p.blobs.insert(&record_key(), stored.clone());
+    w.p.package(&req(&w, DeliveryTarget::Zip, None))
+        .await
+        .unwrap();
+    let copy =
+        zip_entry(&w.p.blobs, &w.head, "evidence/direct.json").expect("the zip holds the record");
+    let parsed: serde_json::Value = serde_json::from_slice(&copy).unwrap();
+    assert_eq!(
+        parsed["zipHolds"],
+        serde_json::json!(HOLDS),
+        "TRIGGER PRESENT: the packager read the record and wrote its own copy: {parsed}"
+    );
+    assert_eq!(
+        parsed["cancelRequestedAt"],
+        serde_json::json!("2026-11-16T07:05:22Z"),
+        "{parsed}"
+    );
+    let mut without = parsed.clone();
+    without.as_object_mut().unwrap().remove("zipHolds");
+    assert_eq!(
+        without,
+        serde_json::from_slice::<serde_json::Value>(&stored).unwrap()
+    );
+    assert_eq!(
+        w.p.blobs.get(&record_key()).unwrap(),
+        stored,
+        "the object in the bucket is not rewritten"
+    );
+    // A zip without such a file holds the record as the bucket holds it.
+    let plain = world(false);
+    plain.p.blobs.insert(&record_key(), stored.clone());
+    plain
+        .p
+        .package(&req(&plain, DeliveryTarget::Zip, None))
+        .await
+        .unwrap();
+    assert_eq!(
+        zip_entry(&plain.p.blobs, &plain.head, "evidence/direct.json").unwrap(),
+        stored
+    );
+}

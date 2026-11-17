@@ -294,7 +294,41 @@ pub struct RunItem {
     /// no engine, and every item written before the member existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<Engine>,
+    /// The copy the service read back from a stopped session's storage and chose to go on from. `next-slice`
+    /// writes it only for a copy it uses, and only over none or over one of an earlier session; control-api serves it for the newest
+    /// copy of the run until a later session saves one of its own. A copy that was read back and not used is not named here: it is
+    /// found by its session's key. Absent for a run that used no such copy.
+    // Boxed (wire-identical) so the item grows by a pointer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovered_copy: Option<Box<RecoveredCopyRef>>,
+    /// When the user's keep-the-work cancel was recorded (RFC 3339 UTC). control-api writes it once, on a run that is
+    /// `active`, in one write with the harness event that says so. It is the one durable record of that cancel: the slice loop of run-session
+    /// starts no further session while it is set and delivers what exists, and worker-api hands a Cancel to the run's session on every events
+    /// answer. Absent for a run that was never cancelled that way and for every item written before the member existed. It stays on the item
+    /// as history when the run has ended; a discard does not remove it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at: Option<String>,
     pub version: u64,
+}
+
+/// The read-back copy a run goes on from ([`RunItem::recovered_copy`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveredCopyRef {
+    /// The session whose storage was read.
+    pub session: u32,
+    /// `runs/<run>/agents/recovery/turns/<session>/recovery.bundle`.
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
+    /// The commit of the copy.
+    pub head_sha: String,
+    /// When the service chose it, RFC 3339 UTC.
+    pub at: String,
+    /// The time of the newest write in the tree, when the worker reported one. It is shown, never used to choose a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_write_at: Option<String>,
+    pub bundle_bytes: u64,
 }
 
 /// `RUN#<runId>` / `GOAL#root` or `GOAL#<taskId>`.
@@ -399,6 +433,18 @@ pub struct AgentItem {
     /// Written only with the rotation to a new slice; absent on every other item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce_ciphertext: Option<String>,
+    /// The session generation that may no longer act on the run. worker-api writes it when the worker of the
+    /// current session gives notice that the session is being ended, and run-session writes it before it stops a session that left no
+    /// result; the same write revokes the credential refresh. While it equals `session_generation`, worker-api refuses that session's
+    /// credentials, heartbeats, turn-complete and message calls, and stores its events without handing out a control. The next session has
+    /// a higher generation, so the member stays as it is when the item moves on. Absent on an item no session of which was fenced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fenced_generation: Option<u32>,
+    /// `false` when the run switched off reading a stopped session's storage back
+    /// (`StartDirectRunRequest.recoverAfterStop`). `start-session` copies it from the stored request, so worker-api finds it on the item
+    /// it reads anyway and leaves the worker's notice of an end without effect. Absent means on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recover_after_stop: Option<bool>,
     pub version: u64,
 }
 

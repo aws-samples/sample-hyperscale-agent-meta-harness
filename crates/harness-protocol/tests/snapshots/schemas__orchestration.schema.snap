@@ -520,6 +520,13 @@ expression: value
             "string",
             "null"
           ]
+        },
+        "storageReadBack": {
+          "description": "`true` when the service reads the storage of a session of this run back after the session was stopped or\nwent silent, before the next session starts: the run did not switch the read off (`recoverAfterStop`), and its machine keeps\nits storage when a session ends. Left out otherwise, and by a service that predates the read: a client that does not find it\npromises no read.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

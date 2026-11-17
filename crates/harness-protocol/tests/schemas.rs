@@ -678,6 +678,36 @@ const FROZEN: &[(&str, &str)] = &[
         "1.62.0",
         "f46e0f1d779f055ca2e3800894b380b31051769bb29a663e6cc50c85f732c575",
     ),
+    // 1.63.0, reading a stopped session's storage back. `runtime.schema.json` gains the body the service sends to the old session
+    // id (`RecoveryInvocationRequest`, kind `recover`), the worker's answer (`RecoveryAnswer` with the stored copy, the storage's marker and
+    // the comparison with the saved copy, which may read `unknown`) and the output that ends the wait for a session whose worker gave
+    // notice of its end (`SessionEnded`). The heartbeat gains the optional `ending`; the start request gains the optional
+    // `recoverAfterStop` (only `false` is sent); the Agent item gains the optional `fencedGeneration` and `recoverAfterStop`; the Run item
+    // gains the optional `recoveredCopy` (`RecoveredCopyRef`). A later session may restore the read-back bundle of an earlier session
+    // (`runs/<run>/agents/recovery/turns/<n>/recovery.bundle`), which is a rule of the validator and no schema member. Both OpenAPI
+    // documents change their info.version. The wire format of every other member is unchanged.
+    // The same line carries a cancel that sticks and the session facts of the run list. The Run item gains the optional
+    // `cancelRequestedAt`, the one durable record of the user's keep-the-work cancel (`items.schema.json`). The answer of the cancel route
+    // gains the optional `cancel` (`CancelRecorded`: when the cancel was recorded, the session, whether it is asked to stop, whether the run
+    // is delivering, the last heartbeat and the latest time at which a silent session is called lost), and a row of the run list gains the
+    // optional `cancelRequestedAt` and `sessionSilentSince` (`openapi-v1.json`). Every member is left out when absent, so an item, an
+    // answer and a row of 1.62.0 read and write unchanged. Both OpenAPI documents change their info.version. One line for the lanes of
+    // the release: a lane that adds a member re-pins this hash.
+    // The tokens of the prompts that answered are in the same line: the conversation summary a worker declares at
+    // turn-complete gains the optional `answeredTokens` (`openapi-internal.json`), and the cost of a run gains the optional
+    // `answeredTokens` (`openapi-v1.json`). Both are left out when absent.
+    // The service's word that it reads a stopped session's storage back for a run is in the same line: the payload of its
+    // `session.started` event gains the optional `storageReadBack` (`orchestration.schema.json`), written only as `true`.
+    // The user's earlier messages from the service are in the same line: the internal API gains the route
+    // `POST /internal/message-history` (`listDeliveredMessages`) with `HistoryRequest`, `HistoryResponse`, `DeliveredMessage`
+    // and `UnconfirmedMessage` (`openapi-internal.json`). A worker asks it at the start of a session; the invocation of a session and every other route are
+    // unchanged, so a worker of 1.62.0 never calls it and reads what it always read. The hash below is the one of all these members
+    // together, pinned once after the lanes of the release were merged, again when this route joined them and again when
+    // its answer gained the messages that have no report of their delivery (`unconfirmed`).
+    (
+        "1.63.0",
+        "6f30a5dd912f9ea0d936ad98b602457debefb2519b31462961fbf0798067f0c8",
+    ),
 ];
 
 /// 1.26.0 adds one optional turn member after 1.25.0 shipped: the released line keeps its hash and
@@ -1363,8 +1393,7 @@ fn b823_b847_frozen_1_61_0_is_one_new_line_and_the_1_60_0_line_did_not_move() {
     assert_ne!(v160[0].1, v161[0].1);
 }
 
-/// 1.62.0 follows the 1.61.0 line: that line keeps its hash, the new line differs from it, and it
-/// is the newest.
+/// 1.62.0 follows the 1.61.0 line: that line keeps its hash and the new line differs from it.
 #[test]
 fn b850_frozen_1_62_0_is_a_new_line_and_the_1_61_0_line_did_not_move() {
     let v161: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.61.0").collect();
@@ -1379,7 +1408,25 @@ fn b850_frozen_1_62_0_is_a_new_line_and_the_1_61_0_line_did_not_move() {
         "a75dcf285cb79de9239da26e39080584cc352cca1fb8f362ccdc2ef843731076"
     );
     assert_ne!(v161[0].1, v162[0].1);
-    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.62.0"));
+}
+
+/// 1.63.0
+/// follows the 1.62.0 line: that line keeps its hash, the new line differs from it, and it is the newest.
+#[test]
+fn b854_b853_frozen_1_63_0_is_a_new_line_and_the_1_62_0_line_did_not_move() {
+    let v162: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.62.0").collect();
+    let v163: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.63.0").collect();
+    assert_eq!(
+        (v162.len(), v163.len()),
+        (1, 1),
+        "one pinned line per version"
+    );
+    assert_eq!(
+        v162[0].1,
+        "f46e0f1d779f055ca2e3800894b380b31051769bb29a663e6cc50c85f732c575"
+    );
+    assert_ne!(v162[0].1, v163[0].1);
+    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.63.0"));
 }
 
 /// The ninth file is appended after the eight: the order of `SCHEMA_FILES` is part of the hash, so the file joins at the end and no existing file moves.

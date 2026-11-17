@@ -137,6 +137,7 @@ fn begun() -> Vec<Envelope> {
 /// The service's word that `session` was lost at `decided`, with the last heartbeat it holds and what the next session starts from.
 fn lost(session: u32, decided: i64, heartbeat: Option<i64>, saved: Option<i64>) -> SessionLost {
     SessionLost {
+        cancelled_at: None,
         kind: KIND.to_string(),
         session,
         decided_at: at(decided),
@@ -150,6 +151,10 @@ fn lost(session: u32, decided: i64, heartbeat: Option<i64>, saved: Option<i64>) 
         from: Some(if saved.is_some() { FROM_COPY } else { "start" }.to_string()),
         saved_at: saved.map(at),
         delivers: None,
+        ended_at: None,
+        recovery: None,
+        read_back_session: None,
+        run_id: String::new(),
     }
 }
 
@@ -573,6 +578,7 @@ fn page(
     completeness: Vec<CompletenessEntry>,
 ) -> TranscriptPage {
     TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state,
         records,
@@ -925,4 +931,65 @@ fn b846_the_card_has_a_row_for_the_tokens_outside_the_answered_prompts() {
         },
     );
     assert!(!no_usage.contains("Outside"), "{no_usage}");
+}
+
+// ---- the request to end that the service itself reports (with the read of a stopped session's storage) -----------------------------
+
+/// The service's own word that a session was asked to end is the lost-session event with the cause `end-requested` and the time of
+/// the worker's notice. The view keeps it among the lost sessions, whether a copy was stored after the worker's word or not, and the
+/// notice, the card's row and the card of the finished run say it. The worker's own word is no longer needed then.
+#[test]
+fn b846_a_request_to_end_is_always_said() {
+    use ham_core::lost_session::{CAUSE_END_REQUESTED, FROM_RECOVERED, LostRecovery};
+    for copy_after in [false, true] {
+        let mut events = begun();
+        events.push(copy(5, 211, 1, 1));
+        events.push(copy_notice(6, 598, STOP));
+        if copy_after {
+            // The worker's next try stores a copy: what the run said about its copies ends, the request to end stays.
+            events.push(copy(7, 603, 2, 1));
+        }
+        let v = state_of(events.clone()).view();
+        assert_eq!(
+            v.end_asked.as_deref(),
+            Some("2026-11-14T07:09:58Z"),
+            "TRIGGER PRESENT: the worker said that the session was asked to end (copy after: {copy_after})"
+        );
+        // The service: the session was asked to end at 07:09:58, and session 2 starts from the files read back.
+        let mut l = lost(1, 673, Some(593), None);
+        l.cause = CAUSE_END_REQUESTED.to_string();
+        l.ended_at = Some(at(598));
+        l.from = Some(FROM_RECOVERED.to_string());
+        l.recovery = Some(LostRecovery {
+            tried: true,
+            used: true,
+            kept: true,
+            ..LostRecovery::default()
+        });
+        l.read_back_session = Some(1);
+        events.push(lost_event(8, &l, 673));
+        let v = state_of(events).view();
+        assert_eq!(
+            v.end_asked, None,
+            "the service's word takes the worker's place"
+        );
+        assert_eq!(v.lost.len(), 1);
+        assert_eq!(v.lost[0].cause, CAUSE_END_REQUESTED);
+        assert_eq!(v.lost[0].ended_at.as_deref(), Some("2026-11-14T07:09:58Z"));
+        let said = v.lost[0].sentence();
+        assert!(
+            said.starts_with(
+                "Session 1 was asked to end from outside at 2026-11-14 07:09 UTC. Session 2 starts from the files the service read \
+                 back from session 1's storage after it ended."
+            ),
+            "{said}"
+        );
+        let row = v.lost[0].card_row();
+        assert!(
+            row.starts_with("Lost      session 1: asked to end 2026-11-14 07:09 UTC; session 2 started from the files read back"),
+            "{row}"
+        );
+        let card = final_card(&v, &FinalCard::default());
+        assert!(card.contains(&row), "{card}");
+    }
 }

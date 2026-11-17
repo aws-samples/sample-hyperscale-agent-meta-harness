@@ -25,6 +25,9 @@ pub struct EmitContext {
     /// The user's compaction settings (protocol 1.39.0, `context.compaction` and `context.compaction_trigger`). `None` leaves the emitted files
     /// byte for byte as they were.
     pub compaction: Option<crate::engine::user_settings::CompactionBlock>,
+    /// The command time limit the engine's configuration must carry, in milliseconds: the limit of a shell command that names none,
+    /// for an engine whose configuration holds it (`crate::engine::direct::run_limit`). `None` leaves the emitted files and environment as they were.
+    pub command_limit_ms: Option<u64>,
 }
 
 impl EmitContext {

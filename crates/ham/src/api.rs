@@ -184,6 +184,13 @@ pub fn predates_delivery_note_words() -> String {
     "this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage".to_string()
 }
 
+/// What `ham` says when the stage predates the switch of reading a stopped session's storage back: the key that put the member
+/// into the request, with its value, and the two ways out. Such a stage reads no storage back at all, so the run would behave as the key
+/// asks; the request is still not sent again without the member, because the stage that refused it is not the one the key was written for.
+pub fn predates_recover_after_stop_words() -> String {
+    "this stage predates the switch of reading a stopped session's storage back, so it cannot start a run with run.recover_after_stop = false; run `ham config unset run.recover_after_stop` or update the stage".to_string()
+}
+
 /// What `ham` says when the stage predates the copy interval of a run: the key that put the member into the request, with its value, and
 /// the two ways out.
 ///
@@ -526,6 +533,22 @@ impl<P: ControlPlane> Api<P> {
                     error: WireError {
                         code: "stage-predates-delivery-note".into(),
                         message: predates_delivery_note_words(),
+                        request_id: error.request_id,
+                    },
+                });
+            }
+            (other, _) => other,
+        };
+        // The switch of reading a stopped session's storage back, the `recoverAfterStop` member of `run.recover_after_stop = false`.
+        let result = match (result, req.recover_after_stop) {
+            (Err(ApiError::Http { status: 400, error }), Some(false))
+                if names_member(&error, &body, "recoverAfterStop") =>
+            {
+                return Err(ApiError::Http {
+                    status: 400,
+                    error: WireError {
+                        code: "stage-predates-recover-after-stop".into(),
+                        message: predates_recover_after_stop_words(),
                         request_id: error.request_id,
                     },
                 });
@@ -961,11 +984,22 @@ impl<P: ControlPlane> Api<P> {
     /// `POST /v1/runs/{runId}/cancel` (`ham cancel`, the dashboard's `c` twice): on the direct stage it asks Cline to stop and
     /// keeps the work. A cancel is state-idempotent, so it is retried like the reads and carries a fresh `Idempotency-Key`.
     pub async fn cancel_run(&self, run_id: &str) -> Result<RunControlResponse, ApiError> {
+        self.cancel_run_with(run_id, false).await
+    }
+
+    /// [`Api::cancel_run`], or with `discard` the explicit clear: the same route with
+    /// `?discard=true`, which stops the run now and delivers nothing. The copies the run saved stay.
+    pub async fn cancel_run_with(
+        &self,
+        run_id: &str,
+        discard: bool,
+    ) -> Result<RunControlResponse, ApiError> {
         let key = crate::start::new_nonce();
+        let query = if discard { "?discard=true" } else { "" };
         self.retried(
             "RunControlResponse",
             "POST",
-            &format!("/v1/runs/{run_id}/cancel"),
+            &format!("/v1/runs/{run_id}/cancel{query}"),
             &json_headers(Some(&key)),
             b"{}",
         )

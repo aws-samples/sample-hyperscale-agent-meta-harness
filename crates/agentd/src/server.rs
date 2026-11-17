@@ -3,6 +3,11 @@
 //! `/invocations` takes a `kind: "direct"` body, validates it, claims the session's one turn slot (409 while a turn runs),
 //! sets `/ping` to `HealthyBusy`, answers `InvocationAccepted` at once and runs the direct driver in the background:
 //! AgentCore cuts synchronous requests at 15 minutes.
+//!
+//! A body of `kind: "recover"` asks a new machine to read the storage of a stopped session back (`crate::direct::recover`).
+//! agentd answers it in the same call, with what it stored. A machine is for one of the two for its whole life: one that ran a turn
+//! refuses a read (409 `session-active`: it is the stopped session's own machine, still alive), and one that took a read never runs a
+//! turn. One read is made per machine: the same attempt id gets the first answer again, another attempt id is refused.
 
 use crate::config::Config;
 use crate::creds::{CredStore, HttpRefresher};
@@ -15,10 +20,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use harness_protocol::direct::RecoveryAnswer;
 use harness_protocol::runtime::{InvocationAccepted, turn_result_path};
 use serde_json::json;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 
@@ -53,6 +59,17 @@ impl Ending {
             n = *asked;
         });
         n
+    }
+
+    /// Whether agentd was asked to end: a machine that is being ended reads no stopped session's storage back.
+    pub fn requested(&self) -> bool {
+        *self.asked.borrow() > 0
+    }
+
+    /// The requests to end, for a reader that is no copy task: the number of the
+    /// last request. Reading them does not count as watching.
+    pub fn requests(&self) -> watch::Receiver<u64> {
+        self.asked.subscribe()
     }
 
     /// Whether a copy task watches: a turn is in its prompt phase and saves copies.
@@ -128,7 +145,25 @@ pub struct App {
     pub ending: Arc<Ending>,
     /// One turn at a time: an AgentCore session belongs to one agent.
     pub(crate) turn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// What this machine is for: nothing yet ([`MODE_NONE`]), the turns of a session ([`MODE_TURNS`]) or one read of a stopped
+    /// session's storage ([`MODE_READ`]). It is set once and never changes.
+    mode: AtomicU8,
+    /// The attempt id of the read this machine took: the first one that arrived.
+    recover_attempt: std::sync::OnceLock<String>,
+    /// The answer of that read, once it has one. The lock is held while the read works, so a second call of the same attempt
+    /// waits for the one answer.
+    recovery: tokio::sync::Mutex<Option<RecoveryAnswer>>,
 }
+
+/// The machine has taken no invocation of either kind.
+const MODE_NONE: u8 = 0;
+/// A turn runs or ran in this machine.
+const MODE_TURNS: u8 = 1;
+/// This machine read, or reads, a stopped session's storage.
+const MODE_READ: u8 = 2;
+
+/// What a machine that read a stopped session's storage says to a turn.
+pub const RECOVERY_MACHINE: &str = "this machine read a stopped session's storage and runs no turn";
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -148,7 +183,31 @@ impl App {
             creds: CredStore::new(Arc::new(HttpRefresher::new()), Arc::new(SystemClock)),
             ending: Arc::new(Ending::default()),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            mode: AtomicU8::new(MODE_NONE),
+            recover_attempt: std::sync::OnceLock::new(),
+            recovery: tokio::sync::Mutex::new(None),
         })
+    }
+
+    /// Takes this machine for `mode`. `false` when it was taken for the other mode before.
+    fn take_for(&self, mode: u8) -> bool {
+        match self
+            .mode
+            .compare_exchange(MODE_NONE, mode, Ordering::SeqCst, Ordering::SeqCst)
+        {
+            Ok(_) => true,
+            Err(taken) => taken == mode,
+        }
+    }
+
+    /// Whether a turn runs or ran in this machine.
+    pub fn direct_seen(&self) -> bool {
+        self.mode.load(Ordering::SeqCst) == MODE_TURNS
+    }
+
+    /// Whether this machine took a read of a stopped session's storage.
+    pub fn recover_seen(&self) -> bool {
+        self.mode.load(Ordering::SeqCst) == MODE_READ
     }
 }
 
@@ -174,6 +233,10 @@ async fn invocations(State(app): State<Arc<App>>, body: Bytes) -> Response {
     if body.len() > MAX_DIRECT_BODY_BYTES {
         return bad_request(format!("body exceeds {MAX_DIRECT_BODY_BYTES} bytes"));
     }
+    // The kind of the body, read with every other member ignored. Any other body is a turn's, parsed and refused as before.
+    if body_kind(&body).as_deref() == Some("recover") {
+        return recover(app, &body).await;
+    }
     let req: DirectInvocationRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -187,6 +250,17 @@ async fn invocations(State(app): State<Arc<App>>, body: Bytes) -> Response {
     if let Err(e) = validate_direct_invocation(&req) {
         app.log.line(&format!("direct invocation refused: {e}"));
         return bad_request(e.to_string());
+    }
+    // A machine that read a stopped session's storage never becomes a working session. The mode is taken for a valid body only,
+    // and before the slot, so a read that arrives from now on is refused.
+    if !app.take_for(MODE_TURNS) {
+        app.log
+            .line("direct turn refused: this machine read a stopped session's storage");
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(json!({ "error": RECOVERY_MACHINE })),
+        )
+            .into_response();
     }
     let Ok(slot) = app.turn_lock.clone().try_lock_owned() else {
         app.log
@@ -215,6 +289,76 @@ async fn invocations(State(app): State<Arc<App>>, body: Bytes) -> Response {
         drop(slot);
     });
     axum::Json(ack).into_response()
+}
+
+/// The `kind` member of a body, when the body is a JSON object that has one as text.
+fn body_kind(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Kind {
+        kind: Option<String>,
+    }
+    serde_json::from_slice::<Kind>(body).ok()?.kind
+}
+
+/// `POST /invocations` of `kind: "recover"`: parse, validate, take the machine for the read, and answer with what
+/// `direct::recover::handle` stored. 400 for a body that does not parse or validate (a rule or a position, never the input); 409
+/// `session-active` when a turn runs or ran here, and when this machine answers another attempt. The read runs as a task of its own:
+/// a caller that goes away does not end it, and a second call of the same attempt waits for its answer.
+async fn recover(app: Arc<App>, body: &[u8]) -> Response {
+    use harness_protocol::direct::{RecoveryInvocationRequest, validate_recovery_invocation};
+    let req: RecoveryInvocationRequest = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return bad_request(format!(
+                "body is not a RecoveryInvocationRequest (line {}, column {})",
+                e.line(),
+                e.column()
+            ));
+        }
+    };
+    if let Err(e) = validate_recovery_invocation(&req) {
+        app.log.line(&format!("recover invocation refused: {e}"));
+        return bad_request(e.to_string());
+    }
+    let refuse = |why: &str| {
+        app.log.line(&format!("recover invocation refused: {why}"));
+        (
+            StatusCode::CONFLICT,
+            axum::Json(json!({ "error": "session-active", "detail": why })),
+        )
+            .into_response()
+    };
+    if !app.take_for(MODE_READ) {
+        return refuse("a turn runs or ran in this machine");
+    }
+    if *app.recover_attempt.get_or_init(|| req.attempt_id.clone()) != req.attempt_id {
+        return refuse("this machine answers another attempt");
+    }
+    let task = app.clone();
+    let read = tokio::spawn(async move {
+        let mut answer = task.recovery.lock().await;
+        if let Some(first) = answer.as_ref() {
+            return first.clone();
+        }
+        let busy = Health::busy(&task.health);
+        // A read that ends without an answer of its own leaves this one behind: this machine never reads twice.
+        *answer = Some(crate::direct::recover::no_answer(&req));
+        let made = crate::direct::recover::handle(&task, &req).await;
+        *answer = Some(made.clone());
+        drop(busy);
+        made
+    });
+    match read.await {
+        Ok(answer) => axum::Json(answer).into_response(),
+        Err(e) => {
+            app.log.line(&format!("recover invocation failed: {e}"));
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": "the read ended without an answer" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 pub fn router(app: Arc<App>) -> Router {

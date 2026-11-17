@@ -169,6 +169,37 @@
       ],
       "type": "object"
     },
+    "CopyMarker": {
+      "description": "The marker a working session keeps on its storage, outside the folder of the engine's user: the newest copy it stored, or the commit it\nstarted on. The storage is at or after a saved copy only when the marker names exactly that copy's commit.",
+      "properties": {
+        "count": {
+          "description": "The number of the copy the marker names. A marker that names the commit the session started on carries that commit's own number\nwhen the commit is a copy a worker made while an engine worked, and 0 otherwise.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headSha": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "session",
+        "count",
+        "headSha"
+      ],
+      "type": "object"
+    },
     "DirectAttempt": {
       "description": "One try of the prompt in a run that retried (`DirectSummary.attempts`). A run with one try lists none.",
       "properties": {
@@ -2615,6 +2646,317 @@
         }
       ]
     },
+    "RecoverKind": {
+      "description": "The `kind` member of the recovery body: the one word that tells agentd to read the storage back and run no turn.",
+      "enum": [
+        "recover"
+      ],
+      "type": "string"
+    },
+    "RecoveredCopy": {
+      "description": "The bundle the worker stored: the tree as the storage held it, as one commit on the ref `refs/heads/snapshot`.",
+      "properties": {
+        "bundleBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bundleSha256": {
+          "description": "The S3 SHA-256 checksum of the bundle (base64), which the service compares with the object's.",
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headSha": {
+          "description": "The commit of the copy.",
+          "type": "string"
+        },
+        "marker": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CopyMarker"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The marker of the storage, when it could be trusted (owned by the worker's own user, in a folder the engine cannot write to)."
+        },
+        "newestWriteAt": {
+          "description": "The time of the newest write in the tree. It is shown, never used to choose a copy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentSha": {
+          "description": "The commit below it: the engine's HEAD on the storage. Absent when the history could not be read; the whole tree is then stored\nwithout a parent, and no session starts from it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stable": {
+          "description": "Whether two passes over the tree gave the same tree.",
+          "type": "boolean"
+        },
+        "treeSha": {
+          "description": "The tree of that commit.",
+          "type": "string"
+        },
+        "versionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "headSha",
+        "treeSha",
+        "stable",
+        "files",
+        "bytes",
+        "bundleBytes",
+        "bundleSha256"
+      ],
+      "type": "object"
+    },
+    "RecoveryAnswer": {
+      "description": "The worker's answer to a [`RecoveryInvocationRequest`]. A reader ignores members it does not know, so the service reads the answer of a\nlater worker.",
+      "properties": {
+        "agentdVersion": {
+          "type": "string"
+        },
+        "attemptId": {
+          "type": "string"
+        },
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoveryComparison"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the worker found when it compared the stored copy with the baseline. Absent when it compared nothing; a comparison that failed\nis present with the state `unknown`. Neither takes a stored copy back."
+        },
+        "copy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoveredCopy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "description": "Why no bundle is stored, as one word.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recovered": {
+          "description": "Whether the bundle is stored. It does not say that the service may use it.",
+          "type": "boolean"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "session": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tookMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uptimeS": {
+          "description": "The seconds the worker's machine had been up when it answered.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "attemptId",
+        "runId",
+        "session",
+        "recovered",
+        "tookMs",
+        "agentdVersion"
+      ],
+      "type": "object"
+    },
+    "RecoveryBaseline": {
+      "additionalProperties": false,
+      "description": "The newest saved copy of the run when the read starts: what the run goes on from when the copy read back is not used.",
+      "properties": {
+        "count": {
+          "description": "The number of the saved copy, when its record names that commit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "headSha": {
+          "description": "The commit of the saved copy.",
+          "type": "string"
+        },
+        "object": {
+          "description": "`s3://<bucket>/<key>` of the saved copy's bundle, which the worker fetches with [`RecoveryInvocationRequest::credentials`]. Absent\nwhen the baseline is the commit the session started on, which the session's own repository holds.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "headSha"
+      ],
+      "type": "object"
+    },
+    "RecoveryComparison": {
+      "description": "The comparison of the copy read back with the baseline. Only a comparison whose state is [`COMPARISON_DONE`] says anything about the\nother members; every other state is doubt.",
+      "properties": {
+        "reason": {
+          "description": "Why the comparison is unknown, as one word.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regressed": {
+          "default": 0,
+          "description": "The files of which the baseline holds more than the storage did: a file of the copy read back that is a strict prefix of the same\nfile in the baseline (a shorter file too large to read, [`MAX_PREFIX_CHECK_BYTES`], counts here unread), and a file that the\nbaseline holds, the commit below the baseline does not, and the copy read back lacks.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "regressedPaths": {
+          "description": "At most [`MAX_COMPARE_PATHS_SHOWN`] of those paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rewritten": {
+          "default": 0,
+          "description": "The files of the copy read back that equal the file in the commit below the baseline while the baseline holds another version: the\nstorage holds the earlier version of a file that was rewritten in place.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rewrittenPaths": {
+          "description": "At most [`MAX_COMPARE_PATHS_SHOWN`] of those paths.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sameAsBaseline": {
+          "default": false,
+          "description": "The copy read back holds the tree of the baseline.",
+          "type": "boolean"
+        },
+        "state": {
+          "description": "[`COMPARISON_DONE`] or [`COMPARISON_UNKNOWN`].",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "RecoveryInvocationRequest": {
+      "additionalProperties": false,
+      "description": "`POST /invocations` body of a read: sent by `run-session` to the runtime session id of the session that ended. Its `Debug` hides the\ncredentials.",
+      "properties": {
+        "attemptId": {
+          "description": "A ULID made once per session that is read back. A second call with the same id gets the first answer; another id is refused.",
+          "type": "string"
+        },
+        "baseSha": {
+          "description": "The commit the run started from.",
+          "type": "string"
+        },
+        "baseline": {
+          "$ref": "#/$defs/RecoveryBaseline"
+        },
+        "budgetS": {
+          "description": "The seconds the worker has for the whole read: 1 to [`RECOVERY_WORKER_BUDGET_S`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "credentials": {
+          "$ref": "#/$defs/ProcessCredentials",
+          "description": "Session credentials of `harness-worker-session` with the tag `agent=recovery`, narrowed to a PUT of [`Self::object`] and a GET of\nthe baseline's object. They give no right on a run record, the internal API or a model."
+        },
+        "kind": {
+          "$ref": "#/$defs/RecoverKind"
+        },
+        "object": {
+          "description": "`s3://<bucket>/runs/<run>/agents/recovery/turns/<session>/recovery.bundle`: the one object the worker writes, once.",
+          "type": "string"
+        },
+        "region": {
+          "description": "The stage Region (S3).",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "runtimeSessionId": {
+          "description": "The runtime session id of that session, `<run>-direct-g<session>`: the id the call itself is made on.",
+          "type": "string"
+        },
+        "session": {
+          "description": "The session whose storage is read: 1 to [`MAX_SLICES`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "startHead": {
+          "description": "The commit the session started on: the head it restored, or the run's base.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "attemptId",
+        "runId",
+        "session",
+        "runtimeSessionId",
+        "region",
+        "credentials",
+        "object",
+        "baseSha",
+        "startHead",
+        "baseline",
+        "budgetS"
+      ],
+      "type": "object"
+    },
     "Refusal": {
       "description": "One kind of permission request agentd's role policy refused in a turn: the tool, what the\nfirst such request asked for, agentd's reason, and how many requests of the turn got it.",
       "properties": {
@@ -3002,6 +3344,30 @@
       },
       "required": [
         "entries"
+      ],
+      "type": "object"
+    },
+    "SessionEnded": {
+      "description": "The output that ends the wait for a session whose worker gave notice that it is being ended: `{\"sessionEnded\": {...}}`. It is no\nturn-complete, so the session counts as lost, with [`Self::cause`] as the cause.",
+      "properties": {
+        "at": {
+          "description": "When the service took the notice, RFC 3339 UTC.",
+          "type": "string"
+        },
+        "cause": {
+          "description": "[`SESSION_END_REQUESTED`].",
+          "type": "string"
+        },
+        "session": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session",
+        "cause",
+        "at"
       ],
       "type": "object"
     },
@@ -3444,9 +3810,19 @@
     "ping": {
       "$ref": "#/$defs/PingResponse"
     },
+    "recovery_answer": {
+      "$ref": "#/$defs/RecoveryAnswer"
+    },
+    "recovery_invocation_request": {
+      "$ref": "#/$defs/RecoveryInvocationRequest",
+      "description": "Reading a stopped session's storage back: the body `run-session` sends to the old session id, the worker's answer,\nand the output that ends the wait for a session whose worker gave notice that it is being ended."
+    },
     "research": {
       "$ref": "#/$defs/ResearchContract",
       "description": "The research route's stored objects: the item manifest, the audit object, the policy row and the summary note."
+    },
+    "session_ended": {
+      "$ref": "#/$defs/SessionEnded"
     }
   },
   "required": [
@@ -3457,7 +3833,10 @@
     "direct_summary",
     "direct_evidence",
     "research",
-    "direct_test_report"
+    "direct_test_report",
+    "recovery_invocation_request",
+    "recovery_answer",
+    "session_ended"
   ],
   "title": "RuntimeContract",
   "type": "object"

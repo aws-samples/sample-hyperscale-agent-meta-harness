@@ -27,9 +27,9 @@ use crate::handler::{
 use ham_core::redact::redact_tokens;
 use ham_core::transcript::{
     Before, CompletenessEntry, FIRST_SEQ, GapCode, GapKind, MAX_CHUNK_OBJECT_BYTES,
-    MAX_CHUNKS_PER_REQUEST, MAX_PREFIX_KEYS, MAX_RECORD_RESPONSE_BYTES, TranscriptGap,
-    TranscriptPage, TranscriptRecord, TranscriptState, TranscriptSummary, decode_chunk,
-    record_hole_in, seq_of_key, transcript_prefix,
+    MAX_CHUNKS_PER_REQUEST, MAX_COMPLETENESS_ENTRIES, MAX_PREFIX_KEYS, MAX_RECORD_RESPONSE_BYTES,
+    TranscriptGap, TranscriptPage, TranscriptRecord, TranscriptState, TranscriptSummary,
+    decode_chunk, record_hole_in, seq_of_key, transcript_prefix,
 };
 use harness_protocol::goal::GoalStatus;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -60,7 +60,71 @@ pub struct TranscriptFacts {
     pub supported: bool,
     /// The run's conversation was purged (reserved for the later purge).
     pub purged: bool,
+    /// The summary of the newest invoked session. It decides the end of the conversation; an older summary never stands in
+    /// for it.
     pub summary: SummaryFact,
+    /// The entries of the valid summaries of the invoked sessions before the newest one, in session order: what an earlier
+    /// session declared lost or left out stays declared.
+    pub earlier: Vec<CompletenessEntry>,
+    /// An invoked session before the newest one has no valid summary (it was lost, or its summary was not stored).
+    pub earlier_unreported: bool,
+    /// `invokedAt` of the newest invoked session.
+    pub last_session_invoked_at: Option<String>,
+}
+
+/// The facts of a run whose image writes a conversation, from the Turn items of its direct agent as raw attributes, in turn
+/// order. A run is a list of sessions, and each session stores its summary on its own Turn item (turn n is session n). The sessions
+/// that count are the invoked ones (`invokedAt`). The newest of them decides the end: its summary, valid, invalid or absent, is
+/// [`TranscriptFacts::summary`]. The sessions before it add the entries of their valid summaries; one without a valid summary sets
+/// [`TranscriptFacts::earlier_unreported`] and adds nothing (a session that follows a lost one declares its predecessor's open tail
+/// itself, with the chunk it follows). A run with no invoked Turn item (an item that predates the member) reads its first turn, as
+/// every run was read before.
+pub fn facts_of_turns(turns: &[serde_json::Value]) -> TranscriptFacts {
+    use serde_json::Value;
+    let summary_of = |turn: &Value| match turn.get("transcript").filter(|v| !v.is_null()) {
+        None => SummaryFact::Absent,
+        Some(v) => match serde_json::from_value::<TranscriptSummary>(v.clone()) {
+            Ok(s) if s.validate() => SummaryFact::Valid(s),
+            _ => SummaryFact::Invalid,
+        },
+    };
+    let invoked: Vec<&Value> = turns
+        .iter()
+        .filter(|t| t.get("invokedAt").and_then(Value::as_str).is_some())
+        .collect();
+    let Some((newest, before)) = invoked.split_last() else {
+        let first = turns
+            .iter()
+            .find(|t| t.get("n").and_then(Value::as_u64) == Some(1));
+        return TranscriptFacts {
+            supported: true,
+            purged: false,
+            summary: first.map_or(SummaryFact::Absent, summary_of),
+            earlier: Vec::new(),
+            earlier_unreported: false,
+            last_session_invoked_at: None,
+        };
+    };
+    let mut earlier = Vec::new();
+    let mut earlier_unreported = false;
+    for turn in before {
+        match summary_of(turn) {
+            SummaryFact::Valid(s) => earlier.extend(s.entries),
+            SummaryFact::Absent | SummaryFact::Invalid => earlier_unreported = true,
+        }
+    }
+    TranscriptFacts {
+        supported: true,
+        purged: false,
+        summary: summary_of(newest),
+        earlier,
+        earlier_unreported,
+        last_session_invoked_at: newest
+            .get("invokedAt")
+            .and_then(Value::as_str)
+            .filter(|t| harness_protocol::common::is_utc_timestamp(t))
+            .map(str::to_string),
+    }
 }
 
 /// The worker's turn-complete summary as stored.
@@ -543,6 +607,7 @@ pub async fn transcript_with<S: Store, B: Blobs, E: Execution>(
         Ok(Err(e)) | Err(e) => return unavailable(&e, "retry"),
     };
     let mut page = TranscriptPage {
+        last_session_invoked_at: None,
         run_id: run_id.to_string(),
         state: TranscriptState::Unsupported,
         records: Vec::new(),
@@ -562,6 +627,9 @@ pub async fn transcript_with<S: Store, B: Blobs, E: Execution>(
     if !facts.supported {
         return json(200, &page);
     }
+    // When the run's last session was invoked: what ties an `end` record to that session for the reader.
+    page.last_session_invoked_at
+        .clone_from(&facts.last_session_invoked_at);
     let ended = sealed(run.status);
     let ctx = Ctx {
         blobs: &deps.blobs,
@@ -696,21 +764,38 @@ pub async fn transcript_with<S: Store, B: Blobs, E: Execution>(
         }
     }
 
-    // Completeness and state.
-    page.completeness = match (&facts.summary, ended) {
-        (SummaryFact::Valid(s), _) => s.entries.clone(),
-        (_, true) => vec![CompletenessEntry {
+    // Completeness and state. Every invoked session's declared entries count, in session order, and the newest invoked session
+    // decides the end. Its valid summary gives its entries. Without one, a run that has ended does not know the end of its
+    // conversation: one open tail without a chunk. A run that goes on gets no such entry: its newest session is still writing.
+    let mut entries: Vec<CompletenessEntry> = facts.earlier.clone();
+    match (&facts.summary, ended) {
+        (SummaryFact::Valid(s), _) => entries.extend(s.entries.iter().cloned()),
+        (_, true) => entries.push(CompletenessEntry {
             kind: GapKind::TailUnknown,
             from_seq: None,
             to_seq: None,
             count: None,
-        }],
-        _ => Vec::new(),
-    };
+        }),
+        _ => {}
+    }
+    // A page carries a bounded list: the oldest entries give way, and the page then says less than was declared.
+    let cut = entries.len() > MAX_COMPLETENESS_ENTRIES;
+    if cut {
+        let excess = entries.len() - MAX_COMPLETENESS_ENTRIES;
+        entries.drain(..excess);
+    }
+    // `complete` means that no session reports a loss: the last session and every one before it left a valid summary, nothing was
+    // cut from the list, and every entry is something left out on purpose. A located open tail of an earlier session is still a hole.
+    let whole = matches!(&facts.summary, SummaryFact::Valid(_))
+        && !facts.earlier_unreported
+        && !cut
+        && entries.iter().all(|e| e.kind == GapKind::Excluded);
+    page.completeness = entries;
     page.state = if ended {
-        match &facts.summary {
-            SummaryFact::Valid(s) if s.is_lossless() => TranscriptState::Complete,
-            _ => TranscriptState::Incomplete,
+        if whole {
+            TranscriptState::Complete
+        } else {
+            TranscriptState::Incomplete
         }
     } else if params.after.is_some() || !listing.valid.is_empty() {
         TranscriptState::Live

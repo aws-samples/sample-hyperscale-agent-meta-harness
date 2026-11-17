@@ -11,7 +11,7 @@
 //! | setting | placed as | by |
 //! |---|---|---|
 //! | `reasoning.effort` | the argument `--thinking <level>`; `default` takes the level of the model spec (`DirectModelSpec.defaultReasoningEffort`, the model's catalog row), `off` adds none | `direct::direct_launch_argv` |
-//! | `commands.timeout_seconds` | the variable `CLINE_RUN_COMMANDS_TIMEOUT_MS` (milliseconds) when the user set it; for OpenCode the variable `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` in every launch, the user's limit or 600 s | `direct::launch_env` |
+//! | `commands.timeout_seconds` | the variable `CLINE_RUN_COMMANDS_TIMEOUT_MS` (milliseconds) when the user set it; for OpenCode the plugin `hamh.shell-limit` named in the session document, with the limit in its options (the user's limit or 600 s, in every launch): the limit of a shell call that names none | `direct::launch_env`; for OpenCode `opencode::emit` |
 //! | `context.compaction`, `context.compaction_trigger` | `settings.compaction` of `providers.json` | `config::emit` through [`CompactionBlock`] |
 //! | `tools.disable` | the union with the stage's list in the locked `global-settings.json` | [`UserSettings::disabled_tools`], `direct::lock_global_settings` |
 //!
@@ -20,7 +20,7 @@
 //! report where one exists (`_meta.harness.compaction`, `config tools --json`).
 
 use super::config::providers_path;
-use super::direct::{command_limit, locked_settings_path};
+use super::direct::{command_limit, locked_settings_path, run_limit};
 use harness_protocol::direct::EngineConfig;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -377,15 +377,19 @@ pub fn check_reasoning_launch(argv: &[String], launch: &ReasoningLaunch) -> Resu
     }
 }
 
-/// Reads the environment back and compares it with the command time limit the launch is meant to carry ([`command_limit`]). Cline's variable is
-/// looked at only for a limit the user set: a stage may set its own default for it. The variable of an engine whose launch always carries a limit
-/// is looked at in every launch, for the user's limit or the default, so a launch without it is refused. An engine with no such variable is not
-/// looked at. The error names the part and never the value.
+/// Reads the placement of the command time limit back and compares it with the limit the launch is meant to carry. Cline: the variable
+/// ([`command_limit`]), looked at only for a limit the user set (a stage may set its own default for it). The second engine: what its emitter
+/// wrote, in every launch, for the user's limit or the default (`opencode::check_limit`: the plugin file and both layers of the session document
+/// under the harness's root of `config_dir`). An engine with neither is not looked at. The error names the part and never the value.
 pub fn check_command_limit(
     engine: &str,
+    config_dir: &Path,
     env: &BTreeMap<String, String>,
     settings: &UserSettings,
 ) -> Result<(), String> {
+    if let Some(limit) = run_limit(engine, settings) {
+        return super::opencode::check_limit(config_dir, env, limit.millis());
+    }
     match command_limit(engine, settings) {
         Some((var, limit))
             if env.get(var).map(String::as_str) != Some(limit.millis().to_string().as_str()) =>
@@ -423,7 +427,9 @@ pub fn read_back(placed: &Placed<'_>, settings: &UserSettings) -> Result<(), Str
     match placed.engine {
         ENGINE => {}
         // The second engine takes the command time limit and nothing else: no argument, no provider file, no locked settings.
-        SECOND_ENGINE => return check_command_limit(placed.engine, placed.env, settings),
+        SECOND_ENGINE => {
+            return check_command_limit(placed.engine, placed.config_dir, placed.env, settings);
+        }
         _ => {
             return Err(
                 "engine settings: this build cannot place settings for that engine".to_string(),
@@ -440,7 +446,7 @@ pub fn read_back(placed: &Placed<'_>, settings: &UserSettings) -> Result<(), Str
             );
         }
     }
-    check_command_limit(placed.engine, placed.env, settings)?;
+    check_command_limit(placed.engine, placed.config_dir, placed.env, settings)?;
     let provider_problem = || {
         "engine settings: the provider file does not hold the compaction settings that were written"
             .to_string()

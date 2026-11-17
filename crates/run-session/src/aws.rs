@@ -442,6 +442,64 @@ impl Store for DynamoStore {
         }
     }
 
+    async fn fence_agent(&self, run_id: &str, agent_id: &str, generation: u32) -> Res<bool> {
+        let res = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("PK", s(keys::run_pk(run_id)))
+            .key("SK", s(keys::agent_sk(agent_id)))
+            .update_expression("SET #f = :n, #c.#r = :true, #v = #v + :one")
+            .condition_expression("#sg = :n AND attribute_exists(#c)")
+            .expression_attribute_names("#f", "fencedGeneration")
+            .expression_attribute_names("#sg", "sessionGeneration")
+            .expression_attribute_names("#c", "creds")
+            .expression_attribute_names("#r", "revoked")
+            .expression_attribute_names("#v", "version")
+            .expression_attribute_values(":n", AttributeValue::N(generation.to_string()))
+            .expression_attribute_values(":true", AttributeValue::Bool(true))
+            .expression_attribute_values(":one", AttributeValue::N("1".into()))
+            .send()
+            .await;
+        match res {
+            Ok(_) => Ok(true),
+            // The item is at another generation, has no credential binding or does not exist: nothing to fence.
+            Err(e) if conditional_failed(&e) => Ok(false),
+            Err(e) => Err(unavailable(context(e))),
+        }
+    }
+
+    async fn set_recovered_copy(
+        &self,
+        run_id: &str,
+        copy: &harness_protocol::store::RecoveredCopyRef,
+    ) -> Res<()> {
+        let value =
+            serde_dynamo::to_attribute_value(copy).map_err(|e| unavailable(e.to_string()))?;
+        let res = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .key("PK", s(keys::run_pk(run_id)))
+            .key("SK", s(keys::META))
+            .update_expression("SET #rc = :copy")
+            .condition_expression(
+                "attribute_exists(PK) AND (attribute_not_exists(#rc) OR #rc.#s < :n)",
+            )
+            .expression_attribute_names("#rc", "recoveredCopy")
+            .expression_attribute_names("#s", "session")
+            .expression_attribute_values(":copy", value)
+            .expression_attribute_values(":n", AttributeValue::N(copy.session.to_string()))
+            .send()
+            .await;
+        match res {
+            Ok(_) => Ok(()),
+            // The item names the copy of this session or of a later one already: nothing to move.
+            Err(e) if conditional_failed(&e) => Ok(()),
+            Err(e) => Err(unavailable(context(e))),
+        }
+    }
+
     async fn set_run_slice(&self, run_id: &str, slice: u32) -> Res<()> {
         let res = self
             .client

@@ -620,6 +620,10 @@ pub struct TranscriptSummary {
     pub last_transcript_seq: Option<u64>,
     #[serde(default)]
     pub entries: Vec<CompletenessEntry>,
+    /// The tokens of the prompts that answered in this session, as the worker added them up where it made the records
+    /// (`harness_protocol::transcript::TranscriptSummary`). Absent when it declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_tokens: Option<u64>,
 }
 
 impl TranscriptSummary {
@@ -676,6 +680,11 @@ pub struct TranscriptPage {
     /// Keys under the prefix that were not chunks and were skipped.
     #[serde(default)]
     pub skipped_keys: u32,
+    /// When the service invoked the run's last session (RFC 3339 UTC, from the newest invoked Turn item). An `end` record that
+    /// is no older was written by that session, which the records alone cannot say. Absent for a run with no invoked session and from
+    /// a service that predates the member: the reader then ties the end to the last session by the run's events, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session_invoked_at: Option<String>,
 }
 
 /// Which end a backward read starts from.

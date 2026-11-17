@@ -18,13 +18,17 @@
 //!   admission is closed and nothing more is accepted (the control plane answers 409 run-sealed).
 //! - `on_event`: `SessionStarted` is the epoch (a model change is not a new session); `PromptSent` with the claimed text is the
 //!   acknowledgement (`delivered (turn k)`); `PromptReplied` feeds the tripwire and the allowance; `EngineStopped` reaps tool processes.
+//!   A delivered message also joins the record of the run: the first prompt of a session that follows, in this
+//!   machine or in a new one, carries what the user said, labelled as delivered in an earlier session.
 //! - `/now`: [`MessagesHook::offer`] of a `now` message while a prompt is open claims it, then `DriverCtl::interrupt()` (one
 //!   `session/cancel`; the prompt's own answer is awaited by the client, 0.19 to 0.48 s measured), then at the stage's end the module
 //!   reaps the engine's tool processes (a cancel leaves orphans) and votes the message as the new prompt. If the engine does not answer
 //!   within the 10 s grace (or processes of the engine survive the kill), the message is demoted to `next` and keeps its claim; the user
 //!   is told "could not interrupt; delivered after this turn" (`turn.progress`, kind `notify`), the engine and every process of its
 //!   family are killed, the driver's own ladder starts a fresh session, and the message goes out first there, once, with no
-//!   confirmation. The interrupt counter and the rule that an interrupt stop opens no question are unchanged.
+//!   confirmation. The interrupt counter and the rule that an interrupt stop opens no question are unchanged. A `now` message that
+//!   found no prompt to interrupt (the engine works through the goal plugin's follow-up rounds, or the run is between two prompts, in a
+//!   retry wait or setting a session up) goes out at the next turn end, and the user reads the same notice, once.
 //! - The user's cancel stays final and separate from the interrupt: a vote that comes back after it is dropped by the driver; this
 //!   module claims nothing once it is up and closes the run for the cancel.
 //! - `on_shutdown` / `on_finalize`: every ending. A claimed message that never went out ends failed (not sent), admission closes
@@ -32,7 +36,13 @@
 //!   commit and the bundle.
 //! - Tripwire: a reply of `end_turn` with usage 0, no update since the prompt and an answer within moments is the engine's queue, never
 //!   a done report. The engine is replaced (processes reaped, a fresh session follows) and no `/now` relies on its cancel. When
-//!   the reap cannot vouch that the engine's processes are gone the run stops instead of sending a prompt beside them.
+//!   the reap cannot vouch that the engine's processes are gone the run stops instead of sending a prompt beside them. One answer of
+//!   that shape is expected and trips nothing: the answer to a message this module voted while another module said the engine
+//!   works by itself (`TurnEnd.engine_working`: the goal plugin's follow-up rounds). The engine takes that message behind the round it
+//!   is working on, and the engine is kept. The module remembers such a message until the engine has begun a run after it took the
+//!   message (the observer's log of the engine's runs counts them). When no module says the engine works any more and no run began
+//!   since, the round the message arrived in was the engine's last and the engine cannot have read the message: it goes out once
+//!   more, as an ordinary prompt to the idle engine, and is the same delivery for the control plane and for the record of the run.
 //! - Continuation: after the first done-looking stop 300 s of the run's time must remain for another message turn; a message that finds
 //!   less ends rejected (`run-sealed`) and the run is sealed. No count of turns and no limit on extra work apply by default. A stage may
 //!   still set `AGENTD_MESSAGES_MAX_TURNS` and `AGENTD_MESSAGES_MAX_EXEC_S`: a message beyond them ends rejected (`continuation-limit`) and the
@@ -47,6 +57,7 @@
 //! Settings come from `AGENTD_MESSAGES_*` ([`Settings::from_env`]); `AGENTD_MESSAGES=off` turns the module off. Nothing here says a
 //! run is verified: the harness records how the engine stopped.
 
+pub mod earlier;
 pub mod http;
 pub mod machine;
 pub mod reap;
@@ -57,12 +68,13 @@ pub use machine::{Budget, Offered, Queue, Verdict};
 pub use reap::{Reaper, TAG_ENV};
 pub use store::{ConfirmRefused, MemoryStore, MessageStore, Op, WithdrawRefused};
 pub use types::{
-    ClaimOutcome, FailReason, Held, MAX_TEXT_BYTES, Message, Mode, Notice, Refusal, RejectReason,
-    SealMode, SealOutcome, State, StoreError,
+    ClaimOutcome, Delivered, FailReason, Held, History, HistoryError, MAX_TEXT_BYTES, Message,
+    Mode, Notice, Refusal, RejectReason, SealMode, SealOutcome, State, StoreError,
 };
 
 use crate::BoxFuture;
 use crate::acp::{Dir, Watched};
+use crate::direct::goal::rounds::{RoundLine, RoundsReader};
 use crate::direct::hooks::{
     DirectHook, DriverCtl, EngineStop, Event, Finalize, HookEnv, Shutdown, StartupCtx, TurnEnd,
     TurnVote, Wire,
@@ -74,6 +86,7 @@ use harness_protocol::api::internal::PendingControl;
 use harness_protocol::direct::DIRECT_TURN;
 use harness_protocol::envelope::EventType;
 use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -108,6 +121,9 @@ pub struct Settings {
     /// One decision of the module (a turn end or the seal) stops looking for another message after this long; the driver cuts a module
     /// off at 120 s ([`crate::direct::hooks::Limits`]).
     pub decision_cap: Duration,
+    /// Where a later session takes the user's earlier messages from, and the bound of the question. The default asks the
+    /// service; `AGENTD_MESSAGES_EARLIER=record` reads only the record in the run's storage, quoted as data.
+    pub earlier: earlier::Ask,
 }
 
 impl Default for Settings {
@@ -125,6 +141,7 @@ impl Default for Settings {
             retry_pause: Duration::from_millis(200),
             trip_window: Duration::from_secs(2),
             decision_cap: Duration::from_secs(90),
+            earlier: earlier::Ask::default(),
         }
     }
 }
@@ -136,6 +153,10 @@ impl Settings {
             quiesce: Duration::from_secs(5),
             store_timeout: Duration::from_secs(5),
             retry_pause: Duration::from_millis(2),
+            earlier: earlier::Ask {
+                pause: Duration::from_millis(2),
+                ..earlier::Ask::default()
+            },
             ..Self::default()
         }
     }
@@ -165,6 +186,10 @@ impl Settings {
         if let Some(n) = num("AGENTD_MESSAGES_QUEUE") {
             s.queue_cap = usize::try_from(n).unwrap_or(s.queue_cap).max(1);
         }
+        // `record` asks nobody and reads the record in the run's storage only; any other value is the default (the service).
+        if get("AGENTD_MESSAGES_EARLIER").is_some_and(|v| v.trim() == "record") {
+            s.earlier.source = earlier::Source::Record;
+        }
         s
     }
 }
@@ -180,6 +205,13 @@ pub struct Wiring {
     pub reaper: Option<Reaper>,
     /// The run's event recorder: the notice that an interrupt could not cancel the turn is written to it (`turn.progress`, kind `notify`).
     pub events: Option<Arc<EventRecorder>>,
+    /// The record of the messages that were delivered to an engine of this run: each delivery joins it, and the first
+    /// prompt of a session that follows carries it.
+    pub said: Option<Arc<earlier::Log>>,
+    /// The observer's log of the engine's own runs: one start line for each run the engine begins, also the runs of a loop it
+    /// drives by itself (the goal plugin's follow-up rounds). `None` when the engine has no such log. The engine's user writes the
+    /// file, so it vouches for nothing: here it only decides whether a message the engine took behind a round is sent again.
+    pub rounds: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Wiring {
@@ -198,6 +230,8 @@ impl Wiring {
             log,
             reaper: None,
             events: None,
+            said: None,
+            rounds: None,
         }
     }
 
@@ -208,6 +242,17 @@ impl Wiring {
 
     pub fn with_events(mut self, rec: Arc<EventRecorder>) -> Self {
         self.events = Some(rec);
+        self
+    }
+
+    pub fn with_said(mut self, said: Arc<earlier::Log>) -> Self {
+        self.said = Some(said);
+        self
+    }
+
+    /// The file the engine's observer writes a start line to for each run the engine begins ([`Wiring::rounds`]).
+    pub fn with_rounds(mut self, rounds: PathBuf) -> Self {
+        self.rounds = Some(rounds);
         self
     }
 }
@@ -231,6 +276,24 @@ struct Sent {
     text: String,
     session: String,
     at: Instant,
+    /// The vote was made while another module said the engine works by itself: the engine takes the
+    /// prompt behind the round it is working on and answers the request at once.
+    working: bool,
+}
+
+/// How many pieces of the observer's log one count of the engine's runs reads ([`Inner::runs_begun`]): 8 pieces of 256 KiB.
+const RUNS_READS: usize = 8;
+
+/// A message that went out while the engine worked by itself and that the engine took behind the round it was working on.
+struct Behind {
+    id: String,
+    text: String,
+    session: String,
+    /// How many runs the engine had begun when it answered the prompt ([`Inner::runs_begun`]); `None` when nothing counts them, and for
+    /// a message that waits behind one that had to go out again.
+    runs: Option<u64>,
+    /// The message was voted again and its prompt has not been seen yet.
+    again: bool,
 }
 
 /// An outcome the control plane has not been told yet. It stays owned by the module until a call succeeds or the server refuses it for
@@ -264,6 +327,8 @@ struct Run {
     ready: VecDeque<Message>,
     /// Returned in a `Prompt` vote; its `PromptSent` has not been seen.
     voted: Option<Message>,
+    /// What the poll said about the engine when `voted` was voted (`TurnEnd.engine_working`).
+    voted_working: bool,
     sent: Option<Sent>,
     prompt_at: Option<Instant>,
     /// The number of the latest prompt written (`PromptSent.no`): an interrupt is aimed at the prompt that was open when it was asked.
@@ -288,6 +353,12 @@ struct Run {
     /// Interrupt messages whose cancel the engine did not acknowledge: demoted to `next`, the claim kept across the restart of the engine,
     /// and sent first in the new session.
     demoted: HashSet<String>,
+    /// Messages whose user was told "could not interrupt; delivered after this turn": one notice for a message, whichever path writes it
+    /// first.
+    told: HashSet<String>,
+    /// Messages the engine took behind a round it was working on, oldest first. One leaves the list when the engine began a
+    /// run after it took the message, when the message went out again, or when the session ended.
+    behind: VecDeque<Behind>,
     stats: Stats,
 }
 
@@ -321,6 +392,8 @@ struct Inner {
     gate: tokio::sync::Mutex<()>,
     /// Tests only: the next question whether a prompt is open is answered yes ([`MessagesHook::pretend_prompt_open`]).
     pretend_open: AtomicBool,
+    /// The reader of the observer's log ([`Wiring::rounds`]) and the start lines it has read so far.
+    runs: Mutex<Option<(RoundsReader, u64)>>,
 }
 
 /// The module.
@@ -339,8 +412,16 @@ impl std::fmt::Debug for MessagesHook {
 /// The module for a run, or `None` when `AGENTD_MESSAGES=off`. `Hooks::standard` calls it once per run. The store is the private internal
 /// API ([`http::HttpMessageStore`]); a plane that serves no message routes answers 404 and the module stays out of that run.
 pub fn hook(env: &HookEnv) -> Option<Arc<dyn DirectHook>> {
-    let settings = Settings::from_env(&|k| std::env::var(k).ok());
+    hook_with(env, Settings::from_env(&|k| std::env::var(k).ok()))
+}
+
+/// As [`hook`] with these settings. The switch is read from the environment, which a test cannot change, so the constructor takes the
+/// settings as a value. There is only this constructor.
+pub fn hook_with(env: &HookEnv, settings: Settings) -> Option<Arc<dyn DirectHook>> {
     if !settings.enabled {
+        // With the module off a run shows no earlier message, also none from a file an earlier process left in a machine that is used
+        // again.
+        earlier::forget_local(&env.agent_data, &env.log);
         return None;
     }
     let transport = http::SignedTransport::new(
@@ -354,7 +435,15 @@ pub fn hook(env: &HookEnv) -> Option<Arc<dyn DirectHook>> {
         &env.agent_id,
         &http::new_generation(),
     );
-    let hook: Arc<dyn DirectHook> = MessagesHook::new(Arc::new(store), settings);
+    module(Arc::new(store), settings)
+}
+
+/// The module of a run on `store`, or `None` when the settings switch it off (`AGENTD_MESSAGES=off`).
+pub fn module(store: Arc<dyn MessageStore>, settings: Settings) -> Option<Arc<dyn DirectHook>> {
+    if !settings.enabled {
+        return None;
+    }
+    let hook: Arc<dyn DirectHook> = MessagesHook::new(store, settings);
     Some(hook)
 }
 
@@ -376,6 +465,7 @@ impl MessagesHook {
                     queue,
                     ready: VecDeque::new(),
                     voted: None,
+                    voted_working: false,
                     sent: None,
                     prompt_at: None,
                     prompt_no: 0,
@@ -393,6 +483,8 @@ impl MessagesHook {
                     claim_unsure: false,
                     handled: HashSet::new(),
                     demoted: HashSet::new(),
+                    told: HashSet::new(),
+                    behind: VecDeque::new(),
                     stats: Stats::default(),
                 }),
                 wiring: OnceLock::new(),
@@ -406,6 +498,7 @@ impl MessagesHook {
                 claim_done: Notify::new(),
                 gate: tokio::sync::Mutex::new(()),
                 pretend_open: AtomicBool::new(false),
+                runs: Mutex::new(None),
             }),
         })
     }
@@ -480,7 +573,14 @@ impl MessagesHook {
     /// outcome still owed, seals the run for good (pending and held messages end rejected, nothing more is accepted) and reaps what the
     /// engine left. Idempotent; bounded.
     pub async fn close(&self) {
+        let started = Instant::now();
         let _ = tokio::time::timeout(Duration::from_secs(12), self.inner.close()).await;
+        // The record of what was delivered reaches the run's bucket before the end sequence goes on. A delivery was handed over
+        // when its prompt went out, so this waits for the write in flight and the newest record behind it, within what is left of the
+        // time the driver gives a module at the end (`earlier::flush_bound`).
+        if let Some(said) = self.inner.wiring.get().and_then(|w| w.said.clone()) {
+            said.flush(earlier::flush_bound(started.elapsed())).await;
+        }
     }
 }
 
@@ -808,8 +908,9 @@ impl Inner {
     }
 
     /// Turns a claimed message into the vote, or ends it: too long (failed), over the allowance or too late (given back, then
-    /// rejected). The claim is never abandoned silently. The clock is read now, when the message is about to go out.
-    async fn dispatch(&self, m: Message, until: Instant) -> Option<TurnVote> {
+    /// rejected). The claim is never abandoned silently. The clock is read now, when the message is about to go out. `working`: the poll
+    /// said the engine works by itself (`TurnEnd.engine_working`); it is kept with the vote for the answer of the prompt (the tripwire).
+    async fn dispatch(&self, m: Message, until: Instant, working: bool) -> Option<TurnVote> {
         if m.text.len() > MAX_TEXT_BYTES {
             self.log(&format!("message {} is too long to send", m.id));
             self.settle_failed(&m.id, FailReason::TooLarge, false).await;
@@ -838,15 +939,20 @@ impl Inner {
         let text = m.text.clone();
         self.lock().handled.insert(m.id.clone());
         // A vote the driver never sent is given back before this one replaces it.
-        let older = self.lock().voted.replace(m);
+        let older = {
+            let mut st = self.lock();
+            st.voted_working = working;
+            st.voted.replace(m)
+        };
         if let Some(old) = older {
             self.give_back(&old.id).await;
         }
         Some(TurnVote::Prompt(text))
     }
 
-    /// The next message to send, claimed: the interrupt's message first, then the queue. `until` is the run's deadline.
-    async fn next_message(&self, until: Instant) -> Option<TurnVote> {
+    /// The next message to send, claimed: the interrupt's message first, then the queue. `until` is the run's deadline; `working` is what
+    /// the poll said about the engine (`TurnEnd.engine_working`, always false at the seal).
+    async fn next_message(&self, until: Instant, working: bool) -> Option<TurnVote> {
         let cap = Instant::now() + self.settings.decision_cap;
         let mut claims_until: Option<Instant> = None;
         loop {
@@ -856,7 +962,7 @@ impl Inner {
             }
             let ready = self.lock().ready.pop_front();
             if let Some(m) = ready {
-                if let Some(v) = self.dispatch(m, until).await {
+                if let Some(v) = self.dispatch(m, until, working).await {
                     return Some(v);
                 }
                 continue;
@@ -894,7 +1000,16 @@ impl Inner {
             let epoch = self.sync_epoch().await?;
             match self.claim(&n, &epoch).await {
                 Ok(Some(m)) => {
-                    if let Some(v) = self.dispatch(m, until).await {
+                    let id = m.id.clone();
+                    if let Some(v) = self.dispatch(m, until, working).await {
+                        // A message that is still `now` here started no interrupt, because no prompt was open when it came:
+                        // the engine was working through the goal plugin's follow-up rounds, or the run was between two prompts, in
+                        // a retry wait or setting a session up. Nothing was cancelled for it, at the first ask of a stop as at a
+                        // later one, and the user is told in the words of every other interrupt that could not cancel (a demoted
+                        // message is `next` by now and was told then).
+                        if n.mode == Mode::Now {
+                            self.notice("could not interrupt; delivered after this turn", &id);
+                        }
                         return Some(v);
                     }
                 }
@@ -1082,6 +1197,8 @@ impl Inner {
                     self.log(&format!(
                         "message {id} claimed; a later prompt is open than the one it was aimed at, so it goes out at the turn end"
                     ));
+                    // Nothing was cancelled for it, and the user is told so.
+                    self.notice("could not interrupt; delivered after this turn", &id);
                 } else {
                     st.ready.push_front(m);
                     // The check and the call are one step under the lock, so a prompt that opens in between is not the one cancelled
@@ -1097,6 +1214,8 @@ impl Inner {
                         self.log(&format!(
                             "message {id} claimed; no prompt was open, it goes out at the turn end"
                         ));
+                        // The prompt the user saw ended while the claim was out; nothing was cancelled, and the user is told so.
+                        self.notice("could not interrupt; delivered after this turn", &id);
                     }
                 }
             }
@@ -1124,8 +1243,9 @@ impl Inner {
                     st.interrupting = None;
                     st.ready.pop_front()
                 };
+                // The engine answered the cancel and is idle: the prompt that follows is an ordinary one.
                 if let Some(m) = m
-                    && let Some(v) = self.dispatch(m, until).await
+                    && let Some(v) = self.dispatch(m, until, false).await
                 {
                     return v;
                 }
@@ -1169,8 +1289,12 @@ impl Inner {
         }
     }
 
-    /// One line the user sees (`turn.progress`, kind `notify`, which the terminal app shows as a notice of the run).
+    /// One line the user sees (`turn.progress`, kind `notify`, which the terminal app shows as a notice of the run). A message is told
+    /// once: a second notice for the same message is not written.
     fn notice(&self, detail: &str, message_id: &str) {
+        if !self.lock().told.insert(message_id.to_string()) {
+            return;
+        }
         self.log(&format!("message {message_id}: {detail}"));
         if let Some(rec) = self.wiring.get().and_then(|w| w.events.as_ref()) {
             rec.record(
@@ -1179,6 +1303,130 @@ impl Inner {
                     "turn": DIRECT_TURN,
                     "kind": "notify",
                     "reason": "message-not-interrupted",
+                    "detail": detail,
+                    "messageId": message_id,
+                }),
+            );
+        }
+    }
+
+    /// How many runs the engine has begun, by the observer's log: its start lines. `None` when the engine has no such log, the
+    /// file is not there, or it shrank or was replaced. One call reads at most [`RUNS_READS`] pieces (2 MiB). When that does not reach
+    /// the end of the file the answer is `None` as well: a count of part of the file is no count, because the lines a later call reads
+    /// would look like runs begun since. The next call reads on from where this one stopped.
+    fn runs_begun(&self) -> Option<u64> {
+        let path = self.wiring.get()?.rounds.clone()?;
+        let mut guard = self.runs.lock().unwrap_or_else(|p| p.into_inner());
+        let (reader, starts) = guard.get_or_insert_with(|| (RoundsReader::new(path), 0));
+        let mut present = false;
+        let mut whole = false;
+        for _ in 0..RUNS_READS {
+            let before = reader.offset();
+            let polled = reader.poll();
+            present |= polled.present;
+            let begun = polled
+                .lines
+                .iter()
+                .filter(|l| matches!(l, RoundLine::Start { .. }))
+                .count();
+            *starts = starts.saturating_add(u64::try_from(begun).unwrap_or(u64::MAX));
+            if polled.damaged {
+                return None;
+            }
+            // A read that moved nothing found the end of the file.
+            if reader.offset() == before {
+                whole = true;
+                break;
+            }
+        }
+        (present && whole).then_some(*starts)
+    }
+
+    /// The first message the engine took behind a round and cannot have read, voted again; `None` when there is none. Asked
+    /// when no module says the engine works by itself (a turn end, the seal). A message is settled when the engine began a run after
+    /// it took the message: the engine goes through its own queue, one run for each message it took. A message that saw no run begin
+    /// since arrived in the round that ended the engine's loop, and so did every message behind it; a message nothing counts runs for
+    /// is treated the same way, because a message read twice costs a turn and a message never read is lost. Such a message goes out
+    /// once more, as an ordinary prompt to the idle engine. A message that cannot go out any more (the run's time, the allowance) is
+    /// named to the user as not read. `until` is the run's deadline.
+    fn unread(&self, until: Instant) -> Option<TurnVote> {
+        if self.lock().behind.is_empty() {
+            return None;
+        }
+        let now = self.runs_begun();
+        let mut settled: Vec<String> = Vec::new();
+        let mut dropped: Vec<String> = Vec::new();
+        let mut vote: Option<(String, String)> = None;
+        {
+            let mut st = self.lock();
+            let epoch = st.epoch.clone();
+            // The run each message needs: one after the engine took it, and one more for each message in front of it.
+            let mut need = 0u64;
+            while let Some(b) = st.behind.front() {
+                if epoch.as_deref() != Some(b.session.as_str()) {
+                    st.behind.pop_front();
+                    continue;
+                }
+                let read = match (now, b.runs) {
+                    (Some(now), Some(then)) if !b.again => {
+                        need = then.max(need).saturating_add(1);
+                        now >= need
+                    }
+                    _ => false,
+                };
+                if !read {
+                    break;
+                }
+                settled.extend(st.behind.pop_front().map(|b| b.id));
+            }
+            if !st.behind.is_empty() {
+                let left = until.saturating_duration_since(Instant::now());
+                if st.budget.verdict(left) == Verdict::Allowed {
+                    // What waits behind it was not read either, and the run of this send is not a run of theirs.
+                    for b in st.behind.iter_mut().skip(1) {
+                        b.runs = None;
+                    }
+                    if let Some(b) = st.behind.front_mut() {
+                        b.again = true;
+                        vote = Some((b.id.clone(), b.text.clone()));
+                    }
+                } else {
+                    dropped = st.behind.drain(..).map(|b| b.id).collect();
+                }
+            }
+        }
+        for id in settled {
+            self.log(&format!(
+                "message {id}: the engine began a run after it took the message; nothing is sent again"
+            ));
+        }
+        for id in dropped {
+            self.notice_unread(&id);
+        }
+        let (id, text) = vote?;
+        self.log(&format!(
+            "message {id}: the engine is idle and began no run after it took the message{}; the message goes out again",
+            if now.is_none() {
+                " (nothing counts the engine's runs)"
+            } else {
+                ""
+            }
+        ));
+        Some(TurnVote::Prompt(text))
+    }
+
+    /// One line the user sees for a message the engine took behind its round and did not read, when the message cannot go out
+    /// again (`turn.progress`, kind `notify`): the control plane shows it delivered, and the user must not take that for read.
+    fn notice_unread(&self, message_id: &str) {
+        let detail = "not read; the run ended before this message was reached";
+        self.log(&format!("message {message_id}: {detail}"));
+        if let Some(rec) = self.wiring.get().and_then(|w| w.events.as_ref()) {
+            rec.record(
+                EventType::TurnProgress,
+                serde_json::json!({
+                    "turn": DIRECT_TURN,
+                    "kind": "notify",
+                    "reason": "message-not-read",
                     "detail": detail,
                     "messageId": message_id,
                 }),
@@ -1385,7 +1633,26 @@ impl DirectHook for MessagesHook {
                 ctx.env.log.clone(),
             )
             .with_reaper(reaper)
-            .with_events(ctx.env.rec.clone());
+            .with_events(ctx.env.rec.clone())
+            // The record of what the user said to the run. A later session asks the service for the messages that were delivered
+            // in the sessions before it, here, before its first prompt is written; the record those sessions left in the run's storage
+            // stands in, quoted as data, when the service gives no answer.
+            .with_said(
+                earlier::Log::for_session(
+                    ctx.env,
+                    Some(self.inner.store.as_ref()),
+                    &self.inner.settings.earlier,
+                )
+                .await,
+            );
+            // The observer's log of the engine's runs, when the engine of the run has one (the goal plugin's observer writes it
+            // into the engine's data directory).
+            let wiring = match crate::engine::goal::goal_engine(&ctx.env.engine)
+                .filter(|e| !e.rounds_file.is_empty())
+            {
+                Some(e) => wiring.with_rounds(ctx.data_dir.join(e.rounds_file)),
+                None => wiring,
+            };
             self.bind(wiring);
             Ok(())
         })
@@ -1420,6 +1687,9 @@ impl DirectHook for MessagesHook {
                     st.cancel_unsafe = false;
                     st.tripped = false;
                     st.interrupting = None;
+                    // What the engine of the earlier session took behind a round is not sent again: the first prompt of the
+                    // new session carries the record of the delivered messages.
+                    st.behind.clear();
                     // A message turn that never got its reply ends with its session; its time is charged.
                     if let Some(sent) = st.sent.take() {
                         st.budget.turn_ended(now.duration_since(sent.at));
@@ -1469,16 +1739,48 @@ impl DirectHook for MessagesHook {
                         text: m.text.clone(),
                         session: p.session_id.to_string(),
                         at: now,
+                        working: st.voted_working,
                     });
                     st.budget.turn_started();
+                    let session = st.epoch_no;
                     drop(st);
+                    // The delivered message is kept for the sessions that follow: a session that starts without this
+                    // conversation is told what the user said. It is written here, in the event of the send (a lock and one small
+                    // file; the bucket follows from a task of its own), because the engine can be replaced a moment later and the
+                    // fresh session's first prompt is written at once: a record that waited for the worker, which may be in the
+                    // middle of a call to the control plane, would come too late.
+                    if let Some(said) = i.wiring.get().and_then(|w| w.said.as_ref()) {
+                        said.delivered_message(session, &m.id, &m.text);
+                    }
                     i.job(Job::Submitted(m.id, p.no));
+                } else if st
+                    .behind
+                    .front()
+                    .is_some_and(|b| b.again && b.text == p.text && b.session == p.session_id)
+                    && let Some(b) = st.behind.pop_front()
+                {
+                    // A message the engine took behind a round and did not read goes out again, to an idle engine. It is the
+                    // same delivery (no second acknowledgement, no second entry of the record) and a message turn of its own, and
+                    // its answer is judged as the answer of any prompt to an idle engine.
+                    st.sent = Some(Sent {
+                        id: b.id,
+                        text: b.text,
+                        session: p.session_id.to_string(),
+                        at: now,
+                        working: false,
+                    });
+                    st.budget.turn_started();
                 } else if st
                     .sent
                     .as_ref()
                     .is_some_and(|s| s.text == p.text && s.session == p.session_id)
                 {
                     // The ladder sent the same text again after a provider error: the same delivery, in the turn of the first send.
+                    // No poll stands behind this send, so nobody said the engine works by itself now: its answer is judged
+                    // as the answer of a prompt to an idle engine.
+                    if let Some(s) = st.sent.as_mut() {
+                        s.working = false;
+                    }
                 } else if let Some(s) = st.sent.take() {
                     // Another prompt replaced a message turn that was never answered: the time it ran is charged.
                     st.budget.turn_ended(now.duration_since(s.at));
@@ -1495,27 +1797,53 @@ impl DirectHook for MessagesHook {
                         && u.cache_read_input_tokens == 0
                         && u.cache_write_input_tokens == 0
                 });
-                let tripped = {
+                let (tripped, behind) = {
                     let mut st = i.lock();
                     let quick = st
                         .prompt_at
                         .is_some_and(|t| now.duration_since(t) <= i.settings.trip_window);
-                    let tripped = p.stop_reason == Some("end_turn")
-                        && zero
-                        && quick
-                        && i.updates.load(Ordering::SeqCst) == 0;
+                    // The engine did no work for the request: it ended the turn and used no token.
+                    let no_work = p.stop_reason == Some("end_turn") && zero;
+                    let queued = no_work && quick && i.updates.load(Ordering::SeqCst) == 0;
+                    // A message that was voted while the engine worked by itself (the goal plugin's follow-up rounds) is taken
+                    // by the engine behind the round it is working on, and the request is answered with no work done. That is the
+                    // delivery the vote rules ask for (a prompt replaces a wait), not the fault the tripwire is for: the engine is
+                    // kept, and it reads the message when its round has ended. For such a message the answer without work alone
+                    // says that the engine queued it. The engine goes on writing the updates of the round in progress, so an update
+                    // since the prompt says nothing here, and a busy engine may answer later than the tripwire's window: both
+                    // conditions are for a prompt to an idle engine. A message that is not remembered here would stay "delivered"
+                    // and never be sent again when the round turns out to be the engine's last.
+                    let behind = st.sent.as_ref().is_some_and(|s| no_work && s.working);
+                    let tripped = queued && !behind;
                     if tripped {
                         st.tripped = true;
                         st.cancel_unsafe = true;
                         st.stats.tripwires += 1;
                     }
-                    if let Some(s) = st.sent.take() {
+                    let sent = st.sent.take();
+                    if let Some(s) = &sent {
                         st.budget.turn_ended(now.duration_since(s.at));
                     }
-                    tripped
+                    (tripped, sent.filter(|_| behind))
                 };
                 if tripped {
                     i.log("tripwire: end_turn with no usage and no update since the prompt; the engine's own queue took it");
+                }
+                if let Some(s) = behind {
+                    i.log(&format!(
+                        "message {} went out while the engine worked by itself; the engine took it behind its round and is kept",
+                        s.id
+                    ));
+                    // The runs the engine has begun so far are counted now, after its answer: a run it begins from here on is one it
+                    // began with the message in its queue. Until one is seen the message is not known to be read ([`Inner::unread`]).
+                    let runs = i.runs_begun();
+                    i.lock().behind.push_back(Behind {
+                        id: s.id,
+                        text: s.text,
+                        session: s.session,
+                        runs,
+                        again: false,
+                    });
                 }
             }
             Event::EngineStopped(EngineStop::Reaped | EngineStop::Restarted) => {
@@ -1574,7 +1902,16 @@ impl DirectHook for MessagesHook {
             if tripped {
                 return i.hard_reset().await;
             }
-            i.next_message(until).await.unwrap_or(TurnVote::Done)
+            // No module says the engine works by itself any more. A message it took behind a round and cannot have read goes
+            // out again before anything new.
+            if !end.engine_working
+                && let Some(v) = i.unread(until)
+            {
+                return v;
+            }
+            i.next_message(until, end.engine_working)
+                .await
+                .unwrap_or(TurnVote::Done)
         })
     }
 
@@ -1596,9 +1933,13 @@ impl DirectHook for MessagesHook {
             i.settle_owed(false).await;
             // A claim whose answer was lost: the control plane would refuse a normal seal for it. Learn what is held first.
             i.reconcile(false).await;
+            // A message the engine took behind a round and cannot have read is sent again before anything is sealed.
+            if let Some(v) = i.unread(until) {
+                return v;
+            }
             // A message claimed after the last turn end (an interrupt that lost the race) is sent before anything is sealed.
             if !i.lock().ready.is_empty()
-                && let Some(v) = i.next_message(until).await
+                && let Some(v) = i.next_message(until, false).await
             {
                 return v;
             }
@@ -1629,7 +1970,7 @@ impl DirectHook for MessagesHook {
                     }
                     Ok(SealOutcome::Pending(notices)) => {
                         i.lock().queue.offer(notices);
-                        if let Some(v) = i.next_message(until).await {
+                        if let Some(v) = i.next_message(until, false).await {
                             return v;
                         }
                         // None of them could be sent (withdrawn meanwhile, or the claims failed): ask again, a limited number of times.
@@ -1657,6 +1998,10 @@ impl DirectHook for MessagesHook {
         Box::pin(async move {
             if !self.inner.lock().terminal {
                 self.close().await;
+            } else if let Some(said) = self.inner.wiring.get().and_then(|w| w.said.clone()) {
+                // The tree was committed and uploaded since the close: a write of the record that was still in flight then has
+                // had that time, and gets a last wait here before the turn is reported complete.
+                said.flush(Duration::from_secs(5)).await;
             }
         })
     }

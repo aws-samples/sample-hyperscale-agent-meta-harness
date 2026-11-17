@@ -162,6 +162,30 @@ where
     )))
 }
 
+/// A run whose keep-the-work cancel is recorded (`cancelRequestedAt` of the Run item) gets no new session. The Run item is read
+/// again for it, a consistent read. The error is `Invalid`, which the state machine does not retry: its Catch leads to `next-slice` for
+/// this slice, whose decision is made fresh, reads the record and delivers what exists. A discard is not this function's: a run that is
+/// no longer active is [`end_if_discarded`]'s.
+async fn refuse_if_cancelled<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+) -> Res<()>
+where
+    S: Store,
+{
+    let cancelled = deps
+        .store
+        .get_run(run_id)
+        .await?
+        .is_some_and(|r| r.cancel_requested_at.is_some());
+    if cancelled {
+        return Err(RunSessionError::Invalid(format!(
+            "run {run_id} was cancelled; no session is started"
+        )));
+    }
+    Ok(())
+}
+
 /// The `version` of the profile of `engine` in this build: what the Dispatch and the Agent item record as the engine version.
 pub fn engine_version(engine: Engine) -> Res<String> {
     bundled_profile(engine)
@@ -323,6 +347,11 @@ where
         }
     };
     let arn = arn.as_str();
+    // Whether the service reads the storage of a session of this run back when the session is stopped or goes silent: the run
+    // did not switch the read off, and its machine keeps its storage when a session ends (an Instances session's volume goes with the
+    // session). The run's first event of the service says so, and the client's notice of a silent session promises the read only then.
+    let reads_back =
+        matches!(compute, Compute::Microvm) && request.recover_after_stop != Some(false);
     let pin = match run.runtime_endpoint.as_deref() {
         Some(e) => Pin {
             version: run.runtime_version.clone().unwrap_or_default(),
@@ -362,6 +391,12 @@ where
             .await?
             .ok_or_else(|| invalid(format!("run {run_id} has no plan for slice {n}")))?
     };
+    // What the slice restores is one choice: the read-back copy its plan names, else the plan's restore (the saved copy). The
+    // repository of the invocation, the commit the worker must find and the Turn item's resume head all name that choice.
+    let (restore_key, restore_head) = match &plan.recovery {
+        Some(r) => (r.key.clone(), Some(r.head.clone())),
+        None => (plan.restore.key.clone(), plan.restore.head.clone()),
+    };
 
     // 3. the Turn item, with the newest token
     let ctx = TokenContext {
@@ -372,6 +407,12 @@ where
     let ciphertext = deps.tokens.encrypt(task_token, &ctx).await?;
     let now_ms = cfg.now_ms();
     let existing = deps.store.get_turn(run_id, DIRECT_AGENT_ID, n).await?;
+    // No new session for a run whose cancel is recorded. The check comes before the Turn item of the slice is created and before
+    // its token is replaced, so a refused slice leaves no Turn item of its own. A slice that was invoked is not refused: it reaches the
+    // early return of step 4, and the running session is told of the cancel by worker-api.
+    if existing.as_ref().is_none_or(|t| t.invoked_at.is_none()) {
+        refuse_if_cancelled(deps, run_id).await?;
+    }
     let created = if existing.is_none() {
         let turn = TurnItem {
             run_id: run_id.to_string(),
@@ -403,7 +444,7 @@ where
             }),
             resume_reason: (n > 1)
                 .then(|| format!("slice {n} restores the work of an earlier slice")),
-            resume_head: plan.restore.head.clone(),
+            resume_head: restore_head.clone(),
             engine: Some(engine),
             model_id: Some(model.id.clone()),
             lost_at: None,
@@ -448,6 +489,7 @@ where
                 engine,
                 &model.id,
                 model.context_tokens,
+                reads_back,
             )
             .await?;
         }
@@ -500,6 +542,9 @@ where
         // provider is what `DeleteCapacityProviderSession` needs at the end of the run.
         agent.compute = Some(compute.word().to_string());
         agent.capacity_provider_id = provider;
+        // A run that switched off reading a stopped session's storage back says so on the item, where the `recover` op and
+        // worker-api find it without reading the request. Only off is written; the item moves to later sessions with it.
+        agent.recover_after_stop = request.recover_after_stop.filter(|on| !on);
         mint_plan(&agent, &nonce).map_err(|e| invalid(e.message().to_string()))?;
         deps.store.put_agent(&agent).await?;
         (agent, nonce)
@@ -520,7 +565,7 @@ where
     let slice_member = (n > 1 || !plan.last).then(|| DirectSlice {
         last: plan.last,
         base_sha: (n > 1).then(|| plan.base_sha.clone()).flatten(),
-        restore_head: (n > 1).then(|| plan.restore.head.clone()).flatten(),
+        restore_head: (n > 1).then(|| restore_head.clone()).flatten(),
         sessions_before: (n > 1).then_some(plan.sessions_before),
         brief: (n > 1).then(|| plan.brief.clone()).flatten(),
     });
@@ -545,7 +590,7 @@ where
             sha256: request_sha256,
         },
         repo: RepoSource::S3Bundle {
-            uri: harness_protocol::direct::s3::uri(bucket, &plan.restore.key),
+            uri: harness_protocol::direct::s3::uri(bucket, &restore_key),
         },
         timeout_s,
         provider_silence_s: cfg.provider_silence_s,
@@ -590,6 +635,9 @@ where
     deps.store.set_run_slice(run_id, n).await?;
     // A discard may have landed since step 1: the Agent item exists now, so the reaper of a discard that comes from here on finds it.
     end_if_discarded(deps, run_id).await?;
+    // A cancel may have been recorded since the check before the Turn item: nothing is invoked for it. There is no such check
+    // after the invoke: a session that started is told of the cancel in its first events answer and ends itself.
+    refuse_if_cancelled(deps, run_id).await?;
     let invoked: Res<bool> = match deps.sessions.invoke(arn, &qualifier, &session, &body).await {
         Ok(ack_body) => serde_json::from_slice::<InvocationAccepted>(&ack_body)
             .map_err(|_| {
@@ -633,6 +681,7 @@ where
                 engine,
                 &model.id,
                 model.context_tokens,
+                reads_back,
             )
         })
         .await?;
@@ -732,6 +781,7 @@ async fn announce<S, T, M, R, B, P>(
     engine: Engine,
     model_id: &str,
     context_tokens: u32,
+    reads_back: bool,
 ) -> Res<()>
 where
     S: Store,
@@ -747,6 +797,7 @@ where
             engine,
             model_id,
             context_tokens,
+            reads_back,
         ))
         .await
 }

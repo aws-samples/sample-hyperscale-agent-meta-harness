@@ -33,7 +33,8 @@ use crate::direct::classify::scrub_detail;
 use crate::direct::input::{ChangedFiles, DigestSources, TreeSource};
 use crate::time::now_unix;
 use crate::workspace::{
-    WsError, git_dir_problem, git_with_env, git_with_env_outside, git_with_env_until,
+    WsError, git_bytes_with_env, git_dir_problem, git_with_env, git_with_env_outside,
+    git_with_env_until,
 };
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use std::io::Read;
@@ -64,6 +65,38 @@ pub struct SnapshotMade {
     /// ([`cut_unix`]).
     pub read_unix: i64,
 }
+
+/// The one copy of a read of a stopped session's storage ([`Snapshotter::read_back`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadBack {
+    pub commit: String,
+    pub tree: String,
+    /// The commit below it. `None` when the history could not be read: the copy then holds the whole tree itself.
+    pub parent: Option<String>,
+    /// Whether two passes over the tree gave the same tree.
+    pub stable: bool,
+    pub bundle: PathBuf,
+    pub bundle_bytes: u64,
+}
+
+/// What the comparison of a copy read back with a saved copy found ([`Snapshotter::compare`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Compared {
+    /// The two hold the same tree.
+    pub same: bool,
+    /// The files of which the saved copy holds more than the storage did: a file of the copy read back that is a strict prefix of the
+    /// same file in the saved copy (a shorter file too large to read counts unread), and a file that the saved copy holds, the commit
+    /// below it does not, and the copy read back lacks.
+    pub regressed: u32,
+    /// At most `MAX_COMPARE_PATHS_SHOWN` of those paths, each scrubbed to one line.
+    pub regressed_paths: Vec<String>,
+    /// The files of the copy read back that equal the file in the commit below the saved copy while the saved copy holds another version.
+    pub rewritten: u32,
+    pub rewritten_paths: Vec<String>,
+}
+
+/// The files of a tree by path: the blob and its size in bytes.
+type TreeFiles = std::collections::BTreeMap<Vec<u8>, (String, u64)>;
 
 /// A look that has run this long without storing its copy is said to the run, once per streak of trouble ([`late_after`]).
 pub const COPY_LATE_AFTER: Duration = Duration::from_secs(20);
@@ -841,6 +874,45 @@ impl ScratchRepo {
             .map_err(ws)
     }
 
+    /// [`Self::read`] whose output comes back as bytes, untrimmed.
+    async fn read_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        git_bytes_with_env(cwd, args, &[("GIT_DIR", &self.git_dir)])
+            .await
+            .map_err(ws)
+    }
+
+    /// The files of the tree `tree` by path, each with its blob and its size (`git ls-tree -r -l -z`). A submodule has no size
+    /// and is left out.
+    async fn files_of(&self, tree: &str) -> Result<TreeFiles, String> {
+        object_id(tree)?;
+        let raw = self
+            .read_bytes(&["ls-tree", "-r", "-l", "-z", tree])
+            .await?;
+        let mut files = TreeFiles::new();
+        for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+            // `<mode> <type> <object> <size>` TAB `<path>`
+            let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+                continue;
+            };
+            let meta = String::from_utf8_lossy(&entry[..tab]);
+            let mut fields = meta.split_whitespace();
+            let (Some(_mode), Some(kind), Some(blob), Some(size)) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if kind != "blob" {
+                continue;
+            }
+            let Ok(bytes) = size.parse::<u64>() else {
+                continue;
+            };
+            files.insert(entry[tab + 1..].to_vec(), (blob.to_string(), bytes));
+        }
+        Ok(files)
+    }
+
     /// The tree id of the commit `commit` (an object id, 7 to 64 hexadecimal digits, never a ref name).
     pub async fn tree_of(&self, commit: &str) -> Result<String, String> {
         object_id(commit)?;
@@ -1236,9 +1308,19 @@ impl Snapshotter {
         parent: Option<&str>,
         n: u32,
     ) -> Result<(String, String), String> {
+        self.commit_with(tree, parent, &format!("harness: snapshot {n}"))
+            .await
+    }
+
+    /// [`Self::commit_copy`] with the subject of the commit given.
+    async fn commit_with(
+        &self,
+        tree: String,
+        parent: Option<&str>,
+        message: &str,
+    ) -> Result<(String, String), String> {
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
-        let message = format!("harness: snapshot {n}");
         if let Some(parent) = parent
             && self.scratch.has_commit(parent).await
         {
@@ -1246,7 +1328,7 @@ impl Snapshotter {
                 .scratch
                 .git(
                     cwd,
-                    &["commit-tree", &tree, "-p", parent, "-m", &message],
+                    &["commit-tree", &tree, "-p", parent, "-m", message],
                     &[("GIT_DIR", gd)],
                 )
                 .await
@@ -1258,7 +1340,7 @@ impl Snapshotter {
             .scratch
             .git(
                 cwd,
-                &["commit-tree", &whole, "-m", &message],
+                &["commit-tree", &whole, "-m", message],
                 &[("GIT_DIR", gd)],
             )
             .await
@@ -1288,6 +1370,251 @@ impl Snapshotter {
             .map_err(ws)?;
         let bytes = std::fs::metadata(&bundle).map_err(io)?.len();
         Ok((bundle, bytes))
+    }
+
+    /// The private repository of a read of a stopped session's storage, `<dir>/snapshot.git`, for the work tree at `repo`. Unlike
+    /// [`Self::new`] it is made whether or not the history can be read: the engine may have removed or replaced `.git` before its session
+    /// was stopped, and the tree is still the work. Nothing is run in the engine's repository here and nothing is written to it, ever.
+    pub async fn for_read_back(dir: &Path, repo: &Path, base: &str) -> Result<Self, String> {
+        let git_dir = dir.join("snapshot.git");
+        let scratch = ScratchRepo::open(git_dir.clone(), repo).await?;
+        Ok(Self {
+            scratch,
+            git_dir,
+            repo: repo.to_path_buf(),
+            base: base.to_string(),
+            last_tree: String::new(),
+            last_parent: None,
+            count: 0,
+            tidy_error: None,
+            tidy_due: false,
+            gave_up: false,
+        })
+    }
+
+    /// The copy of a read of a stopped session's storage: the tree as the storage holds it, as one commit on `refs/heads/snapshot`
+    /// and the bundle of that ref, made like a copy of the copy task. Its parent is the engine's `HEAD` when the run's base is behind
+    /// it, else `start_head` (the commit the session started on) when this repository can read it. With neither, the history cannot be
+    /// read and the copy holds the whole tree with no parent ([`ScratchRepo::whole_tree`]): the tree is never thrown away because
+    /// `.git` is gone. The tree is hashed twice; equal trees are a stable copy, and when they differ the pair is hashed once more. The
+    /// commit's subject names the session and carries no copy number. Every git call and every file call on the work tree ends when
+    /// `give_up` says so.
+    pub async fn read_back(
+        &mut self,
+        start_head: &str,
+        session: u32,
+        give_up: &GiveUp,
+    ) -> Result<ReadBack, String> {
+        self.scratch.give_up = Some(give_up.clone());
+        let made = self.read_back_kept(start_head, session).await;
+        self.scratch.give_up = None;
+        made
+    }
+
+    async fn read_back_kept(&mut self, start_head: &str, session: u32) -> Result<ReadBack, String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        let base = self.base.clone();
+        let parent = match self.engine_head().await {
+            Some(head) if self.behind(&base, &head).await => Some(head),
+            _ if self.scratch.has_commit(start_head).await => Some(start_head.to_string()),
+            _ => None,
+        };
+        // What the base tracks stays tracked whatever an ignore rule says, while the base can be read.
+        if parent.is_some() && self.scratch.has_commit(&base).await {
+            let index = self.git_dir.join("index");
+            let _ = self
+                .scratch
+                .git(cwd, &["read-tree", &base], &self.scratch.envs(&index))
+                .await;
+        }
+        let first = self.current_tree().await?;
+        let second = self.current_tree().await?;
+        let (seen, mut stable) = if first == second {
+            (second, true)
+        } else {
+            let third = self.current_tree().await?;
+            let fourth = self.current_tree().await?;
+            let same = third == fourth;
+            (fourth, same)
+        };
+        let (commit, tree) = self
+            .commit_with(
+                seen.clone(),
+                parent.as_deref(),
+                &format!("harness: read back {session}"),
+            )
+            .await?;
+        // A copy without a parent hashes the tree once more, into an index of its own: a tree that moved since is not a stable one.
+        stable = stable && tree == seen;
+        let parent = self
+            .scratch
+            .read(&["rev-parse", "--verify", "-q", &format!("{commit}^")])
+            .await
+            .ok()
+            .filter(|p| !p.is_empty());
+        self.scratch
+            .git(
+                cwd,
+                &["update-ref", "refs/heads/snapshot", &commit],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map_err(ws)?;
+        let (bundle, bundle_bytes) = self.write_bundle().await?;
+        Ok(ReadBack {
+            commit,
+            tree,
+            parent,
+            stable,
+            bundle,
+            bundle_bytes,
+        })
+    }
+
+    /// Whether the commit `ancestor` is behind the commit `head` in what this repository can read.
+    async fn behind(&self, ancestor: &str, head: &str) -> bool {
+        object_id(ancestor).is_ok()
+            && object_id(head).is_ok()
+            && self
+                .scratch
+                .read(&["merge-base", "--is-ancestor", ancestor, head])
+                .await
+                .is_ok()
+    }
+
+    /// How many files the tree `tree` holds and how many bytes they have.
+    pub async fn totals(&self, tree: &str) -> Result<(u64, u64), String> {
+        let files = self.scratch.files_of(tree).await?;
+        let bytes = files.values().map(|(_, n)| *n).sum();
+        Ok((files.len() as u64, bytes))
+    }
+
+    /// Whether this repository can read the commit `commit`, from its own objects or the engine's store.
+    pub async fn has_commit(&self, commit: &str) -> bool {
+        self.scratch.has_commit(commit).await
+    }
+
+    /// Brings the copy in the bundle `bundle` (its `refs/heads/snapshot`) into this repository and returns its commit: the saved
+    /// copy a read compares with.
+    pub async fn fetch_copy(&self, bundle: &Path) -> Result<String, String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        self.scratch
+            .git(
+                cwd,
+                &[
+                    "fetch",
+                    "-q",
+                    "--no-tags",
+                    bundle.to_str().unwrap_or_default(),
+                    "+refs/heads/snapshot:refs/baseline/snapshot",
+                ],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map_err(ws)?;
+        self.scratch
+            .read(&["rev-parse", "--verify", "refs/baseline/snapshot^{commit}"])
+            .await
+    }
+
+    /// Compares the tree `copy_tree` of a copy read back with the saved copy `baseline` (a commit this repository can read).
+    ///
+    /// A file of the copy read back that is a strict prefix of the same file in the saved copy is counted (`regressed`): the saved copy
+    /// holds more of it than the storage did, which is what an open, unsynced file leaves. The bytes are compared only when the file on
+    /// the storage is the shorter one; a pair whose longer side is above `max_prefix_bytes` is counted unread. A shorter file that is no
+    /// prefix and a longer file are not counted.
+    ///
+    /// A file that the saved copy holds and the copy read back lacks is counted with them when the commit below the saved copy does
+    /// not hold it either: the saved copy added the file, and the storage does not have it. A working session's copy reads the tree
+    /// through the machine's file cache, so it can hold a file that never reached the storage. The same tree is left by an engine that
+    /// removed a file it had just made, so this is doubt and no proof, and on doubt the run goes on from the saved copy. A file that
+    /// the commit below already held and the storage lacks was removed since: a deletion, which is not counted. A saved copy without
+    /// a commit below it has no earlier state to tell the two apart, and nothing is counted for it.
+    ///
+    /// A file of the copy read back that equals the file in the commit below the saved copy, while the saved copy holds another version,
+    /// is counted too (`rewritten`): the storage holds the earlier version of a file that was rewritten in place. Only ids are compared.
+    pub async fn compare(
+        &self,
+        copy_tree: &str,
+        baseline: &str,
+        max_prefix_bytes: u64,
+        paths_shown: usize,
+    ) -> Result<Compared, String> {
+        let base_tree = self.scratch.tree_of(baseline).await?;
+        if base_tree == copy_tree {
+            return Ok(Compared {
+                same: true,
+                ..Compared::default()
+            });
+        }
+        let base_files = self.scratch.files_of(&base_tree).await?;
+        let copy_files = self.scratch.files_of(copy_tree).await?;
+        // The commit below the saved copy, when it has one. A saved copy without a parent has no earlier version to compare with; a
+        // parent that cannot be read is an error, so the comparison is unknown and never "done" with a check left out.
+        let parents = self
+            .scratch
+            .read(&["rev-list", "--parents", "-n", "1", baseline])
+            .await?;
+        let below = match parents.split_whitespace().nth(1) {
+            Some(parent) => {
+                let tree = self.scratch.tree_of(parent).await?;
+                Some(self.scratch.files_of(&tree).await?)
+            }
+            None => None,
+        };
+        let mut found = Compared::default();
+        let show = |paths: &mut Vec<String>, path: &[u8]| {
+            if paths.len() < paths_shown {
+                paths.push(scrub_detail(&String::from_utf8_lossy(path)));
+            }
+        };
+        for (path, (copy_blob, copy_bytes)) in &copy_files {
+            let Some((base_blob, base_bytes)) = base_files.get(path) else {
+                continue;
+            };
+            if base_blob == copy_blob {
+                continue;
+            }
+            if below
+                .as_ref()
+                .and_then(|files| files.get(path))
+                .is_some_and(|(blob, _)| blob == copy_blob)
+            {
+                found.rewritten += 1;
+                show(&mut found.rewritten_paths, path);
+            }
+            if copy_bytes < base_bytes {
+                let prefix = if *base_bytes > max_prefix_bytes || *copy_bytes == 0 {
+                    true
+                } else {
+                    let long = self
+                        .scratch
+                        .read_bytes(&["cat-file", "blob", base_blob])
+                        .await?;
+                    let short = self
+                        .scratch
+                        .read_bytes(&["cat-file", "blob", copy_blob])
+                        .await?;
+                    long.starts_with(&short)
+                };
+                if prefix {
+                    found.regressed += 1;
+                    show(&mut found.regressed_paths, path);
+                }
+            }
+        }
+        // The files the saved copy added that the storage lacks.
+        if let Some(below) = &below {
+            for path in base_files.keys() {
+                if !copy_files.contains_key(path) && !below.contains_key(path) {
+                    found.regressed += 1;
+                    show(&mut found.regressed_paths, path);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// The copy of the session's end, made when the engine and everything it started have stopped. With `head` (the session's

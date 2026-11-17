@@ -11,8 +11,8 @@ use harness_protocol::common::Usage;
 use harness_protocol::envelope::Envelope;
 use harness_protocol::goal::GoalStatus;
 use harness_protocol::messages::{
-    ClaimRequest, ClaimResponse, MessageNotice, OutcomeRequest, OutcomeResponse, SealRequest,
-    SealResponse, SessionAck, SessionReport,
+    ClaimRequest, ClaimResponse, HistoryResponse, MessageNotice, OutcomeRequest, OutcomeResponse,
+    SealRequest, SealResponse, SessionAck, SessionReport,
 };
 use harness_protocol::store::{AgentItem, ControlItem, EventItem, Keyed, TurnItem, keys};
 use harness_protocol::transcript::TranscriptSummary;
@@ -58,7 +58,7 @@ const MAX_CONTROL_PAGES: usize = 10;
 /// before, because 2,000 sequential requests would not fit the timeout and a retry would write the same prefix again.
 pub const SEQUENTIAL_EVENTS_MAX: usize = 100;
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -225,6 +225,42 @@ impl Store for DynamoStore {
                     .is_some_and(|se| se.is_conditional_check_failed_exception()) =>
             {
                 Ok(())
+            }
+            Err(e) => Err(unavailable(e)),
+        }
+    }
+
+    async fn fence_agent(
+        &self,
+        run: &str,
+        agent: &str,
+        generation: u32,
+    ) -> Result<bool, StoreError> {
+        let res = self
+            .client
+            .update_item()
+            .table_name(&self.table)
+            .set_key(Some(Self::agent_key(run, agent)))
+            .update_expression("SET #f = :n, #c.#r = :true, #v = #v + :one")
+            .condition_expression("#sg = :n AND attribute_exists(#c)")
+            .expression_attribute_names("#f", "fencedGeneration")
+            .expression_attribute_names("#sg", "sessionGeneration")
+            .expression_attribute_names("#c", "creds")
+            .expression_attribute_names("#r", "revoked")
+            .expression_attribute_names("#v", "version")
+            .expression_attribute_values(":n", AttributeValue::N(generation.to_string()))
+            .expression_attribute_values(":true", AttributeValue::Bool(true))
+            .expression_attribute_values(":one", AttributeValue::N("1".into()))
+            .send()
+            .await;
+        match res {
+            Ok(_) => Ok(true),
+            // The item is at another generation, has no credential binding or does not exist: nothing to fence.
+            Err(e)
+                if e.as_service_error()
+                    .is_some_and(|se| se.is_conditional_check_failed_exception()) =>
+            {
+                Ok(false)
             }
             Err(e) => Err(unavailable(e)),
         }
@@ -474,6 +510,25 @@ impl Store for DynamoStore {
         self.ledger().notices(run).await
     }
 
+    /// A consistent `GetItem` of the Run item that projects the one attribute `cancelRequestedAt`, which control-api writes.
+    async fn cancel_requested(&self, run: &str) -> Result<bool, StoreError> {
+        let out = self
+            .client
+            .get_item()
+            .table_name(&self.table)
+            .key("PK", s(keys::run_pk(run)))
+            .key("SK", s(keys::META))
+            .consistent_read(true)
+            .projection_expression("#cancel")
+            .expression_attribute_names("#cancel", "cancelRequestedAt")
+            .send()
+            .await
+            .map_err(unavailable)?;
+        Ok(out
+            .item
+            .is_some_and(|item| item.contains_key("cancelRequestedAt")))
+    }
+
     async fn cancel_queued(&self, run: &str, agent: &str) -> Result<bool, StoreError> {
         let mut start = None;
         for _ in 0..MAX_CONTROL_PAGES {
@@ -549,6 +604,11 @@ impl Store for DynamoStore {
                 &req.outcome,
             )
             .await
+    }
+
+    /// One consistent Query of the run's message items (`Ledger::delivered`); the role's `HarnessTable` statement already allows it.
+    async fn message_history(&self, run: &str) -> Result<HistoryResponse, LedgerError> {
+        self.ledger().delivered(run).await
     }
 }
 

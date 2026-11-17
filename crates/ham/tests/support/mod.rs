@@ -212,6 +212,9 @@ impl Store for Mem {
                     .any(|f| f == harness_protocol::transcript::TRANSCRIPT_FEATURE)
         });
         Ok(control_api::transcript::TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported,
             purged: false,
             summary: control_api::transcript::SummaryFact::Absent,
@@ -570,6 +573,7 @@ impl Store for Mem {
         Ok(RunUsage {
             agents: vec![agent],
             turns: vec![turn],
+            answered: Default::default(),
         })
     }
     async fn list_agents(&self, run_id: &str) -> Result<Vec<AgentItem>, StoreError> {
@@ -666,6 +670,31 @@ impl Store for Mem {
         }
         g.index.insert(key, item.clone());
         Ok(true)
+    }
+    /// A cancel that keeps the work is recorded on the Run item, once, with its event; only for a run that is active.
+    async fn record_cancel(
+        &self,
+        run_id: &str,
+        at: &str,
+        event: &Envelope,
+    ) -> Result<control_api::handler::CancelWrite, StoreError> {
+        use control_api::handler::CancelWrite;
+        let mut g = self.inner.lock().unwrap();
+        let Some(run) = g.runs.get_mut(run_id) else {
+            return Ok(CancelWrite::NotActive);
+        };
+        if run.status != harness_protocol::goal::GoalStatus::Active {
+            return Ok(CancelWrite::NotActive);
+        }
+        if let Some(first) = &run.cancel_requested_at {
+            return Ok(CancelWrite::Already(first.clone()));
+        }
+        run.cancel_requested_at = Some(at.to_string());
+        // Numbered like the played events, as the status event of `update_run` is.
+        let mut e = event.clone();
+        e.event_id = self.ulid();
+        g.events.push(e);
+        Ok(CancelWrite::Recorded)
     }
     async fn update_run(
         &self,

@@ -237,6 +237,13 @@ export class SecurityStack extends Stack {
             { Sid: "ReadRunInputs", Effect: "Allow", Action: "s3:GetObject", Resource: `${bucketArn}/runs/\${aws:PrincipalTag/run}/input/*` },
             { Sid: "ReadWriteOwnAgentPrefix", Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"],
               Resource: `${bucketArn}/runs/\${aws:PrincipalTag/run}/agents/\${aws:PrincipalTag/agent}/*` },
+            // Reading a stopped session's storage back. A working session (agent tag `direct`) restores the read-back copy of an earlier session of
+            // its own run from agents/recovery/, which it cannot write: only the credentials of a read carry the agent tag `recovery`, and their inline
+            // session policy allows one PUT there. The worker of a read fetches the saved copy it compares with, and that session policy narrows the second
+            // resource to the one object. Both resources are bound to the run tag.
+            { Sid: "ReadRecoveryCopies", Effect: "Allow", Action: "s3:GetObject", Resource: [
+              `${bucketArn}/runs/\${aws:PrincipalTag/run}/agents/recovery/*`,
+              `${bucketArn}/runs/\${aws:PrincipalTag/run}/agents/direct/turns/*/snapshot.bundle`] },
             { Sid: "ListOwnPrefixesOnly", Effect: "Allow", Action: "s3:ListBucket", Resource: bucketArn,
               Condition: { StringLike: { "s3:prefix": [
                 "runs/${aws:PrincipalTag/run}/input/*", "runs/${aws:PrincipalTag/run}/agents/${aws:PrincipalTag/agent}/*"] } } },

@@ -739,6 +739,35 @@ where
             record.stage.last_shape = report.as_ref().map(|r| r.shape);
             record.stage.identical_calls = Some(facts.identical_tail);
             record.stage.failed_turns = Some(facts.failed_tail);
+            // The guard's stop on a bounded wait that was sent again is no loop. It does not spend the automatic resume, at most
+            // three times in one session of a run (the collector counts, and it lives for one session: a later session of the run starts
+            // its count at 0), and the prompt is resumed like any other engine stop. A stage that allows
+            // no resume at all gets none here either.
+            if plan.engine_stop_resumes > 0 && collector.forgive_wait_stop() {
+                let wait = policy.jittered(policy.pause_before(1, &AcpError::Closed));
+                if let Some(a) = attempts.last_mut() {
+                    a.backoff_s = Some(wait.as_secs());
+                }
+                let report = report.unwrap_or_else(|| StopReport::new(facts, ran));
+                let note = format!(
+                    "the engine stopped the run itself ({}) while it waited for a command that ran long; this stop is not counted; the model stays {model_now}; the run goes on in {} s",
+                    report.describe(),
+                    wait.as_secs()
+                );
+                collector.record_wait_stop(wait.as_secs(), &note);
+                if let Some(log) = &policy.log {
+                    log.line(&format!(
+                        "direct turn engine stop on a wait, not counted: {note}"
+                    ));
+                }
+                let slice = failover.map_or(wait, |f| f.wait_slice);
+                if wait_marking(wait, slice, plan.cancel.as_ref(), activity).await {
+                    answer_dropped(collector, &mut answered);
+                    return cancelled_while_waiting(client, activity, session_id).await;
+                }
+                sending = resume.to_string();
+                continue;
+            }
             if engine_stop_used >= plan.engine_stop_resumes {
                 return result;
             }

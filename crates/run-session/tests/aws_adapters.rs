@@ -431,6 +431,100 @@ async fn the_agent_is_ended_stopped_and_revoked_and_a_missing_binding_is_fine() 
     assert_eq!(b["ExpressionAttributeNames"]["#r"], "revoked");
 }
 
+/// The fence of a session generation is one conditional write: it holds only while the item is still at that generation, so the
+/// session that follows is never fenced by a write that came late.
+#[tokio::test]
+async fn b854_the_fence_is_one_conditional_write_and_an_item_that_moved_on_is_left_alone() {
+    let r = json10(vec![(200, "{}"), (400, CCF), (500, DDB_500)]);
+    let s = ddb(&r);
+    assert!(s.fence_agent(RUN, "direct", 3).await.unwrap());
+    assert!(
+        !s.fence_agent(RUN, "direct", 3).await.unwrap(),
+        "the item is at another generation, or has no binding: nothing was written"
+    );
+    assert_eq!(
+        s.fence_agent(RUN, "direct", 3)
+            .await
+            .unwrap_err()
+            .error_type(),
+        "RunSessionUnavailable"
+    );
+    let b = &bodies(&r)[0];
+    assert_eq!(
+        b["Key"],
+        json!({"PK": {"S": run_pk()}, "SK": {"S": "AGENT#direct"}})
+    );
+    assert_eq!(
+        b["UpdateExpression"],
+        "SET #f = :n, #c.#r = :true, #v = #v + :one"
+    );
+    assert_eq!(
+        b["ConditionExpression"],
+        "#sg = :n AND attribute_exists(#c)"
+    );
+    assert_eq!(
+        b["ExpressionAttributeNames"],
+        json!({"#f": "fencedGeneration", "#sg": "sessionGeneration", "#c": "creds", "#r": "revoked", "#v": "version"})
+    );
+    assert_eq!(
+        b["ExpressionAttributeValues"],
+        json!({":n": {"N": "3"}, ":true": {"BOOL": true}, ":one": {"N": "1"}})
+    );
+}
+
+/// A used read-back copy is named on the Run item in one conditional write: over no copy or an earlier session's, never over the
+/// copy of this session or a later one, and a write that finds one of those is no error.
+#[tokio::test]
+async fn b854_a_used_copy_is_named_on_the_run_item_only_over_none_or_an_earlier_sessions() {
+    let r = json10(vec![(200, "{}"), (400, CCF), (500, DDB_500)]);
+    let s = ddb(&r);
+    let copy = harness_protocol::store::RecoveredCopyRef {
+        session: 2,
+        key: harness_protocol::direct::s3::recovery_bundle_key(RUN, 2),
+        version_id: None,
+        head_sha: "c".repeat(40),
+        at: "2026-09-21T14:25:00Z".into(),
+        newest_write_at: None,
+        bundle_bytes: 4096,
+    };
+    s.set_recovered_copy(RUN, &copy).await.unwrap();
+    s.set_recovered_copy(RUN, &copy)
+        .await
+        .expect("the item names this session's copy or a later one: nothing to move, and no error");
+    assert_eq!(
+        s.set_recovered_copy(RUN, &copy)
+            .await
+            .unwrap_err()
+            .error_type(),
+        "RunSessionUnavailable"
+    );
+    let b = &bodies(&r)[0];
+    assert_eq!(
+        b["Key"],
+        json!({"PK": {"S": run_pk()}, "SK": {"S": "META"}})
+    );
+    assert_eq!(b["UpdateExpression"], "SET #rc = :copy");
+    assert_eq!(
+        b["ConditionExpression"],
+        "attribute_exists(PK) AND (attribute_not_exists(#rc) OR #rc.#s < :n)"
+    );
+    assert_eq!(
+        b["ExpressionAttributeNames"],
+        json!({"#rc": "recoveredCopy", "#s": "session"})
+    );
+    let values = &b["ExpressionAttributeValues"];
+    assert_eq!(values[":n"], json!({"N": "2"}));
+    let stored = &values[":copy"]["M"];
+    assert_eq!(stored["session"], json!({"N": "2"}), "{stored}");
+    assert_eq!(
+        stored["key"],
+        json!({"S": harness_protocol::direct::s3::recovery_bundle_key(RUN, 2)}),
+        "{stored}"
+    );
+    assert_eq!(stored["headSha"], json!({"S": "c".repeat(40)}), "{stored}");
+    assert_eq!(stored["bundleBytes"], json!({"N": "4096"}), "{stored}");
+}
+
 #[tokio::test]
 async fn a_turn_is_created_once_its_token_replaced_and_its_invocation_recorded() {
     let r = json10(vec![
@@ -1964,5 +2058,38 @@ async fn b689_a_stop_stores_the_reason_and_the_resume_mode_on_the_run_item_with_
     assert_eq!(
         bodies(&r)[2]["TransactItems"][0]["Update"]["ExpressionAttributeValues"][":to"],
         json!({"S": "paused"})
+    );
+}
+
+/// The record of the user's cancel is read where control-api writes it. The attribute name is typed here, not taken from a
+/// constant of the product: a read under another name would pass every other test and start a second session for every cancelled run.
+#[tokio::test]
+async fn b853_the_flag_is_read_where_it_is_written() {
+    let mut with = run_json();
+    with["cancelRequestedAt"] = json!("2026-11-16T07:05:22Z");
+    let r = json10(vec![
+        (200, &item_reply(with, &run_pk(), "META")),
+        (200, &item_reply(run_json(), &run_pk(), "META")),
+    ]);
+    let s = ddb(&r);
+    assert_eq!(
+        s.get_run(RUN)
+            .await
+            .unwrap()
+            .unwrap()
+            .cancel_requested_at
+            .as_deref(),
+        Some("2026-11-16T07:05:22Z")
+    );
+    assert_eq!(
+        s.get_run(RUN).await.unwrap().unwrap().cancel_requested_at,
+        None
+    );
+    // The read the slice loop decides on is a consistent read of the Run item.
+    let b = bodies(&r);
+    assert_eq!(b[0]["ConsistentRead"], true);
+    assert_eq!(
+        b[0]["Key"],
+        json!({"PK": {"S": run_pk()}, "SK": {"S": "META"}})
     );
 }

@@ -454,3 +454,58 @@ async fn the_record_is_read_whole_in_one_ranged_read_bounded_by_its_limit() {
     );
     assert!(calls.contains(&want), "{calls:?}");
 }
+
+/// The decision of a run that ended because of the user's cancel holds `cancelRequestedAt` beside the members this route knows
+/// (run-session's `plan-delivery` writes it; `crates/run-session/tests/b853_cancel_sticks.rs` pins the member's name in the file the
+/// writer makes). The route reads single places of the file, so the head and the engine's last message come out as before, and the
+/// member is no part of the answer.
+#[tokio::test]
+async fn b853_a_decision_file_with_the_cancel_time_is_read_as_before() {
+    let w = world("complete");
+    w.put_object(
+        &direct_s3::evidence_key(RUN),
+        evidence(Some("hello.py printed 55.")),
+    );
+    let (status, plain, _) = head(&w, ME).await;
+    assert_eq!(status, 200, "{plain}");
+    // The same file with the cancel time: the same answer.
+    let mut file: Value = serde_json::from_slice(&evidence(Some("hello.py printed 55."))).unwrap();
+    file["cancelRequestedAt"] = json!("2026-11-16T07:05:22Z");
+    w.put_object(&direct_s3::evidence_key(RUN), file.to_string().into_bytes());
+    let (status, body, logs) = head(&w, ME).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body, plain,
+        "the member changes nothing that the route answers"
+    );
+    assert_eq!(body["clineMessage"], "hello.py printed 55.");
+    assert_eq!(body["headSha"], HEAD);
+    assert!(body.get("cancelRequestedAt").is_none(), "{body}");
+    assert!(logs.is_empty(), "{logs:?}");
+    // The decision of a cancel that no session answered: the harness-ended outcome and no summary of a session. The head still comes
+    // from the verified bundle, and there is no message of an engine to give.
+    let cancelled = json!({
+        "schemaVersion": 1, "runId": RUN, "outcome": "stopped_other",
+        "label": "Cline stopped: the harness ended the run (you stopped it at 2026-11-16 07:05 UTC while its session was not answering)",
+        "detail": "The harness ended the run: you stopped it at 2026-11-16 07:05 UTC while its session was not answering. No further session was started. The work is the last saved snapshot, taken at 2026-11-16 07:05 UTC.",
+        "headSource": "snapshot", "headSha": HEAD, "baseSha": BASE,
+        "plannedAt": "2026-11-16T07:15:40Z", "plannedAtMs": 1_794_813_340_000u64,
+        "failure": {"error": "States.HeartbeatTimeout", "cause": ""}, "summary": null,
+        "snapshotAt": "2026-11-16T07:05:10Z", "slice": 1, "cancelRequestedAt": "2026-11-16T07:05:22Z"
+    });
+    w.put_object(
+        &direct_s3::evidence_key(RUN),
+        cancelled.to_string().into_bytes(),
+    );
+    let (status, body, logs) = head(&w, ME).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["headSha"], HEAD,
+        "the commit the verified bundle names"
+    );
+    assert!(
+        body.get("clineMessage").is_none(),
+        "no session left a message: {body}"
+    );
+    assert!(logs.is_empty(), "{logs:?}");
+}

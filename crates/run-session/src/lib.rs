@@ -33,6 +33,7 @@ pub mod pinned;
 pub mod plan_delivery;
 pub mod ports;
 pub mod prepare;
+pub mod recover;
 pub mod run_ended;
 pub mod slices;
 pub mod start_session;

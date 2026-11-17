@@ -6,9 +6,11 @@
 //!
 //! `on_startup`, after the driver wrote everything and the configuration directory became root's:
 //!
-//! 0. An engine whose launch always carries a command time limit has that variable checked first, with a member or
-//!    without: a launch without it ends the run the way a read-back mismatch does. For the engine that carries it only when the user set it, this
-//!    step looks at nothing.
+//! 0. An engine whose launch always carries a command time limit has its placement read back first, with a member or
+//!    without (`check_command_limit`: the plugin file and both layers of the session document). A mismatch for a limit the user set ends the run
+//!    the way every read-back mismatch does. A mismatch for the harness's own default does not: the run is told once (`turn.progress`, kind
+//!    `notify`, reason `command_limit`), one log line is written, the wait bound is set for the engine's own limit, and the run goes on. For the
+//!    engine that carries a limit only when the user set it, this step looks at nothing.
 //! 1. A request with no member, or a member that sets no key, stops here: nothing is read, posted or logged, so a run without engine settings is
 //!    the run it was (the 13 golden files do not move).
 //! 2. The member passes the shared check again ([`crate::direct::request::engine_settings`]); a refusal ends the run `stopped_setup_failed`
@@ -19,7 +21,7 @@
 //! 4. One `turn.progress` event of kind `engine-config` names the keys that were placed (key and value as short texts, at most 24, inside the
 //!    4,096-byte inline limit) with the settings hash and `readBack: "ok"`, and one log line says how many keys were placed. The event is posted
 //!    only after the read-back compared equal. "Placed" means agentd wrote the value where the engine reads it; it does not mean the engine
-//!    confirmed it.
+//!    confirmed it. For the second engine's command time limit the engine's own sign is looked for after `session/new` (`Respawn::confirm`).
 //!
 //! `on_summary` fills `DirectSummary.engineConfig` (engine, schema, the settings hash and the key count, never a value) when step 4 happened.
 //! The module votes on nothing and the user's prompt is not changed (root invariant 1).
@@ -27,10 +29,14 @@
 use crate::BoxFuture;
 use crate::direct::hooks::{DirectHook, HookEnv, StartupCtx, SummaryCtx};
 use crate::direct::request::engine_settings;
+use crate::engine::direct::{LIMIT_REASON, WAIT_ENV};
 use crate::engine::user_settings::{Placed, check_command_limit, read_back};
+use harness_protocol::api::v1::StartDirectRunRequest;
 use harness_protocol::direct::{DIRECT_TURN, DirectEngineConfigRef, EngineConfig, keys_for};
 use harness_protocol::envelope::EventType;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// The most settings the event lists.
@@ -43,6 +49,29 @@ const MAX_EVENT_BYTES: usize = 4096;
 /// The module, always registered: it acts only when the request carries a member that sets at least one key. `Hooks::standard` calls it once per run.
 pub fn hook(_env: &HookEnv) -> Option<Arc<dyn DirectHook>> {
     Some(Arc::new(EngineConfigHook::new()))
+}
+
+/// What the module's startup reads and changes: the parts of a [`StartupCtx`] it uses.
+pub struct StartParts<'a> {
+    pub env: &'a HookEnv,
+    pub request: &'a StartDirectRunRequest,
+    pub config_dir: &'a Path,
+    pub data_dir: &'a Path,
+    /// The engine's argv.
+    pub argv: &'a [String],
+    /// The environment the engine will get; step 0 may lower the wait bound in it.
+    pub engine_env: &'a mut BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for StartParts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The engine's argv and environment are left out: they are the engine's launch, and a log line has no use for them.
+        f.debug_struct("StartParts")
+            .field("engine", &self.env.engine)
+            .field("config_dir", &self.config_dir)
+            .field("data_dir", &self.data_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The module.
@@ -64,10 +93,30 @@ impl EngineConfigHook {
             .clone()
     }
 
-    async fn startup(&self, ctx: &mut StartupCtx<'_>) -> Result<(), String> {
-        let settings = engine_settings(ctx.request, &ctx.env.engine)?;
-        check_command_limit(&ctx.env.engine, &*ctx.engine_env, &settings)?;
-        let Some(cfg) = &ctx.request.engine_config else {
+    /// The module's startup on the parts of a [`StartupCtx`] it reads and changes (steps 0 to 4 of the module's description). `on_startup`
+    /// calls it with the context's own parts; a test calls it for any engine without a whole run.
+    pub fn start_with(&self, parts: StartParts<'_>) -> Result<(), String> {
+        let StartParts {
+            env,
+            request,
+            config_dir,
+            data_dir,
+            argv,
+            engine_env,
+        } = parts;
+        let settings = engine_settings(request, &env.engine)?;
+        match limit_step(&env.engine, config_dir, &*engine_env, &settings) {
+            LimitStep::Held => {}
+            LimitStep::Ended(why) => return Err(why),
+            LimitStep::Told { notice, wait_s } => {
+                env.log
+                    .line("direct engine command limit not placed: the engine's own limit applies");
+                env.rec
+                    .record(EventType::TurnProgress, limit_notice(&notice));
+                engine_env.insert(WAIT_ENV.into(), wait_s.to_string());
+            }
+        }
+        let Some(cfg) = &request.engine_config else {
             return Ok(());
         };
         if cfg.key_count() == 0 {
@@ -75,22 +124,21 @@ impl EngineConfigHook {
         }
         read_back(
             &Placed {
-                engine: &ctx.env.engine,
-                config_dir: ctx.config_dir,
-                data_dir: ctx.data_dir,
-                argv: ctx.engine_argv(),
-                env: &*ctx.engine_env,
-                stage_disabled: &ctx.env.cfg.direct.disabled_tools,
+                engine: &env.engine,
+                config_dir,
+                data_dir,
+                argv,
+                env: &*engine_env,
+                stage_disabled: &env.cfg.direct.disabled_tools,
             },
             &settings,
         )?;
         let reference = cfg.to_ref();
-        ctx.env.log.line(&format!(
+        env.log.line(&format!(
             "direct engine settings placed: {} key(s), read back ok",
             reference.keys
         ));
-        ctx.env
-            .rec
+        env.rec
             .record(EventType::TurnProgress, event(cfg, &reference));
         *self
             .placed
@@ -109,7 +157,17 @@ impl DirectHook for EngineConfigHook {
         &'a self,
         ctx: &'a mut StartupCtx<'b>,
     ) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(self.startup(ctx))
+        Box::pin(async move {
+            let argv = ctx.engine_argv().to_vec();
+            self.start_with(StartParts {
+                env: ctx.env,
+                request: ctx.request,
+                config_dir: ctx.config_dir,
+                data_dir: ctx.data_dir,
+                argv: &argv,
+                engine_env: &mut *ctx.engine_env,
+            })
+        })
     }
 
     fn on_summary<'a>(&'a self, ctx: SummaryCtx<'a>) -> BoxFuture<'a, ()> {
@@ -117,6 +175,46 @@ impl DirectHook for EngineConfigHook {
             ctx.summary.engine_config = self.placed();
         })
     }
+}
+
+/// What step 0 of the startup found about the command time limit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LimitStep {
+    /// The placement was read back, or this engine has none to read.
+    Held,
+    /// The user's own limit could not be read back: as every user setting, the run does not start. The text names the part and no value.
+    Ended(String),
+    /// The harness's own default could not be placed: the run is told `notice` once and goes on with the engine's own limit; `wait_s` is the
+    /// bound of a wait that fits that limit.
+    Told { notice: String, wait_s: u32 },
+}
+
+/// Step 0 of the startup: reads the placement of the command time limit back and says what follows. Only a limit the user set ends a run.
+pub fn limit_step(
+    engine: &str,
+    config_dir: &Path,
+    engine_env: &BTreeMap<String, String>,
+    settings: &crate::engine::user_settings::UserSettings,
+) -> LimitStep {
+    match check_command_limit(engine, config_dir, engine_env, settings) {
+        Ok(()) => LimitStep::Held,
+        Err(why) if settings.command_timeout.is_some() => LimitStep::Ended(why),
+        Err(_) => {
+            let (notice, wait_s) = crate::engine::config::limit_not_placed(engine, settings);
+            LimitStep::Told { notice, wait_s }
+        }
+    }
+}
+
+/// The notice of [`LimitStep::Told`], in the shape every notice of a run has.
+pub fn limit_notice(detail: &str) -> Value {
+    json!({
+        "turn": DIRECT_TURN,
+        "kind": "notify",
+        "reason": LIMIT_REASON,
+        "outageMinutes": null,
+        "detail": detail,
+    })
 }
 
 /// A value as the card shows it: a text as it is, a list as its members joined by commas, a number as written; at most 64 characters.

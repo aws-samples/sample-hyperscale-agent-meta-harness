@@ -329,6 +329,11 @@ pub struct RuntimeContract {
     pub research: crate::research::ResearchContract,
     /// The clean-checkout test report (1.38.0): the worker's `test-report.json` and the checked copy in `evidence/`.
     pub direct_test_report: crate::direct::TestReport,
+    /// Reading a stopped session's storage back: the body `run-session` sends to the old session id, the worker's answer,
+    /// and the output that ends the wait for a session whose worker gave notice that it is being ended.
+    pub recovery_invocation_request: crate::direct::RecoveryInvocationRequest,
+    pub recovery_answer: crate::direct::RecoveryAnswer,
+    pub session_ended: crate::direct::SessionEnded,
 }
 
 #[cfg(test)]

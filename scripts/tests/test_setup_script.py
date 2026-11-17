@@ -745,7 +745,7 @@ class StepsCase(SetupBase):
         self.assertIn("Next steps", out)
         for cmd in ("ham rules edit", "ham models", "--direct", "ham watch", "ham pull", "ham clone"):
             self.assertIn(cmd, out)
-        for nonexistent in ("ham stop", "ham login", "ham logs", "ham status", "ham run ", "ham start", "--discard"):
+        for nonexistent in ("ham stop", "ham login", "ham logs", "ham status", "ham run ", "ham start", "--erase"):
             self.assertNotIn(nonexistent, out)
 
     def test_no_secret_is_written_or_printed(self) -> None:

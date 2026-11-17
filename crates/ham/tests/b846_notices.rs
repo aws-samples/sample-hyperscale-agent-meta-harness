@@ -132,6 +132,7 @@ fn waiting() -> Vec<Envelope> {
 
 fn lost(saved: bool) -> SessionLost {
     SessionLost {
+        cancelled_at: None,
         kind: KIND.to_string(),
         session: 1,
         decided_at: "2026-10-16T08:26:10Z".into(),
@@ -145,6 +146,10 @@ fn lost(saved: bool) -> SessionLost {
         from: Some(if saved { FROM_COPY } else { "start" }.to_string()),
         saved_at: saved.then(|| "2026-10-16T08:15:31Z".to_string()),
         delivers: None,
+        ended_at: None,
+        recovery: None,
+        read_back_session: None,
+        run_id: String::new(),
     }
 }
 
@@ -725,15 +730,23 @@ fn b846_the_json_view_of_ham_watch_carries_the_notices_about_the_copies() {
         ]),
         "{v}"
     );
-    // The member is the only difference.
+    // The two members are the only difference: the notices and, since the word that the session was asked to end is among them, the
+    // time of that word (`endRequestedAt`).
+    assert_eq!(v["endRequestedAt"], json!("2026-10-16T08:17:05Z"), "{v}");
     let mut keys: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
-    keys.retain(|k| k != "copyNotices");
+    keys.retain(|k| k != "copyNotices" && k != "endRequestedAt");
     let plain_keys: Vec<String> = plain.as_object().unwrap().keys().cloned().collect();
     assert_eq!(keys, plain_keys);
     // A stored copy ends what the run said: the member is gone.
     events.push(copy(15, "2026-10-16T08:17:30Z", 2, 1));
     let after = view_json(&view_at(events, "2026-10-16T08:17:32Z"));
     assert!(after.get("copyNotices").is_none(), "{after}");
+    // The request to end outlives the stored copy.
+    assert_eq!(
+        after["endRequestedAt"],
+        json!("2026-10-16T08:17:05Z"),
+        "{after}"
+    );
 }
 
 // ---- points 6 and 8 on the run screen ---------------------------------------------------------------------------------------------------
@@ -1164,4 +1177,324 @@ fn b846_b842_the_json_view_of_ham_watch_keeps_its_other_members_beside_the_copy_
         "{lost}"
     );
     assert_eq!(lost["savedCopy"], plain["savedCopy"], "{lost}");
+}
+
+/// A run of two sessions that both closed their conversations reads `complete`, and the delivery card of the run screen shows
+/// its `Outside` row from the stored conversation read whole: the total minus the prompts that answered, of both sessions. A declared
+/// open tail of a lost session keeps the row away, whatever the state of the page says: the prompts that answered in the hole are not
+/// held, and the sum would be too small.
+#[test]
+fn b855_outside_row_from_the_stored_sum() {
+    let dir = std::env::temp_dir().join(format!("b855-card-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("calc.zip");
+    std::fs::write(&path, b"no zip: the card reads no test report from it").unwrap();
+    let answered = |seq: u64, n: u64, inc: &str, t: &str, tokens: u64| {
+        stored_rec(
+            seq,
+            n,
+            inc,
+            t,
+            "prompt_result",
+            json!({"result": {"stopReason": "end_turn", "usage": {"totalTokens": tokens}}}),
+        )
+    };
+    // Session 1 answered a prompt and handed off; session 2 answered one and closed the conversation.
+    let two_sessions = || {
+        page(
+            "complete",
+            vec![
+                msg(0, 0, "m0", "session one works"),
+                answered(0, 1, INC, "2026-10-16T08:16:00Z", 813_995),
+                stored_rec(0, 2, INC, "2026-10-16T08:17:00Z", "end", json!({})),
+                answered(1, 0, INC2, "2026-10-16T08:27:00Z", 913_896),
+                stored_rec(1, 1, INC2, "2026-10-16T08:30:00Z", "end", json!({})),
+            ],
+            None,
+            None,
+        )
+    };
+    let mut app = ready(finished_events());
+    app.update(detail());
+    app.update(downloaded(path.clone()));
+    app.update(answer(ham_core::stored::Read::First, two_sessions()));
+    let text = flat(&screen(&app, 160, 60));
+    assert!(
+        text.contains("Tokens 1941678 USD 2.32"),
+        "TRIGGER PRESENT: the card has its Tokens row: {text}"
+    );
+    assert!(
+        text.contains(
+            "Outside 213787 of these tokens were used outside the prompts that answered (goal-check rounds, failed prompts)"
+        ),
+        "{text}"
+    );
+    // The same records under a page that declares the open tail of a lost session: no row.
+    let mut holed = two_sessions();
+    holed.completeness =
+        serde_json::from_value(json!([{"kind": "tail-unknown", "fromSeq": 0, "toSeq": 0}]))
+            .unwrap();
+    let mut app = ready(finished_events());
+    app.update(detail());
+    app.update(downloaded(path));
+    app.update(answer(ham_core::stored::Read::First, holed));
+    let text = flat(&screen(&app, 160, 60));
+    assert!(text.contains("Tokens 1941678"), "{text}");
+    assert!(!text.contains("Outside"), "{text}");
+}
+
+/// The detail of the finished run of `detail`, with the number the service gives for the prompts that answered.
+fn detail_answered(answered: Option<u64>) -> harness_protocol::api::v1::RunDetail {
+    let Msg::Detail(Ok(mut d)) = detail() else {
+        panic!("detail() is a detail that was read");
+    };
+    d.cost
+        .as_mut()
+        .expect("the detail has a cost")
+        .answered_tokens = answered;
+    d
+}
+
+/// The `Outside` row from the service's number. control-api adds up what the workers of the run's sessions declared,
+/// over exactly the sessions whose usage is in the total, so the row is right for a run that lost a session, and line mode has it:
+/// `ham watch` and `ham pull` build their card with `ham::pull::card` and print it with `final_card`. The service's number wins
+/// over the sum of the stored conversation, which stays the run screen's source when the service sends none.
+#[test]
+fn b855_outside_row_for_two_sessions() {
+    const ROW: &str = "Outside 213787 of these tokens were used outside the prompts that answered (goal-check rounds, failed prompts)";
+    // Line mode: the card as `ham watch` and `ham pull` make and print it. The total is 1,941,678 tokens.
+    let line_card = |answered: Option<u64>| {
+        let d = detail_answered(answered);
+        let card = ham::pull::card(Some(&d), None);
+        let mut s = RunState::new(RUN);
+        for e in finished_events() {
+            s.apply(e);
+        }
+        (
+            card.outside_prompts,
+            flat(&ham_core::render::final_card(&s.view(), &card)),
+        )
+    };
+    let (outside, text) = line_card(Some(1_727_891));
+    assert!(
+        text.contains("Tokens 1941678"),
+        "TRIGGER PRESENT: the card has its Tokens row: {text}"
+    );
+    assert_eq!(outside, Some(213_787));
+    assert!(text.contains(ROW), "{text}");
+    // Without the member line mode has no row: it reads no stored conversation.
+    let (outside, text) = line_card(None);
+    assert_eq!(outside, None);
+    assert!(
+        text.contains("Tokens 1941678") && !text.contains("Outside"),
+        "{text}"
+    );
+    // Nothing outside the answered prompts, and a number above the total: no row.
+    for answered in [1_941_678, 1_941_679, u64::MAX] {
+        let (outside, text) = line_card(Some(answered));
+        assert_eq!(outside, None, "{answered}");
+        assert!(!text.contains("Outside"), "{answered}: {text}");
+    }
+
+    // The run screen.
+    let dir = std::env::temp_dir().join(format!("b855-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("calc.zip");
+    std::fs::write(&path, b"no zip: the card reads no test report from it").unwrap();
+    let answered = |seq: u64, n: u64, inc: &str, t: &str, tokens: u64| {
+        stored_rec(
+            seq,
+            n,
+            inc,
+            t,
+            "prompt_result",
+            json!({"result": {"stopReason": "end_turn", "usage": {"totalTokens": tokens}}}),
+        )
+    };
+    // Two sessions that both closed their conversations: the stored prompts answered with 813,995 and 913,896 tokens.
+    let two_sessions = || {
+        page(
+            "complete",
+            vec![
+                msg(0, 0, "m0", "session one works"),
+                answered(0, 1, INC, "2026-10-16T08:16:00Z", 813_995),
+                stored_rec(0, 2, INC, "2026-10-16T08:17:00Z", "end", json!({})),
+                answered(1, 0, INC2, "2026-10-16T08:27:00Z", 913_896),
+                stored_rec(1, 1, INC2, "2026-10-16T08:30:00Z", "end", json!({})),
+            ],
+            None,
+            None,
+        )
+    };
+    let shown = |from_service: Option<u64>,
+                 stored: Option<ham_core::transcript::TranscriptPage>| {
+        let mut app = ready(finished_events());
+        app.update(Msg::Detail(Ok(detail_answered(from_service))));
+        app.update(downloaded(path.clone()));
+        if let Some(p) = stored {
+            app.update(answer(ham_core::stored::Read::First, p));
+        }
+        flat(&screen(&app, 160, 60))
+    };
+    // The service's number alone: the row is there before any stored conversation is read.
+    let text = shown(Some(1_727_891), None);
+    assert!(text.contains("Tokens 1941678 USD 2.32"), "{text}");
+    assert!(text.contains(ROW), "{text}");
+    // The service's number wins over the stored sum: the stored conversation gives 213,787 outside, the service 241,678.
+    let text = shown(Some(1_700_000), Some(two_sessions()));
+    assert!(
+        text.contains("Outside 241678 of these tokens"),
+        "the row of the service's number: {text}"
+    );
+    assert!(!text.contains("Outside 213787"), "{text}");
+    // A run that lost its first session: the last session declared the open tail, so the stored conversation gives no sum
+    // (`b855_outside_row_from_the_stored_sum`), and the total holds only the usage of the session that reported. The service's
+    // number covers exactly that session.
+    let mut holed = two_sessions();
+    holed.completeness =
+        serde_json::from_value(json!([{"kind": "tail-unknown", "fromSeq": 0, "toSeq": 0}]))
+            .unwrap();
+    let text = shown(None, Some(holed.clone()));
+    assert!(
+        text.contains("Tokens 1941678") && !text.contains("Outside"),
+        "TRIGGER PRESENT: without the service's number such a run has no row: {text}"
+    );
+    let text = shown(Some(913_896), Some(holed));
+    assert!(
+        text.contains("Outside 1027782 of these tokens"),
+        "the total minus the answered prompts of the session that reported: {text}"
+    );
+    // The service's number leaves nothing outside: no row, also when the stored sum would give one.
+    let text = shown(Some(1_941_678), Some(two_sessions()));
+    assert!(
+        text.contains("Tokens 1941678") && !text.contains("Outside"),
+        "{text}"
+    );
+    // Without the service's number the run screen keeps the stored sum.
+    let text = shown(None, Some(two_sessions()));
+    assert!(text.contains(ROW), "{text}");
+}
+
+/// The card of a run for which the service gave the number needs no stored conversation read whole, so the run screen does
+/// not read the older chunks of a long conversation in the background for it.
+#[test]
+fn b855_the_run_screen_reads_no_older_chunks_for_a_row_the_service_gave() {
+    let dir = std::env::temp_dir().join(format!("b855-older-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("calc.zip");
+    std::fs::write(&path, b"no zip: the card reads no test report from it").unwrap();
+    // The newest page of a long conversation that does not fit the screen: chunks 0 to 9 are older.
+    let newest = || -> Vec<Value> {
+        (0..80)
+            .map(|n| {
+                msg(
+                    10 + n / 6,
+                    100 + n,
+                    &format!("m{n}"),
+                    &format!("message number {n}"),
+                )
+            })
+            .collect()
+    };
+    let asks_older = |from_service: Option<u64>| {
+        let mut app = ready(finished_events());
+        app.update(Msg::Detail(Ok(detail_answered(from_service))));
+        app.update(downloaded(path.clone()));
+        app.update(answer(
+            ham_core::stored::Read::First,
+            page("complete", newest(), Some(10), None),
+        ));
+        let _ = screen(&app, 160, 60);
+        (0..20).any(|_| {
+            matches!(transcript_job(&app.tick()), Some((_, read)) if read == ham_core::stored::Read::Older)
+        })
+    };
+    assert!(
+        asks_older(None),
+        "TRIGGER PRESENT: without the service's number the card wants the conversation whole"
+    );
+    assert!(
+        !asks_older(Some(1_727_891)),
+        "the service gave the number: the view at its end reads nothing older"
+    );
+}
+
+/// The guide's row of the card says where the number comes from: the service's sum for the answered prompts, which line mode prints
+/// too, and the stored conversation as the run screen's source when the service gives none.
+#[test]
+fn b855_the_guide_says_where_the_outside_row_comes_from() {
+    let guide = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/user-guide.md"
+    ))
+    .unwrap();
+    let rows: Vec<&str> = guide
+        .lines()
+        .filter(|l| l.starts_with("| Outside |"))
+        .collect();
+    assert_eq!(rows.len(), 1, "one row for the Outside line of the card");
+    let row = rows[0];
+    assert!(
+        !row.contains("They print no `Outside` row."),
+        "the guide says that line mode never has the row: {row}"
+    );
+    for words in [
+        "The service adds up the tokens of the answered prompts as the run's sessions report them.",
+        "`ham watch` and `ham pull` print the row from that number, and the run screen shows it with the card.",
+        "Without the service's number, `ham watch` and `ham pull` print no `Outside` row, because they read no stored conversation.",
+        "The run screen then takes the sum for answered prompts from the stored conversation.",
+        "Example: `Outside   213787 of these tokens were used outside the prompts that answered (goal-check rounds, failed prompts)`",
+    ] {
+        assert!(
+            row.contains(words),
+            "{words:?} is missing from the row: {row}"
+        );
+    }
+}
+
+/// With the read of a stopped session's storage the service itself says that a session was asked to end: its lost-session event
+/// carries the cause `end-requested` and the time of the worker's notice. The JSON view of `ham watch` keeps that fact in
+/// `lostSessions`, also when a copy was stored after the worker's word, and no longer carries the worker's `endRequestedAt` then.
+#[test]
+fn b846_a_request_to_end_is_always_said() {
+    for copy_after in [false, true] {
+        let mut events = working();
+        events.push(copy_notice(14, "2026-10-16T08:17:05Z", STOP));
+        if copy_after {
+            events.push(copy(15, "2026-10-16T08:17:30Z", 2, 1));
+        }
+        let before = view_json(&view_at(events.clone(), "2026-10-16T08:17:40Z"));
+        assert_eq!(
+            before["endRequestedAt"],
+            json!("2026-10-16T08:17:05Z"),
+            "TRIGGER PRESENT: the worker's word is in the view (copy after: {copy_after}): {before}"
+        );
+        assert!(before.get("lostSessions").is_none(), "{before}");
+        let mut l = lost(true);
+        l.cause = ham_core::lost_session::CAUSE_END_REQUESTED.to_string();
+        l.ended_at = Some("2026-10-16T08:17:05Z".to_string());
+        l.decided_at = "2026-10-16T08:18:20Z".to_string();
+        events.push(event(
+            20,
+            "2026-10-16T08:18:20Z",
+            EventType::RunWaiting,
+            Authority::Harness,
+            serde_json::to_value(&l).unwrap(),
+        ));
+        let after = view_json(&view_at(events, "2026-10-16T08:18:25Z"));
+        assert_eq!(
+            after["lostSessions"][0]["cause"],
+            json!("end-requested"),
+            "{after}"
+        );
+        assert_eq!(
+            after["lostSessions"][0]["endedAt"],
+            json!("2026-10-16T08:17:05Z"),
+            "{after}"
+        );
+        assert!(
+            after.get("endRequestedAt").is_none(),
+            "the service's word took the worker's place: {after}"
+        );
+    }
 }

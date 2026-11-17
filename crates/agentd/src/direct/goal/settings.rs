@@ -26,7 +26,9 @@ pub fn strip_outside_note(text: &str) -> String {
 }
 
 /// The goal the engine is given when nobody wrote another. It is short on purpose: the plugin quotes it in every follow-up prompt.
-pub const DEFAULT_GOAL_TEXT: &str = "Finish the task you were given. If the lifecycle goal card exists (.ham/lifecycle/GOAL.md, or the same path with the folder that \
+/// It names the goal card of this task ("If this task has a lifecycle goal card"): a card that an earlier request left in the repository is
+/// not named as the goal of a later one. [`goal_text_in`] splits the text on the words " its numbered checks", which stay.
+pub const DEFAULT_GOAL_TEXT: &str = "Finish the task you were given. If this task has a lifecycle goal card (.ham/lifecycle/GOAL.md, or the same path with the folder that \
 .ham/records names in place of .ham), its numbered checks are the goal: every check must pass in a run made after your last edit. Answer each question about \
 the goal from the output of those checks, not from memory. If you cannot make progress, end your final message with a line that starts with \
 BLOCKED: and says what is missing. Work outside this checkout is not a blocker: report it as NOT DONE lines and finish the rest.";

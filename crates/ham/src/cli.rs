@@ -422,7 +422,22 @@ pub async fn execute<P: ControlPlane>(
         | Command::Engine(_)
         | Command::Models => 0,
         Command::Pull { run_id, artifact } if *artifact == PullArtifact::Snapshot => {
-            crate::snapshot_cmd::pull_snapshot(api, run_id, json, ctx.downloads, out).await
+            crate::snapshot_cmd::pull_snapshot(api, run_id, None, json, ctx.downloads, out).await
+        }
+        // The files the service read back from one session's storage, used or not.
+        Command::Pull {
+            run_id,
+            artifact: PullArtifact::ReadBack(session),
+        } => {
+            crate::snapshot_cmd::pull_snapshot(
+                api,
+                run_id,
+                Some(*session),
+                json,
+                ctx.downloads,
+                out,
+            )
+            .await
         }
         Command::Pull { run_id, artifact } => {
             cmd_pull(api, run_id, artifact, json, ctx.downloads, ctx.chunk, out).await
@@ -475,7 +490,9 @@ pub async fn execute<P: ControlPlane>(
             .await
         }
         Command::Runs { probes } => cmd_runs(api, *probes, json, out).await,
-        Command::Cancel { run_id } => commands::cmd_cancel(api, run_id, json, out).await,
+        Command::Cancel { run_id, discard } => {
+            commands::cmd_cancel(api, run_id, *discard, json, out).await
+        }
         Command::Say {
             run_id,
             text,
@@ -1600,11 +1617,17 @@ pub fn runs_line_tagged(r: &RunSummary, name: Option<&str>, tags: &[String]) -> 
         RunTarget::NewRepo { repo } => format!("new {repo}"),
         RunTarget::S3Only => "s3-only".to_string(),
     };
+    // What the service says about the session of an active run, after the phase: a recorded cancel, else a session it
+    // finds silent. The words come from the service's members alone; the client's clock is not asked.
+    let session = ham_core::cancel_note::row_trailer(r)
+        .map(|words| format!(" \u{b7} {words}"))
+        .unwrap_or_default();
     let mut line = format!(
-        "{}  {} ({})  {}  {}",
+        "{}  {} ({}){}  {}  {}",
         sanitize_line(&r.run_id),
         v["status"].as_str().unwrap_or("-"),
         ham_core::render::phase_listed(Some(r.status), Some(r.phase)),
+        session,
         sanitize_line(&target),
         sanitize_line(&r.created_at),
     );

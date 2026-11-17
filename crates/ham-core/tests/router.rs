@@ -1174,7 +1174,10 @@ fn a_confirmation_waits_for_a_second_enter_not_too_soon_and_escape_cancels() {
     assert_eq!(c.argv(), ["cancel", RUN]);
     assert_eq!(
         c.invocation().command,
-        Command::Cancel { run_id: RUN.into() }
+        Command::Cancel {
+            run_id: RUN.into(),
+            discard: false
+        }
     );
     assert!(c.preview().text.contains(RUN));
     // The Enter that sent the line, and a repeat in the burst after it, do not confirm.

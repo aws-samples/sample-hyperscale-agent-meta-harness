@@ -270,9 +270,11 @@ fn agent_item(features: &str) -> String {
     )
 }
 
+/// The answer of the Query for the direct agent's Turn items: the one Turn item of a run of one session. It names no `invokedAt`
+/// (an item written before the member existed), so it is read as the run's first turn was always read.
 fn turn_item(transcript: &str) -> String {
     format!(
-        r#"{{"Item": {{"PK": {{"S": "RUN#{RUN}"}}, "SK": {{"S": "TURN#direct#000001"}}, "n": {{"N": "1"}}{transcript}}}}}"#
+        r#"{{"Items": [{{"PK": {{"S": "RUN#{RUN}"}}, "SK": {{"S": "TURN#direct#000001"}}, "n": {{"N": "1"}}{transcript}}}]}}"#
     )
 }
 
@@ -301,10 +303,14 @@ async fn the_facts_are_two_consistent_gets_of_the_agent_and_turn_items_read_as_r
                 count: Some(3),
             },
         ],
+        answered_tokens: None,
     };
     assert_eq!(
         facts,
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: false,
             summary: SummaryFact::Valid(want)
@@ -316,9 +322,14 @@ async fn the_facts_are_two_consistent_gets_of_the_agent_and_turn_items_read_as_r
         b[0]["Key"],
         json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "AGENT#direct"}})
     );
+    // The Turn items of the direct agent, every session's, with one Query.
     assert_eq!(
-        b[1]["Key"],
-        json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "TURN#direct#000001"}})
+        b[1]["KeyConditionExpression"],
+        "PK = :pk AND begins_with(SK, :sk)"
+    );
+    assert_eq!(
+        b[1]["ExpressionAttributeValues"],
+        json!({":pk": {"S": format!("RUN#{RUN}")}, ":sk": {"S": "TURN#direct#"}})
     );
     assert!(
         b.iter()
@@ -668,4 +679,153 @@ async fn the_query_limit_is_clamped_to_what_dynamodb_accepts() {
             .collect::<Vec<_>>(),
         vec![1, 1000]
     );
+}
+
+// ----: the newest invoked session decides the end ----------------------------------------------------------------------------
+
+fn turn_n(n: u32, extra: &str) -> String {
+    format!(
+        r#"{{"PK": {{"S": "RUN#{RUN}"}}, "SK": {{"S": "TURN#direct#{n:06}"}}, "n": {{"N": "{n}"}}{extra}}}"#
+    )
+}
+
+fn turns(items: &[String]) -> String {
+    format!(r#"{{"Items": [{}]}}"#, items.join(","))
+}
+
+fn invoked(at: &str) -> String {
+    format!(r#", "invokedAt": {{"S": "{at}"}}"#)
+}
+
+/// A summary that declares only what was left out on purpose.
+fn lossless(last: u64, count: u64) -> String {
+    format!(
+        r#", "transcript": {{"M": {{"lastTranscriptSeq": {{"N": "{last}"}}, "entries": {{"L": [{{"M": {{"kind": {{"S": "excluded"}}, "count": {{"N": "{count}"}}}}}}]}}}}}}"#
+    )
+}
+
+fn excluded(count: u64) -> CompletenessEntry {
+    CompletenessEntry {
+        kind: GapKind::Excluded,
+        from_seq: None,
+        to_seq: None,
+        count: Some(count),
+    }
+}
+
+async fn facts_of(items: &[String]) -> TranscriptFacts {
+    let (a, t) = (agent_item(FEATURES_V1), turns(items));
+    let r = json_replies(vec![&a, &t]);
+    ddb(&r).transcript_facts(RUN).await.unwrap()
+}
+
+/// A later session stores its summary on its own Turn item (turn n is session n). The adapter read turn 1 only, so a run whose first
+/// session handed off and whose second lost its end read as complete, and a run whose first session was lost never read its second
+/// session's summary.
+#[tokio::test]
+async fn b855_transcript_facts_reads_the_newest_invoked_turn() {
+    let at1 = "2026-11-16T07:03:00Z";
+    let at2 = "2026-11-16T07:15:34Z";
+    // Session 1 handed off with a lossless summary; session 2 was invoked and left none: the end is not known.
+    let facts = facts_of(&[
+        turn_n(1, &format!("{}{}", invoked(at1), lossless(2, 4))),
+        turn_n(2, &invoked(at2)),
+    ])
+    .await;
+    assert_eq!(
+        facts.summary,
+        SummaryFact::Absent,
+        "never the summary of an earlier session"
+    );
+    assert_eq!(facts.earlier, vec![excluded(4)]);
+    assert!(!facts.earlier_unreported);
+    assert_eq!(facts.last_session_invoked_at.as_deref(), Some(at2));
+    assert!(facts.supported && !facts.purged);
+
+    // Session 1 was lost (no summary); session 2 closed its conversation: its summary is the one that counts.
+    let facts = facts_of(&[
+        turn_n(1, &invoked(at1)),
+        turn_n(2, &format!("{}{}", invoked(at2), lossless(6, 9))),
+    ])
+    .await;
+    assert_eq!(
+        facts.summary,
+        SummaryFact::Valid(TranscriptSummary {
+            last_transcript_seq: Some(6),
+            entries: vec![excluded(9)],
+            answered_tokens: None,
+        })
+    );
+    assert!(facts.earlier.is_empty());
+    assert!(
+        facts.earlier_unreported,
+        "an earlier session without a summary is said"
+    );
+    assert_eq!(facts.last_session_invoked_at.as_deref(), Some(at2));
+
+    // Three sessions that all left a summary: the earlier entries in session order, the newest summary last.
+    let facts = facts_of(&[
+        turn_n(1, &format!("{}{}", invoked(at1), lossless(2, 1))),
+        turn_n(2, &format!("{}{}", invoked(at2), lossless(5, 2))),
+        turn_n(
+            3,
+            &format!("{}{}", invoked("2026-11-16T08:00:00Z"), lossless(8, 3)),
+        ),
+    ])
+    .await;
+    assert_eq!(facts.earlier, vec![excluded(1), excluded(2)]);
+    assert!(!facts.earlier_unreported);
+    assert_eq!(
+        facts.summary,
+        SummaryFact::Valid(TranscriptSummary {
+            last_transcript_seq: Some(8),
+            entries: vec![excluded(3)],
+            answered_tokens: None,
+        })
+    );
+
+    // A newest summary that is not well formed counts as none; the earlier valid one does not stand in for it. An earlier one that is
+    // not well formed is an earlier session that did not report.
+    let bad = r#", "transcript": {"M": {"entries": {"L": [{"M": {"kind": {"S": "bogus"}}}]}}}"#;
+    let facts = facts_of(&[
+        turn_n(1, &format!("{}{}", invoked(at1), lossless(2, 4))),
+        turn_n(2, &format!("{}{bad}", invoked(at2))),
+    ])
+    .await;
+    assert_eq!(facts.summary, SummaryFact::Invalid);
+    let facts = facts_of(&[
+        turn_n(1, &format!("{}{bad}", invoked(at1))),
+        turn_n(2, &format!("{}{}", invoked(at2), lossless(6, 9))),
+    ])
+    .await;
+    assert!(facts.earlier_unreported && facts.earlier.is_empty());
+
+    // A Turn item that was never invoked (a planned session whose start was refused) is no session: the one before it decides.
+    let facts = facts_of(&[
+        turn_n(1, &format!("{}{}", invoked(at1), lossless(2, 4))),
+        turn_n(2, ""),
+    ])
+    .await;
+    assert_eq!(
+        facts.summary,
+        SummaryFact::Valid(TranscriptSummary {
+            last_transcript_seq: Some(2),
+            entries: vec![excluded(4)],
+            answered_tokens: None,
+        })
+    );
+    assert_eq!(facts.last_session_invoked_at.as_deref(), Some(at1));
+
+    // No invoked Turn item at all (items that predate the member): the first turn is read, as before.
+    let facts = facts_of(&[turn_n(1, &lossless(2, 4))]).await;
+    assert_eq!(
+        facts.summary,
+        SummaryFact::Valid(TranscriptSummary {
+            last_transcript_seq: Some(2),
+            entries: vec![excluded(4)],
+            answered_tokens: None,
+        })
+    );
+    assert_eq!(facts.last_session_invoked_at, None);
+    assert!(!facts.earlier_unreported && facts.earlier.is_empty());
 }

@@ -42,6 +42,10 @@ The dispatcher library provides pure helpers and AgentCore calls. The `run-sessi
   models take 1,675 of the 2,048 characters that STS allows (the five session tags pack the whole to 36 percent, measured against STS; all-literal Regions
   would take about 2,370); one route gives exactly the text of `session_policy_in`; an ARN, a wildcard or an odd
   character in an id is refused. `tests/policy_routes.rs`.
+- `policy::recovery_policy(bucket, key, baseline_key)` is the inline session policy of the credentials that read a
+  stopped session's storage back: `s3:PutObject` on the one read-back object, `s3:GetObject` on the one saved copy it is compared with (left out when there
+  is none to fetch), and `kms:GenerateDataKey` and `kms:Decrypt`, which the intersection with the role's policy needs named. No other object, no listing, no
+  internal API and no model. A bucket or key that could name more than one object is `PolicyError::BadObject`.
 - Credentials and nonces are never printed or logged. The Agent item stores only the nonce SHA-256.
 - Tests never call AWS. `tests/aws_calls.rs` drives the real SDK client over recorded HTTP exchanges using `StaticReplayClient`. It reads what each call put on the wire.
 

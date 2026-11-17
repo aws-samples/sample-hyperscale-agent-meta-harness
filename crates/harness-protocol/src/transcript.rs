@@ -74,6 +74,12 @@ pub struct TranscriptSummary {
     pub last_transcript_seq: Option<u64>,
     #[serde(default)]
     pub entries: Vec<CompletenessEntry>,
+    /// The tokens of the prompts that answered in this session, added up by the worker where it makes the records:
+    /// `result.usage.totalTokens` of every `prompt_result` record whose `result.stopReason` is a string, once per record, whether or
+    /// not the record was stored. Absent when no such record reported a number, after a sum past the largest number, and from a worker
+    /// that predates the member: the service then gives no number for the run. `validate` does not look at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_tokens: Option<u64>,
 }
 
 impl TranscriptSummary {

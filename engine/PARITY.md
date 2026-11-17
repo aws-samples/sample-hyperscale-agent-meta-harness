@@ -31,7 +31,8 @@ while any row is owed, so no row is owed on a merged tree.
 | permission answering | every permission request is answered at once, allow once | asserted | asserted |
 | idle watchdog | an engine silent past the limit is cancelled and given up on | asserted | asserted |
 | tool-idle limit | a tool call that runs while the engine sends nothing is cancelled after the limit; each engine starts with its own default, one setting replaces it | asserted | asserted |
-| command time limit | the shell command time limit of the engine is one setting, placed in the launch, and is ten minutes when the user sets none | asserted | asserted |
+| command time limit | the shell command time limit of the engine is one setting, placed where the engine reads it, and is ten minutes when the user sets none | asserted | asserted |
+| command time limit by effect | the engine's profile gates it on a run of the pinned engine with the harness's launch: a command that names no limit runs past the engine's own default; on OpenCode a limit the model names is kept, on Cline none can be named | exception | asserted |
 | task text that starts with a slash | a task that starts with / reaches the model as a task, and an engine that reads no prompt as a command gets its prompts byte for byte | asserted | asserted |
 | telemetry kill switches | telemetry and self-update are off in every launch, and a launch without them is refused | asserted | asserted |
 | credentials binding | the engine reaches AWS through the agent profile and agentd creds, with no raw key | asserted | asserted |
@@ -49,6 +50,7 @@ while any row is owed, so no row is owed on a merged tree.
 
 ### Exceptions
 
+- command time limit by effect (cline): Cline's limit is the fork's own code (patch 0015): the model cannot name a limit, and probe FK1 runs the fork's binary with a command past the old limit and with a hung command at every fork build.
 - AgentCore MCP gateway tools (both engines): The harness gives no AgentCore MCP gateway tool to any engine today. A gateway tool added later reaches every engine through the harness tool server of the row above.
 - semantic-engine access (both engines): The harness gives no semantic search to any engine today; the code_search tool of the harness's tool server is a ripgrep search of the work tree, the same for every engine.
 - AWS API MCP access (both engines): The harness gives no AWS API MCP to any engine today; an engine reaches AWS with the session credentials of the credentials row, through its own tools.
@@ -65,6 +67,8 @@ None.
 | `src/engine/config.rs` | Built-in config files and the value of the ACP `model` option | Engines read settings from different files and name the same model differently. |
 | `src/engine/tools.rs` | Tool names and the title style | Engines name their tools differently, and no engine is judged by another's names. |
 | `src/engine/layout.rs` | Where rules, skills and locked settings go, their protection strategy, the kill switches, the repository folders that shadow | An engine that keeps state in its config directory cannot have it owned by root. |
-| `src/engine/direct.rs` | Launch arguments, the command time limit variable, rules and skills listing commands, the locked settings file | Only the engine that has these commands uses them; the other engines are checked on the disk. |
+| `src/engine/direct.rs` | Launch arguments, the first engine's command time limit variable, the wait bound, rules and skills listing commands, the locked settings file | Only the engine that has these commands uses them; the other engines are checked on the disk. |
+| `src/engine/opencode.rs` | The session document of the second engine, the command time limit plugin, its read-back and its ready line | The pinned release reads no variable for the limit of its shell tool, so the limit travels in a plugin's options. |
+| `src/engine/launch.rs` | The engine's environment block and the standalone launch | One place builds what a run and the K-suite start. |
 | `src/engine/goal.rs` | The goal plugin and the files of the goal loop | Engines carry their goal loop in different ways. |
 | `src/engine/direct_words.rs`, `faults.rs`, `user_settings.rs` | Words, idle-timeout text and user settings that name an engine | The words a person reads name the engine they run on. |

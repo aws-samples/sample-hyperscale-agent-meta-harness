@@ -184,6 +184,27 @@ impl Store for &Fake {
     async fn list_agents(&self, _: &str) -> Result<Vec<AgentItem>, StoreError> {
         Ok(self.agents.lock().unwrap().clone())
     }
+    /// A cancel that keeps the work is recorded on the Run item.
+    async fn record_cancel(
+        &self,
+        run_id: &str,
+        at: &str,
+        _: &Envelope,
+    ) -> Result<control_api::handler::CancelWrite, StoreError> {
+        use control_api::handler::CancelWrite;
+        let mut runs = self.runs.lock().unwrap();
+        let Some(run) = runs.get_mut(run_id) else {
+            return Ok(CancelWrite::NotActive);
+        };
+        if run.status != harness_protocol::goal::GoalStatus::Active {
+            return Ok(CancelWrite::NotActive);
+        }
+        if let Some(first) = &run.cancel_requested_at {
+            return Ok(CancelWrite::Already(first.clone()));
+        }
+        run.cancel_requested_at = Some(at.to_string());
+        Ok(CancelWrite::Recorded)
+    }
     async fn update_run(
         &self,
         run: &RunItem,

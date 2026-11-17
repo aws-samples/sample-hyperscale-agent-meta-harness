@@ -174,6 +174,12 @@ pub struct SessionStartedPayload {
     /// own window applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u32>,
+    /// `true` when the service reads the storage of a session of this run back after the session was stopped or
+    /// went silent, before the next session starts: the run did not switch the read off (`recoverAfterStop`), and its machine keeps
+    /// its storage when a session ends. Left out otherwise, and by a service that predates the read: a client that does not find it
+    /// promises no read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_read_back: Option<bool>,
 }
 
 /// The `orchestration.schema.json` contract document.

@@ -20,6 +20,9 @@
 //! The row `run.delivery_note` is the switch of the block the harness writes before the first prompt of every session on how the run delivers. It is on unless the
 //! file says `false`, which is the only value that reaches a request (the `deliveryNote` member).
 //!
+//! The row `run.recover_after_stop` is the switch of reading a stopped session's storage back before the next session starts, and of acting on the worker's notice
+//! that its session is being ended. It is on unless the file says `false`, which is the only value that reaches a request (the `recoverAfterStop` member).
+//!
 //! The first nine rows are the keys of v4.02, with the names, types, ranges, environment variables and spellings they always had. The
 //! six after them (`run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`) and the ones added later (`ui.mascot`,
 //! `run.report_command_minutes`) live in the tables `[run]`,
@@ -106,11 +109,12 @@ pub enum Key {
     RunCopyEveryMinutes,
     RunCopyEverySeconds,
     RunDeliveryNote,
+    RunRecoverAfterStop,
 }
 
 impl Key {
     /// Every key, in registry order.
-    pub const ALL: [Key; 49] = [
+    pub const ALL: [Key; 50] = [
         Key::ApiEndpoint,
         Key::Region,
         Key::AwsProfile,
@@ -160,6 +164,7 @@ impl Key {
         Key::RunCopyEveryMinutes,
         Key::RunCopyEverySeconds,
         Key::RunDeliveryNote,
+        Key::RunRecoverAfterStop,
     ];
 
     /// The row of this key.
@@ -337,6 +342,12 @@ impl Key {
             Key::RunDeliveryNote => {
                 Slot::Bool(&mut cfg.run.get_or_insert_with(RunTable::default).delivery_note)
             }
+            Key::RunRecoverAfterStop => Slot::Bool(
+                &mut cfg
+                    .run
+                    .get_or_insert_with(RunTable::default)
+                    .recover_after_stop,
+            ),
             Key::RunProviderSharing => Slot::Bool(
                 &mut cfg
                     .run
@@ -657,7 +668,7 @@ const fn row(
 }
 
 /// The registry, in the order of [`Key`].
-pub static ROWS: [Row; 49] = [
+pub static ROWS: [Row; 50] = [
     Row {
         applies: Applies::Restart,
         security: true,
@@ -1469,6 +1480,21 @@ pub static ROWS: [Row; 49] = [
             Kind::Bool,
             "Delivery note",
             "On, the harness tells the engine at the start of every session how the run delivers, in one short block before your prompt: only a zip, which takes a workflow file and a root buildspec.yml, or a pull request to the repository you named, which refuses a run that adds, changes or removes such a file. Off, the engine is told nothing about the delivery and your prompt is the first thing it reads: a zip run may then leave out a workflow file you asked for, and a pull-request run may add one and end blocked. A stage that predates the switch refuses a start with it off, and ham names the key. A run that ham resume or /retry starts keeps the setting of the run it comes from.",
+        )
+    },
+    Row {
+        default: DefaultValue::Bool(true),
+        default_text: "on",
+        wire: Some("recoverAfterStop"),
+        since: 1,
+        group: Group::Limits,
+        ..row(
+            Key::RunRecoverAfterStop,
+            ("run", "recover_after_stop"),
+            "run.recover_after_stop",
+            Kind::Bool,
+            "Read back on stop",
+            "On, when a session of a run is stopped from outside or stops answering, the service reads that session's own storage back before the next session starts. It uses those files only when the lineage and content checks pass; when it does not, ham pull <runId> --read-back <n> downloads them. A stop the worker hears of ends the wait early. A session on Instances compute keeps no storage of that kind: it gets no read, and its notice does not end the wait. Off, the service makes no read and does not act on that notice. It calls a stopped session lost after 600 seconds and starts the next session from the last saved copy, as in releases before this one. The saved copies are kept either way. A stage that predates the switch refuses a start with it off, and ham names the key. A run that ham resume or /retry starts keeps the setting of the run it comes from.",
         )
     },
 ];

@@ -9,6 +9,7 @@ pub mod agents;
 pub mod alert;
 pub mod attachments;
 pub mod backends;
+pub mod cancel_note;
 pub mod chat;
 pub mod command;
 pub mod config;

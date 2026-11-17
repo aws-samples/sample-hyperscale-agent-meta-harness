@@ -762,6 +762,7 @@ fn a_confirmed_cancel() {
     assert!(screen_text(&app, 120, 40).contains("press c again to cancel"));
     assert_eq!(press_slowly(&mut app, KeyCode::Char('c')), cancel());
     app.update(Msg::Cancelled(Ok(RunControlResponse {
+        cancel: None,
         run_id: RUN.into(),
         status: GoalStatus::Cleared,
     })));
@@ -859,4 +860,75 @@ fn the_artifacts_screen_lists_and_downloads_the_runs_artifacts() {
     assert_eq!(app.screen(), Screen::Dashboard);
     press(&mut app, KeyCode::Char('a'));
     assert_eq!(press(&mut app, KeyCode::Char('q')), vec![Effect::Quit]);
+}
+
+/// The screen as one line of words: the wrapped lines joined, every run of blanks one blank.
+fn words(screen: &str) -> String {
+    screen.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// After a cancel made with the keys, the notice row says what the service recorded in the line of
+/// `ham watch`, which ends with the command that downloads the newest saved copy. The row is one row and a terminal cuts it, so the
+/// conversation says the same line whole when the service's event arrives.
+#[test]
+fn b853_a_recorded_cancel_names_the_command_of_the_newest_copy_on_the_run_screen() {
+    use ham_core::cancel_note::CancelNote;
+    use harness_protocol::api::v1::CancelRecorded;
+    let recorded = CancelRecorded {
+        requested_at: "2026-09-27T09:05:22Z".into(),
+        session: Some(1),
+        session_live: false,
+        delivering: false,
+        last_heartbeat_at: None,
+        lost_after: None,
+    };
+    let copy = CancelNote::copy_line(RUN);
+    let mut app = dashboard(agents(1));
+    assert!(
+        !words(&screen_text(&app, 120, 40)).contains("Cancel recorded"),
+        "TRIGGER PRESENT: nothing says a cancel before one is made"
+    );
+    app.update(Msg::Cancelled(Ok(RunControlResponse {
+        cancel: Some(recorded.clone()),
+        run_id: RUN.into(),
+        status: GoalStatus::Active,
+    })));
+    // The notice row: the status, then the line of `ham watch`. At 120 columns the row is cut before the command.
+    let narrow = screen_text(&app, 120, 40);
+    assert!(
+        narrow.contains(&format!(
+            "run {RUN} active. Cancel recorded at 2026-09-27 09:05 UTC: the run has no session that answers"
+        )),
+        "{narrow}"
+    );
+    assert!(
+        !words(&narrow).contains(&copy),
+        "TRIGGER PRESENT: one row of 120 columns cuts the notice before the command: {narrow}"
+    );
+    // The notice is the whole line: a row that is wide enough shows the command at its end.
+    let wide = screen_text(&app, 480, 40);
+    assert!(
+        wide.contains(&format!(
+            "The service delivers the files it read back from the session's storage when its checks leave no doubt, and otherwise the last saved copy, if the run saved one. {copy}"
+        )),
+        "{wide}"
+    );
+    // The service's event arrives with the next read: the conversation says the line whole, wrapped to the screen.
+    let mut payload = serde_json::to_value(&recorded).unwrap();
+    payload["kind"] = json!("cancel-recorded");
+    app.update(pages(vec![env(
+        900,
+        EventType::RunWaiting,
+        None,
+        None,
+        0,
+        payload,
+    )]));
+    for (w, h) in [(80, 40), (120, 40)] {
+        let text = words(&screen_text(&app, w, h));
+        assert!(
+            text.contains(&copy),
+            "{w}x{h}: the conversation names the command: {text}"
+        );
+    }
 }

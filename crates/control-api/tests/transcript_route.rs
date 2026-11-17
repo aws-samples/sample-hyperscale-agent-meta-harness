@@ -30,6 +30,7 @@ const INC_A: &str = "01K83DA0A0A0A0A0A0A0A0A0A0";
 
 fn run_item(id: &str, owner: &str, status: GoalStatus) -> RunItem {
     RunItem {
+        cancel_requested_at: None,
         run_id: id.into(),
         owner_principal_arn: owner.into(),
         prompt_sha256: "cd".repeat(32),
@@ -52,11 +53,15 @@ fn run_item(id: &str, owner: &str, status: GoalStatus) -> RunItem {
         slice: None,
         max_run_s: None,
         engine: None,
+        recovered_copy: None,
     }
 }
 
 fn supported() -> TranscriptFacts {
     TranscriptFacts {
+        last_session_invoked_at: None,
+        earlier_unreported: false,
+        earlier: Vec::new(),
         supported: true,
         purged: false,
         summary: SummaryFact::Absent,
@@ -326,6 +331,9 @@ async fn a_run_whose_image_writes_no_transcript_is_unsupported_and_costs_no_buck
     t.facts.lock().unwrap().insert(
         RUN.into(),
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: true,
             summary: SummaryFact::Absent,
@@ -428,10 +436,12 @@ async fn the_state_of_an_ended_run_comes_from_the_workers_summary_and_the_run_st
             to_seq: Some(2),
             count: None,
         }],
+        answered_tokens: None,
     };
     let shed = TranscriptSummary {
         last_transcript_seq: Some(2),
         entries: vec![entry(GapKind::Shed)],
+        answered_tokens: None,
     };
     let tail_unknown = vec![CompletenessEntry {
         kind: GapKind::TailUnknown,
@@ -512,6 +522,9 @@ async fn the_state_of_an_ended_run_comes_from_the_workers_summary_and_the_run_st
         t.facts.lock().unwrap().insert(
             RUN.into(),
             TranscriptFacts {
+                last_session_invoked_at: None,
+                earlier_unreported: false,
+                earlier: Vec::new(),
                 supported: true,
                 purged: false,
                 summary,
@@ -536,10 +549,14 @@ async fn chunks_the_worker_declared_but_the_prefix_lacks_are_a_gap_once_the_whol
     let summary = TranscriptSummary {
         last_transcript_seq: Some(5),
         entries: vec![],
+        answered_tokens: None,
     };
     t.facts.lock().unwrap().insert(
         RUN.into(),
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: false,
             summary: SummaryFact::Valid(summary),
@@ -571,11 +588,15 @@ async fn chunks_the_worker_declared_but_the_prefix_lacks_are_a_gap_once_the_whol
     t.facts.lock().unwrap().insert(
         RUN.into(),
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: false,
             summary: SummaryFact::Valid(TranscriptSummary {
                 last_transcript_seq: Some(5),
                 entries: vec![],
+                answered_tokens: None,
             }),
         },
     );
@@ -1337,11 +1358,15 @@ async fn an_ended_run_read_to_its_end_has_no_next_and_a_live_one_keeps_its_poll_
     ended.facts.lock().unwrap().insert(
         RUN.into(),
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: false,
             summary: SummaryFact::Valid(TranscriptSummary {
                 last_transcript_seq: Some(2),
                 entries: vec![],
+                answered_tokens: None,
             }),
         },
     );
@@ -1695,11 +1720,15 @@ async fn the_budget_leaves_room_for_the_worst_gaps_and_completeness() {
     t.facts.lock().unwrap().insert(
         RUN.into(),
         TranscriptFacts {
+            last_session_invoked_at: None,
+            earlier_unreported: false,
+            earlier: Vec::new(),
             supported: true,
             purged: false,
             summary: SummaryFact::Valid(TranscriptSummary {
                 last_transcript_seq: Some(9_999_999),
                 entries,
+                answered_tokens: None,
             }),
         },
     );

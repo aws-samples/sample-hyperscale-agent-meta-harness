@@ -225,6 +225,36 @@ pub(crate) async fn git_with_env_outside(
     harness_git(git_command_outside(dir, args), args, envs).await
 }
 
+/// [`git_with_env_outside`] whose whole output comes back as bytes, untrimmed: the listing of a tree with its NUL separators, the
+/// bytes of a blob.
+pub(crate) async fn git_bytes_with_env(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+) -> Result<Vec<u8>, WsError> {
+    let mut cmd = git_command_outside(dir, args);
+    cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
+        .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
+        .kill_on_drop(true);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| WsError::Git(format!("git {}: {e}", args.first().unwrap_or(&""))))?;
+    if !out.status.success() {
+        return Err(WsError::Git(format!(
+            "git {}: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(out.stdout)
+}
+
 async fn harness_git(
     mut cmd: Command,
     args: &[&str],

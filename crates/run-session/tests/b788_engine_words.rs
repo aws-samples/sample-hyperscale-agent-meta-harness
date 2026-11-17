@@ -88,7 +88,6 @@ fn b788_the_comments_that_hold_a_long_message_are_headed_with_the_engine() {
 
 #[test]
 fn b788_run_completed_and_run_blocked_carry_the_label_of_the_engine() {
-    use harness_protocol::goal::GoalStatus;
     let run = "01M4X3Q7R9S0V1W2X3Y4Z5A6B7";
     let label_of = |e: harness_protocol::envelope::Envelope| match e.payload {
         harness_protocol::envelope::Payload::Inline { value } => value["label"].clone(),
@@ -98,10 +97,10 @@ fn b788_run_completed_and_run_blocked_carry_the_label_of_the_engine() {
         (Engine::CLINE, "Cline stopped: the session was lost"),
         (Engine::OPENCODE, "OpenCode stopped: the session was lost"),
     ] {
-        let done = events::run_completed_as(
+        // The label of the status form is the caller's; the plain form builds it from the engine.
+        let done = events::run_completed(
             run,
             1,
-            GoalStatus::Stalled,
             engine,
             DirectOutcome::StoppedSessionLost,
             None,

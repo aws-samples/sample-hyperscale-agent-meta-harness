@@ -61,6 +61,12 @@ pub struct Stats {
     pub stale: u64,
     /// Updates that came outside an open prompt (stored with `turn_id` null).
     pub unattributed: u64,
+    /// The tokens of the prompts that answered: `result.usage.totalTokens` of every `prompt_result` record made with a
+    /// string `result.stopReason`, added up once per record. `None` until such a record carries a number, and for good once the
+    /// sum has passed the largest number ([`Stats::answered_overflow`]).
+    pub answered_tokens: Option<u64>,
+    /// The sum of [`Stats::answered_tokens`] passed the largest number once: no number is given any more.
+    pub answered_overflow: bool,
 }
 
 /// The prompt a record belongs to.
@@ -398,6 +404,9 @@ impl Pipeline {
         self.stats.truncated += u64::from(truncated);
         self.stats.suppressed += u64::from(suppressed);
         self.stats.excluded += u64::from(excluded);
+        if raw.kind == "prompt_result" {
+            self.count_answered(&data);
+        }
         let n = self.next_n;
         self.next_n += 1;
         self.stats.records += 1;
@@ -411,6 +420,33 @@ impl Pipeline {
             n,
             kind: raw.kind,
             bytes: serde_json::to_vec(&rec).unwrap_or_default(),
+        }
+    }
+
+    /// Adds the tokens of one `prompt_result` record to the sum of the prompts that answered. The record is read as it is
+    /// made (after redaction and the record cap), by the rule a reader of the stored conversation uses: `result.stopReason` is a
+    /// string and `result.usage.totalTokens` a whole number. Each record is made once, so each is counted once, whether or not
+    /// its object is stored later. A sum past the largest number is unknown for good.
+    fn count_answered(&mut self, data: &Value) {
+        if self.stats.answered_overflow
+            || !data
+                .pointer("/result/stopReason")
+                .is_some_and(Value::is_string)
+        {
+            return;
+        }
+        let Some(tokens) = data
+            .pointer("/result/usage/totalTokens")
+            .and_then(Value::as_u64)
+        else {
+            return;
+        };
+        match self.stats.answered_tokens.unwrap_or(0).checked_add(tokens) {
+            Some(sum) => self.stats.answered_tokens = Some(sum),
+            None => {
+                self.stats.answered_tokens = None;
+                self.stats.answered_overflow = true;
+            }
         }
     }
 

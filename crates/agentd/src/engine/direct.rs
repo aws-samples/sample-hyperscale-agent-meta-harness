@@ -88,22 +88,70 @@ pub fn has_reasoning_flag(engine: &str) -> bool {
 /// The engine's command time limit variable (milliseconds; fork patch 0015: 1,000 to 1,800,000, default 600,000).
 pub const TIMEOUT_ENV: &str = "CLINE_RUN_COMMANDS_TIMEOUT_MS";
 
-/// The second engine's command time limit variable (milliseconds). Its shell tool stops a command after two minutes unless this says
-/// otherwise.
-pub const OPENCODE_TIMEOUT_ENV: &str = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS";
-
-/// The command time limit a launch of `engine` carries and the variable that holds it. Cline's fork has ten minutes as its own default, so its
-/// variable is there only for a limit the user set, and a run with none has the environment it had. OpenCode's own default is two minutes, so its
-/// launch always carries the variable: the user's limit, else [`CommandSeconds::DEFAULT`], the ten minutes Cline's runs end up with. `None` for an
-/// engine with no such variable, and for Cline while the user set no limit.
+/// The command time limit a launch of `engine` carries in a variable, and the variable. Cline's fork has ten minutes as its own default, so its
+/// variable is there only for a limit the user set, and a run with none has the environment it had. `None` for every other engine: the second
+/// engine reads no variable for the limit (the pinned release holds no such name), its limit is placed in its configuration ([`run_limit`]).
 pub fn command_limit(
     engine: &str,
     settings: &UserSettings,
 ) -> Option<(&'static str, CommandSeconds)> {
     match engine {
         "cline" => settings.command_timeout.map(|limit| (TIMEOUT_ENV, limit)),
-        "opencode" => Some((
-            OPENCODE_TIMEOUT_ENV,
+        _ => None,
+    }
+}
+
+/// The environment variables the engine's launch gets from the user's engine settings: the command time limit, in milliseconds, in the variable
+/// [`command_limit`] names. Nothing is added for a setting the user did not make, and nothing for an engine that reads no variable for it.
+pub fn launch_env(engine: &str, settings: &UserSettings) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if let Some((var, limit)) = command_limit(engine, settings) {
+        env.insert(var.to_string(), limit.millis().to_string());
+    }
+    env
+}
+
+/// The command time limit the configuration of `engine` must carry: for the second engine the user's limit, else
+/// [`CommandSeconds::DEFAULT`], the ten minutes Cline's runs end up with, in every launch, because that engine's own limit for a shell command
+/// that names none is two minutes. `None` for an engine whose configuration holds no such limit.
+pub fn run_limit(engine: &str, settings: &UserSettings) -> Option<CommandSeconds> {
+    match engine {
+        "opencode" => Some(
+            settings
+                .command_timeout
+                .unwrap_or_else(CommandSeconds::default_limit),
+        ),
+        _ => None,
+    }
+}
+
+/// The reason word of the notices about the command time limit (`turn.progress`, kind `notify`).
+pub const LIMIT_REASON: &str = "command_limit";
+
+/// The variable that bounds one wait on a background job, in seconds. The lifecycle pack's wait reads it and waits 100 seconds without it.
+pub const WAIT_ENV: &str = "HAMH_WAIT_S";
+
+/// The longest wait: a prompt cache entry lives five minutes from its last use, and a wait of four leaves a minute for the model's own answer.
+pub const WAIT_MAX_S: u32 = 240;
+
+/// The bound of one wait for a command time limit: nine tenths of the limit, at least 1 and at most [`WAIT_MAX_S`] seconds, so a wait is not
+/// cut by the limit and does not outlive the prompt cache.
+pub fn wait_seconds(limit: CommandSeconds) -> u32 {
+    (limit.get() * 9 / 10).clamp(1, WAIT_MAX_S)
+}
+
+/// [`wait_seconds`] of a limit given in milliseconds (the engine's own limit, which is no user setting).
+pub fn wait_seconds_of_ms(limit_ms: u64) -> u32 {
+    u32::try_from(limit_ms / 1000 * 9 / 10)
+        .unwrap_or(WAIT_MAX_S)
+        .clamp(1, WAIT_MAX_S)
+}
+
+/// The bound of one wait a launch of `engine` carries, in seconds: for both engines the limit is the user's setting, else
+/// [`CommandSeconds::DEFAULT`]. `None` for an engine with no arm (the pack's wait is then 100 seconds).
+pub fn wait_bound(engine: &str, settings: &UserSettings) -> Option<u32> {
+    match engine {
+        "cline" | "opencode" => Some(wait_seconds(
             settings
                 .command_timeout
                 .unwrap_or_else(CommandSeconds::default_limit),
@@ -112,14 +160,24 @@ pub fn command_limit(
     }
 }
 
-/// The environment variables the engine's launch gets from the user's engine settings: the command time limit, in milliseconds, in the variable
-/// [`command_limit`] names. For Cline nothing is added for a setting the user did not make.
-pub fn launch_env(engine: &str, settings: &UserSettings) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-    if let Some((var, limit)) = command_limit(engine, settings) {
-        env.insert(var.to_string(), limit.millis().to_string());
+/// The bound of one wait that the engine's launch really carries, in seconds, for the count of the guard stops on a wait that was sent
+/// again: the value of [`WAIT_ENV`] in the launch's environment after the modules had their say, so the stops are judged by the
+/// bound the session has. `None` for a launch without the variable, and for an engine whose tool call frame does not carry the call's
+/// input (`TitleStyle::input_is_late`): its shell calls all look alike in the count of identical calls, so nothing there tells a wait that
+/// was sent again from five different commands that each ran long.
+pub fn guard_wait_bound(engine: &str, env: &BTreeMap<String, String>) -> Option<u32> {
+    if crate::engine::tools::engine_tools(engine)
+        .title
+        .input_is_late()
+    {
+        return None;
     }
-    env
+    env.get(WAIT_ENV)?.parse().ok().filter(|s| *s > 0)
+}
+
+/// [`wait_bound`] as the variable of the launch.
+pub fn wait_env(engine: &str, settings: &UserSettings) -> Option<(&'static str, String)> {
+    wait_bound(engine, settings).map(|s| (WAIT_ENV, s.to_string()))
 }
 
 /// One row of the engine's rules listing.

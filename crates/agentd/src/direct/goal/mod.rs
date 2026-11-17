@@ -68,7 +68,9 @@ use usage::{FINAL_READS, OutsideUsage, now_ms};
 use watch::{Command, HelperRule, HelperStall, HoldNote, Watch, span};
 
 /// The sentence a dead loop is given (sent as a prompt in the same session through the driver, so it is never sent beside a user's message).
-pub const KICK_PROMPT: &str = "Continue working toward the goal. Run the checks of the goal card again and answer from their output. If you cannot make progress, end your final message with a line that starts with BLOCKED: and says what is missing. Work outside this checkout is not a blocker: report it as NOT DONE lines and finish the rest.";
+/// Like the default goal text it names the goal card of this task, and only if the task has one: a card that an earlier request left
+/// in the repository is not the card whose checks are asked for.
+pub const KICK_PROMPT: &str = "Continue working toward the goal. Run the checks of this task's goal card again, if it has one, and answer from their output. If you cannot make progress, end your final message with a line that starts with BLOCKED: and says what is missing. Work outside this checkout is not a blocker: report it as NOT DONE lines and finish the rest.";
 
 /// [`KICK_PROMPT`] with the sentence about work outside the checkout when `outside_note` is true, without it when the user turned it
 /// off.

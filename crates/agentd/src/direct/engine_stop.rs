@@ -23,7 +23,7 @@ use std::time::Duration;
 pub const MEASURED_UPSTREAM_TAG: &str = "cli-v3.0.71";
 /// The tree of the engine's patch series on that tag (`[series] tree` of the same lock). Series 14 (patch 0014, blank keys of a replayed Bedrock
 /// tool input) and series 13 as its control gave that result earlier.
-pub const MEASURED_SERIES_TREE: &str = "f8990b6745402aec9bf0458611c763a1a7e710f8";
+pub const MEASURED_SERIES_TREE: &str = "c75466739c34f810ccc10e1c721210215dc0de68";
 
 /// Identical consecutive tool calls at the end of the attempt that show the engine's loop guard (its hard threshold; the soft warning is 3).
 pub const LOOP_GUARD_CALLS: u32 = 5;

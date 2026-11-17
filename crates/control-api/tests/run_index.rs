@@ -8,7 +8,7 @@ mod chat_support;
 
 use chat_support::{
     ME, OTHER, SONNET, World, agent_item, at, deps, get, get_logged, goal_item, message, post,
-    request, run_item, ulid,
+    question, request, run_item, ulid,
 };
 use control_api::run_index::Budgets;
 use ham_core::run_index::{
@@ -1228,4 +1228,256 @@ async fn a_tag_written_before_the_start_survives_the_start() {
     let r = row_of(&body, &run);
     assert_eq!(r["title"], "Add percent_change");
     assert_eq!(r["tags"], json!(["project:billing", "topic:csv-export"]));
+}
+
+// ----: the session facts of the rows ---------------------------------------------------------------------------------------
+
+fn session_row(extra: Value) -> harness_protocol::api::v1::RunSummary {
+    let mut v = json!({"runId": rid(1), "status": "active", "phase": "green", "target": {"mode": "s3-only"},
+        "createdAt": at(1), "ownerPrincipalArn": ME});
+    for (k, x) in extra.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    serde_json::from_value(v).unwrap()
+}
+
+fn beating_agent(
+    run: &str,
+    status: &str,
+    heartbeat: Option<&str>,
+) -> harness_protocol::store::AgentItem {
+    let mut a = agent_item(run, SONNET, status);
+    a.heartbeat_at = heartbeat.map(str::to_string);
+    a
+}
+
+/// The service decides what is silent, at its own clock: the last heartbeat of an active run's session is at least 150 seconds old.
+#[test]
+fn b846_a_session_is_silent_by_the_services_clock_and_only_while_it_could_answer() {
+    use control_api::run_index::{session_silent_since, silent_after_s};
+    assert_eq!(
+        silent_after_s(),
+        150,
+        "two beats of a minute and half a minute"
+    );
+    // 2026-11-16T07:05:22Z
+    let heard = "2026-11-16T07:05:22Z";
+    let at_s = harness_protocol::common::parse_utc_unix(heard).unwrap();
+    let agent = beating_agent(&rid(1), "running", Some(heard));
+    let row = session_row(json!({}));
+    // Before the threshold: nothing. At it and after it: the time of the last heartbeat.
+    assert_eq!(session_silent_since(&row, Some(&agent), at_s + 149), None);
+    assert_eq!(
+        session_silent_since(&row, Some(&agent), at_s + 150).as_deref(),
+        Some(heard)
+    );
+    assert_eq!(
+        session_silent_since(&row, Some(&agent), at_s + 4_000).as_deref(),
+        Some(heard)
+    );
+    let late = at_s + 4_000;
+    // A run that is not active, a run that delivers, and a run that waits for the user's answer are not silent.
+    for extra in [
+        json!({"status": "complete"}),
+        json!({"status": "blocked"}),
+        json!({"phase": "delivering"}),
+        json!({"needsInput": {"requestId": "01K5ZQ4T8M3N6P7R9S0V1W2X3Y", "reason": "question", "title": "Which file?"}}),
+    ] {
+        assert_eq!(
+            session_silent_since(&session_row(extra.clone()), Some(&agent), late),
+            None,
+            "{extra}"
+        );
+    }
+    // A session the service ended, a session that has sent no heartbeat yet, and a run with no session record.
+    for status in ["stopped", "failed"] {
+        let ended = beating_agent(&rid(1), status, Some(heard));
+        assert_eq!(
+            session_silent_since(&row, Some(&ended), late),
+            None,
+            "{status}"
+        );
+    }
+    let fresh = beating_agent(&rid(1), "running", None);
+    assert_eq!(session_silent_since(&row, Some(&fresh), late), None);
+    assert_eq!(session_silent_since(&row, None, late), None);
+    // A time that is no UTC time is no heartbeat.
+    let odd = beating_agent(&rid(1), "running", Some("a while ago"));
+    assert_eq!(session_silent_since(&row, Some(&odd), late), None);
+}
+
+#[tokio::test]
+async fn b846_runs_rows_carry_the_session_facts() {
+    let w = World::new();
+    // An hour ago by the service's clock, and a moment ago.
+    let now = control_api::ids::now_rfc3339();
+    let long_ago = control_api::ids::rfc3339(
+        u64::try_from(harness_protocol::common::parse_utc_unix(&now).unwrap()).unwrap() - 3_600,
+    );
+    // Run 1: active, its session silent for an hour. Run 2: active, its session beats. Run 3: active with a recorded cancel and a
+    // silent session. Run 4: finished, with the record of a cancel and an old heartbeat.
+    for (i, status) in [(1, "active"), (2, "active"), (3, "active"), (4, "complete")] {
+        let mut run = run_item(&rid(i), ME, status, &at(i), S3_ONLY());
+        if i >= 3 {
+            run.cancel_requested_at = Some("2026-11-16T07:05:22Z".into());
+        }
+        w.add_run(run);
+        let heard = if i == 2 {
+            now.clone()
+        } else {
+            long_ago.clone()
+        };
+        w.agents
+            .lock()
+            .unwrap()
+            .push(beating_agent(&rid(i), "running", Some(&heard)));
+    }
+    let (status, body, logs) = get_logged(&w, ME, "/v1/runs", &[]).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        !logs.iter().any(|l| l.contains("session of run")),
+        "{logs:?}"
+    );
+    let rows = body["runs"].as_array().unwrap();
+    let row = |i: u64| {
+        rows.iter()
+            .find(|r| r["runId"] == json!(rid(i)))
+            .unwrap_or_else(|| panic!("run {i} is listed: {body}"))
+    };
+    assert_eq!(row(1)["sessionSilentSince"], json!(long_ago), "{}", row(1));
+    assert!(row(1).get("cancelRequestedAt").is_none());
+    assert!(row(2).get("sessionSilentSince").is_none(), "{}", row(2));
+    // The record of the cancel and the silent session are both sent; the client says the cancel.
+    assert_eq!(row(3)["cancelRequestedAt"], json!("2026-11-16T07:05:22Z"));
+    assert_eq!(row(3)["sessionSilentSince"], json!(long_ago));
+    // A finished row carries neither.
+    assert!(row(4).get("cancelRequestedAt").is_none(), "{}", row(4));
+    assert!(row(4).get("sessionSilentSince").is_none(), "{}", row(4));
+}
+
+/// `GET /v1/runs/{runId}` says about the run's session what the run's row of the list says.
+#[tokio::test]
+async fn b846_the_run_detail_carries_the_session_facts_of_its_row() {
+    let w = World::new();
+    let now = control_api::ids::now_rfc3339();
+    let long_ago = control_api::ids::rfc3339(
+        u64::try_from(harness_protocol::common::parse_utc_unix(&now).unwrap()).unwrap() - 3_600,
+    );
+    // Run 1: active with a recorded cancel, its session silent for an hour. Run 2: active, its session beats. Run 3: finished, with
+    // the record of a cancel and an old heartbeat.
+    for (i, status) in [(1, "active"), (2, "active"), (3, "complete")] {
+        let mut run = run_item(&rid(i), ME, status, &at(i), S3_ONLY());
+        if i != 2 {
+            run.cancel_requested_at = Some("2026-11-16T07:05:22Z".into());
+        }
+        w.add_run(run);
+        w.goals
+            .lock()
+            .unwrap()
+            .insert(rid(i), goal_item(&rid(i), "Build it"));
+        let heard = if i == 2 {
+            now.clone()
+        } else {
+            long_ago.clone()
+        };
+        w.agents
+            .lock()
+            .unwrap()
+            .push(beating_agent(&rid(i), "running", Some(&heard)));
+    }
+    let (status, d1) = get(&w, ME, &format!("/v1/runs/{}", rid(1)), &[]).await;
+    assert_eq!(status, 200, "{d1}");
+    assert_eq!(d1["summary"]["sessionSilentSince"], json!(long_ago), "{d1}");
+    assert_eq!(
+        d1["summary"]["cancelRequestedAt"],
+        json!("2026-11-16T07:05:22Z"),
+        "{d1}"
+    );
+    for i in [2, 3] {
+        let (status, d) = get(&w, ME, &format!("/v1/runs/{}", rid(i)), &[]).await;
+        assert_eq!(status, 200, "{d}");
+        assert!(d["summary"].get("sessionSilentSince").is_none(), "{d}");
+        assert!(d["summary"].get("cancelRequestedAt").is_none(), "{d}");
+    }
+}
+
+/// `GET /v1/runs/{runId}` does not call the session of a run that waits for the user's answer silent. The detail's summary
+/// carries no question, so the route reads the run's events for it, and only for a run that it would otherwise call silent.
+#[tokio::test]
+async fn b846_the_run_detail_of_a_run_that_waits_for_an_answer_is_not_called_silent() {
+    let w = World::new();
+    let now = control_api::ids::now_rfc3339();
+    let long_ago = control_api::ids::rfc3339(
+        u64::try_from(harness_protocol::common::parse_utc_unix(&now).unwrap()).unwrap() - 3_600,
+    );
+    // Run 1 waits for the user's answer, run 2 does not. The last heartbeat of both sessions is an hour old.
+    for i in [1, 2] {
+        w.add_run(run_item(&rid(i), ME, "active", &at(i), S3_ONLY()));
+        w.goals
+            .lock()
+            .unwrap()
+            .insert(rid(i), goal_item(&rid(i), "Build it"));
+        w.agents
+            .lock()
+            .unwrap()
+            .push(beating_agent(&rid(i), "running", Some(&long_ago)));
+    }
+    w.add_events([question(&rid(1), &ulid(1), &at(500))]);
+    let (status, waiting, logs) = get_logged(&w, ME, &format!("/v1/runs/{}", rid(1)), &[]).await;
+    assert_eq!(status, 200, "{waiting}");
+    assert!(
+        waiting["summary"].get("sessionSilentSince").is_none(),
+        "a session that waits for an answer is not silent: {waiting}"
+    );
+    assert!(
+        !logs.iter().any(|l| l.contains("session of run")),
+        "{logs:?}"
+    );
+    // TRIGGER PRESENT: the run without a question, with the same old heartbeat, is called silent; and the run list says that run 1
+    // waits for an answer.
+    let (status, silent, _) = get_logged(&w, ME, &format!("/v1/runs/{}", rid(2)), &[]).await;
+    assert_eq!(status, 200, "{silent}");
+    assert_eq!(
+        silent["summary"]["sessionSilentSince"],
+        json!(long_ago),
+        "{silent}"
+    );
+    let (_, listed, _) = get_logged(&w, ME, "/v1/runs", &[]).await;
+    let row = listed["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["runId"] == json!(rid(1)))
+        .unwrap_or_else(|| panic!("run 1 is listed: {listed}"));
+    assert!(
+        row.get("needsInput").is_some(),
+        "TRIGGER PRESENT: the run's question is open: {row}"
+    );
+    assert!(row.get("sessionSilentSince").is_none(), "{row}");
+}
+
+/// With the read of a stopped session's storage: a session the service has fenced is not called silent. The service has taken
+/// it off the run and decides about it; the row says nothing until the next session beats.
+#[test]
+fn b846_a_fenced_session_is_not_called_silent() {
+    use control_api::run_index::session_silent_since;
+    let heard = "2026-11-16T07:05:22Z";
+    let late = harness_protocol::common::parse_utc_unix(heard).unwrap() + 4_000;
+    let row = session_row(json!({}));
+    let mut agent = beating_agent(&rid(1), "running", Some(heard));
+    agent.session_generation = Some(2);
+    assert_eq!(
+        session_silent_since(&row, Some(&agent), late).as_deref(),
+        Some(heard),
+        "TRIGGER PRESENT: the session is silent"
+    );
+    // The fence of an earlier generation changes nothing.
+    agent.fenced_generation = Some(1);
+    assert_eq!(
+        session_silent_since(&row, Some(&agent), late).as_deref(),
+        Some(heard)
+    );
+    // The generation the item is at is fenced.
+    agent.fenced_generation = Some(2);
+    assert_eq!(session_silent_since(&row, Some(&agent), late), None);
 }

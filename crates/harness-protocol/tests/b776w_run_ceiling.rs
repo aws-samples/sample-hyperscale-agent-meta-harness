@@ -116,7 +116,7 @@ fn b776w_the_session_count_covers_the_ceiling_twice_over() {
 fn b776w_the_history_of_the_longest_run_fits_the_machine_limit_with_room() {
     let asl = machine();
     let states = asl["States"].as_object().expect("States");
-    let in_loop = ["StartSession", "NextSlice", "SliceChoice", "ResetSession"];
+    let in_loop = IN_LOOP;
     let per_session: u64 = in_loop.iter().map(|n| worst_events(&states[*n])).sum();
     let once: u64 = states
         .iter()
@@ -129,6 +129,53 @@ fn b776w_the_history_of_the_longest_run_fits_the_machine_limit_with_room() {
         worst * 5 <= SFN_HISTORY_EVENTS * 4,
         "{MAX_SLICES} sessions of {per_session} events and {once} once is {worst} events"
     );
+}
+
+/// The states one session of a run can pass: the loop, with the two states that read a stopped session's storage back.
+const IN_LOOP: [&str; 6] = [
+    "StartSession",
+    "HasResult",
+    "Recover",
+    "NextSlice",
+    "SliceChoice",
+    "ResetSession",
+];
+
+/// The loop has two more states, the Choice `HasResult` and the Task `Recover`. `Recover` has no Retry, so a session adds 7
+/// events at most (2 and 5) and writes 58 in all; 256 sessions of that still fit the history with the room the ceiling keeps.
+#[test]
+fn b854_the_history_still_fits_with_the_two_new_states() {
+    let asl = machine();
+    let states = asl["States"].as_object().expect("States");
+    assert_eq!(states["HasResult"]["Type"], "Choice");
+    assert_eq!(states["Recover"]["Type"], "Task");
+    assert!(
+        states["Recover"].get("Retry").is_none(),
+        "a Retry of Recover would add its events to every session that is lost"
+    );
+    assert_eq!(
+        worst_events(&states["HasResult"]) + worst_events(&states["Recover"]),
+        7
+    );
+    let per_session: u64 = IN_LOOP.iter().map(|n| worst_events(&states[*n])).sum();
+    assert_eq!(per_session, 58, "the events one session can write");
+    let once: u64 = states
+        .iter()
+        .filter(|(n, _)| !IN_LOOP.contains(&n.as_str()))
+        .map(|(_, s)| worst_events(s))
+        .sum();
+    let worst = u64::from(MAX_SLICES) * per_session + once;
+    assert!(
+        worst * 5 <= SFN_HISTORY_EVENTS * 4,
+        "{MAX_SLICES} sessions of {per_session} events and {once} once is {worst} events"
+    );
+    // The loop is one path: StartSession and its Catch reach HasResult, which reaches NextSlice itself or through Recover.
+    assert_eq!(states["StartSession"]["Next"], "HasResult");
+    assert_eq!(states["StartSession"]["Catch"][0]["Next"], "HasResult");
+    assert_eq!(states["HasResult"]["Choices"][0]["Next"], "NextSlice");
+    assert_eq!(states["HasResult"]["Default"], "Recover");
+    assert_eq!(states["Recover"]["Next"], "NextSlice");
+    assert_eq!(states["Recover"]["Catch"][0]["Next"], "NextSlice");
 }
 
 #[test]
@@ -151,6 +198,46 @@ fn b776w_the_snapshot_download_grant_names_every_turn_number_up_to_the_session_c
         (1..=digits).collect::<Vec<_>>(),
         "turn directory patterns of the snapshot grant"
     );
+}
+
+/// The files the service read back from a stopped session's storage are served by the same route, chosen or not, so the role
+/// of control-api reads and lists `agents/recovery/turns/<n>/recovery.bundle` for every session number a run can have: one pattern for
+/// each digit count, in the read statement and in the listing, as for the saved copies.
+#[test]
+fn b854_the_recovery_download_grant_names_every_turn_number() {
+    let ts = read("infra/lib/stacks/control.ts");
+    let digits = MAX_SLICES.to_string().len();
+    // The read statement names each object by its ARN; the listing names the same key as a prefix.
+    let widths = |lead: &str| {
+        let mut found: Vec<usize> = Vec::new();
+        for part in ts.split(lead).skip(1) {
+            let marks = part.chars().take_while(|c| *c == '?').count();
+            assert!(
+                marks > 0 && part[marks..].starts_with("/recovery.bundle`"),
+                "the grant names the read-back bundle of a session and nothing else under agents/recovery/: {}",
+                &part[..part.len().min(40)]
+            );
+            found.push(marks);
+        }
+        found.sort_unstable();
+        found
+    };
+    let read_widths = widths("`arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/");
+    let list_widths = widths("`runs/*/agents/recovery/turns/");
+    assert_eq!(
+        ts.matches("agents/recovery/").count(),
+        read_widths.len() + list_widths.len() + ts.matches("under agents/recovery/").count(),
+        "every other mention of the prefix is a comment"
+    );
+    let all: Vec<usize> = (1..=digits).collect();
+    assert_eq!(
+        read_widths, all,
+        "turn directory patterns of the read grant"
+    );
+    assert_eq!(list_widths, all, "turn directory patterns of the listing");
+    // The statements are the two of the snapshot download: the files read back have no statement of their own.
+    assert_eq!(ts.matches("Sid: \"SnapshotDownload\"").count(), 1);
+    assert_eq!(ts.matches("Sid: \"ListSnapshot\"").count(), 1);
 }
 
 #[test]

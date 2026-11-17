@@ -27,6 +27,7 @@ fn emitted(label: &str) -> (Value, String) {
         max_output_tokens: Some(128_000),
         context_tokens: Some(1_000_000),
         compaction: None,
+        command_limit_ms: None,
     };
     let version =
         harness_core::engine_profile::bundled_profile(harness_protocol::common::Engine::OPENCODE)

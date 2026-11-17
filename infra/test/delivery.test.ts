@@ -340,8 +340,11 @@ describe("bundle-validator and packager roles (no secrets, no CodeCommit)", () =
     // one exact key shape per run, the key repo-gateway's StageInputs writes.
     // The snapshot bundle is the held head of a direct run whose session ended with no final bundle:
     // the direct agent's key alone, not every agent's.
+    // The copy the service read back from a stopped session's storage is delivered when the run ends on that session:
+    // plan-delivery names turns/<n>/recovery.bundle under agents/recovery/ as the validator's sourceBundleUri. That one key shape alone.
     expect(list(get.Resource).sort()).toEqual([
       `${BUCKET}/runs/*/agents/*/turns/*/bundle`, `${BUCKET}/runs/*/agents/direct/turns/*/snapshot.bundle`,
+      `${BUCKET}/runs/*/agents/recovery/turns/*/recovery.bundle`,
       `${BUCKET}/runs/*/deliverable/verified.bundle`, `${BUCKET}/runs/*/input/repo.bundle`,
     ]);
     const put = sid(st, "WriteVerifiedBundle");

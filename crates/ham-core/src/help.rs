@@ -221,7 +221,8 @@ const OPT_RESUME_ALL: &str =
 const OPT_RESUME_DRY_RUN: &str =
     "Print which runs would be resumed and which would be left, and start nothing.";
 const ABOUT_WATCH: &str = "Omit the run id to follow your newest run. The command downloads the zip on completion and returns the run's exit code.";
-const ABOUT_CANCEL: &str = "Give the run id.";
+const ABOUT_CANCEL: &str = "Give the run id. The work so far is kept: the service records the cancel, starts no further session and delivers what exists.";
+const OPT_CANCEL_DISCARD: &str = "Discard the run: stop it now and deliver nothing. The copies the run saved stay; ham pull <runId> --snapshot downloads the newest.";
 const ABOUT_MODELS: &str =
     "The built-in model list works offline. The list marks the default model.";
 const OPT_MODELS_SERVER: &str =
@@ -230,6 +231,7 @@ const ABOUT_PR: &str = "Use this for runs that target a CodeCommit repository.";
 const ABOUT_PULL: &str = "The default download is the zip. Files go to download_dir when set, otherwise your current folder.";
 const OPT_PULL_ARTIFACT: &str = "Choose zip (default), evidence (a zip without source), or partial. The partial option finds nothing for runs started with --direct.";
 const OPT_PULL_SNAPSHOT: &str = "Download the latest saved copy of the run's work, while the run works or after it ended; this option cannot accompany --artifact.";
+const OPT_PULL_READ_BACK: &str = "Download the files the service read back from the storage of session n after that session ended, whether the run went on from them or not; this option stands alone.";
 const ABOUT_CLONE: &str = "Use ham clone <runId> [dir], with ./<repository name> as the default directory. The local repository comes from repo.bundle inside the zip.";
 const ABOUT_PUSH: &str = "Use ham push <runId> <git-url> [--branch <name>] to rebuild the repository from the zip and push the run's branch with your git credentials. Give a URL without a password.";
 const OPT_PUSH_BRANCH: &str =
@@ -378,10 +380,12 @@ fn forms(name: &str) -> Vec<String> {
         "engine" => split(ENGINE_FORMS),
         "runs" => fixed(&["ham runs [--probes]"]),
         "watch" => fixed(&["ham watch [<runId>]"]),
-        "cancel" => fixed(&["ham cancel <runId>"]),
+        "cancel" => fixed(&["ham cancel <runId> [--discard]"]),
         "models" => fixed(&["ham models [--server]"]),
         "pr" => fixed(&["ham pr <runId>"]),
-        "pull" => fixed(&["ham pull <runId> [--artifact zip|partial|evidence | --snapshot]"]),
+        "pull" => fixed(&[
+            "ham pull <runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n>]",
+        ]),
         "clone" => fixed(&["ham clone <runId> [dir]"]),
         "push" => fixed(&["ham push <runId> <git-url> [--branch <name>]"]),
         "link" => fixed(&["ham link <runId>"]),
@@ -460,10 +464,12 @@ fn sections(name: &str) -> Vec<Section> {
             ("--no-wait", OPT_UPDATE_NO_WAIT),
             ("--wait <minutes>", OPT_UPDATE_WAIT),
         ]),
+        "cancel" => with_json(&[("--discard", OPT_CANCEL_DISCARD)]),
         "models" => with_json(&[("--server", OPT_MODELS_SERVER)]),
         "pull" => with_json(&[
             ("--artifact zip|partial|evidence", OPT_PULL_ARTIFACT),
             ("--snapshot", OPT_PULL_SNAPSHOT),
+            ("--read-back <n>", OPT_PULL_READ_BACK),
         ]),
         "push" => with_json(&[("--branch <name>", OPT_PUSH_BRANCH)]),
         "doctor" => with_json(&[("--catalog-max-age <hours>", OPT_DOCTOR_CATALOG_MAX_AGE)]),

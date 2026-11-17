@@ -434,8 +434,20 @@ impl Store for &World {
     async fn get_artifact(&self, _: &str, _: &str) -> Result<Option<ArtifactItem>, StoreError> {
         Ok(None)
     }
-    async fn run_usage(&self, _: &str) -> Result<RunUsage, StoreError> {
-        Ok(RunUsage::default())
+    /// The Agent items of the run, as the real adapter answers them. This store holds no Turn items.
+    async fn run_usage(&self, run_id: &str) -> Result<RunUsage, StoreError> {
+        Ok(RunUsage {
+            agents: self
+                .agents
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|a| a.run_id == run_id)
+                .cloned()
+                .collect(),
+            turns: Vec::new(),
+            answered: Default::default(),
+        })
     }
     async fn list_agents(&self, run_id: &str) -> Result<Vec<AgentItem>, StoreError> {
         self.log(format!("list_agents {run_id}"));

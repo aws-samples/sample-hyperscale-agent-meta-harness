@@ -155,6 +155,10 @@ pub struct AwsState {
     complete: Mutex<Vec<TurnCompleteRequest>>,
     cancel_on: Mutex<Option<EventType>>,
     cancel_sent: Mutex<bool>,
+    /// The Cancel is told on every events answer from then on, as worker-api tells it while the user's cancel is recorded.
+    cancel_always: Mutex<bool>,
+    /// The events answers that carried a Cancel.
+    cancels_told: Mutex<u32>,
     /// `(substring of bucket/key, pause)`: a GET whose key contains the substring is answered after the pause.
     get_delays: Mutex<Vec<(String, Duration)>>,
     /// `(substring of bucket/key, pause)`: a PUT whose key contains the substring is answered after the pause.
@@ -182,6 +186,11 @@ pub struct AwsState {
     refreshes: Mutex<u32>,
     /// The completion key each `/internal/events` and `/internal/turn-complete` post carried: `(path, key)`.
     completion_keys: Mutex<Vec<(String, Option<String>)>>,
+    /// Every heartbeat with `ending: true` that arrived, answered or not: the request, the completion key it carried, and how many
+    /// events posts had arrived before it.
+    ending_notices: Mutex<Vec<(HeartbeatRequest, Option<String>, usize)>>,
+    /// The next this-many heartbeats with `ending: true` answer 503 (`u32::MAX`: every one).
+    ending_failures: Mutex<u32>,
 }
 
 /// Picks the event a control rule waits for.
@@ -604,8 +613,9 @@ async fn api_events(
         && s.events.lock().unwrap().iter().any(|e| e.event_type == t)
     {
         let mut sent = s.cancel_sent.lock().unwrap();
-        if !*sent {
+        if !*sent || *s.cancel_always.lock().unwrap() {
             *sent = true;
+            *s.cancels_told.lock().unwrap() += 1;
             pending.push(PendingControl::Cancel);
         }
     }
@@ -687,11 +697,30 @@ async fn api_events(
     axum::Json(body).into_response()
 }
 
-async fn api_heartbeat(State(s): State<Shared>, body: Bytes) -> axum::response::Response {
-    s.heartbeats
-        .lock()
-        .unwrap()
-        .push(serde_json::from_slice(&body).unwrap());
+async fn api_heartbeat(
+    State(s): State<Shared>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let beat: HeartbeatRequest = serde_json::from_slice(&body).unwrap();
+    if beat.ending == Some(true) {
+        // The notice of an end. The real plane checks the run's key on it and may fail its callback (503).
+        let key = headers
+            .get(harness_protocol::store::COMPLETION_KEY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let batches = s.batches.lock().unwrap().len();
+        s.ending_notices.lock().unwrap().push((beat, key, batches));
+        let mut left = s.ending_failures.lock().unwrap();
+        if *left > 0 {
+            if *left != u32::MAX {
+                *left -= 1;
+            }
+            return (StatusCode::SERVICE_UNAVAILABLE, "fake callback failure").into_response();
+        }
+        return axum::Json(serde_json::json!({"ok": true})).into_response();
+    }
+    s.heartbeats.lock().unwrap().push(beat);
     axum::Json(serde_json::json!({"ok": true})).into_response()
 }
 
@@ -977,6 +1006,18 @@ impl FakeAws {
         *self.state.cancel_on.lock().unwrap() = Some(t);
     }
 
+    /// As [`FakeAws::cancel_on`], and every later events response that hands out controls carries the Cancel again: what
+    /// worker-api answers while the user's cancel is recorded on the Run item.
+    pub fn cancel_on_every_answer(&self, t: EventType) {
+        *self.state.cancel_always.lock().unwrap() = true;
+        self.cancel_on(t);
+    }
+
+    /// How many events responses carried a Cancel.
+    pub fn cancels_told(&self) -> u32 {
+        *self.state.cancels_told.lock().unwrap()
+    }
+
     /// Once the first event with this progress kind (`needs-input`, ...) has been posted, the next events response carries `answer`
     /// as a user's `Instruct` for that event's request id.
     pub fn instruct_on(&self, kind: &str, answer: Answer) {
@@ -1106,6 +1147,17 @@ impl FakeAws {
 
     pub fn heartbeats(&self) -> Vec<HeartbeatRequest> {
         self.state.heartbeats.lock().unwrap().clone()
+    }
+
+    /// Every heartbeat with `ending: true` that arrived: the request, the completion key it carried, and how many events posts
+    /// had arrived before it.
+    pub fn ending_notices(&self) -> Vec<(HeartbeatRequest, Option<String>, usize)> {
+        self.state.ending_notices.lock().unwrap().clone()
+    }
+
+    /// The next `times` heartbeats with `ending: true` answer 503 (`u32::MAX`: every one).
+    pub fn fail_ending_notices(&self, times: u32) {
+        *self.state.ending_failures.lock().unwrap() = times;
     }
 
     pub fn complete(&self) -> Vec<TurnCompleteRequest> {

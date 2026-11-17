@@ -169,7 +169,7 @@ describe("the run-session role is least privilege", () => {
   test("exactly these statements", () => {
     expect(sids(runSession).sort()).toEqual([
       "AgentOutputs", "DataKeyThroughServices", "Evidence", "HarnessTable", "InvokeUtilityModel", "InvokeWorkers", "ListForAbsentKeys", "MintWorkerSessions", "OwnLogs",
-      "PackageRead", "PackageToken", "PackageTokenBearer", "PinnedAgentOutputs", "ResearchPolicyRow", "RunCreatedEvent", "RunInputs", "RunMessages", "RuntimeArn",
+      "PackageRead", "PackageToken", "PackageTokenBearer", "PinnedAgentOutputs", "RecoveryCopies", "ResearchPolicyRow", "RunCreatedEvent", "RunInputs", "RunMessages", "RuntimeArn",
       "SessionNonce", "SessionNonceKey", "SliceRecords", "TagVocabulary", "TestReportEvidence", "Tracing", "TurnTokens",
     ]);
   });
@@ -272,6 +272,15 @@ describe("the run-session role is least privilege", () => {
     expect(actions(byId(runSession, "RunInputs"))).toEqual(["s3:GetObject"]);
     expect(resources(byId(runSession, "AgentOutputs"))).toEqual([`${bucket}/runs/*/agents/direct/turns/*`]);
     expect(actions(byId(runSession, "AgentOutputs"))).toEqual(["s3:GetObject"]);
+    // The copy read back from a stopped session's storage: a read of that one object name per session, and no write under agents/.
+    expect(resources(byId(runSession, "RecoveryCopies"))).toEqual([`${bucket}/runs/*/agents/recovery/turns/*/recovery.bundle`]);
+    expect(actions(byId(runSession, "RecoveryCopies"))).toEqual(["s3:GetObject"]);
+    expect(byId(runSession, "RecoveryCopies").Condition).toBeUndefined();
+    const agentWrites = runSession
+      .filter((s) => s.Effect === "Allow" && actions(s).some((a) => /^s3:(Put|Delete|Abort)/.test(a)))
+      .flatMap((s) => resources(s))
+      .filter((r) => r.includes("/agents/") && !r.endsWith("/agents/direct/nonce.enc"));
+    expect(agentWrites, "run-session writes nothing a session writes").toEqual([]);
     expect(resources(byId(runSession, "Evidence"))).toEqual([`${bucket}/runs/*/evidence/direct.json`]);
     expect(actions(byId(runSession, "Evidence")).sort()).toEqual(["s3:GetObject", "s3:PutObject"]);
     // The session nonce (review S1): the run's refresh nonce, KMS-sealed, written once so a retried start sends the nonce the

@@ -116,6 +116,7 @@ fn state_of(events: Vec<Envelope>) -> RunState {
 
 fn lost(session: u32) -> SessionLost {
     SessionLost {
+        cancelled_at: None,
         kind: KIND.to_string(),
         session,
         decided_at: at(850),
@@ -129,6 +130,10 @@ fn lost(session: u32) -> SessionLost {
         from: Some(FROM_COPY.to_string()),
         saved_at: Some(at(211)),
         delivers: None,
+        ended_at: None,
+        recovery: None,
+        read_back_session: None,
+        run_id: RUN.to_string(),
     }
 }
 
@@ -452,6 +457,7 @@ fn page(
     completeness: Vec<CompletenessEntry>,
 ) -> TranscriptPage {
     TranscriptPage {
+        last_session_invoked_at: None,
         run_id: RUN.into(),
         state,
         records,

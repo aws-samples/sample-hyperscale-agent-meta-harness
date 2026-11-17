@@ -297,3 +297,33 @@ async fn a_presigned_url_reaches_no_log_line() {
         assert!(!l.contains("amazonaws.com"), "{l}");
     }
 }
+
+/// A recorded cancel hides no copy. The route answers the run's saved copy while the cancelled run is still
+/// active, after it ended delivered, after it ended blocked, and after a discard that followed the cancel.
+#[tokio::test]
+async fn b853_the_snapshot_route_answers_for_a_cancelled_run() {
+    for status in ["active", "complete", "blocked", "cleared"] {
+        let w = World::new();
+        let mut run = run_item(
+            RUN,
+            ME,
+            status,
+            "2026-10-15T13:00:00Z",
+            json!({"mode": "s3-only"}),
+        );
+        run.cancel_requested_at = Some("2026-10-15T13:12:00Z".into());
+        w.add_run(run);
+        w.put_object(&s3::snapshot_json_key(RUN), record(HEAD));
+        w.put_object(&s3::snapshot_bundle_key(RUN), bundle(HEAD, 100));
+        let (code, body, _) = post(&w, ME, &path(), &[], "").await;
+        assert_eq!(code, 200, "{status}: {body}");
+        let d: SnapshotDownload = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(d.head_sha, HEAD, "{status}");
+        assert_eq!(body["runStatus"], status);
+        assert_eq!(
+            w.presigned.lock().unwrap().clone(),
+            vec![(s3::snapshot_bundle_key(RUN), DOWNLOAD_URL_TTL)],
+            "{status}: the copy is signed"
+        );
+    }
+}

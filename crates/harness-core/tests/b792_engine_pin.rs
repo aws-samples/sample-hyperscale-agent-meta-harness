@@ -236,14 +236,15 @@ fn b792_the_pinned_release_has_the_goal_command_from_2_2_1() {
 }
 
 #[test]
-fn b792_the_opencode_profile_marks_the_handshake_and_the_cancel_row_local() {
+fn b792_the_opencode_profile_marks_the_handshake_the_cancel_and_the_limit_row_local() {
     let local: Vec<String> = profile("opencode")
         .rows
         .iter()
         .filter(|r| r.local)
         .map(|r| r.id.clone())
         .collect();
-    assert_eq!(local, ["K0-O", "K5-O"]);
+    // K16-O runs the pinned engine with the harness's launch on a build host: the command time limit by effect.
+    assert_eq!(local, ["K0-O", "K5-O", "K16-O"]);
 }
 
 #[test]

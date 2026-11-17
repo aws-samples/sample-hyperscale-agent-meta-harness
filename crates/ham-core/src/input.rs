@@ -164,12 +164,15 @@ const REASONS: [(&str, ReasonWords); 14] = [
 /// The sentence promises what the service does, by the rule of the notice of a silent session
 /// (`crate::lost_session::Silence::sentence`): a new session starts "when the run has time left" (the client cannot see the run's
 /// time), and none starts when the session would be lost session `MAX_LOST_SLICES` in a row, because the run ends then.
-/// `lost_in_a_row` is the count of the run's events (`RunView::lost_in_a_row`).
-pub fn asked_by_ending_session(lost_in_a_row: u32) -> String {
+/// `lost_in_a_row` is the count of the run's events (`RunView::lost_in_a_row`). `cancelled` is whether the user's cancel is
+/// recorded for the run (`RunView::cancel`): the service starts no further session then, so nobody asks again.
+pub fn asked_by_ending_session(lost_in_a_row: u32, cancelled: bool) -> String {
     let head =
         "The open question was asked by that session: once it has ended, no answer reaches it.";
     let would = lost_in_a_row.saturating_add(1);
-    if would >= harness_protocol::direct::MAX_LOST_SLICES {
+    if cancelled {
+        format!("{head} You stopped the run, so no new session starts and nobody asks again.")
+    } else if would >= harness_protocol::direct::MAX_LOST_SLICES {
         format!(
             "{head} It would be lost session {would} in a row, so the run would end and no new session would ask again."
         )

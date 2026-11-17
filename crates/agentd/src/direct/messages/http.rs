@@ -1,9 +1,16 @@
-//! The module's calls to the private internal API: the four routes of protocol 1.38.0.
+//! The module's calls to the private internal API: the four routes of protocol 1.38.0 and
+//! the read of protocol 1.63.0.
 //!
 //! - `POST /internal/message-session`: the session (the epoch) agentd now holds, with the generation of this agentd.
 //! - `POST /internal/message-claim`: the dispatch claim of one message, which returns its text.
 //! - `POST /internal/message-seal`: "anything pending? if not, the run is done", and the terminal close.
 //! - `POST /internal/message-outcome`: submitted, failed, released or rejected.
+//! - `POST /internal/message-history`: the messages of the run that were delivered to an engine, asked once at the start of a
+//!   session. Its body names the run and the agent and nothing else. An answer that the route does not exist (a 404 of worker-api with
+//!   the code `not_found`, a 404 with no error body of the service, a 405, or the gateway's answer to an unknown resource, a 403 whose
+//!   `message` is its one sentence) is [`HistoryError::NoRoute`] and says nothing about the four routes above, which a service from
+//!   before the read serves: the store stays available. Every other failure is [`HistoryError::Failed`], also an HTTP 200 whose body is
+//!   not the answer; members of the answer this agentd does not know are ignored.
 //!
 //! Every body names the run, the agent (`direct`), the generation (a ULID made when this agentd starts; a larger one replaces a smaller
 //! one, so the server can tell a replaced worker from the live one) and the session. The calls are signed with the run's session
@@ -27,8 +34,8 @@ use crate::BoxFuture;
 use crate::creds::CredStore;
 use crate::direct::messages::store::MessageStore;
 use crate::direct::messages::types::{
-    ClaimOutcome, FailReason, Held, Message, Mode, Notice, Refusal, RejectReason, SealMode,
-    SealOutcome, StoreError,
+    ClaimOutcome, Delivered, FailReason, Held, History, HistoryError, Message, Mode, Notice,
+    Refusal, RejectReason, SealMode, SealOutcome, StoreError,
 };
 use crate::http::{SignedHttp, SignedRequest};
 use harness_protocol::api::ApiError;
@@ -207,6 +214,19 @@ fn fail_detail(r: FailReason) -> String {
             "session-changed: the session changed before the prompt was written".into()
         }
     }
+}
+
+/// The gateway's answer to a call for a resource it does not have: a JSON body whose `message` is exactly its one sentence. A body
+/// that only holds those words among others is something else.
+fn gateway_unknown_resource(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "Missing Authentication Token")
+        })
+        .unwrap_or(false)
 }
 
 impl HttpMessageStore {
@@ -530,5 +550,75 @@ impl MessageStore for HttpMessageStore {
 
     fn unavailable(&self) -> bool {
         self.plane_has_no_routes() || self.fenced.load(Ordering::SeqCst)
+    }
+
+    fn delivered<'a>(&'a self) -> BoxFuture<'a, Result<History, HistoryError>> {
+        Box::pin(async move {
+            const PATH: &str = "/internal/message-history";
+            let req = wire::HistoryRequest {
+                run_id: self.run_id.clone(),
+                agent_id: self.agent_id.clone(),
+            };
+            let body = serde_json::to_vec(&req).map_err(|e| {
+                HistoryError::Failed(format!("the request could not be written: {e}"))
+            })?;
+            let (status, bytes) = self
+                .transport
+                .post(PATH, body)
+                .await
+                .map_err(|e| HistoryError::Failed(format!("transport: {e}")))?;
+            if status == 200 {
+                let answer: wire::HistoryResponse =
+                    serde_json::from_slice(&bytes).map_err(|_| {
+                        HistoryError::Failed(format!(
+                            "the answer of {PATH} is not the answer the route gives"
+                        ))
+                    })?;
+                return Ok(History {
+                    messages: answer
+                        .messages
+                        .into_iter()
+                        .map(|m| Delivered {
+                            id: m.message_id,
+                            seq: u64::from(m.seq),
+                            text: m.text,
+                        })
+                        .collect(),
+                    cut: answer.cut,
+                    unconfirmed: answer
+                        .unconfirmed
+                        .into_iter()
+                        .map(|m| Delivered {
+                            id: m.message_id,
+                            seq: u64::from(m.seq),
+                            text: m.text,
+                        })
+                        .collect(),
+                });
+            }
+            // The route does not exist on this plane, said explicitly: a 404 of worker-api for a route it does not know (`not_found`),
+            // a 404 that carries no error body of the service (something in front of it does not know the path), or the gateway's
+            // answer to a resource it does not have (a 403 whose `message` is that one sentence). Anything else is a failure and is
+            // asked again: a 404 of the service for another reason, a 403 that is a refusal. A 405 means what it means on the four message routes: the path belongs to something that takes no POST there. This says nothing about the four
+            // message routes: `no_routes` stays as it is.
+            let api = serde_json::from_slice::<ApiError>(&bytes).ok();
+            let no_route = match status {
+                404 => api.as_ref().is_none_or(|a| a.code == "not_found"),
+                403 => gateway_unknown_resource(&bytes),
+                // the path is served by something that takes no POST there, as on the four message routes
+                405 => true,
+                _ => false,
+            };
+            if no_route {
+                return Err(HistoryError::NoRoute(format!(
+                    "{PATH} is not served ({status})"
+                )));
+            }
+            let code = api.map(|a| a.code);
+            Err(HistoryError::Failed(match code {
+                Some(c) => format!("{PATH} returned {status} {c}"),
+                None => format!("{PATH} returned {status}"),
+            }))
+        })
     }
 }

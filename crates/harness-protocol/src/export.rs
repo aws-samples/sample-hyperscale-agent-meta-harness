@@ -17,8 +17,9 @@ use crate::engine_profile::EngineProfile;
 use crate::envelope::Envelope;
 use crate::evidence::EvidenceHeader;
 use crate::messages::{
-    ClaimRequest, ClaimResponse, MessageResponse, MessagesPage, OutcomeRequest, OutcomeResponse,
-    SealRequest, SealResponse, SendMessageRequest, SendMessageResponse, SessionAck, SessionReport,
+    ClaimRequest, ClaimResponse, HistoryRequest, HistoryResponse, MessageResponse, MessagesPage,
+    OutcomeRequest, OutcomeResponse, SealRequest, SealResponse, SendMessageRequest,
+    SendMessageResponse, SessionAck, SessionReport,
 };
 use crate::orchestration::OrchestrationContract;
 use crate::research::{
@@ -167,6 +168,10 @@ fn operation_types(g: &mut SchemaGenerator, operation_id: &str) -> (Option<Schem
         "postMessageOutcome" => (
             Some(g.subschema_for::<OutcomeRequest>()),
             g.subschema_for::<OutcomeResponse>(),
+        ),
+        "listDeliveredMessages" => (
+            Some(g.subschema_for::<HistoryRequest>()),
+            g.subschema_for::<HistoryResponse>(),
         ),
         "researchSearch" => (
             Some(g.subschema_for::<SearchRequest>()),

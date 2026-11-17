@@ -74,7 +74,13 @@ async fn cancel_asks_the_live_agent_to_stop_and_keeps_the_run() {
     let h = home(&fake, "control-live");
     let o = ham(&h, &["cancel", &run]).await;
     assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
-    assert_eq!(text(&o.stdout).trim(), format!("run {run} active"));
+    // The status line, then what the service recorded for the cancel.
+    let out = text(&o.stdout);
+    assert_eq!(
+        out.lines().next(),
+        Some(format!("run {run} active").as_str())
+    );
+    assert!(out.contains("The cancel is recorded ("), "{out}");
     let g = fake.mem.inner.lock().unwrap();
     assert!(g.stopped.is_empty(), "the run is not stopped");
     assert!(

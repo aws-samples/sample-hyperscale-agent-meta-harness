@@ -50,7 +50,7 @@ scripts/build-cline-fork.sh --verify-only   # needs CLINE_FORK_WORK_DIR; see eng
 
 | Path | Covers |
 | --- | --- |
-| `cline/AGENTS.md` | Cline fork: upstream pin, patch series 0001-0015 on cli-v3.0.71, lock, rebase procedure, promotion of a series, telemetry rule |
+| `cline/AGENTS.md` | Cline fork: upstream pin, patch series 0001-0016 on cli-v3.0.71, lock, rebase procedure, promotion of a series, telemetry rule |
 | `profiles/AGENTS.md` | Engine profiles: launch per transport, env, hidden paths, binary pin, K rows |
 | `rules/AGENTS.md` | `rules/deps/`, the recorded dependency data (the Go approved module list and the Maven notes) |
 | `policy/AGENTS.md` | `image-key.pin`, the pinned worker image key that `scripts/image-key-guard.sh` checks |

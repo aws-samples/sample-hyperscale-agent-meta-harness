@@ -132,9 +132,73 @@ async fn rows_of<S: Store>(
     (rows, status)
 }
 
+/// The interval at which a worker sends the service a heartbeat while its session lives (agentd's flusher), in seconds.
+const WORKER_HEARTBEAT_S: u64 = 60;
+
+/// The seconds without a heartbeat after which the service calls the session of an active run silent in the run list: the
+/// client's own rule for a session that beats every minute (`ham_core::lost_session::notice_after_s`: two beats and half a minute).
+pub fn silent_after_s() -> u64 {
+    ham_core::lost_session::notice_after_s(WORKER_HEARTBEAT_S)
+}
+
+/// The time of the last heartbeat the service received from the run's session, when the service itself finds the session
+/// silent at its own clock `now` (Unix seconds); `None` otherwise. All of these hold for a silent session: the run is `active`; it is
+/// not delivering (a run that delivers has ended its session, and its Agent item keeps the heartbeat of the turn's end until the run
+/// ends); it does not wait for the user's answer (`needsInput` of the row; a waiting session beats, and the row says the question);
+/// its direct Agent item is neither `stopped` nor `failed`, and the generation it is at is not fenced;
+/// the item holds a heartbeat (of the session in progress: the move to a new
+/// session clears it, so a session that has not sent its first heartbeat is never called silent); and that heartbeat is at least
+/// [`silent_after_s`] seconds old. The client compares nothing with its own clock.
+pub fn session_silent_since(
+    row: &harness_protocol::api::v1::RunSummary,
+    agent: Option<&harness_protocol::store::AgentItem>,
+    now: i64,
+) -> Option<String> {
+    use harness_protocol::goal::GoalPhase;
+    use harness_protocol::store::AgentStatus;
+    if row.status != GoalStatus::Active
+        || row.phase == GoalPhase::Delivering
+        || row.needs_input.is_some()
+    {
+        return None;
+    }
+    let agent = agent?;
+    if matches!(agent.status, AgentStatus::Stopped | AgentStatus::Failed) {
+        return None;
+    }
+    // A fenced session is one the service has taken off the run and decides about; the row calls no such session silent.
+    if crate::controls::fenced(agent) {
+        return None;
+    }
+    let heard = agent.heartbeat_at.as_deref()?;
+    let at = harness_protocol::common::parse_utc_unix(heard)
+        .filter(|_| harness_protocol::common::is_utc_timestamp(heard))?;
+    let limit = i64::try_from(silent_after_s()).ok()?;
+    (now.saturating_sub(at) >= limit).then(|| heard.to_string())
+}
+
+/// What the run list reads of one active run: the tail of its direct agent's events ([`input::active_tail`]) and its Agent items.
+type ActiveFacts = (
+    Result<
+        (
+            Option<harness_protocol::api::v1::NeedsInputBrief>,
+            Option<String>,
+        ),
+        StoreError,
+    >,
+    Result<Vec<harness_protocol::store::AgentItem>, StoreError>,
+);
+
+async fn active_facts<S: Store>(store: &S, run_id: &str) -> ActiveFacts {
+    let tail = input::active_tail(store, run_id).await;
+    let agents = store.list_agents(run_id).await;
+    (tail, agents)
+}
+
 /// For each active, non-probe row: the open question (`needsInput`) and the time of the newest event of the direct agent, read from a
-/// tail of its shard, [`TAIL_WIDTH`] at a time, until `deadline`. A failed read, or a deadline reached, leaves the rows as they are and
-/// adds a diagnostic.
+/// tail of its shard, and whether the service finds the run's session silent, from its direct Agent item
+/// ([`session_silent_since`]); [`TAIL_WIDTH`] runs at a time, until `deadline`. A failed read, or a deadline reached, leaves the rows
+/// as they are and adds a diagnostic.
 async fn enrich_active<S: Store>(
     store: &S,
     rows: &mut [RunRow],
@@ -153,7 +217,7 @@ async fn enrich_active<S: Store>(
             .iter()
             .map(|i| rows[*i].summary.run_id.clone())
             .collect();
-        let reads = ids.iter().map(|id| input::active_tail(store, id)).collect();
+        let reads = ids.iter().map(|id| active_facts(store, id)).collect();
         let results = if left.is_zero() {
             None
         } else {
@@ -167,8 +231,9 @@ async fn enrich_active<S: Store>(
             );
             return;
         };
-        for (i, result) in chunk.iter().copied().zip(results) {
-            match result {
+        for (i, (tail, agents)) in chunk.iter().copied().zip(results) {
+            let tail_read = tail.is_ok();
+            match tail {
                 Ok((brief, newest)) => {
                     rows[i].summary.needs_input = brief.map(Box::new);
                     if let Some(ts) = newest
@@ -181,6 +246,19 @@ async fn enrich_active<S: Store>(
                     }
                 }
                 Err(e) => logs.push(format!("needsInput of run {}: {e}", rows[i].summary.run_id)),
+            }
+            // The session facts of the row. Without the tail the row does not know whether the run waits for an answer, so it
+            // says nothing about a silent session.
+            match agents {
+                Ok(agents) if tail_read => {
+                    let direct = agents
+                        .iter()
+                        .find(|a| a.agent_id == harness_protocol::direct::DIRECT_AGENT_ID);
+                    rows[i].summary.session_silent_since =
+                        session_silent_since(&rows[i].summary, direct, input::unix_now());
+                }
+                Ok(_) => {}
+                Err(e) => logs.push(format!("session of run {}: {e}", rows[i].summary.run_id)),
             }
         }
     }

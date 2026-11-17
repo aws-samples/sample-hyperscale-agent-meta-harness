@@ -97,4 +97,42 @@ impl StderrCapture {
             cut: start > 0,
         })
     }
+
+    /// Whether one whole line of the log equals `line`, looking at no more than the first `max` bytes, through this handle (`pread` from
+    /// offset 0, so the engine's write offset is untouched and a path the engine changed is never followed). A line ends with `\n` or `\r\n`;
+    /// a last line the engine has not ended yet does not count.
+    pub fn holds_line(&self, line: &str, max: usize) -> io::Result<bool> {
+        let len = usize::try_from(self.file.metadata()?.len())
+            .unwrap_or(max)
+            .min(max);
+        let mut bytes = vec![0u8; len];
+        let mut got = 0;
+        while got < bytes.len() {
+            match self.file.read_at(&mut bytes[got..], got as u64) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        bytes.truncate(got);
+        let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else {
+            return Ok(false);
+        };
+        Ok(bytes[..end]
+            .split(|b| *b == b'\n')
+            .any(|l| l.strip_suffix(b"\r").unwrap_or(l) == line.as_bytes()))
+    }
+}
+
+/// `bytes` without every whole line that starts with `prefix` (the line's end goes with it); every other byte stays as it is. For a log that
+/// holds a line of the harness's own which must not read as the engine's last words.
+pub fn without_lines_starting(bytes: &[u8], prefix: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        if !line.starts_with(prefix.as_bytes()) {
+            out.extend_from_slice(line);
+        }
+    }
+    out
 }

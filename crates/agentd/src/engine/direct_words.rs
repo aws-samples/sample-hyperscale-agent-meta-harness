@@ -93,3 +93,34 @@ pub fn reason_explain(reason: NeedsInputReason) -> &'static str {
         }
     }
 }
+
+/// The name of an engine in the words of a notice: the display name of an engine the protocol knows (`OpenCode`), else the profile name as it is.
+fn display(engine: &str) -> String {
+    harness_protocol::common::Engine::new(engine)
+        .map_or_else(|_| engine.to_string(), |e| e.display_name().to_string())
+}
+
+/// The notice of a run whose default command time limit could not be placed: the run goes on with the engine's own limit.
+pub fn limit_not_placed(engine: &str, limit_s: u64, engine_default_s: u64) -> String {
+    format!(
+        "This run's command time limit of {limit_s} seconds could not be placed for {}. Commands that set no time limit of their own are stopped after {engine_default_s} seconds.",
+        display(engine)
+    )
+}
+
+/// The notice of a session whose engine did not confirm the command time limit in time. True when the sign is only late and when the
+/// limit is not in force. Like the other two it fits the 160 characters the client shows of a notice, for every limit of the setting's range.
+pub fn limit_not_confirmed(engine: &str, limit_s: u64, engine_default_s: u64) -> String {
+    format!(
+        "{} has not confirmed this run's command time limit of {limit_s} seconds. If it is not in force, commands that set no limit of their own stop after {engine_default_s} seconds.",
+        display(engine)
+    )
+}
+
+/// The notice of a command that named no limit and that the engine stopped at another number than the run's limit.
+pub fn limit_not_applied(engine: &str, cut_s: u64, limit_s: u64) -> String {
+    format!(
+        "{} stopped a command after {cut_s} seconds, not after this run's {limit_s}: the command time limit was not applied to it.",
+        display(engine)
+    )
+}

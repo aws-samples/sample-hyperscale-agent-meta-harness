@@ -59,6 +59,20 @@ pub const EVENTS_PAGE: usize = 500;
 /// Lifetime of an artifact download URL; the session credentials can end it sooner.
 pub const DOWNLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// What [`Store::record_cancel`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancelWrite {
+    /// This cancel is the first: its time and its event are stored.
+    Recorded,
+    /// A cancel of the run was recorded before, at this time. Nothing was written: the first time stands and no second event exists.
+    Already(String),
+    /// The run is not `active` (any more). Nothing was written.
+    NotActive,
+    /// Another writer changed the Run item at the same instant, or the item reads as `active` without the record. Nothing was written,
+    /// and a second try may succeed.
+    Busy,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
     /// A conditional write lost to a concurrent writer.
@@ -303,6 +317,22 @@ pub trait Store: Send + Sync {
     ) -> impl Future<Output = Result<Vec<AgentItem>, StoreError>> + Send {
         async move { Ok(self.run_usage(run_id).await?.agents) }
     }
+    /// Records the user's keep-the-work cancel on a run that is `active`, once: the Run item's `cancelRequestedAt` (set to `at`
+    /// only while the status is `active` and the attribute is absent) and `event`, in one write, so the record and its event are one
+    /// fact. It touches no other attribute and not the item's `version`. A store that cannot change a run reports itself unavailable.
+    fn record_cancel(
+        &self,
+        run_id: &str,
+        at: &str,
+        event: &Envelope,
+    ) -> impl Future<Output = Result<CancelWrite, StoreError>> + Send {
+        let _ = (run_id, at, event);
+        async {
+            Err(StoreError::Unavailable(
+                "this store cannot change a run".into(),
+            ))
+        }
+    }
     /// Writes `run` and `goal` (each at its stored version plus one) and `event`, together;
     /// `Conflict` if either item changed since it was read.
     fn update_run(
@@ -406,6 +436,10 @@ pub struct TagRead {
 pub struct RunUsage {
     pub agents: Vec<AgentItem>,
     pub turns: Vec<TurnItem>,
+    /// What the stored conversation summary of a turn declares as the tokens of the prompts that answered (the Turn item's
+    /// `transcript.answeredTokens`), by agent and turn number. A turn whose summary declares none has no entry: a worker that
+    /// predates the member, a session that left no summary.
+    pub answered: std::collections::BTreeMap<(String, u32), u64>,
 }
 
 pub trait Blobs: Send + Sync {
@@ -718,7 +752,7 @@ pub async fn handle_logged<S: Store, B: Blobs, E: Execution>(
         (["v1", "search"], "GET") => crate::search::get_search(&req, &caller, deps).await,
         (["v1", "tags", "edit"], "POST") => crate::tags::edit(&req, &caller, deps).await,
         (["v1", "runs", id, "snapshot", "download-url"], "POST") => {
-            crate::snapshot::download_url(id, &caller, deps).await
+            crate::snapshot::download_url(&req, id, &caller, deps).await
         }
         (["v1", "runs", id, "artifacts"], "GET") => artifacts(id, &caller, deps).await,
         (["v1", "runs", id, "artifacts", art, "download-url"], "POST") => {
@@ -901,7 +935,14 @@ pub(crate) fn valid_idempotency_key(k: &str) -> bool {
 
 /// The `GET /v1/runs` summary of a Run item (the reaper's `aborted` included).
 pub fn run_summary(run: RunItem) -> RunSummary {
+    // A recorded cancel is shown while the run is `active`; on a run that has ended it is history.
+    let cancel_requested_at = run
+        .cancel_requested_at
+        .filter(|_| run.status == harness_protocol::goal::GoalStatus::Active);
     RunSummary {
+        // Set by the routes that read the run's Agent item.
+        session_silent_since: None,
+        cancel_requested_at,
         run_id: run.run_id,
         status: run.status,
         phase: run.phase,
@@ -959,7 +1000,12 @@ async fn get_run<S: Store, B: Blobs, E: Execution>(
         }
         None => (None, Vec::new()),
     };
-    let cost = crate::cost::run_cost(&usage.agents, &usage.turns, crate::cost::pinned());
+    let cost = crate::cost::run_cost(
+        &usage.agents,
+        &usage.turns,
+        &usage.answered,
+        crate::cost::pinned(),
+    );
     let budget = run.budget;
     // The root goal's counter is the old line's budget counter; a direct run never moves it, so the tokens its turns reported (the sum of
     // the lines of `cost`) are the honest number. The larger of the two is shown, so a run that has both reads the same as before.
@@ -976,6 +1022,25 @@ async fn get_run<S: Store, B: Blobs, E: Execution>(
         links: RunLinks::default(),
         cost,
     };
+    // Whether the service finds the run's session silent, by the rule of the run list. A run that waits for the user's answer is
+    // not silent: its events are read for that, only for a run that would otherwise be called silent.
+    {
+        let direct = usage
+            .agents
+            .iter()
+            .find(|a| a.agent_id == harness_protocol::direct::DIRECT_AGENT_ID);
+        if let Some(since) = crate::run_index::session_silent_since(
+            &detail.summary,
+            direct,
+            crate::input::unix_now(),
+        ) {
+            match crate::input::active_tail(&deps.store, run_id).await {
+                Ok((None, _)) => detail.summary.session_silent_since = Some(since),
+                Ok((Some(_), _)) => {}
+                Err(e) => logs.push(format!("session of run {run_id}: {e}")),
+            }
+        }
+    }
     // The reply is one Lambda reply (6 MiB): a whole prompt read from the stored request must leave it room; otherwise the stored head stays.
     if !detail_fits_a_reply(&detail) {
         detail.objective = goal.as_ref().map(|g| g.objective.clone());

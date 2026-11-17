@@ -167,6 +167,12 @@ pub const INTERNAL_ROUTES: &[Route] = &[
     ),
     route(
         "POST",
+        "/internal/message-history",
+        "listDeliveredMessages",
+        "agentd asks, at the start of a session, for the user's messages that were delivered in earlier sessions of the run; it reads and changes nothing",
+    ),
+    route(
+        "POST",
         "/internal/research/search",
         "researchSearch",
         "Search the web through the stage's research route (Tavily); served by the research-api Lambda, not worker-api",

@@ -64,10 +64,12 @@ impl HttpEventSink {
         self
     }
 
-    async fn post(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>, String> {
+    /// `keyed`: the request carries the run's completion key. The routes worker-api guards with it always do; a heartbeat does only
+    /// when it is the notice of an end.
+    async fn post(&self, path: &str, body: Vec<u8>, keyed: bool) -> Result<Vec<u8>, String> {
         let creds = self.creds.current().await.map_err(|e| e.to_string())?;
         let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
-        let guarded = matches!(path, "/internal/events" | "/internal/turn-complete");
+        let guarded = keyed || matches!(path, "/internal/events" | "/internal/turn-complete");
         let key_header = self
             .completion_key
             .as_deref()
@@ -100,7 +102,9 @@ impl HttpEventSink {
     /// `POST /internal/turn-complete`: the turn's facts, no verdict.
     pub async fn turn_complete(&self, req: &TurnCompleteRequest) -> Result<(), String> {
         let body = serde_json::to_vec(req).map_err(|e| e.to_string())?;
-        self.post("/internal/turn-complete", body).await.map(|_| ())
+        self.post("/internal/turn-complete", body, true)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -111,7 +115,7 @@ impl EventSink for HttpEventSink {
     ) -> BoxFuture<'a, Result<EventsBatchResponse, String>> {
         Box::pin(async move {
             let body = serde_json::to_vec(&batch).map_err(|e| e.to_string())?;
-            let bytes = self.post("/internal/events", body).await?;
+            let bytes = self.post("/internal/events", body, true).await?;
             serde_json::from_slice(&bytes)
                 .map_err(|_| "events response is not an EventsBatchResponse".to_string())
         })
@@ -120,7 +124,11 @@ impl EventSink for HttpEventSink {
     fn heartbeat<'a>(&'a self, req: HeartbeatRequest) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
-            self.post("/internal/heartbeat", body).await.map(|_| ())
+            // The notice of an end carries the run's completion key; a plain heartbeat is the request it always was.
+            let keyed = req.ending == Some(true);
+            self.post("/internal/heartbeat", body, keyed)
+                .await
+                .map(|_| ())
         })
     }
 }
@@ -543,6 +551,29 @@ fn post_len(events: &[Envelope]) -> usize {
     events.len()
 }
 
+/// How often the notice of an end is sent at the most.
+pub const ENDING_NOTICE_TRIES: u32 = 5;
+/// The pause between two tries of the notice of an end.
+pub const ENDING_NOTICE_PAUSE: Duration = Duration::from_secs(1);
+
+/// Sends the notice of an end, one heartbeat with `ending: true`, until the service took it: at most [`ENDING_NOTICE_TRIES`]
+/// times, [`ENDING_NOTICE_PAUSE`] apart. An answer 409 ends the tries too: the service has fenced this session, so it knows. When every
+/// try fails nothing else happens: the service calls the session lost after its own wait, as it did before there was a notice.
+async fn send_ending(sink: Arc<dyn EventSink>, log: Arc<dyn LogSink>, req: HeartbeatRequest) {
+    for attempt in 1..=ENDING_NOTICE_TRIES {
+        match sink.heartbeat(req.clone()).await {
+            Ok(()) => return,
+            Err(e) if e.ends_with(" returned 409") => return,
+            Err(e) => log.line(&format!(
+                "ending notice failed (try {attempt} of {ENDING_NOTICE_TRIES}): {e}"
+            )),
+        }
+        if attempt < ENDING_NOTICE_TRIES {
+            tokio::time::sleep(ENDING_NOTICE_PAUSE).await;
+        }
+    }
+}
+
 /// [`spawn_flusher_with`] for a bare cancel signal.
 pub fn spawn_flusher(
     rec: Arc<EventRecorder>,
@@ -568,12 +599,69 @@ pub fn spawn_flusher_with(
     log: Arc<dyn LogSink>,
     controls: Arc<TurnControls>,
 ) -> Flusher {
+    spawn_flusher_ending(rec, sink, every, heartbeat_every, turn, log, controls, None)
+}
+
+/// [`spawn_flusher_with`] that also gives the service notice of an end. When agentd is asked to end (`ending`) while the engine
+/// works, the flusher posts what is buffered and then sends one heartbeat with `ending: true` and the run's completion key
+/// ([`send_ending`]), once for the session. The service then ends its wait for the session at once instead of after its own limit. A
+/// turn that is in its end sequence sends no notice: its turn-complete is near. A request that comes before the engine works (the
+/// session is starting) is told at the first pass at which it works. The flusher only reads the request to end (`Ending::requests`,
+/// `Ending::requested`); it is no copy task and does not count as one that watches.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_flusher_ending(
+    rec: Arc<EventRecorder>,
+    sink: Arc<dyn EventSink>,
+    every: Duration,
+    heartbeat_every: Duration,
+    turn: u32,
+    log: Arc<dyn LogSink>,
+    controls: Arc<TurnControls>,
+    ending: Option<Arc<crate::server::Ending>>,
+) -> Flusher {
     let (stop, mut stopped) = oneshot::channel();
     let handle = tokio::spawn(async move {
         let mut pending = Vec::new();
         let mut tick = tokio::time::interval(every);
         let mut beat = tokio::time::interval(heartbeat_every);
+        // The requests to end, until the notice of this session is on its way.
+        let mut end_asked = ending.as_ref().map(|e| e.requests());
+        // Agentd was asked to end and the notice is still to send. A request that comes while no copy task watches (the session is
+        // starting) waits here: the notice goes out at the first pass at which the engine works. A request that came before this
+        // flusher began counts too.
+        let mut end_waits = ending.as_ref().is_some_and(|e| e.requested());
         loop {
+            if end_waits && end_asked.is_some() && ending.as_ref().is_some_and(|e| e.watched()) {
+                // Once, after what is buffered, on a task of its own, so the tries do not hold the events back.
+                end_asked = None;
+                end_waits = false;
+                flush(
+                    &rec,
+                    sink.as_ref(),
+                    log.as_ref(),
+                    &mut pending,
+                    false,
+                    &controls,
+                )
+                .await;
+                let req = HeartbeatRequest {
+                    run_id: rec.run_id.clone(),
+                    agent_id: rec.agent_id.clone(),
+                    turn,
+                    ending: Some(true),
+                };
+                tokio::spawn(send_ending(sink.clone(), log.clone(), req));
+            }
+            let asked = async {
+                match end_asked.as_mut() {
+                    Some(requests) => {
+                        if requests.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                    None => std::future::pending().await,
+                }
+            };
             // The beat of a quiet session is due one beat interval after the recorder's newest event. The time is read at each
             // pass of the loop (the tick makes one every `every` at least), so an event taken in between moves it. A recorder that
             // writes no beat never wakes this.
@@ -591,11 +679,14 @@ pub fn spawn_flusher_with(
                 _ = tick.tick() => flush(&rec, sink.as_ref(), log.as_ref(), &mut pending, false, &controls).await,
                 _ = rec.nudge.notified() => flush(&rec, sink.as_ref(), log.as_ref(), &mut pending, false, &controls).await,
                 _ = beat.tick() => {
-                    let req = HeartbeatRequest { run_id: rec.run_id.clone(), agent_id: rec.agent_id.clone(), turn };
+                    let req = HeartbeatRequest { run_id: rec.run_id.clone(), agent_id: rec.agent_id.clone(), turn, ending: None };
                     if let Err(e) = sink.heartbeat(req).await {
                         log.line(&format!("heartbeat failed: {e}"));
                     }
                 }
+                // Agentd was asked to end. The next pass tells the service when the engine works (a copy task watches), and every
+                // pass after it looks again until it does or the turn ends.
+                () = asked => end_waits = true,
                 // The newest event is one beat interval old: a beat (`beat_when_quiet`). The time is read again, because an
                 // event may have been taken while this pass waited.
                 () = quiet => {

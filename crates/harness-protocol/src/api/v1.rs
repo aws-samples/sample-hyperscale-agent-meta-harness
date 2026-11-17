@@ -157,6 +157,15 @@ pub struct StartDirectRunRequest {
     /// a stored request that holds it, and tells the engine nothing about the delivery of a request that does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_note: Option<bool>,
+    /// Protocol 1.63.0: `false` switches off reading a stopped session's storage back, from the user's `run.recover_after_stop`.
+    /// Otherwise, when a session of the run is stopped from outside or stops answering, the service reads that session's own storage
+    /// back before the next session starts and uses those files when the checks leave no doubt, and a stop the worker hears of ends the
+    /// wait for the session early. With `false` the service makes no read and does not act on the worker's notice: the session is called
+    /// lost after [`crate::direct::SESSION_LOST_AFTER_S`] seconds and the next one starts from the last saved copy, as in the releases
+    /// before. Absent (the default) and `true` leave it on; only `false` is ever sent or stored, so a request that keeps the default is
+    /// byte for byte the request of protocol 1.62.0. A stage that predates the member refuses a request that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recover_after_stop: Option<bool>,
 }
 
 /// `GET /v1/direct/models` (protocol 1.31.0; served only by the `direct` stage) and `ham models --json`: every
@@ -246,6 +255,17 @@ pub struct RunSummary {
     /// member existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<u32>,
+    /// Protocol 1.63.0: when the user's keep-the-work cancel of this run was recorded (the Run item's `cancelRequestedAt`). Set only
+    /// while the run is `active`: the run then starts no further session and ends when its session has answered or is called lost. Absent
+    /// for every other run and from a service that predates the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at: Option<String>,
+    /// Protocol 1.63.0: the time of the last heartbeat the service received from the run's session, set only when the service itself
+    /// finds the session silent: the run is `active`, is not delivering and does not wait for the user's answer, its session is not ended,
+    /// and that heartbeat is at least 150 seconds old by the service's clock. A session that has sent no heartbeat yet is never called
+    /// silent. Absent otherwise and from a service that predates the member. The client compares nothing with its own clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_silent_since: Option<String>,
 }
 
 /// The one-line form of an open question in the run list.
@@ -344,6 +364,13 @@ pub struct RunCost {
     /// Models with usage but no row in the price table: their tokens count and price at zero.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unpriced_models: Vec<String>,
+    /// The tokens of the prompts that answered, as the workers of the run's sessions declared them
+    /// (`TranscriptSummary.answeredTokens`), added up over exactly the turns whose usage is in `lines`. The tokens of `lines`
+    /// minus this number are what the engine used outside the prompts that answered. Absent when one of those turns declared no
+    /// number (a worker that predates the member, a session that left no summary) and when the sum passes the largest number:
+    /// the service then gives no number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -361,6 +388,39 @@ pub struct CostLine {
 pub struct RunControlResponse {
     pub run_id: String,
     pub status: GoalStatus,
+    /// Protocol 1.63.0: what the service recorded for a cancel that keeps the work, on a run that is `active` and has a session record.
+    /// Absent for every other answer (a run that was cleared, a discard) and from a service that predates the member: the client then prints
+    /// the status alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<CancelRecorded>,
+}
+
+/// A cancel that the service recorded: the member `cancel` of the answer of `POST /v1/runs/{runId}/cancel` and, with a
+/// `kind`, the payload of the harness's `run.waiting` event of kind [`crate::direct_input::CANCEL_RECORDED_KIND`]. The record stands whatever
+/// the run's session does: the run starts no further session and delivers what exists. Three forms, by what the service knew when the cancel
+/// arrived: a session that answers (`sessionLive`), a run that is already delivering (`delivering`), and neither (no session that answers).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelRecorded {
+    /// When the cancel was recorded (RFC 3339 UTC): the time of the first cancel of the run; a repeated cancel answers the same time.
+    pub requested_at: String,
+    /// The number of the run's session when the cancel arrived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<u32>,
+    /// The run has a session that the service has not ended and that is asked to stop. It says nothing about whether that session answers.
+    #[serde(default)]
+    pub session_live: bool,
+    /// The run is already delivering what exists: its session has ended and nothing will be called lost. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivering: bool,
+    /// The last heartbeat the service received from the session, when it holds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<String>,
+    /// For a session that is asked to stop (`sessionLive`): the latest time at which the service calls the session lost when it stays silent
+    /// (the later of its last heartbeat and its start, plus [`crate::direct::SESSION_LOST_AFTER_S`] seconds). It is no promise of when the
+    /// run ends. Absent in the other two forms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_after: Option<String>,
 }
 
 /// `GET .../events?shard=&after=`: one shard, events after the cursor in ULID order.

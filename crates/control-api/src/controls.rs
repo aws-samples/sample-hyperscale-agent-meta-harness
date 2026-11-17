@@ -1,27 +1,37 @@
 //! Run control behind `ham cancel` / `ham stop`.
 //!
-//! Cancel keeps the work: with a live agent and no `?discard=true` it queues one
-//! `Cancel` control for the agent and changes nothing else. agentd ends the prompt within 10 s, runs its end sequence, and the
-//! run machine delivers what exists with the label `Cline stopped: you stopped the run`. `?discard=true` (exactly the word
-//! `true`), or a run with no live agent (nothing to keep), clears the run: the Run item and the root Goal move to `cleared`
-//! at their next versions, the harness `goal.status` is published in the same write ([`Store::update_run`]) and the `run`
-//! execution is stopped. A concurrent writer makes the change a 409. A repeat cancel of a cleared run re-sends the stop, so a
-//! retry after a failure finishes the job.
+//! Cancel keeps the work, and it sticks. Without `?discard=true`, a cancel of a run that is
+//! `active` and has an Agent item is recorded on the Run item ([`Store::record_cancel`]: `cancelRequestedAt` and one harness event of
+//! kind `cancel-recorded`, in one write). That record is the one durable fact of the cancel: run-session starts no further session
+//! while it is set and delivers what exists, and worker-api hands the run's session a Cancel on every events answer. The route also
+//! queues one `Cancel` control for each live agent, the fast notice of a session that answers: agentd ends the prompt within 10 s,
+//! runs its end sequence, and the run machine delivers what exists with the label `Cline stopped: you stopped the run`. The run's
+//! status does not change, and the answer carries what was recorded ([`CancelRecorded`]): the time of the first cancel, the session,
+//! and when a session that stays silent is called lost at the latest. A cancel that keeps the work never clears a run that has an
+//! Agent item, whatever the agent's status: a run delivers after its session was stopped, and a cancel then must not throw the
+//! delivery away.
+//!
+//! `?discard=true` (exactly the word `true`; `ham cancel --discard`), a run that has no Agent item (no session ever ran, so nothing
+//! was saved) and a run that is `blocked`, `usage_limited` or `budget_limited` take the clear path: the Run item and the root Goal
+//! move to `cleared` at their next versions, the harness `goal.status` is published in the same write ([`Store::update_run`]) and the
+//! `run` execution is stopped. A concurrent writer makes the change a 409. A repeat cancel of a cleared run re-sends the stop, so a
+//! retry after a failure finishes the job. No path removes a copy the run saved: `ham pull <runId> --snapshot` downloads the newest
+//! one before, during and after.
 
 use crate::body::parse_body;
 use crate::handler::{
-    Blobs, Deps, Execution, Reply, Store, StoreError, V1Request, error, json, not_found, owned,
-    unavailable,
+    Blobs, CancelWrite, Deps, Execution, Reply, Store, StoreError, V1Request, error, json,
+    not_found, owned, unavailable,
 };
-use crate::ids::{new_ulid, now_rfc3339};
+use crate::ids::{new_ulid, now_rfc3339, rfc3339};
 use crate::input;
 use harness_protocol::api::internal::PendingControl;
-use harness_protocol::api::v1::{InputAccepted, InputAnswer, RunControlResponse};
+use harness_protocol::api::v1::{CancelRecorded, InputAccepted, InputAnswer, RunControlResponse};
 use harness_protocol::common::{Engine, parse_utc_unix};
-use harness_protocol::direct::DIRECT_AGENT_ID;
-use harness_protocol::direct_input::InstructOrigin;
+use harness_protocol::direct::{DIRECT_AGENT_ID, SESSION_LOST_AFTER_S};
+use harness_protocol::direct_input::{CANCEL_RECORDED_KIND, InstructOrigin};
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload, SCHEMA_VERSION};
-use harness_protocol::goal::GoalStatus;
+use harness_protocol::goal::{GoalPhase, GoalStatus};
 use harness_protocol::orchestration::GoalStatusPayload;
 use harness_protocol::store::{AgentItem, AgentStatus, ControlItem, RunItem};
 
@@ -75,8 +85,125 @@ fn status_event(run: &RunItem) -> Envelope {
     }
 }
 
+/// The generation the Agent item is at is fenced: the service has taken that session off the run (its worker gave notice that it
+/// is being ended, or the service is stopping it to read its storage back). worker-api refuses its calls and hands it no control.
+pub(crate) fn fenced(a: &AgentItem) -> bool {
+    a.fenced_generation.is_some() && a.fenced_generation == a.session_generation
+}
+
+/// A session the service has not ended and has not fenced: one that can still answer, and that a Cancel is queued for.
 fn live(a: &AgentItem) -> bool {
-    !matches!(a.status, AgentStatus::Stopped | AgentStatus::Failed)
+    !matches!(a.status, AgentStatus::Stopped | AgentStatus::Failed) && !fenced(a)
+}
+
+/// What the service knows about the run's session when a keep-the-work cancel arrives, as the answer and the event carry it.
+/// `at` is the time of this cancel. A run that is delivering has no session that could be called lost; else a session the service has
+/// neither ended nor fenced is asked to stop, and `lostAfter` is the latest time at which the service calls it lost when it stays silent: the later
+/// of its last heartbeat and its start, plus [`SESSION_LOST_AFTER_S`] seconds.
+pub fn cancel_recorded(run: &RunItem, agents: &[AgentItem], at: &str) -> CancelRecorded {
+    let direct = agents.iter().find(|a| a.agent_id == DIRECT_AGENT_ID);
+    let delivering = run.phase == GoalPhase::Delivering;
+    let session_live = !delivering && direct.map_or_else(|| agents.iter().any(live), live);
+    let last_heartbeat_at = direct.and_then(|a| a.heartbeat_at.clone());
+    let lost_after = direct.filter(|_| session_live).and_then(|a| {
+        let heard = a.heartbeat_at.as_deref().and_then(parse_utc_unix);
+        let began = a.generation_started_at.as_deref().and_then(parse_utc_unix);
+        let from = heard.into_iter().chain(began).max()?;
+        let lost = from.checked_add(i64::try_from(SESSION_LOST_AFTER_S).ok()?)?;
+        u64::try_from(lost).ok().map(rfc3339)
+    });
+    CancelRecorded {
+        requested_at: at.to_string(),
+        session: direct.and_then(|a| a.session_generation),
+        session_live,
+        delivering,
+        last_heartbeat_at,
+        lost_after,
+    }
+}
+
+/// The harness event that says the cancel is recorded (`run.waiting`, kind `cancel-recorded`): what `ham watch` prints. It is
+/// written in the same write as the Run item's `cancelRequestedAt`, so the two are one fact.
+fn cancel_event(run_id: &str, recorded: &CancelRecorded) -> Envelope {
+    let mut value = serde_json::to_value(recorded).unwrap_or_default();
+    if let Some(members) = value.as_object_mut() {
+        members.insert("kind".into(), CANCEL_RECORDED_KIND.into());
+    }
+    Envelope {
+        schema_version: SCHEMA_VERSION,
+        event_id: new_ulid(),
+        run_id: run_id.to_string(),
+        task_id: None,
+        agent_id: None,
+        seq: 0,
+        ts: recorded.requested_at.clone(),
+        event_type: EventType::RunWaiting,
+        authority: Authority::Harness,
+        payload: Payload::Inline { value },
+    }
+}
+
+/// What [`record_keep_cancel`] did.
+enum Recording {
+    /// The route's answer.
+    Done(Reply),
+    /// The run is no longer `active`: the route goes on from its fresh status, as it does for a run that never was.
+    NotActive,
+}
+
+/// Records a keep-the-work cancel of an `active` run that has an Agent item, closes the run to messages, queues the Cancel for
+/// each live agent and answers what was recorded. A repeated cancel keeps the first time and adds no event. A write that met another
+/// writer of the Run item is tried once more, then the caller is asked to retry: nothing is recorded by a failed try. A failure to
+/// queue the control is one log line and the answer stands: the cancel did not fail, and the session hears of it on its next events
+/// answer.
+async fn record_keep_cancel<S: Store, B: Blobs, E: Execution>(
+    run: &RunItem,
+    agents: &[AgentItem],
+    caller: &str,
+    deps: &Deps<S, B, E>,
+) -> Recording {
+    let run_id = run.run_id.as_str();
+    let now = now_rfc3339();
+    let mut recorded = cancel_recorded(run, agents, &now);
+    let event = cancel_event(run_id, &recorded);
+    let mut write = deps.store.record_cancel(run_id, &now, &event).await;
+    if write == Ok(CancelWrite::Busy) {
+        write = deps.store.record_cancel(run_id, &now, &event).await;
+    }
+    match write {
+        Ok(CancelWrite::Recorded) => {}
+        Ok(CancelWrite::Already(at)) => recorded.requested_at = at,
+        Ok(CancelWrite::NotActive) => return Recording::NotActive,
+        Ok(CancelWrite::Busy) => {
+            return Recording::Done(unavailable(
+                &StoreError::Unavailable(format!(
+                    "run {run_id} changed while the cancel was being recorded"
+                )),
+                "retry",
+            ));
+        }
+        Err(e) => return Recording::Done(unavailable(&e, "retry")),
+    }
+    // The run is closed to messages BEFORE the Cancel is queued: with the order reversed agentd could claim a message between the
+    // two writes and send it to Cline after the user stopped the run.
+    let mut logs = close_messages(deps, run_id).await;
+    if agents.iter().any(live) {
+        let cause = format!("cancelled by {caller}; the work is kept");
+        if let Err(e) = stop_run_work(&deps.store, &deps.execution, run_id, &cause, false).await {
+            logs.push(format!(
+                "cancel of run {run_id}: the Cancel control was not queued ({e}); the cancel is recorded and the session is told on its next events answer"
+            ));
+        }
+    }
+    let (resp, _) = json(
+        200,
+        &RunControlResponse {
+            run_id: run_id.to_string(),
+            status: run.status,
+            cancel: Some(recorded),
+        },
+    );
+    Recording::Done((resp, logs))
 }
 
 /// What [`stop_run_work`] did.
@@ -126,38 +253,42 @@ pub(crate) async fn cancel<S: Store, B: Blobs, E: Execution>(
         Ok(r) => r,
         Err(reply) => return reply,
     };
-    let to = match transition(run_id, run.status) {
+    let mut to = match transition(run_id, run.status) {
         Ok(t) => t,
         Err(reply) => return reply,
     };
-    if !discard && to.is_some() {
+    // A cancel that keeps the work is recorded for a run that is `active`. Every other status takes the path below, as before.
+    if !discard && run.status == GoalStatus::Active {
         let agents = match deps.store.list_agents(run_id).await {
             Ok(a) => a,
             Err(e) => return unavailable(&e, "retry"),
         };
-        if agents.iter().any(live) {
-            let cause = format!("cancelled by {caller}; the work is kept");
-            // The run is closed to messages BEFORE the Cancel is queued: with the order reversed agentd could claim a message between the
-            // two writes and send it to Cline after the user stopped the run.
-            let logs = close_messages(deps, run_id).await;
-            if let Err(e) = stop_run_work(&deps.store, &deps.execution, run_id, &cause, false).await
-            {
-                return unavailable(
-                    &e,
-                    &format!(
-                        "retry ham stop to ask {} to stop",
-                        crate::handler::engine_name_of(&run)
-                    ),
-                );
+        // No Agent item at all: `start-session` writes it before the first invoke and nothing deletes it, so no session ever ran and
+        // nothing was saved. Such a run has nothing to keep and is cleared below. An Agent item in any state means the cancel is
+        // recorded and nothing is cleared: a run delivers after its session was stopped.
+        if !agents.is_empty() {
+            match record_keep_cancel(&run, &agents, caller, deps).await {
+                Recording::Done(reply) => return reply,
+                Recording::NotActive => {
+                    // The run ended between the read above and the write: go on from the status it has now.
+                    run = match run_of(&deps.store, run_id, caller).await {
+                        Ok(r) => r,
+                        Err(reply) => return reply,
+                    };
+                    if run.status == GoalStatus::Active {
+                        return unavailable(
+                            &StoreError::Unavailable(format!(
+                                "run {run_id} changed while the cancel was being recorded"
+                            )),
+                            "retry",
+                        );
+                    }
+                    to = match transition(run_id, run.status) {
+                        Ok(t) => t,
+                        Err(reply) => return reply,
+                    };
+                }
             }
-            let (resp, _) = json(
-                200,
-                &RunControlResponse {
-                    run_id: run_id.to_string(),
-                    status: run.status,
-                },
-            );
-            return (resp, logs);
         }
     }
     if let Some(status) = to {
@@ -197,6 +328,7 @@ pub(crate) async fn cancel<S: Store, B: Blobs, E: Execution>(
     let (resp, _) = json(
         200,
         &RunControlResponse {
+            cancel: None,
             run_id: run_id.to_string(),
             status: run.status,
         },

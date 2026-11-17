@@ -66,7 +66,10 @@ fn the_constants_are_the_ones_of_the_state_machine() {
     assert_eq!(task["TimeoutSeconds"], json!(SESSION_TASK_TIMEOUT_S));
     assert_eq!(task["HeartbeatSeconds"], json!(SESSION_HEARTBEAT_S));
     assert_eq!(task["Catch"][0]["ResultPath"], "$.session.failure");
-    assert_eq!(task["Catch"][0]["Next"], "NextSlice");
+    // The catch goes on to the gate before `NextSlice`, which sends a session without a result to `Recover` first.
+    assert_eq!(task["Catch"][0]["Next"], "HasResult");
+    assert_eq!(asl["States"]["HasResult"]["Default"], "Recover");
+    assert_eq!(asl["States"]["Recover"]["Next"], "NextSlice");
     assert_eq!(SESSION_TASK_TIMEOUT_S, 28_500);
     assert_eq!(SESSION_HEARTBEAT_S, 600);
 }

@@ -354,6 +354,12 @@ pub trait Respawn: Send {
     fn audit(&self) -> Option<Arc<dyn AuditSink>> {
         None
     }
+
+    /// Looks for the engine's own sign that this launch's command time limit is in force. `None`: confirmed, or the engine gives no
+    /// sign. `Some(sentence)`: not confirmed; the host has written its log line and the caller tells the run. Nothing ends.
+    fn confirm(&mut self) -> BoxFuture<'_, Option<String>> {
+        Box::pin(async { None })
+    }
 }
 
 /// What a restart answers: the output and the input of the new engine process, or why it did not start.
@@ -508,6 +514,9 @@ where
     let mut last_files: Option<u32>;
     // The prompt a module sent after its interrupt, until its answer is seen.
     let mut resend: Option<Resend> = None;
+    // With: the driver held the run at the stop before this one, because a module said that the engine worked by itself
+    // (the goal loop's follow-up rounds), and the prompt that ended that stop went out to the working engine.
+    let mut worked_alone = false;
     let raw = loop {
         let limits = WatchLimits::new(
             deadline.saturating_duration_since(Instant::now()),
@@ -516,7 +525,7 @@ where
         let rec = machine.as_ref().map(|m| m.w.rec.clone());
         let watched = if first {
             watch(
-                exchange(client, collector, activity, plan, tree, &mut inner),
+                exchange(client, collector, activity, plan, tree, &mut inner, host),
                 limits,
                 activity,
             )
@@ -665,6 +674,25 @@ where
                 )
                 .await;
                 let Some(TurnVote::Wait { until }) = voted else {
+                    // With: the user's cancel was up before the modules could be asked about an answered prompt, and the
+                    // engine was working by itself when the driver last looked (it held the run at this stop, or at the stop before,
+                    // whose prompt went out to the working engine and was answered at once). No prompt is open, so nothing has told
+                    // the engine and nothing has made the stop the user's: the run ends for the cancel as a hold ends for it.
+                    if voted.is_none()
+                        && (held || worked_alone)
+                        && matches!(&raw.watched, Watched::Done(Ok(done)) if done.stop_reason != "cancelled")
+                        && plan.cancel.as_ref().is_some_and(|c| *c.borrow())
+                    {
+                        // The cancel may have been written to the prompt itself, which the working engine answered at once all the
+                        // same (it queued the prompt behind its round): it is not written a second time.
+                        if !raw.cancel_sent {
+                            write_cancel(client, inner.session_id.as_deref()).await;
+                            activity.cancel_written();
+                        }
+                        raw.watched = Watched::Done(Err(AcpError::CancelIgnored));
+                        raw.cancel_sent = activity.cancel_sent();
+                        raw.message = collector.final_message();
+                    }
                     break voted;
                 };
                 held = true;
@@ -689,6 +717,7 @@ where
                     }
                 }
             };
+            worked_alone = held;
             if held {
                 // The tree changed while the engine worked.
                 files = match &machine {
@@ -1012,7 +1041,8 @@ where
 
 /// Puts the end of a stage to the modules: the vote of the turn end (`seal` false) or the seal. `None` when the stage is not one a module
 /// may continue: nothing was asked of the model, the prompt was not answered, the user's cancel is up or no time is left. A vote that comes back
-/// after the user's cancel or the deadline is dropped.
+/// after the user's cancel or the deadline is dropped, except a `Wait` of the turn end: the caller's hold then ends the run for that cancel or
+/// deadline.
 #[allow(clippy::too_many_arguments)]
 async fn consult(
     hooks: &Hooks,
@@ -1044,6 +1074,7 @@ async fn consult(
         classified,
         files_changed: files,
         interrupted,
+        engine_working: false,
         time_left: left,
         tool_calls: collector.tool_calls(),
     };
@@ -1053,7 +1084,15 @@ async fn consult(
         hooks.turn_end(&end).await
     };
     if cancelled() || deadline <= Instant::now() {
-        return None;
+        // With: a module said in this poll that the engine still works by itself (`Wait`), and the user's cancel or the
+        // deadline came up while the modules were asked. That vote is kept: the hold that follows ends the run for the cancel or the
+        // deadline at once, as it ends an open prompt (the cancel is written to the engine, and the stop is the user's or the time
+        // limit's). Dropped, the run ended with the outcome of the last answered prompt; after a user's message that the engine had
+        // queued behind its round, that was a turn that ended without a message. Every other vote is dropped as before.
+        return match vote {
+            wait @ TurnVote::Wait { .. } if !seal => Some(wait),
+            _ => None,
+        };
     }
     Some(vote)
 }
@@ -1743,7 +1782,12 @@ impl Machine {
         (user_text, analyzer_notes): (Option<String>, Option<String>),
     ) -> FreshSpec {
         let sources = self.gather(collector, inner, classified).await;
-        let d = digest(&sources, DIGEST_BUDGET_BYTES);
+        // What the user said to the run so far (the message module keeps it in the context directory), for a session that starts
+        // without the conversation.
+        let d = digest(&sources, DIGEST_BUDGET_BYTES).with_earlier(
+            &crate::direct::messages::earlier::read_in(self.w.context.path()),
+            &sources.secrets,
+        );
         let n = inner.sessions + 1;
         let text = d.text();
         let (bytes, sha) = match self
@@ -2180,17 +2224,19 @@ pub(crate) fn init_params() -> Value {
 
 /// The first stage: setup (`initialize`, `session/new`, the model pin), then the user's prompt byte for byte, after the harness's block on
 /// the delivery when the plan's prompt holds one.
-async fn exchange<R, W>(
+async fn exchange<R, W, S>(
     client: &mut AcpClient<R, W>,
     collector: &mut DirectCollector,
     activity: &Arc<Activity>,
     plan: &PromptPlan,
     tree: &dyn TreeProbe,
     inner: &mut Inner,
+    host: &mut S,
 ) -> Result<PromptDone, Box<Fail>>
 where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
+    S: Respawn<R = R, W = W>,
 {
     step(client, collector, "initialize", "initialize", init_params()).await?;
     // No `_meta`: the engine's own system prompt and its rules stand as they are.
@@ -2228,6 +2274,10 @@ where
             err: AcpError::ModelMismatch { wanted, got },
             fresh_start: false,
         }));
+    }
+    // The engine's own sign that the command time limit is in force: a session without it is told once and goes on.
+    if let Some(note) = host.confirm().await {
+        collector.record_notify(crate::engine::direct::LIMIT_REASON, None, &note);
     }
     collector
         .hooks()

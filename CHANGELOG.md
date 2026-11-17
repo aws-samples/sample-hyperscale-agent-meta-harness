@@ -6,6 +6,56 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.23] - 2026-11-17
+
+### Added
+
+- When a session of a run is stopped from outside or stops answering, the service reads that session's own storage back before the next session starts. The next session starts from those files when the service's checks leave no doubt. Otherwise it starts from the last saved copy.
+- `ham pull <runId> --read-back <n>` downloads the files the service read back from session n, whether the run went on from them or not. `/pull --read-back <n>` does the same for the run on screen.
+- `ham pull <runId> --snapshot` downloads the files read back while they are the copy the run goes on from.
+- The notice of a lost session says which copy the next session starts from. When files were read back and not used, it says why and names the command that downloads them.
+- A run that ends on a lost session delivers the files read back when the service chose them.
+- A run that ends blocked while its newest copy is files read back names that copy and its command.
+- `run.recover_after_stop`, on by default, sets whether the service reads a stopped session's storage back. `ham config set run.recover_after_stop off` switches the read and the early end of the wait off. A stage of an older release refuses a start with it off, and `ham` names the key.
+- `ham cancel <runId> --discard` stops a run now and delivers nothing. Saved copies stay available through `ham pull <runId> --snapshot`.
+- `ham cancel` says at once that the cancel is recorded and what follows, and names `ham pull <runId> --snapshot`. `ham watch` prints one line, the run screen shows the same line in the conversation, and `ham runs` and the Runs screen show `cancel recorded`.
+- `ham runs` and the Runs screen show `session silent since <time>` when the service has missed two of a session's heartbeats and half a minute more. `ham runs --json` carries `cancelRequestedAt` and `sessionSilentSince`.
+- `ham watch --json` carries `cancelRequestedAt` and `endRequestedAt`.
+- `ham watch` and `ham pull` show the `Outside` row of the delivery card: the tokens the engine used outside the prompts that answered. `GET /v1/runs/{runId}` carries the sum as `cost.answeredTokens`.
+- A new session of a run is given the messages you sent earlier in the run as your own words, in the order you sent them. The service supplies them from its record of the run's messages. This covers a session after the 8-hour limit, a session that follows a lost one and a fresh session. The service carries at most 16,384 bytes of message text and at most 100 messages. It leaves out the oldest messages first, and the new session is told how many were left out. These messages do not include text that you typed with an answer to a question.
+- A message that `ham` shows as `may have reached Cline` is given to the new session after the delivered messages, with a line that says the earlier session may or may not have read it.
+- When the service cannot supply the messages, the new session receives the record the earlier session kept, quoted as data, and its first prompt says so.
+- A run says once when OpenCode does not take the command time limit in a session, and goes on.
+
+### Changed
+
+- A stop that the worker hears of ends the wait for the session within seconds instead of after 600 seconds. A session on Instances compute gets no read and keeps the 600 second wait.
+- After a lost session the service waits 75 seconds before it decides which copy the next session starts from.
+- A cancelled run whose session does not answer delivers the files the service read back from that session's storage when its checks leave no doubt, and otherwise the last saved copy. `ham cancel`, `ham watch` and the guides say this rule in the same words, and the card's `Lost` row names the copy the run ended with.
+- The notice of a silent session says that the service reads the session's storage back when the service does so for the run, and no longer says that file changes are lost. A run with `run.recover_after_stop` off, a run on Instances compute and a run on a stage of an older release keep the earlier notice.
+- After a recorded cancel, the notice for a silent session says that no new session starts. It says that the run ends when the service calls the session lost. If the session was asked to end, the sentence about its open question then says that nobody asks again.
+- A session that starts from files read back is told so in its first words. Before, every later session was told that it starts from the last saved copy.
+- A cancel that no session answers ends with the label of a run the harness ended, and the reason says when you stopped it. The label of such a run is the same in the card, the run list and the events.
+- The service adds up the tokens of the `Outside` row from what each session reports, so the row is right for a run that lost a session.
+- A run whose engine stopped a prompt while it repeated a wait on a long command is resumed without using up its automatic resume, up to three times in a session. A repeat counts as such a wait when the earlier identical call blocked for at least the larger of 5 seconds and the smaller of half of the wait bound and 50 seconds.
+- Cline no longer counts a bounded wait that is sent again toward its guard on identical tool calls. A repeat is left out when the earlier identical call blocked for at least the larger of 5 seconds and the smaller of half of the wait bound and 50 seconds. Calls that return quickly count as before, and the repeats that are left out may take two hours in all.
+- Every launch of an engine sets `HAMH_WAIT_S`, the bound of one wait on a background job: nine tenths of the run's command time limit, at most 240 seconds.
+- The lifecycle pack starts a long background run in a process group of its own and writes the exit code into the end file after the command has returned. The wait is bounded by `HAMH_WAIT_S` seconds, with 100 as the fallback. It also ends when the job's process is gone, and then prints `JOB-GONE` if no exit code was written. A job that was ended from outside no longer reads as a success.
+- The lifecycle pack and the default rules file no longer ask for a new number on every repeat of the wait. `ham rules init` updates a rules file that was never edited and leaves an edited file alone.
+
+### Fixed
+
+- `ham cancel` now sticks when the run's session is gone. The service records the cancel and starts no further session. It delivers the copy it chose, or ends the run `blocked` with the cancel as its reason when there is none.
+- A cancel while a run delivers no longer discards the delivery.
+- A cancel that arrives while the engine works through the goal loop's follow-up prompts ends the run as your stop also when it comes in the moment the harness asks its modules about a round. Before, such a run could end with the label of its last answered prompt.
+- The stored conversation of a run with several sessions is read from every session. The notice that its end may be missing follows the run's last session.
+- A message sent while Cline works through the goal loop's follow-up prompts no longer restarts Cline. Cline takes the message after the round it is working on. A message that Cline took behind the last round of the loop is sent once more when Cline is idle, so it is read. A message that can no longer go out shows the notice "not read; the run ended before this message was reached".
+- A `/now` message that finds no turn to interrupt shows the notice "could not interrupt; delivered after this turn". This covers the goal loop's follow-up prompts, the time between two turns, a wait before a retry and the start of a session.
+- The goal loop's goal text and its follow-up prompts name this task's goal card. A goal card that an earlier request left in the repository is no longer named.
+- OpenCode runs get the command time limit: a shell command that names no limit runs up to `commands.timeout_seconds` (600 seconds by default), not 120 seconds. A limit the model names for a command is kept.
+- A command that OpenCode stopped at its time limit shows as timed out in the run's records.
+- Git commands work in a scratch worktree under the session's temp folder, under both engines. The review round can compare the change with the starting commit there.
+
 ## [5.22] - 2026-11-16
 
 ### Added

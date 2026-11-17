@@ -46,6 +46,7 @@ pub fn ctx(model: &str) -> EmitContext {
         max_output_tokens: Some(64_000),
         context_tokens: Some(1_000_000),
         compaction: None,
+        command_limit_ms: None,
     }
 }
 

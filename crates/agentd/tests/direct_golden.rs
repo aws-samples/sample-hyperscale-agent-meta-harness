@@ -443,3 +443,26 @@ async fn golden_silence() {
     run(&d).await;
     check("silence", &d);
 }
+
+/// worker-api tells the session of a recorded cancel on every events answer, so that a Cancel a dying session took, or one
+/// whose answer was lost, is not lost. A session that lives therefore hears the Cancel again and again. The run is the one of
+/// `golden_user_cancel`, event for event: one cancel reaches the engine, the turn ends as stopped by the user, and the end sequence
+/// runs once.
+#[tokio::test(flavor = "multi_thread")]
+async fn b853_a_repeated_cancel_does_not_disturb_the_worker() {
+    let d = Direct::start(Opts {
+        scenario: "end_turn_done",
+        engine_env: vec![("FAKE_ACP_HOLD_PROMPTS", "1".into())],
+        timeout_s: 60,
+        ..golden_opts()
+    })
+    .await;
+    d.aws.cancel_on_every_answer(EventType::TurnStarted);
+    run(&d).await;
+    assert!(
+        d.aws.cancels_told() > 1,
+        "TRIGGER PRESENT: the Cancel was told {} time(s)",
+        d.aws.cancels_told()
+    );
+    check("user_cancel", &d);
+}

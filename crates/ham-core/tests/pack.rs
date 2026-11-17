@@ -30,7 +30,7 @@ fn lock() -> serde_json::Value {
 fn the_contract_rule_asset_is_byte_for_byte_the_pack_contract() {
     let on_disk = std::fs::read_to_string(repo().join("lifecycle/pack/AGENTS.md")).unwrap();
     assert_eq!(pack::CONTRACT, on_disk);
-    assert!(pack::CONTRACT.len() <= 11600, "the contract limit");
+    assert!(pack::CONTRACT.len() <= 11900, "the contract limit");
 }
 
 #[test]
@@ -257,10 +257,12 @@ fn the_skills_member_stays_inside_the_requests_limits() {
         .sum();
     // The budget of the whole pack in one start request: 100 KiB while the pack was 101,521 bytes (pack 1.10.0), 128 KiB since the scanner kit
     // gained its bandit and secret-shape parts (pack 1.11.0, 117,994 bytes), 132 KiB since the delivery and build-and-test skills and the DOX starter
-    // gained the words for a starter the harness writes before the first prompt (pack 1.14.0, about 131,400 bytes). The skills have no size of their
-    // own in the protocol; the pack stays small so that it leaves the request room for the user's own files.
+    // gained the words for a starter the harness writes before the first prompt (pack 1.14.0, about 131,400 bytes), 133 KiB since the scanner step
+    // of the check skill starts the kit in a process group of its own and waits with a command that also ends when the kit is gone (pack 1.18.0,
+    // about 135,500 bytes). The skills have no size of their own in the protocol; the pack stays small so that it leaves the request room
+    // for the user's own files.
     assert!(
-        total < 132 * 1024,
+        total < 133 * 1024,
         "the pack is small enough to travel in every start request: {total} bytes"
     );
 }

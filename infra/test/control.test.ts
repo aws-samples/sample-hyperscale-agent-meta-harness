@@ -4,7 +4,8 @@ import { resourcesOf, synth, template } from "./helpers.ts";
 import { ACCOUNT, names, REGION, stageConfig } from "../lib/config.ts";
 
 // The private /internal API: IAM auth, worker-api Lambda.
-const ROUTES = ["creds", "heartbeat", "turn-complete", "events", "message-session", "message-claim", "message-seal", "message-outcome"];
+// `message-history` is the read of the run's delivered messages that a worker asks at the start of a session.
+const ROUTES = ["creds", "heartbeat", "turn-complete", "events", "message-session", "message-claim", "message-seal", "message-outcome", "message-history"];
 // The research route adds a `research` resource and five more POST routes below it (infra/test/research.test.ts).
 const RESEARCH_ROUTES = ["search", "fetch", "repo", "job", "limits"];
 
@@ -42,7 +43,7 @@ describe("control stack", () => {
     expect(JSON.stringify(deny.Condition)).toContain("aws:SourceVpce");
   });
 
-  test("thirteen POST routes under /internal with IAM auth and Lambda proxy integration", () => {
+  test("fourteen POST routes under /internal with IAM auth and Lambda proxy integration", () => {
     const resources = onApi("AWS::ApiGateway::Resource", "hamh-direct-internal").map((p) => p.PathPart);
     expect(resources.sort()).toEqual(["internal", ...ROUTES, "research", ...RESEARCH_ROUTES].sort());
     const methods = onApi("AWS::ApiGateway::Method", "hamh-direct-internal");
@@ -422,7 +423,13 @@ describe("control stack", () => {
     // The keys the role may read (SnapshotDownload), as listing prefixes: nothing else under agents/ becomes listable.
     const read = stmts.find((x: any) => x.Sid === "SnapshotDownload");
     const keys = [read.Resource].flat().map((r: string) => r.replace(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/`, "")).sort();
-    expect(keys).toHaveLength(6);
+    // Six keys of the saved copies and three of the files read back from a stopped session's storage.
+    expect(keys).toHaveLength(9);
+    expect(keys.filter((k: string) => k.includes("agents/recovery/"))).toEqual([
+      "runs/*/agents/recovery/turns/?/recovery.bundle",
+      "runs/*/agents/recovery/turns/??/recovery.bundle",
+      "runs/*/agents/recovery/turns/???/recovery.bundle",
+    ]);
     expect([...list.Condition.StringLike["s3:prefix"]].sort()).toEqual(keys);
     expect(Object.keys(list.Condition)).toEqual(["StringLike"]);
     expect(JSON.stringify(list)).not.toMatch(/agents\/\*|turns\/\*|\/hidden|transcript|summary/);
@@ -455,7 +462,9 @@ describe("control stack", () => {
   // The download of the work in progress. The route reads the record and the first bytes of the bundle and presigns the
   // bundle, so the role may get these two objects of the direct agent and nothing else under agents/ (the transcript, the summary,
   // the stop digests, the nonce and the final bundle stay closed to it).
-  test("control-api may get the snapshot bundle and its record of the direct agent, and nothing else under agents/", () => {
+  // The files the service read back from a stopped session's storage are one more object per session, under a prefix of their own
+  // (agents/recovery/). The same route serves them, chosen or not, so the same statement names them, with the same three patterns.
+  test("control-api may get the snapshot bundle and its record of the direct agent and the bundle read back from a session, and nothing else under agents/", () => {
     const role = Object.values(resourcesOf(t, "AWS::IAM::Role")).map((r) => r.Properties as any)
       .find((r) => r.RoleName === "hamh-direct-control-api");
     const stmts = role.Policies.flatMap((p: any) => p.PolicyDocument.Statement);
@@ -472,7 +481,13 @@ describe("control stack", () => {
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/direct/turns/??/snapshot.json`,
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/direct/turns/???/snapshot.bundle`,
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/direct/turns/???/snapshot.json`,
+      `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/?/recovery.bundle`,
+      `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/??/recovery.bundle`,
+      `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/???/recovery.bundle`,
     ]);
+    // The role reads what a session and the worker of a read wrote; it writes nothing there.
+    expect(JSON.stringify(stmts.filter((x: any) => JSON.stringify(x.Resource ?? "").includes("agents/")).flatMap((x: any) => [x.Action].flat())))
+      .not.toMatch(/Put|Delete/);
     expect(snap.Condition).toBeUndefined();
     expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:GetObjectVersion")).map((x: any) => x.Sid)).toEqual(["SnapshotDownload"]);
     // The listings are the transcript route's (inside the transcript prefix), the follow-up run's (the exact key of a delivered head) and this route's

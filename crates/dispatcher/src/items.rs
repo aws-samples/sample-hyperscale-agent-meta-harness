@@ -99,6 +99,8 @@ pub fn agent_item(d: &Dispatch, nonce: &str, session_policy: &str) -> AgentItem 
         capacity_provider_id: None,
         nonce_ciphertext: None,
         compute: None,
+        fenced_generation: None,
+        recover_after_stop: None,
     }
 }
 

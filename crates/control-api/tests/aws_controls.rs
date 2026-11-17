@@ -221,3 +221,126 @@ async fn cancel_stops_the_named_execution_and_a_missing_one_is_already_stopped()
         "arn:aws:states:us-west-2:800000000022:execution:hamh-live-run:R1"
     );
 }
+
+/// The record of a cancel against the table. The attribute name is typed here, not taken from a constant of the product: this is
+/// the name run-session and worker-api read (`cancelRequestedAt`), and a write under another name would pass every other test.
+#[tokio::test]
+async fn b853_record_cancel_against_the_table() {
+    use control_api::handler::CancelWrite;
+    const AT: &str = "2026-11-16T07:05:22Z";
+    let event = Envelope {
+        schema_version: SCHEMA_VERSION,
+        event_id: "01K5ZQ4T8M3N6P7R9S0V1W2X42".into(),
+        run_id: RUN.into(),
+        task_id: None,
+        agent_id: None,
+        seq: 0,
+        ts: AT.into(),
+        event_type: EventType::RunWaiting,
+        authority: Authority::Harness,
+        payload: Payload::Inline {
+            value: json!({"kind": "cancel-recorded", "requestedAt": AT, "sessionLive": true}),
+        },
+    };
+    let failed_condition = r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException",
+      "message":"Transaction cancelled [ConditionalCheckFailed, None]",
+      "CancellationReasons":[{"Code":"ConditionalCheckFailed"},{"Code":"None"}]}"#;
+    let conflict = r#"{"__type":"com.amazonaws.dynamodb.v20120810#TransactionCanceledException",
+      "message":"Transaction cancelled [TransactionConflict, None]",
+      "CancellationReasons":[{"Code":"TransactionConflict"},{"Code":"None"}]}"#;
+    let throttled = r#"{"__type":"com.amazonaws.dynamodb.v20120810#ThrottlingException","message":"slow down"}"#;
+    // The Run item as the table returns it to the consistent read that follows a failed condition.
+    let stored = |status: &str, cancel: Option<&str>| {
+        let mut item = json!({
+            "PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "META"}, "runId": {"S": RUN},
+            "ownerPrincipalArn": {"S": OWNER}, "promptSha256": {"S": "cd".repeat(32)},
+            "target": {"M": {"mode": {"S": "s3-only"}}}, "status": {"S": status}, "phase": {"S": "green"},
+            "enginePolicyVersion": {"N": "1"}, "createdAt": {"S": "2026-11-16T07:00:00Z"}, "version": {"N": "5"},
+        });
+        if let Some(at) = cancel {
+            item["cancelRequestedAt"] = json!({"S": at});
+        }
+        json!({"Item": item}).to_string()
+    };
+    let recorded_before = stored("active", Some("2026-11-16T07:01:00Z"));
+    let cleared = stored("cleared", None);
+    let active_without = stored("active", None);
+    let r = replay(vec![
+        (200, "{}"),
+        (400, failed_condition),
+        (200, recorded_before.as_str()),
+        (400, failed_condition),
+        (200, cleared.as_str()),
+        (400, conflict),
+        (400, failed_condition),
+        (200, active_without.as_str()),
+        (400, throttled),
+    ]);
+    let s = ddb(&r);
+    // An active run without a record: the time and the event, in one write.
+    assert_eq!(
+        s.record_cancel(RUN, AT, &event).await.unwrap(),
+        CancelWrite::Recorded
+    );
+    // A second cancel: the condition fails, the item is read, and the first time stands.
+    assert_eq!(
+        s.record_cancel(RUN, AT, &event).await.unwrap(),
+        CancelWrite::Already("2026-11-16T07:01:00Z".into())
+    );
+    // A run that is no longer active gets neither the time nor the event.
+    assert_eq!(
+        s.record_cancel(RUN, AT, &event).await.unwrap(),
+        CancelWrite::NotActive
+    );
+    // Another writer of the item at the same instant.
+    assert_eq!(
+        s.record_cancel(RUN, AT, &event).await.unwrap(),
+        CancelWrite::Busy
+    );
+    // The condition failed and the item reads as active without the record: the read raced a writer.
+    assert_eq!(
+        s.record_cancel(RUN, AT, &event).await.unwrap(),
+        CancelWrite::Busy
+    );
+    assert!(matches!(
+        s.record_cancel(RUN, AT, &event).await,
+        Err(StoreError::Unavailable(_))
+    ));
+
+    let b = bodies(&r);
+    let items = b[0]["TransactItems"].as_array().unwrap();
+    assert_eq!(
+        items.len(),
+        2,
+        "the Run item and the event, one transaction"
+    );
+    let run = &items[0]["Update"];
+    assert_eq!(
+        run["Key"],
+        json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "META"}})
+    );
+    assert_eq!(run["UpdateExpression"], "SET #cancel = :at");
+    assert_eq!(
+        run["ConditionExpression"],
+        "#status = :active AND attribute_not_exists(#cancel)"
+    );
+    assert_eq!(
+        run["ExpressionAttributeNames"],
+        json!({"#cancel": "cancelRequestedAt", "#status": "status"})
+    );
+    assert_eq!(
+        run["ExpressionAttributeValues"],
+        json!({":at": {"S": AT}, ":active": {"S": "active"}})
+    );
+    let put = &items[1]["Put"];
+    assert_eq!(put["Item"]["PK"]["S"], format!("EVT#{RUN}#00"));
+    assert_eq!(put["Item"]["envelope"]["M"]["type"]["S"], "run.waiting");
+    assert_eq!(put["ConditionExpression"], "attribute_not_exists(PK)");
+    // The read after a failed condition is a consistent read of the Run item.
+    assert_eq!(
+        b[2]["Key"],
+        json!({"PK": {"S": format!("RUN#{RUN}")}, "SK": {"S": "META"}})
+    );
+    assert_eq!(b[2]["ConsistentRead"], true);
+    assert_eq!(b.len(), 9);
+}

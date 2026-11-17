@@ -106,6 +106,12 @@ impl ContextDir {
         self.write_file(TASK_FILE, task.as_bytes())
     }
 
+    /// Writes `user-messages.json` (mode 0644): the messages of the user that were delivered to an engine of this run,
+    /// for the first prompt of a session that follows.
+    pub fn write_user_messages(&self, json: &str) -> Result<PathBuf, String> {
+        self.write_file(crate::direct::messages::earlier::FILE, json.as_bytes())
+    }
+
     /// Writes `fresh-session-<n>.md` (mode 0644). A digest over the budget is refused: the builder of the digest drops whole
     /// sections to fit, so a longer text is a defect. The user's task is whole in the digest and outside the budget, so the limit is the
     /// budget and the size of `task.md`.

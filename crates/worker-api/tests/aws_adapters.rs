@@ -10,6 +10,8 @@ use harness_protocol::common::Engine;
 use harness_protocol::direct::{InstructAction, InstructOrigin};
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload};
 use harness_protocol::goal::GoalStatus;
+use harness_protocol::messages::{MessageItem, MessageMode, MessageState};
+use message_ledger::LedgerError;
 use worker_api::aws::{DynamoStore, SfnCallbacks, StsMinter};
 use worker_api::creds::MintPlan;
 use worker_api::handler::{CallbackError, Callbacks, Minter, Store, StoreError, TokenContext};
@@ -386,6 +388,7 @@ async fn the_transcript_summary_is_set_on_the_existing_turn_item_and_a_missing_o
                 count: Some(1),
             },
         ],
+        answered_tokens: None,
     };
     store
         .record_turn_transcript("R1", "a1", 3, &summary)
@@ -420,6 +423,40 @@ async fn the_transcript_summary_is_set_on_the_existing_turn_item_and_a_missing_o
                 {"M": {"kind": {"S": "conflict"}, "fromSeq": {"N": "2"}, "toSeq": {"N": "2"}, "count": {"N": "1"}}}
             ]}
         }})
+    );
+}
+
+/// The fence of a session generation is one conditional write on the Agent item.
+#[tokio::test]
+async fn b854_the_fence_is_one_conditional_write_and_an_item_at_another_generation_is_left_alone() {
+    let client = replay(vec![(200, "{}"), (400, CONDITIONAL_FAILED), (500, "{}")]);
+    let store = ddb(&client);
+    assert!(store.fence_agent("R1", "direct", 3).await.unwrap());
+    assert!(
+        !store.fence_agent("R1", "direct", 3).await.unwrap(),
+        "the item is at another generation, or has no binding: nothing was written"
+    );
+    assert!(store.fence_agent("R1", "direct", 3).await.is_err());
+    let b = &bodies(&client)[0];
+    assert_eq!(
+        b["Key"],
+        serde_json::json!({"PK": {"S": "RUN#R1"}, "SK": {"S": "AGENT#direct"}})
+    );
+    assert_eq!(
+        b["UpdateExpression"],
+        "SET #f = :n, #c.#r = :true, #v = #v + :one"
+    );
+    assert_eq!(
+        b["ConditionExpression"],
+        "#sg = :n AND attribute_exists(#c)"
+    );
+    assert_eq!(
+        b["ExpressionAttributeNames"],
+        serde_json::json!({"#f": "fencedGeneration", "#sg": "sessionGeneration", "#c": "creds", "#r": "revoked", "#v": "version"})
+    );
+    assert_eq!(
+        b["ExpressionAttributeValues"],
+        serde_json::json!({":n": {"N": "3"}, ":true": {"BOOL": true}, ":one": {"N": "1"}})
     );
 }
 
@@ -949,4 +986,179 @@ async fn heartbeats_decrypt_the_same_way_and_closed_tasks_are_named() {
         "{e:?}"
     );
     assert_eq!(sfn.actual_requests().count(), 2);
+}
+
+/// The record of the user's cancel is read where control-api writes it. The attribute name is typed here, not taken from a
+/// constant of the product: a read under another name would pass every other test and lose every cancel.
+#[tokio::test]
+async fn b853_the_flag_is_read_where_it_is_written() {
+    let with = r#"{"Item": {"cancelRequestedAt": {"S": "2026-11-16T07:05:22Z"}}}"#;
+    // A projection that finds no such attribute returns an item without it; a run that does not exist returns none.
+    let without = r#"{"Item": {}}"#;
+    let missing = "{}";
+    let down = r#"{"__type": "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException", "message": "no table"}"#;
+    let client = replay(vec![
+        (200, with),
+        (200, without),
+        (200, missing),
+        (400, down),
+    ]);
+    let store = ddb(&client);
+    assert!(store.cancel_requested("R1").await.unwrap());
+    assert!(!store.cancel_requested("R1").await.unwrap());
+    assert!(!store.cancel_requested("R1").await.unwrap());
+    assert!(matches!(
+        store.cancel_requested("R1").await,
+        Err(StoreError::Unavailable(_))
+    ));
+    let b = bodies(&client);
+    assert_eq!(
+        b[0]["Key"],
+        serde_json::json!({"PK": {"S": "RUN#R1"}, "SK": {"S": "META"}})
+    );
+    assert_eq!(b[0]["ConsistentRead"], true);
+    assert_eq!(b[0]["ProjectionExpression"], "#cancel");
+    assert_eq!(
+        b[0]["ExpressionAttributeNames"],
+        serde_json::json!({"#cancel": "cancelRequestedAt"})
+    );
+}
+
+/// The summary's `answeredTokens` is stored inside the Turn item's `transcript`, under the names control-api reads
+/// (typed here, not taken from a constant of the product), and a summary without the number stores no such member.
+#[tokio::test]
+async fn b846_the_summary_is_stored_with_its_answered_tokens() {
+    use harness_protocol::transcript::TranscriptSummary;
+    let client = replay(vec![(200, "{}"), (200, "{}")]);
+    let store = ddb(&client);
+    let with = TranscriptSummary {
+        last_transcript_seq: Some(6),
+        entries: Vec::new(),
+        answered_tokens: Some(1_727_891),
+    };
+    store
+        .record_turn_transcript("R1", "direct", 2, &with)
+        .await
+        .unwrap();
+    let without = TranscriptSummary {
+        last_transcript_seq: Some(6),
+        entries: Vec::new(),
+        answered_tokens: None,
+    };
+    store
+        .record_turn_transcript("R1", "direct", 3, &without)
+        .await
+        .unwrap();
+    let b = bodies(&client);
+    assert_eq!(
+        b[0]["ExpressionAttributeNames"],
+        serde_json::json!({"#t": "transcript"})
+    );
+    assert_eq!(
+        b[0]["ExpressionAttributeValues"][":t"],
+        serde_json::json!({"M": {
+            "lastTranscriptSeq": {"N": "6"},
+            "entries": {"L": []},
+            "answeredTokens": {"N": "1727891"}
+        }})
+    );
+    assert_eq!(
+        b[1]["ExpressionAttributeValues"][":t"],
+        serde_json::json!({"M": {"lastTranscriptSeq": {"N": "6"}, "entries": {"L": []}}}),
+        "TRIGGER PRESENT: a summary without the number stores no such member"
+    );
+}
+
+// ----: the read of the delivered messages ------------------------------------------------------------------------------------------
+
+/// A stored message of run `run` as DynamoDB answers it.
+fn message_item(
+    run: &str,
+    n: u32,
+    state: MessageState,
+    turn: Option<u32>,
+    text: &str,
+) -> serde_json::Value {
+    let item = MessageItem {
+        run_id: run.into(),
+        message_id: format!("01M5A2R7K3C9XJ4D8E6F{n:06}"),
+        seq: n,
+        principal_arn: "arn:aws:sts::111122223333:assumed-role/Admin/owner".into(),
+        text: text.into(),
+        mode: MessageMode::Next,
+        epoch: Some("s1".into()),
+        epoch_no: 1,
+        state,
+        reason: None,
+        detail: None,
+        delivered_turn: turn,
+        confirms: None,
+        superseded_by: None,
+        claimed_by: None,
+        attempt: 1,
+        payload_sha256: "0".repeat(64),
+        accepted_at: "2026-10-16T14:02:11Z".into(),
+        updated_at: "2026-10-16T14:02:11Z".into(),
+        history: Vec::new(),
+        version: 3,
+    };
+    let mut v = serde_json::to_value(&item).unwrap();
+    v["PK"] = serde_json::json!(format!("RUN#{run}"));
+    v["SK"] = serde_json::json!(format!("MSG#{}", item.message_id));
+    serde_json::Value::Object(
+        v.as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, x)| (k.clone(), dynamo(x)))
+            .collect(),
+    )
+}
+
+/// `POST /internal/message-history` reads the run's message items with one consistent Query and writes nothing: the role's table
+/// statement already allows it.
+#[tokio::test]
+async fn b857_the_delivered_messages_are_read_with_one_consistent_query_and_nothing_is_written() {
+    let page = serde_json::json!({"Count": 3, "Items": [
+        message_item("R1", 2, MessageState::Delivered, Some(3), "name the file REPORT.md"),
+        message_item("R1", 1, MessageState::Delivered, Some(2), "use tabs"),
+        message_item("R1", 3, MessageState::Pending, None, "still waiting"),
+    ]})
+    .to_string();
+    let client = replay(vec![(200, &page)]);
+    let got = ddb(&client).message_history("R1").await.unwrap();
+    assert_eq!(
+        got.messages
+            .iter()
+            .map(|m| (m.seq, m.delivered_turn, m.text.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (1, Some(2), "use tabs"),
+            (2, Some(3), "name the file REPORT.md")
+        ],
+        "delivered only, in the order admitted"
+    );
+    assert_eq!(got.cut, 0);
+    let sent = bodies(&client);
+    assert_eq!(sent.len(), 1, "one request: {sent:?}");
+    assert_eq!(sent[0]["TableName"], "hamh-live-harness");
+    assert_eq!(sent[0]["ConsistentRead"], true);
+    assert_eq!(
+        sent[0]["KeyConditionExpression"],
+        "PK = :pk AND begins_with(SK, :sk)"
+    );
+    assert_eq!(sent[0]["ExpressionAttributeValues"][":pk"]["S"], "RUN#R1");
+    assert_eq!(sent[0]["ExpressionAttributeValues"][":sk"]["S"], "MSG#");
+    // the request is a Query: it names nothing to put, update or delete
+    for member in ["Item", "UpdateExpression", "TransactItems", "RequestItems"] {
+        assert!(sent[0].get(member).is_none(), "{member}: {}", sent[0]);
+    }
+    // a read that fails is an error and never an empty answer
+    let client = replay(vec![(
+        400,
+        r#"{"__type":"com.amazon.coral.validate#ValidationException","message":"bad"}"#,
+    )]);
+    assert!(matches!(
+        ddb(&client).message_history("R1").await,
+        Err(LedgerError::Unavailable(_))
+    ));
 }

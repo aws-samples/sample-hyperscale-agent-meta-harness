@@ -124,6 +124,10 @@ where
             ),
         ));
     }
+    // The first start and a later start are treated alike: the engine's sign for the command time limit is looked for again.
+    if let Some(note) = host.confirm().await {
+        collector.record_notify(crate::engine::direct::LIMIT_REASON, None, &note);
+    }
     let hooks = collector.hooks().clone();
     if let Some(old) = &inner.session_id {
         hooks.event(&Event::SessionEnded(SessionEnded {

@@ -18,12 +18,15 @@ import { RESEARCH_ROUTES, ResearchRoute } from "./research.ts";
 import type { SecurityStack } from "./security.ts";
 
 /**
- * The routes of the private /internal API. The last four are message control: agentd reports its session, claims a
- * message before it sends it, seals the run and reports the outcome. Flat names, one resource each, like the first four.
+ * The routes of the private /internal API. Four are message control: agentd reports its session, claims a
+ * message before it sends it, seals the run and reports the outcome. `message-history` is the read a worker asks at the start
+ * of a session: the user's messages that were delivered in earlier sessions of the run. Flat names, one resource each, like the first
+ * four. A new route needs no IAM statement: the worker-session role and the Lambda permission name `POST /internal/*`, and worker-api's
+ * role already reads the table.
  */
 export const INTERNAL_ROUTES = [
   "creds", "heartbeat", "turn-complete", "events",
-  "message-session", "message-claim", "message-seal", "message-outcome",
+  "message-session", "message-claim", "message-seal", "message-outcome", "message-history",
 ] as const;
 
 /**
@@ -130,7 +133,7 @@ export class ControlStack extends Stack {
     };
     const api = new apigw.CfnRestApi(this, "InternalApi", {
       name: `${p}-internal`,
-      description: `${p} private /internal API for agentd (creds, heartbeat, turn-complete, events, message-session, message-claim, message-seal, message-outcome, research)`,
+      description: `${p} private /internal API for agentd (creds, heartbeat, turn-complete, events, message-session, message-claim, message-seal, message-outcome, message-history, research)`,
       endpointConfiguration: { types: ["PRIVATE"], vpcEndpointIds: [network.executeApiEndpointId] },
       policy: internalPolicy,
     });
@@ -244,7 +247,14 @@ export class ControlStack extends Stack {
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/??/snapshot.bundle`,
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/??/snapshot.json`,
                 `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/???/snapshot.bundle`,
-                `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/???/snapshot.json`] },
+                `arn:aws:s3:::${bucket}/runs/*/agents/direct/turns/???/snapshot.json`,
+                // The files the service read back from the storage of a stopped session, one object per session, written once
+                // by the worker of the read. The same route serves them: as the run's newest copy when the service chose them, and
+                // by the number of their session (`?readBack=<n>`) whether it used them or not. The same three patterns, for the
+                // same reason (`b854_the_recovery_download_grant_names_every_turn_number`); nothing else under agents/recovery/.
+                `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/?/recovery.bundle`,
+                `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/??/recovery.bundle`,
+                `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/???/recovery.bundle`] },
             // Whether a snapshot object exists is asked by a listing whose prefix is the key itself (`Blobs::exists`), as for the
             // delivered head above: a GET of an absent key is 403 for a role that may not list the bucket, so a run without a copy of its work, and
             // a run whose newest session has saved none yet, would answer 503 and never "no copy". The role may list the prefixes of exactly the
@@ -255,7 +265,10 @@ export class ControlStack extends Stack {
                 `runs/*/agents/direct/turns/??/snapshot.bundle`,
                 `runs/*/agents/direct/turns/??/snapshot.json`,
                 `runs/*/agents/direct/turns/???/snapshot.bundle`,
-                `runs/*/agents/direct/turns/???/snapshot.json`] } } },
+                `runs/*/agents/direct/turns/???/snapshot.json`,
+                `runs/*/agents/recovery/turns/?/recovery.bundle`,
+                `runs/*/agents/recovery/turns/??/recovery.bundle`,
+                `runs/*/agents/recovery/turns/???/recovery.bundle`] } } },
             { Sid: "DataKeyThroughDynamoDbAndS3", Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
               Resource: security.dataKeyArn,
               Condition: { StringEquals: { "kms:ViaService": [`dynamodb.${region}.amazonaws.com`, `s3.${region}.amazonaws.com`] } } },
@@ -269,7 +282,7 @@ export class ControlStack extends Stack {
             // caller>, outside the run partitions and outside GSI1 (it has no ownerPrincipalArn); reads use the table-wide GetItem and Query.
             { Sid: "RunIndex", Effect: "Allow", Action: ["dynamodb:UpdateItem"],
               Resource: table, Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["OWNER#*"] } } },
-            // Run control updates only the fields it owns on run items (status, version, budget),
+            // Run control updates only the fields it owns on run items (status, version, budget, cancelRequestedAt),
             // never a whole-item Put.
             { Sid: "RunControl", Effect: "Allow", Action: ["dynamodb:UpdateItem"],
               Resource: table, Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["RUN#*"] } } },

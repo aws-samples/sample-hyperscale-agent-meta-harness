@@ -162,6 +162,7 @@ async fn ask(h: &Hooks, seal: bool) -> TurnVote {
         classified: &classified,
         files_changed: Some(2),
         interrupted: false,
+        engine_working: false,
         time_left: Duration::from_secs(600),
         tool_calls: 3,
     };

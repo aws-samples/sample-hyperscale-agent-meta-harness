@@ -32,7 +32,7 @@ fn b800_the_one_key_of_the_table_has_its_words_and_no_other_does() {
 fn b800_the_help_says_how_long_a_command_may_run_and_names_the_engine_that_stops_it() {
     let help = engines::setting_texts(ENGINE)[0].help;
     assert!(
-        help.contains("How long one shell command may run before OpenCode stops it"),
+        help.contains("How long a shell command that sets no time limit of its own may run before OpenCode stops it"),
         "{help}"
     );
     assert!(help.contains("1 to 1800 seconds"), "{help}");

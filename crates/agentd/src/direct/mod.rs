@@ -34,6 +34,7 @@ pub mod goal;
 pub mod hooks;
 pub mod input;
 pub mod local_fault;
+pub mod marker;
 pub mod messages;
 pub mod observe;
 pub mod placement;
@@ -42,6 +43,7 @@ pub mod probe;
 pub mod prune;
 pub mod recorder;
 pub mod records;
+pub mod recover;
 pub mod report;
 pub mod request;
 pub mod research;
@@ -93,7 +95,7 @@ use crate::engine::{
     EngineUsers, LaunchSpec, SystemUsers, chown_tree, kill_group, resolve_engine_identity,
     resolve_program, spawn_captured,
 };
-use crate::events::{EventRecorder, HttpEventSink, TurnControls, spawn_flusher_with};
+use crate::events::{EventRecorder, HttpEventSink, TurnControls, spawn_flusher_ending};
 use crate::logging::LogSink;
 use crate::s3::{PutNew, S3Objects};
 use crate::sandbox::{
@@ -779,7 +781,8 @@ pub async fn run_with(app: &App, req: DirectInvocationRequest, deps: &Deps) -> I
     // A quiet beat interval leaves a beat in the run's events, and `turn.started` says how often. The interval is the heartbeat's,
     // and never shorter than a minute.
     rec.beat_when_quiet(app.cfg.direct.heartbeat_every.max(MIN_BEAT_EVERY));
-    let flusher = spawn_flusher_with(
+    // The flusher also gives the service notice when agentd is asked to end while the engine works.
+    let flusher = spawn_flusher_ending(
         rec.clone(),
         sink.clone(),
         app.cfg.direct.events_every,
@@ -787,6 +790,7 @@ pub async fn run_with(app: &App, req: DirectInvocationRequest, deps: &Deps) -> I
         req.turn,
         app.log.clone(),
         controls.clone(),
+        Some(app.ending.clone()),
     );
     let mut st = State {
         engine_name: req.engine.clone(),
@@ -1081,6 +1085,33 @@ async fn start_and_prompt(
             .await
             .map_err(|e| format!("worktree: {e}"))?,
     };
+    // The storage says which commit this session starts on, before any engine work and before the starter commit of the harness: the
+    // commit the service named for a later session (the restore check above passed), the commit of the checkout for the first. A read of
+    // this storage after a stop takes it as the proof that the session restored that commit. The number is the copy's own when the commit
+    // is a copy agentd made, else 0. A marker that cannot be written is logged and the session goes on.
+    let started_on = restored
+        .as_ref()
+        .map_or_else(|| origin.clone(), |r| r.restore_head.clone());
+    let started_count = workspace::git_with_env(&wt.repo, &["log", "-1", "--format=%s"], &[])
+        .await
+        .ok()
+        .and_then(|subject| copy_number(&subject))
+        .unwrap_or(0);
+    if let Err(e) = marker::write(
+        &cfg.workspace_root,
+        run,
+        &harness_protocol::direct::CopyMarker {
+            schema_version: marker::SCHEMA_VERSION,
+            session: req.turn,
+            count: started_count,
+            head_sha: started_on,
+        },
+    )
+    .await
+    {
+        app.log
+            .line(&format!("direct turn start marker: {}", scrub_detail(&e)));
+    }
     // The DOX starter is written and committed before the base is read, so the engine loads it from its first request and the starter is
     // not the run's own change. A later slice finds the commit in the history it restored and measures from it. Best effort: a refusal leaves the
     // tree as it was and the run goes on.
@@ -1236,6 +1267,8 @@ async fn start_and_prompt(
         max_output_tokens: Some(max_output_tokens),
         context_tokens: Some(context_tokens),
         compaction: user_settings.compaction_block(),
+        command_limit_ms: crate::engine::direct::run_limit(&req.engine, &user_settings)
+            .map(crate::engine::user_settings::CommandSeconds::millis),
     };
     let aws_config = emit_aws_config(&ectx).map_err(|e| format!("aws config: {e}"))?;
     let built_in =
@@ -1284,30 +1317,18 @@ async fn start_and_prompt(
     }
     st.reasoning_effort = reasoning.effort.flag().map(str::to_string);
     st.reasoning_source = reasoning.source.map(|s| s.word().to_string());
-    let mut env: BTreeMap<String, String> = [
-        ("HOME", home.display().to_string()),
-        ("TMPDIR", tmp.display().to_string()),
-        ("USER", "agent".to_string()),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect();
-    env.extend(launch.env.clone());
-    env.extend(built_in.env);
-    env.extend(crate::engine::direct::launch_env(
-        &req.engine,
-        &user_settings,
-    ));
-    env.extend(aws_env(&ectx, &aws_config));
-    for k in launch.env_remove.iter().map(String::as_str).chain([
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK",
-    ]) {
-        env.remove(k);
-    }
-    env.insert("PYTHONDONTWRITEBYTECODE".into(), "1".into());
+    let mut env = crate::engine::launch::base_env(crate::engine::launch::BaseEnv {
+        home: &home,
+        tmp: &tmp,
+        // Git is told that the run's repository and temp folder are safe to work in.
+        repo: &wt.repo,
+        engine: &req.engine,
+        profile_env: &launch.env,
+        built_in: built_in.env,
+        settings: &user_settings,
+        aws: aws_env(&ectx, &aws_config),
+        env_remove: &launch.env_remove,
+    });
     // mypy 2.x keeps its incremental cache in SQLite databases under ./.mypy_cache, which in a session is the repository on the session
     // storage (/mnt/workspace): it crashed there and ran once its cache moved to /tmp. The engine's
     // temp directory is on the VM's local disk.
@@ -1591,6 +1612,8 @@ async fn start_and_prompt(
             }
         }
 
+        // The bound of one wait this launch carries, as the engine will read it (a module may have lowered it).
+        let guard_wait = crate::engine::direct::guard_wait_bound(&req.engine, &env);
         // 11. the engine
         let spec = LaunchSpec {
             argv: launch.argv.clone(),
@@ -1613,6 +1636,8 @@ async fn start_and_prompt(
         // The engine process of the run, restartable: a fresh session on a dead or hung engine starts the same launch again.
         let audit = audit_sink(app, req, &agent_data);
         let mut host = EngineHost {
+            engine: req.engine.clone(),
+            log: app.log.clone(),
             spec,
             child,
             capture: stderr_capture,
@@ -1644,6 +1669,11 @@ async fn start_and_prompt(
         let tree_wake = Arc::new(tokio::sync::Notify::new());
         let mut collector = DirectCollector::new(rec.clone())
             .with_engine(&req.engine)
+            .with_command_limit(
+                crate::engine::direct::run_limit(&req.engine, &user_settings)
+                    .map(crate::engine::user_settings::CommandSeconds::millis),
+            )
+            .with_wait_bound(guard_wait)
             .with_secret_set(st.secrets.clone())
             .with_hooks(hooks.clone())
             .with_tree_wake(tree_wake.clone());
@@ -1850,6 +1880,9 @@ async fn start_and_prompt(
 
 /// The engine process of a run. A fresh session on a dead or hung engine stops it and starts the same launch again.
 struct EngineHost {
+    /// The engine's profile name: which sign of the launch to look for ([`Respawn::confirm`]).
+    engine: String,
+    log: Arc<dyn LogSink>,
     spec: LaunchSpec,
     child: tokio::process::Child,
     capture: crate::engine::StderrCapture,
@@ -1888,6 +1921,32 @@ impl Respawn for EngineHost {
 
     fn audit(&self) -> Option<Arc<dyn AuditSink>> {
         Some(self.audit.clone())
+    }
+
+    fn confirm(&mut self) -> BoxFuture<'_, Option<String>> {
+        use crate::engine::config::{CONFIRM_WAIT, Confirm, confirm_launch, limit_not_confirmed};
+        Box::pin(async move {
+            match confirm_launch(&self.engine, &self.spec.env, &self.capture, CONFIRM_WAIT).await {
+                Confirm::NotAsked => None,
+                Confirm::Confirmed => {
+                    let line = crate::engine::config::ready_line(&self.engine, &self.spec.env);
+                    self.log.line(&format!(
+                        "direct turn command limit confirmed by the engine: {} ms",
+                        line.as_deref()
+                            .and_then(|l| l.rsplit(' ').next())
+                            .unwrap_or("?")
+                    ));
+                    None
+                }
+                Confirm::Missing { headline } => {
+                    self.log.line(&format!(
+                        "direct turn command limit not confirmed by the engine: {}",
+                        headline.as_deref().unwrap_or("its log holds no line")
+                    ));
+                    limit_not_confirmed(&self.engine, &self.spec.env)
+                }
+            }
+        })
     }
 }
 
@@ -1970,13 +2029,25 @@ fn tail_of_file(path: &Path, max: usize) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The tail of the engine's error output as the stop digest carries it: the last `max` bytes of the log ([`tail_of_file`]) without the
+/// lines the harness's own plugin writes, which are not the engine's words. `None` when nothing else is left.
+pub fn engine_error_tail(path: &Path, max: usize) -> Option<String> {
+    let tail = tail_of_file(path, max)?;
+    let rest = crate::engine::without_lines_starting(
+        tail.as_bytes(),
+        crate::engine::config::HARNESS_LINE_PREFIX,
+    );
+    let text = String::from_utf8_lossy(&rest).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 impl input::DigestSource for RunSources {
     fn gather(&self) -> BoxFuture<'_, input::DigestSources> {
         Box::pin(async move {
             let mut src = input::DigestSources {
                 task: self.task.clone(),
                 secrets: self.secrets.snapshot(),
-                stderr_tail: tail_of_file(&self.stderr_log, 3 * 1024),
+                stderr_tail: engine_error_tail(&self.stderr_log, 3 * 1024),
                 ..input::DigestSources::default()
             };
             self.git.facts().await.fill(&mut src);
@@ -2245,6 +2316,10 @@ struct Copies {
     step: Arc<std::sync::atomic::AtomicU8>,
     /// Asks the file system of the work tree whether it answers, before a look and while its git works.
     tree: TreeAlive,
+    /// The root of the session's storage, where the marker of the copies is written (`marker::write`).
+    marker_root: PathBuf,
+    /// The marker could not be written after a copy and that was logged; it is logged again only after a marker was written.
+    marker_failing: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The limits of one look of the copy task. No look is waited for without them: a session that was stopped from outside lived on
@@ -2570,6 +2645,8 @@ impl Copies {
             },
             step: Arc::new(std::sync::atomic::AtomicU8::new(STEP_IDLE)),
             tree: TreeAlive::new(&wt.repo),
+            marker_root: app.cfg.workspace_root.clone(),
+            marker_failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -2590,6 +2667,9 @@ impl Copies {
             &s3::snapshot_bundle_key_t(&self.run, self.turn),
         );
         upload_file(&s3_objects, &bundle_uri, &c, &made.bundle, self.pause).await?;
+        // The bundle is in the bucket, so the storage now stands at this copy: the marker says so before the record is uploaded. A
+        // bundle that was not stored never reaches this line, and a marker that cannot be written does not fail the copy.
+        self.mark(made).await;
         // The time the copy names is from before its tree was read, not the time it was stored.
         let at = format_rfc3339(cut_unix(made.read_unix));
         let json_path = made.bundle.with_file_name("snapshot.json");
@@ -2620,6 +2700,31 @@ impl Copies {
             serde_json::json!({"turn": DIRECT_TURN, "savedCopy": saved}),
         );
         Ok(())
+    }
+
+    /// Writes the marker of the storage for the copy `made`, whose bundle is stored (`marker::write`). What it could not do is
+    /// logged once until a marker is written again; the copy is not affected.
+    async fn mark(&self, made: &SnapshotMade) {
+        let marker = harness_protocol::direct::CopyMarker {
+            schema_version: marker::SCHEMA_VERSION,
+            session: self.turn,
+            count: made.count,
+            head_sha: made.commit.clone(),
+        };
+        match marker::write(&self.marker_root, &self.run, &marker).await {
+            Ok(()) => self
+                .marker_failing
+                .store(false, std::sync::atomic::Ordering::SeqCst),
+            Err(e) => {
+                if !self
+                    .marker_failing
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    self.log
+                        .line(&format!("direct turn copy marker: {}", scrub_detail(&e)));
+                }
+            }
+        }
     }
 
     /// What the clean-up of the private repository after a look could not do is logged; the copy itself is not affected.

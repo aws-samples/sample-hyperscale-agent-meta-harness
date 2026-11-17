@@ -109,6 +109,7 @@ fn working_run() -> Vec<Envelope> {
 
 fn lost(session: u32, decided: i64) -> SessionLost {
     SessionLost {
+        cancelled_at: None,
         kind: KIND.to_string(),
         session,
         decided_at: at(decided),
@@ -122,6 +123,10 @@ fn lost(session: u32, decided: i64) -> SessionLost {
         from: Some(FROM_COPY.to_string()),
         saved_at: Some(at(211)),
         delivers: None,
+        ended_at: None,
+        recovery: None,
+        read_back_session: None,
+        run_id: String::new(),
     }
 }
 

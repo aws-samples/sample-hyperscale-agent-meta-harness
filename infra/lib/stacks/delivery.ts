@@ -181,7 +181,10 @@ export class DeliveryStack extends Stack {
       // turns/1/snapshot.bundle as sourceBundleUri.
       // The direct agent's key only: no other agent writes a snapshot, and nothing else under turns/ is granted by this pattern.
       { Sid: "ReadBundles", Effect: "Allow", Action: "s3:GetObject",
+        // And the copy the service read back from a stopped session's storage, which plan-delivery names when the run ends on
+        // that session: that one key shape under agents/recovery/.
         Resource: [`${bucket}/runs/*/agents/*/turns/*/bundle`, `${bucket}/runs/*/agents/direct/turns/*/snapshot.bundle`,
+          `${bucket}/runs/*/agents/recovery/turns/*/recovery.bundle`,
           `${bucket}/runs/*/input/repo.bundle`, verifiedBundle] },
       // The source bundle of a direct run is read at the version agentd recorded for its own write, not at whatever is current (a GET with a
       // versionId needs s3:GetObjectVersion). The direct agent's bundle key only.

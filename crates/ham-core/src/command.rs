@@ -14,7 +14,7 @@
 //!   (`crate::push`).
 
 use crate::push::{check_branch, check_git_url, mask_userinfo};
-use harness_protocol::direct::ComputeMode;
+use harness_protocol::direct::{ComputeMode, MAX_SLICES};
 use harness_protocol::target::RepoTarget;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -87,6 +87,9 @@ pub enum Command {
     },
     Cancel {
         run_id: String,
+        /// `--discard`: stop the run now and deliver nothing (the service's `?discard=true`). Without it the cancel keeps the
+        /// work: the service records it and the run delivers what exists.
+        discard: bool,
     },
     /// `ham models`: the supported models (`engine/catalog/models.json`) with the default marked, offline.
     Models,
@@ -350,6 +353,9 @@ pub enum PullArtifact {
     /// `--snapshot`: the last snapshot bundle of a live run, saved by agentd about every 15 seconds while the files change. It is
     /// not an artifact of the run, so it is never chosen with `--artifact`.
     Snapshot,
+    /// `--read-back <n>`: the files the service read back from the storage of session `n` after that session ended, whether
+    /// the run went on from them or not. Like a snapshot they are no artifact of the run, and the option stands alone.
+    ReadBack(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1092,7 +1098,13 @@ fn parse_sub(name: &str, a: Args) -> Result<Command, ParseError> {
         "watch" => Command::Watch {
             run_id: scan(name, a, &[], &[], 1)?.positional.first().cloned(),
         },
-        "cancel" => Command::Cancel { run_id: one(a)? },
+        "cancel" => {
+            let s = scan(name, a, &[], &["--discard"], 1)?;
+            Command::Cancel {
+                run_id: s.pos(0, name, "runId")?,
+                discard: s.has("--discard"),
+            }
+        }
         "models" => {
             let s = scan(name, a, &[], &["--server"], 0)?;
             if s.has("--server") {
@@ -1103,18 +1115,37 @@ fn parse_sub(name: &str, a: Args) -> Result<Command, ParseError> {
         }
         "pr" => Command::Pr { run_id: one(a)? },
         "pull" => {
-            let s = scan(name, a, &["--artifact"], &["--snapshot"], 1)?;
+            let s = scan(name, a, &["--artifact", "--read-back"], &["--snapshot"], 1)?;
             if s.has("--snapshot") && s.has("--artifact") {
                 return err(
                     "ham pull takes --snapshot or --artifact, not both: the snapshot is the work so far, an artifact is a delivered file",
                 );
             }
-            let artifact = match s.opt("--artifact").as_deref() {
-                None if s.has("--snapshot") => PullArtifact::Snapshot,
-                None | Some("zip") => PullArtifact::Zip,
-                Some("partial") => PullArtifact::Partial,
-                Some("evidence") => PullArtifact::Evidence,
-                Some(v) => {
+            // The files read back from one session are neither the newest copy of the work nor a delivered file.
+            if s.has("--read-back") && (s.has("--snapshot") || s.has("--artifact")) {
+                return err(
+                    "ham pull takes --read-back <n> alone, without --snapshot or --artifact: it downloads the files the service read back from the storage of session n",
+                );
+            }
+            let read_back = match s.opt("--read-back") {
+                None => None,
+                // A plain session number and nothing else: no sign, no blank, no leading zero.
+                Some(v) => match v.parse::<u32>() {
+                    Ok(n) if (1..=MAX_SLICES).contains(&n) && n.to_string() == v => Some(n),
+                    _ => {
+                        return err(format!(
+                            "--read-back takes the number of a session of the run, 1 to {MAX_SLICES}, got {v:?}"
+                        ));
+                    }
+                },
+            };
+            let artifact = match (read_back, s.opt("--artifact").as_deref()) {
+                (Some(n), _) => PullArtifact::ReadBack(n),
+                (None, None) if s.has("--snapshot") => PullArtifact::Snapshot,
+                (None, None | Some("zip")) => PullArtifact::Zip,
+                (None, Some("partial")) => PullArtifact::Partial,
+                (None, Some("evidence")) => PullArtifact::Evidence,
+                (None, Some(v)) => {
                     return err(format!(
                         "--artifact takes zip, partial or evidence, got {v:?}"
                     ));
@@ -1584,7 +1615,12 @@ impl Invocation {
                     push(&[r]);
                 }
             }
-            Command::Cancel { run_id } => push(&["cancel", run_id]),
+            Command::Cancel { run_id, discard } => {
+                push(&["cancel", run_id]);
+                if *discard {
+                    push(&["--discard"]);
+                }
+            }
             Command::Models => push(&["models"]),
             Command::ModelsServer => push(&["models", "--server"]),
             Command::Config(c) => match c {
@@ -1634,6 +1670,7 @@ impl Invocation {
                     PullArtifact::Partial => push(&["--artifact", "partial"]),
                     PullArtifact::Evidence => push(&["--artifact", "evidence"]),
                     PullArtifact::Snapshot => push(&["--snapshot"]),
+                    PullArtifact::ReadBack(n) => push(&["--read-back", &n.to_string()]),
                 }
             }
             Command::Clone { run_id, dir } => {

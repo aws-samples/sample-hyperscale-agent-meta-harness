@@ -66,6 +66,15 @@
           },
           "type": "array"
         },
+        "fencedGeneration": {
+          "description": "The session generation that may no longer act on the run. worker-api writes it when the worker of the\ncurrent session gives notice that the session is being ended, and run-session writes it before it stops a session that left no\nresult; the same write revokes the credential refresh. While it equals `session_generation`, worker-api refuses that session's\ncredentials, heartbeats, turn-complete and message calls, and stores its events without handing out a control. The next session has\na higher generation, so the member stays as it is when the item moves on. Absent on an item no session of which was fenced.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "generation": {
           "format": "uint32",
           "minimum": 0,
@@ -103,6 +112,13 @@
         },
         "pool": {
           "type": "string"
+        },
+        "recoverAfterStop": {
+          "description": "`false` when the run switched off reading a stopped session's storage back\n(`StartDirectRunRequest.recoverAfterStop`). `start-session` copies it from the stored request, so worker-api finds it on the item\nit reads anyway and leaves the worker's notice of an end without effect. Absent means on.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "runId": {
           "type": "string"
@@ -1302,6 +1318,55 @@
         }
       ]
     },
+    "RecoveredCopyRef": {
+      "description": "The read-back copy a run goes on from ([`RunItem::recovered_copy`]).",
+      "properties": {
+        "at": {
+          "description": "When the service chose it, RFC 3339 UTC.",
+          "type": "string"
+        },
+        "bundleBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headSha": {
+          "description": "The commit of the copy.",
+          "type": "string"
+        },
+        "key": {
+          "description": "`runs/<run>/agents/recovery/turns/<session>/recovery.bundle`.",
+          "type": "string"
+        },
+        "newestWriteAt": {
+          "description": "The time of the newest write in the tree, when the worker reported one. It is shown, never used to choose a copy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session": {
+          "description": "The session whose storage was read.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "versionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "key",
+        "headSha",
+        "at",
+        "bundleBytes"
+      ],
+      "type": "object"
+    },
     "RejectReason": {
       "description": "Why a message was rejected. Every reason but `engine-busy` and `continuation-limit` is the server's alone.",
       "oneOf": [
@@ -1561,6 +1626,13 @@
             }
           ]
         },
+        "cancelRequestedAt": {
+          "description": "When the user's keep-the-work cancel was recorded (RFC 3339 UTC). control-api writes it once, on a run that is\n`active`, in one write with the harness event that says so. It is the one durable record of that cancel: the slice loop of run-session\nstarts no further session while it is set and delivers what exists, and worker-api hands a Cancel to the run's session on every events\nanswer. Absent for a run that was never cancelled that way and for every item written before the member existed. It stays on the item\nas history when the run has ended; a discard does not remove it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "continueFrom": {
           "description": "Protocol 1.38.0: the id of the run a follow-up run continues from, written when control-api creates the run from a start\nrequest that carries `continueFrom`. Absent for an ordinary run and for an item written before the member existed.",
           "type": [
@@ -1611,6 +1683,17 @@
         },
         "promptSha256": {
           "type": "string"
+        },
+        "recoveredCopy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecoveredCopyRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The copy the service read back from a stopped session's storage and chose to go on from. `next-slice`\nwrites it only for a copy it uses, and only over none or over one of an earlier session; control-api serves it for the newest\ncopy of the run until a later session saves one of its own. A copy that was read back and not used is not named here: it is\nfound by its session's key. Absent for a run that used no such copy."
         },
         "resumeMode": {
           "anyOf": [

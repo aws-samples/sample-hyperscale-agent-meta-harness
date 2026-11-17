@@ -78,13 +78,52 @@ describe("security stack", () => {
     for (const r of resources) expect(r, r).not.toMatch(/agents\/merge|agents\/\*\//);
   });
 
-  // The S3 reads of a worker session are the run's input and the session's own agent prefix, nothing else.
-  test("worker session policy: the S3 reads are the run's input and the agent's own prefix, nothing else", () => {
+  // The S3 reads of a worker session are the run's input, the session's own agent prefix and, for reading a stopped session's storage back,
+  // the run's read-back copies and the run's saved copies. Nothing else.
+  test("worker session policy: the S3 reads are the run's input, the agent's own prefix and the run's read-back and saved copies, nothing else", () => {
     const { stmts } = role(t, "hamh-direct-harness-worker-session");
     const bucket = `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}`;
     const reads = stmts.filter((s) => s.Effect === "Allow" && actions(s).includes("s3:GetObject"))
       .flatMap((s) => [s.Resource].flat()).map(String).sort();
-    expect(reads).toEqual([`${bucket}/runs/\${aws:PrincipalTag/run}/agents/\${aws:PrincipalTag/agent}/*`, `${bucket}/runs/\${aws:PrincipalTag/run}/input/*`]);
+    expect(reads).toEqual([
+      `${bucket}/runs/\${aws:PrincipalTag/run}/agents/\${aws:PrincipalTag/agent}/*`,
+      `${bucket}/runs/\${aws:PrincipalTag/run}/agents/direct/turns/*/snapshot.bundle`,
+      `${bucket}/runs/\${aws:PrincipalTag/run}/agents/recovery/*`,
+      `${bucket}/runs/\${aws:PrincipalTag/run}/input/*`,
+    ]);
+  });
+
+  // The copy read back from a stopped session's storage sits under agents/recovery/. A working session reads it and can never write it: the
+  // stopped session's credentials stay valid for up to an hour, and they carry the agent tag `direct`. Only the credentials of a read (agent tag
+  // `recovery`) reach a PUT there, and their inline session policy allows the one key.
+  test("worker session policy: a working session reads its run's read-back copies and cannot write them; the saved copy is readable to the worker of a read", () => {
+    const { stmts } = role(t, "hamh-direct-harness-worker-session");
+    const bucket = `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}`;
+    const stmt = stmts.find((s) => s.Sid === "ReadRecoveryCopies")!;
+    expect(stmt.Effect).toBe("Allow");
+    expect(actions(stmt)).toEqual(["s3:GetObject"]);
+    expect(stmt.Condition).toBeUndefined();
+    expect([stmt.Resource].flat().map(String)).toEqual([
+      `${bucket}/runs/\${aws:PrincipalTag/run}/agents/recovery/*`,
+      `${bucket}/runs/\${aws:PrincipalTag/run}/agents/direct/turns/*/snapshot.bundle`,
+    ]);
+    const of = (action: string) => stmts.filter((s) => s.Effect === "Allow" && actions(s).includes(action)).flatMap((s) => [s.Resource].flat()).map(String);
+    const resolve = (pattern: string, run: string, agent: string) => pattern.replaceAll("${aws:PrincipalTag/run}", run).replaceAll("${aws:PrincipalTag/agent}", agent);
+    const matches = (pattern: string, value: string) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(value);
+    const reach = (action: string, runTag: string, agentTag: string, key: string) => of(action).some((p) => matches(resolve(p, runTag, agentTag), `${bucket}/${key}`));
+    const run = "01M4ZX2QEMB4JFCA411Q5169AY";
+    const copy = `runs/${run}/agents/recovery/turns/3/recovery.bundle`;
+    // A working session: reads the copy of its own run, writes none, and reads no other run's.
+    expect(reach("s3:GetObject", run, "direct", copy)).toBe(true);
+    expect(reach("s3:PutObject", run, "direct", copy)).toBe(false);
+    expect(reach("s3:GetObject", run, "direct", "runs/OTHERRUN/agents/recovery/turns/3/recovery.bundle")).toBe(false);
+    // The worker of a read: the role lets it write under its own agent prefix (the session policy names the one key) and read the saved copy.
+    expect(reach("s3:PutObject", run, "recovery", copy)).toBe(true);
+    expect(reach("s3:GetObject", run, "recovery", `runs/${run}/agents/direct/turns/3/snapshot.bundle`)).toBe(true);
+    expect(reach("s3:GetObject", run, "recovery", "runs/OTHERRUN/agents/direct/turns/3/snapshot.bundle")).toBe(false);
+    // It reaches no other object of the working session through this role: not its bundle, not its summary.
+    expect(reach("s3:GetObject", run, "recovery", `runs/${run}/agents/direct/turns/3/bundle`)).toBe(false);
+    expect(reach("s3:PutObject", run, "recovery", `runs/${run}/agents/direct/turns/3/snapshot.bundle`)).toBe(false);
   });
 
   // Agentd writes a stop digest after every stop and an audit copy of every fresh-session digest under the direct agent's turn

@@ -11,8 +11,8 @@
 
 use crate::BoxFuture;
 use crate::direct::messages::types::{
-    ClaimOutcome, FailReason, Held, Message, Notice, Refusal, RejectReason, SealMode, SealOutcome,
-    State, StoreError,
+    ClaimOutcome, Delivered, FailReason, Held, History, HistoryError, Message, Notice, Refusal,
+    RejectReason, SealMode, SealOutcome, State, StoreError,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -73,6 +73,17 @@ pub trait MessageStore: Send + Sync {
     fn unavailable(&self) -> bool {
         false
     }
+
+    /// The messages of the run that the control plane holds as delivered to an engine, oldest first, as it stored them when the
+    /// user sent them. A read: it names no generation and no session, moves no message and can be repeated. A session asks once, at
+    /// its start, before an engine session exists. A store that has no such call says so ([`HistoryError::NoRoute`]).
+    fn delivered<'a>(&'a self) -> BoxFuture<'a, Result<History, HistoryError>> {
+        Box::pin(async {
+            Err(HistoryError::NoRoute(
+                "this store keeps no list of delivered messages".into(),
+            ))
+        })
+    }
 }
 
 /// The calls a test can make fail or slow down.
@@ -85,11 +96,15 @@ pub enum Op {
     Release,
     Reject,
     Seal,
+    /// The read of the delivered messages. `fail` makes it fail, `delay` makes it wait; nothing of it can be lost, because it
+    /// changes nothing.
+    History,
 }
 
 impl Op {
     fn word(self) -> &'static str {
         match self {
+            Self::History => "history",
             Self::ReportEpoch => "epoch",
             Self::Claim => "claim",
             Self::Submitted => "submitted",
@@ -161,6 +176,8 @@ struct Server {
     accepted: u64,
     calls: Vec<String>,
     faults: Faults,
+    /// The plane serves the read of the delivered messages; `false` is a plane from before that route.
+    history_route: bool,
 }
 
 /// Who is calling: a worker generation. [`MemoryStore`] itself calls as whichever generation is current.
@@ -188,6 +205,7 @@ impl MemoryStore {
                 accepted: 0,
                 calls: Vec::new(),
                 faults: Faults::default(),
+                history_route: true,
             }),
         })
     }
@@ -375,6 +393,58 @@ impl MemoryStore {
     /// already won.
     pub fn delay_after(&self, op: Op, pause: Duration) {
         self.lock().faults.delay_after.insert(op, pause);
+    }
+
+    /// The plane of a release before the read of the delivered messages: the read is answered "no such route" from now on.
+    pub fn without_history_route(&self) {
+        self.lock().history_route = false;
+    }
+
+    /// `POST /internal/message-history`: the messages in state `delivered`, in server order, with their texts as accepted, and
+    /// apart from them the ones a worker claimed and never reported (`dispatching`, `delivery-unknown`). It changes nothing and asks
+    /// for no generation and no session.
+    async fn do_delivered(&self) -> Result<History, HistoryError> {
+        if let Some(d) = self.pause(Op::History) {
+            tokio::time::sleep(d).await;
+        }
+        let mut s = self.lock();
+        s.calls.push("history".to_string());
+        if !s.history_route {
+            return Err(HistoryError::NoRoute(
+                "/internal/message-history is not served".into(),
+            ));
+        }
+        if let Some(n) = s.faults.fail.get_mut(&Op::History)
+            && *n > 0
+        {
+            *n -= 1;
+            return Err(HistoryError::Failed(
+                "injected failure of history".to_string(),
+            ));
+        }
+        Ok(History {
+            messages: s
+                .items
+                .iter()
+                .filter(|i| matches!(i.state, State::Delivered { .. }))
+                .map(|i| Delivered {
+                    id: i.msg.id.clone(),
+                    seq: i.msg.seq,
+                    text: i.msg.text.clone(),
+                })
+                .collect(),
+            cut: 0,
+            unconfirmed: s
+                .items
+                .iter()
+                .filter(|i| matches!(i.state, State::Dispatching | State::DeliveryUnknown))
+                .map(|i| Delivered {
+                    id: i.msg.id.clone(),
+                    seq: i.msg.seq,
+                    text: i.msg.text.clone(),
+                })
+                .collect(),
+        })
     }
 
     fn pause_after(&self, op: Op) -> Option<Duration> {
@@ -871,6 +941,10 @@ impl<T: Resolve> MessageStore for T {
 
     fn held<'a>(&'a self, epoch: &'a str) -> BoxFuture<'a, Result<Vec<Held>, StoreError>> {
         Box::pin(async move { self.store().do_held(self.caller(), epoch).await })
+    }
+
+    fn delivered<'a>(&'a self) -> BoxFuture<'a, Result<History, HistoryError>> {
+        Box::pin(async move { self.store().do_delivered().await })
     }
 
     fn unavailable(&self) -> bool {

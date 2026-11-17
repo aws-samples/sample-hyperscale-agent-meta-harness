@@ -1,11 +1,17 @@
-//! The shell command time limit of the second engine. OpenCode's shell tool stops a command after two minutes unless
-//! `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` says otherwise. Every launch of OpenCode now carries that variable, in milliseconds: the
-//! user's `commands.timeout_seconds` when the engine file sets it, else the ten minutes Cline's launch ends up with. The launch of Cline is
-//! the launch it was: its variable is added only for a setting the user made.
+//! The shell command time limit, one setting for both engines. Cline's fork has ten minutes as its own default, so its
+//! launch carries `CLINE_RUN_COMMANDS_TIMEOUT_MS` only for a limit the user set. OpenCode's shell tool stops a command that names no limit after
+//! two minutes, and the pinned release reads no variable for it (the variable an earlier build set, `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`,
+//! is a name the pinned binary does not hold). Its limit is placed in the session configuration, in every launch: the user's
+//! `commands.timeout_seconds`, else the ten minutes Cline's runs end up with. The placement itself is tested in `b800_shell_limit.rs`; this
+//! file keeps the setting, the key tables, the first engine's variable and the read-back of both engines.
 #![allow(clippy::unwrap_used)]
 
+mod b790_support;
+
 use agentd::direct::request::engine_settings;
-use agentd::engine::direct::{OPENCODE_TIMEOUT_ENV, TIMEOUT_ENV, launch_env};
+use agentd::emit::EmitContext;
+use agentd::engine::direct::{TIMEOUT_ENV, launch_env, run_limit};
+use agentd::engine::opencode::{Line, emit};
 use agentd::engine::user_settings::{
     CommandSeconds, Placed, UserSettings, check_command_limit, read_back,
 };
@@ -15,8 +21,24 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const OPENCODE_VAR: &str = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS";
+/// The variable an earlier build set for the second engine. The pinned engine does not hold the name; no launch carries it any more.
+const DEAD_OPENCODE_VAR: &str = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS";
 const CLINE_VAR: &str = "CLINE_RUN_COMMANDS_TIMEOUT_MS";
+
+/// The emitted launch of the second engine for `settings`: the context and the environment.
+fn placed_for(settings: &UserSettings) -> (EmitContext, BTreeMap<String, String>) {
+    let c = EmitContext {
+        command_limit_ms: run_limit("opencode", settings).map(CommandSeconds::millis),
+        ..b790_support::ctx(b790_support::MODEL)
+    };
+    let env = emit(&c, Line::V2).unwrap().env;
+    (c, env)
+}
+
+fn timeout_ms(env: &BTreeMap<String, String>) -> Value {
+    let doc: Value = serde_json::from_str(&env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+    doc["plugins"][0]["options"]["timeoutMs"].clone()
+}
 
 fn member(engine: &str, settings: Value) -> EngineConfig {
     EngineConfig {
@@ -47,33 +69,43 @@ fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 // ---- the launch -------------------------------------------------------------------------------------------------------------
 
 #[test]
-fn b800_the_names_of_the_two_variables_are_the_engines_own() {
-    assert_eq!(OPENCODE_TIMEOUT_ENV, OPENCODE_VAR);
+fn b800_the_first_engines_variable_is_its_own_and_the_second_engine_gets_none() {
     assert_eq!(TIMEOUT_ENV, CLINE_VAR);
+    for settings in [UserSettings::default(), settings_of("opencode", limit(900))] {
+        assert!(launch_env("opencode", &settings).is_empty());
+        let (_, env) = placed_for(&settings);
+        assert!(!env.contains_key(DEAD_OPENCODE_VAR), "{:?}", env.keys());
+    }
 }
 
 #[test]
 fn b800_a_launch_of_the_second_engine_with_no_setting_carries_ten_minutes() {
-    let env = launch_env("opencode", &UserSettings::default());
-    assert_eq!(env, env_of(&[(OPENCODE_VAR, "600000")]), "{env:?}");
+    let none = UserSettings::default();
+    assert_eq!(
+        run_limit("opencode", &none).map(CommandSeconds::get),
+        Some(600)
+    );
+    let (_, env) = placed_for(&none);
+    assert_eq!(timeout_ms(&env), json!(600_000));
 }
 
 #[test]
 fn b800_a_launch_of_the_second_engine_carries_the_users_limit_in_milliseconds() {
     for (seconds, ms) in [
-        (1, "1000"),
-        (30, "30000"),
-        (600, "600000"),
-        (900, "900000"),
-        (1800, "1800000"),
+        (1, 1000u64),
+        (30, 30_000),
+        (600, 600_000),
+        (900, 900_000),
+        (1800, 1_800_000),
     ] {
         let s = settings_of("opencode", limit(seconds));
-        let env = launch_env("opencode", &s);
-        assert_eq!(env, env_of(&[(OPENCODE_VAR, ms)]), "{seconds} s: {env:?}");
         assert_eq!(
-            s.command_timeout.unwrap().millis(),
-            ms.parse::<u64>().unwrap()
+            run_limit("opencode", &s).map(CommandSeconds::millis),
+            Some(ms)
         );
+        let (_, env) = placed_for(&s);
+        assert_eq!(timeout_ms(&env), json!(ms), "{seconds} s");
+        assert_eq!(s.command_timeout.unwrap().millis(), ms);
     }
 }
 
@@ -113,8 +145,8 @@ fn b800_the_default_is_one_constant_and_it_is_the_default_of_the_first_engine() 
     );
     // The default launch of the second engine is the default the first engine ends up with.
     assert_eq!(
-        launch_env("opencode", &UserSettings::default())[OPENCODE_VAR],
-        CommandSeconds::default_limit().millis().to_string()
+        run_limit("opencode", &UserSettings::default()),
+        Some(CommandSeconds::default_limit())
     );
 }
 
@@ -135,7 +167,7 @@ fn b800_the_launch_of_the_first_engine_is_the_launch_it_was() {
         format!("{env:?}"),
         r#"{"CLINE_RUN_COMMANDS_TIMEOUT_MS": "900000"}"#
     );
-    assert!(!env.contains_key(OPENCODE_VAR));
+    assert!(!env.contains_key(DEAD_OPENCODE_VAR));
     // All five keys: still the one variable.
     let all = settings_of(
         "cline",
@@ -154,7 +186,7 @@ fn b800_the_launch_of_the_first_engine_is_the_launch_it_was() {
 
 #[test]
 fn b800_an_engine_that_has_no_command_limit_variable_gets_none() {
-    for engine in ["fake-acp", "pi", ""] {
+    for engine in ["fake-acp", "pi", "", "opencode"] {
         assert!(
             launch_env(engine, &UserSettings::default()).is_empty(),
             "{engine}"
@@ -166,7 +198,7 @@ fn b800_an_engine_that_has_no_command_limit_variable_gets_none() {
 
 #[test]
 fn b800_the_launch_environments_as_a_run_prints_them() {
-    // The four lines the report quotes. The text is the Debug form of the map `launch_env` returns, which is what the engine's environment gets.
+    // The text is the Debug form of the map `launch_env` returns, which is what the engine's environment gets. The second engine gets no variable.
     let none = UserSettings::default();
     let lines = [
         ("opencode, no setting", launch_env("opencode", &none)),
@@ -181,8 +213,8 @@ fn b800_the_launch_environments_as_a_run_prints_them() {
         ),
     ];
     let want = [
-        r#"{"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "600000"}"#,
-        r#"{"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000"}"#,
+        "{}",
+        "{}",
         "{}",
         r#"{"CLINE_RUN_COMMANDS_TIMEOUT_MS": "900000"}"#,
     ];
@@ -205,10 +237,7 @@ fn b800_a_member_for_the_second_engine_with_the_limit_is_typed_for_that_engine()
     let r = request_with(json!({"engine": "opencode", "schema": 1, "settings": limit(900)}));
     let s = engine_settings(&r, "opencode").unwrap();
     assert_eq!(s.command_timeout, CommandSeconds::new(900));
-    assert_eq!(
-        launch_env("opencode", &s),
-        env_of(&[(OPENCODE_VAR, "900000")])
-    );
+    assert_eq!(run_limit("opencode", &s), CommandSeconds::new(900));
     // The same member on a run of the other engine is a mismatch, not a setting that is set and never applied.
     let err = engine_settings(&r, "cline").unwrap_err();
     assert!(err.contains("another engine"), "{err}");
@@ -238,81 +267,99 @@ fn b800_the_other_keys_of_the_first_engine_still_end_a_run_of_the_second() {
     }
 }
 
-// ---- the check of the placed environment ------------------------------------------------------------------------------------
+// ---- the check of the placement -----------------------------------------------------------------------------------------------
 
 #[test]
-fn b800_the_check_accepts_the_environment_the_launch_made() {
+fn b800_the_check_accepts_the_placement_the_launch_made() {
     for settings in [
         UserSettings::default(),
         settings_of("opencode", limit(1)),
         settings_of("opencode", limit(900)),
         settings_of("opencode", limit(1800)),
     ] {
-        let env = launch_env("opencode", &settings);
-        check_command_limit("opencode", &env, &settings).unwrap();
+        let (c, env) = placed_for(&settings);
+        check_command_limit("opencode", &c.config_dir, &env, &settings).unwrap();
     }
+    let gone = Path::new("/nonexistent-b800");
     for seconds in [1, 900, 1800] {
         let s = settings_of("cline", limit(seconds));
-        check_command_limit("cline", &launch_env("cline", &s), &s).unwrap();
+        check_command_limit("cline", gone, &launch_env("cline", &s), &s).unwrap();
     }
 }
 
 #[test]
-fn b800_a_launch_of_the_second_engine_without_the_variable_is_refused_whatever_the_user_set() {
+fn b800_a_launch_of_the_second_engine_without_the_placement_is_refused_whatever_the_user_set() {
+    // The check itself refuses in both cases. What a refusal means for the run differs: a user's limit ends it, the harness's own default is
+    // told and the run goes on (`b800_shell_limit.rs`, `limit_step`).
+    let gone = Path::new("/nonexistent-b800");
     for settings in [UserSettings::default(), settings_of("opencode", limit(900))] {
-        let err = check_command_limit("opencode", &BTreeMap::new(), &settings).unwrap_err();
+        let err = check_command_limit("opencode", gone, &BTreeMap::new(), &settings).unwrap_err();
         assert!(
             err.contains("engine settings") && err.contains("command time limit"),
             "{err}"
         );
+        // The variable of an earlier build is no placement, and the other engine's variable is none either.
+        for env in [
+            env_of(&[(DEAD_OPENCODE_VAR, "900000")]),
+            env_of(&[(CLINE_VAR, "900000")]),
+        ] {
+            assert!(check_command_limit("opencode", gone, &env, &settings).is_err());
+        }
     }
 }
 
 #[test]
-fn b800_a_wrong_value_or_the_other_engines_variable_is_refused_and_no_value_is_named() {
+fn b800_a_wrong_number_is_refused_and_no_value_is_named() {
     let s = settings_of("opencode", limit(900));
-    for env in [
-        env_of(&[(OPENCODE_VAR, "120000")]),
-        env_of(&[(OPENCODE_VAR, "900")]),
-        env_of(&[(OPENCODE_VAR, "")]),
-        env_of(&[(OPENCODE_VAR, "900000 ")]),
-        env_of(&[(CLINE_VAR, "900000")]),
-    ] {
-        let err = check_command_limit("opencode", &env, &s).unwrap_err();
-        assert!(err.contains("command time limit"), "{env:?}: {err}");
-        assert!(!err.contains("900") && !err.contains("120000"), "{err}");
+    // The placement of another limit: the default's, and the engine's own number.
+    for other in [UserSettings::default(), settings_of("opencode", limit(120))] {
+        let (c, env) = placed_for(&other);
+        let err = check_command_limit("opencode", &c.config_dir, &env, &s).unwrap_err();
+        assert!(err.contains("command time limit"), "{err}");
+        assert!(
+            !err.contains("900") && !err.contains("120000") && !err.contains("600"),
+            "{err}"
+        );
     }
     // The default launch is checked against the default.
     let d = UserSettings::default();
-    assert!(check_command_limit("opencode", &env_of(&[(OPENCODE_VAR, "120000")]), &d).is_err());
-    check_command_limit("opencode", &env_of(&[(OPENCODE_VAR, "600000")]), &d).unwrap();
+    let (c, env) = placed_for(&s);
+    assert!(check_command_limit("opencode", &c.config_dir, &env, &d).is_err());
+    let (c, env) = placed_for(&d);
+    check_command_limit("opencode", &c.config_dir, &env, &d).unwrap();
 }
 
 #[test]
 fn b800_the_first_engine_is_checked_only_for_a_limit_the_user_set() {
+    let gone = Path::new("/nonexistent-b800");
     // Nothing set: the stage may set its own default for the variable, or none, and the check does not look.
     let d = UserSettings::default();
-    check_command_limit("cline", &BTreeMap::new(), &d).unwrap();
-    check_command_limit("cline", &env_of(&[(CLINE_VAR, "1000")]), &d).unwrap();
+    check_command_limit("cline", gone, &BTreeMap::new(), &d).unwrap();
+    check_command_limit("cline", gone, &env_of(&[(CLINE_VAR, "1000")]), &d).unwrap();
     // A limit set: the variable must hold it.
     let s = settings_of("cline", limit(900));
     for env in [
         BTreeMap::new(),
         env_of(&[(CLINE_VAR, "1000")]),
-        env_of(&[(OPENCODE_VAR, "900000")]),
+        env_of(&[(DEAD_OPENCODE_VAR, "900000")]),
     ] {
-        let err = check_command_limit("cline", &env, &s).unwrap_err();
+        let err = check_command_limit("cline", gone, &env, &s).unwrap_err();
         assert!(err.contains("command time limit"), "{err}");
+        assert!(err.contains("environment"), "{err}");
     }
-    // An engine without the variable is not checked.
-    check_command_limit("fake-acp", &BTreeMap::new(), &s).unwrap();
+    // An engine with no placement is not checked.
+    check_command_limit("fake-acp", gone, &BTreeMap::new(), &s).unwrap();
 }
 
-fn placed<'a>(engine: &'a str, env: &'a BTreeMap<String, String>, gone: &'a Path) -> Placed<'a> {
+fn placed<'a>(
+    engine: &'a str,
+    env: &'a BTreeMap<String, String>,
+    config_dir: &'a Path,
+) -> Placed<'a> {
     Placed {
         engine,
-        config_dir: gone,
-        data_dir: gone,
+        config_dir,
+        data_dir: Path::new("/nonexistent-b800"),
         argv: &[],
         env,
         stage_disabled: &[],
@@ -320,33 +367,35 @@ fn placed<'a>(engine: &'a str, env: &'a BTreeMap<String, String>, gone: &'a Path
 }
 
 #[test]
-fn b800_the_read_back_of_the_second_engine_reads_the_variable_and_no_file_of_the_first() {
-    let gone = Path::new("/nonexistent-b800");
+fn b800_the_read_back_of_the_second_engine_reads_its_placement_and_no_file_of_the_first() {
     let s = settings_of("opencode", limit(900));
-    let env = launch_env("opencode", &s);
-    read_back(&placed("opencode", &env, gone), &s).unwrap();
+    let (c, env) = placed_for(&s);
+    read_back(&placed("opencode", &env, &c.config_dir), &s).unwrap();
 
-    // The variable gone, or changed: the run is refused with the part and no value.
-    for bad in [
-        BTreeMap::new(),
-        env_of(&[(OPENCODE_VAR, "120000")]),
-        env_of(&[(CLINE_VAR, "900000")]),
+    // The placement gone, or another number: the run is refused with the part and no value.
+    let (other_c, other_env) = placed_for(&UserSettings::default());
+    for (bad, dir) in [
+        (BTreeMap::new(), c.config_dir.clone()),
+        (
+            env_of(&[(DEAD_OPENCODE_VAR, "900000")]),
+            c.config_dir.clone(),
+        ),
+        (other_env, other_c.config_dir.clone()),
     ] {
-        let err = read_back(&placed("opencode", &bad, gone), &s).unwrap_err();
+        let err = read_back(&placed("opencode", &bad, &dir), &s).unwrap_err();
         assert!(
-            err.contains("engine settings") && err.contains("environment"),
+            err.contains("engine settings") && err.contains("configuration"),
             "{err}"
         );
-        assert!(!err.contains("900") && !err.contains("120000"), "{err}");
+        assert!(!err.contains("900") && !err.contains("600000"), "{err}");
     }
 }
 
 #[test]
 fn b800_the_read_back_of_an_engine_this_build_cannot_place_settings_for_is_still_refused() {
-    let gone = Path::new("/nonexistent-b800");
     let s = settings_of("opencode", limit(900));
-    let env = launch_env("opencode", &s);
-    let err = read_back(&placed("fake-acp", &env, gone), &s).unwrap_err();
+    let (c, env) = placed_for(&s);
+    let err = read_back(&placed("fake-acp", &env, &c.config_dir), &s).unwrap_err();
     assert!(err.contains("engine settings"), "{err}");
 }
 

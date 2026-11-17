@@ -57,7 +57,7 @@ fn done_session() -> Value {
 fn ids(run: &str, ms: u64) -> (String, String) {
     (
         events::goal_active(run, ms).event_id,
-        events::session_started(run, ms, Engine::CLINE, MODEL, 1_000_000).event_id,
+        events::session_started(run, ms, Engine::CLINE, MODEL, 1_000_000, false).event_id,
     )
 }
 

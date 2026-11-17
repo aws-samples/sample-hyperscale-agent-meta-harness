@@ -86,7 +86,7 @@ fn claim_form(nonce: &str) -> String {
 /// The prompt after the user's own: the module asks whether the goal is met, as the follow-up of a goal plugin does. Sent once per session.
 pub fn verification_prompt(goal_text: &str, nonce: &str, outside_note: bool) -> String {
     format!(
-        "Are you sure you have completed the goal? The goal: {goal_text}\n\nRun the checks of the goal card again now and answer from their output, \
+        "Are you sure you have completed the goal? The goal: {goal_text}\n\nRun the checks of this task's goal card again now, if it has one, and answer from their output, \
 not from memory. If every check passes in a run made after your last edit, end your final message with one last line in exactly this form, with the \
 words and the code as written: {form}\nWrite that line only when the work is finished. If a check fails, fix it, run the checks again, and end your \
 final message without that line. {closing}",
@@ -98,7 +98,7 @@ final message without that line. {closing}",
 /// The prompt after every later round that did not claim.
 pub fn continue_prompt(goal_text: &str, nonce: &str, outside_note: bool) -> String {
     format!(
-        "Continue working toward the goal: {goal_text}\n\nRun the checks of the goal card again and answer from their output. When every check passes in \
+        "Continue working toward the goal: {goal_text}\n\nRun the checks of this task's goal card again, if it has one, and answer from their output. When every check passes in \
 a run made after your last edit, end your final message with one last line in exactly this form, with the words and the code as written: {form}\n\
 {closing}",
         form = claim_form(nonce),

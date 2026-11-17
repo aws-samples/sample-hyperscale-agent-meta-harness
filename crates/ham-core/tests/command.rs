@@ -177,9 +177,20 @@ fn subcommands_parse() {
     assert_eq!(
         cmd(&["cancel", "R1"]),
         Command::Cancel {
-            run_id: "R1".into()
+            run_id: "R1".into(),
+            discard: false,
         }
     );
+    // The explicit clear, before or after the run id.
+    for argv in [["cancel", "R1", "--discard"], ["cancel", "--discard", "R1"]] {
+        assert_eq!(
+            cmd(&argv),
+            Command::Cancel {
+                run_id: "R1".into(),
+                discard: true,
+            }
+        );
+    }
     assert_eq!(cmd(&["models"]), Command::Models);
     assert_eq!(
         cmd(&["pr", "R1"]),
@@ -319,6 +330,11 @@ fn every_command_variant_round_trips_through_to_argv() {
         },
         Command::Cancel {
             run_id: "R1".into(),
+            discard: false,
+        },
+        Command::Cancel {
+            run_id: "R1".into(),
+            discard: true,
         },
         Command::Models,
         Command::ModelsServer,
@@ -473,7 +489,7 @@ fn command() -> impl Strategy<Value = Command> {
         direct_args().prop_map(Command::StartDirect),
         any::<bool>().prop_map(|probes| Command::Runs { probes }),
         proptest::option::of(id()).prop_map(|run_id| Command::Watch { run_id }),
-        id().prop_map(|run_id| Command::Cancel { run_id }),
+        (id(), any::<bool>()).prop_map(|(run_id, discard)| Command::Cancel { run_id, discard }),
         (
             id(),
             prop_oneof![Just(PullArtifact::Zip), Just(PullArtifact::Evidence)]

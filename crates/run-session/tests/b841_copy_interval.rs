@@ -46,6 +46,7 @@ fn plan_for(n: u32) -> Vec<u8> {
             key: s3::repo_bundle_key(RUN),
             head: Some(BASE.to_string()),
         },
+        recovery: None,
         base_sha: Some(BASE.to_string()),
         sessions_before: n - 1,
         brief: None,

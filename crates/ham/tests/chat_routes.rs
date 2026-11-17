@@ -739,3 +739,52 @@ async fn the_snapshot_of_a_live_run_downloads_and_verifies_through_the_real_rout
         .unwrap_err();
     assert!(e.to_string().contains("no copy of this run's work"), "{e}");
 }
+
+// ---- the files read back, asked of a stage of an older release ------------------------------------------------------------------------
+
+/// `ham pull <runId> --read-back <n>` against a stage that predates the read of a stopped session's storage. Such a stage does not
+/// know the query and answers with the run's newest saved copy. The client takes no copy but the one it asked for: no byte is
+/// fetched, no file is left, and the refusal names the switch.
+#[tokio::test]
+async fn b854_read_back_asked_of_a_stage_that_predates_it_downloads_nothing_and_names_the_switch() {
+    let object = bundle(HEAD, 5_000);
+    // TRIGGER PRESENT: the answer of the older stage is a saved copy that the plain command downloads.
+    let plane = Canned::new(object.clone());
+    plane.reply(&route(), 200, dl(object.len() as u64, HEAD));
+    let got = fetch_snapshot_with(&scripted(&plane), RUN, &tmp("read-back-older-plain"), 1024)
+        .await
+        .expect("TRIGGER PRESENT: the saved copy downloads");
+    assert_eq!(got.head_sha, HEAD);
+
+    let plane = Canned::new(object.clone());
+    plane.reply(&route(), 200, dl(object.len() as u64, HEAD));
+    let dir = tmp("read-back-older-stage");
+    let e = ham::chat_routes::fetch_read_back(&scripted(&plane), RUN, 1, &dir)
+        .await
+        .expect_err("a saved copy is not the files read back from session 1");
+    assert!(
+        e.to_string().contains(
+            "the stage did not answer with the files read back from session 1; it may predate ham pull --read-back"
+        ),
+        "{e}"
+    );
+    // The client asked for the files of session 1, once.
+    let calls = plane.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].1.starts_with(&route()), "{calls:?}");
+    assert!(calls[0].1.contains("readBack=1"), "{calls:?}");
+    assert!(
+        plane.fetches.lock().unwrap().is_empty(),
+        "no byte of the saved copy is fetched"
+    );
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .map(|d| {
+            d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        left.is_empty(),
+        "nothing is left in the download folder: {left:?}"
+    );
+}

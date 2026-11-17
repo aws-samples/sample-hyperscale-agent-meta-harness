@@ -192,3 +192,191 @@ async fn typed_in_the_chat_box_the_runner_prints_what_the_shell_prints() {
     assert_eq!(out.code, 0, "{}", out.stderr_text());
     assert_eq!(out.stdout_text(), shell_out.out);
 }
+
+// ----: files the service read back from a stopped session's storage ---------------------------------------------------------------
+
+const READ_BACK: &str = "3333333333333333333333333333333333333333";
+
+/// Puts the files the service read back from the storage of session `n` into the bucket, as the worker of the read does.
+fn save_read_back(fake: &Fake, run: &str, n: u32, object: &[u8]) {
+    fake.mem.inner.lock().unwrap().objects.insert(
+        harness_protocol::direct::s3::recovery_bundle_key(run, n),
+        (object.to_vec(), "\"etag-r\"".into()),
+    );
+}
+
+/// `ham pull <runId> --read-back <n>`: the one command that downloads files the service read back and did not use. The Run item
+/// names no chosen copy here, and the run's newest saved copy is another commit.
+#[tokio::test]
+async fn b854_pull_read_back_downloads_the_files_read_back_from_the_named_session_used_or_not() {
+    let fake = Fake::start().await;
+    let run = start(&fake, "Add a percent_change function for read back").await;
+    save_snapshot(&fake, &run, &bundle(HEAD, 4_000), 3);
+    let object = bundle(READ_BACK, 30_000);
+    save_read_back(&fake, &run, 1, &object);
+    let h = home(&fake, "pull-read-back");
+    let p = shell(&h, &["pull", &run, "--read-back", "1"]).await;
+    assert_eq!(p.code, 0, "{} {}", p.out, p.err);
+    let file = h.downloads.join(format!("{run}-read-back-1.bundle"));
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        object,
+        "the file holds the files read back, not the saved copy"
+    );
+    let left: Vec<String> = std::fs::read_dir(&h.downloads)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec![format!("{run}-read-back-1.bundle")], "{left:?}");
+    // The words: what the copy is, without a claim that it is newer than the saved copy or that the run went on from it.
+    for said in [
+        format!("pulled the files read back from session 1 of run {run}"),
+        format!("File      {}", file.display()),
+        format!("Commit    {READ_BACK} (read back from the storage of session 1)"),
+        "Note      This copy is what the service read back from the storage of session 1 after that session ended. The run may not \
+         have gone on from it: the service uses files it read back only when its checks leave no doubt."
+            .to_string(),
+        format!("Look      git clone -b snapshot {} <dir>", file.display()),
+        format!("Warning   {}", ham_core::snapshot::SNAPSHOT_TRUST_NOTE),
+    ] {
+        assert!(p.out.contains(&said), "missing {said:?} in:\n{}", p.out);
+    }
+    // No claim that the copy is newer or that the run used it, and the clone names the branch of a copy, not of a delivery.
+    for claim in ["newer than", "this copy is its work", "-b harness/"] {
+        assert!(!p.out.contains(claim), "{claim:?} in:\n{}", p.out);
+    }
+    assert!(!p.out.contains("X-Amz-"), "no link is printed: {}", p.out);
+
+    // --json names the session the files were read back from.
+    let j = shell(&h, &["pull", &run, "--read-back", "1", "--json"]).await;
+    assert_eq!(j.code, 0, "{} {}", j.out, j.err);
+    let v: Value = serde_json::from_str(j.out.trim()).unwrap();
+    assert_eq!(v["snapshot"]["headSha"], READ_BACK);
+    assert_eq!(v["snapshot"]["readBackSession"], 1);
+    assert!(v["snapshot"].get("count").is_none(), "{v}");
+
+    // A session whose storage was not read back: exit 1 with the service's sentence, and nothing is written.
+    let none = shell(&h, &["pull", &run, "--read-back", "2"]).await;
+    assert_eq!(none.code, 1, "{} {}", none.out, none.err);
+    assert!(
+        none.err
+            .contains("no files were read back from the storage of session 2 of this run"),
+        "{}",
+        none.err
+    );
+    assert!(
+        !h.downloads
+            .join(format!("{run}-read-back-2.bundle"))
+            .exists()
+    );
+
+    // Trigger: the plain snapshot of the same run is the saved copy, another file and another commit.
+    let s = shell(&h, &["pull", &run, "--snapshot"]).await;
+    assert_eq!(s.code, 0, "{}", s.err);
+    assert!(
+        s.out.contains(HEAD) && !s.out.contains(READ_BACK),
+        "{}",
+        s.out
+    );
+    assert!(s.out.contains("pulled the snapshot of run"), "{}", s.out);
+}
+
+/// `ham pull <runId> --snapshot` follows the copy the service chose: the files read back from session 1 while no later session has
+/// saved a copy of its own. The text says what the copy is.
+#[tokio::test]
+async fn b854_pull_snapshot_says_when_the_newest_copy_is_the_files_read_back() {
+    let fake = Fake::start().await;
+    let run = start(&fake, "Write a parser whose session is read back").await;
+    save_snapshot(&fake, &run, &bundle(HEAD, 4_000), 3);
+    let object = bundle(READ_BACK, 12_000);
+    save_read_back(&fake, &run, 1, &object);
+    {
+        let mut g = fake.mem.inner.lock().unwrap();
+        let item = g.runs.get_mut(&run).unwrap();
+        item.slice = Some(2);
+        item.recovered_copy = Some(Box::new(harness_protocol::store::RecoveredCopyRef {
+            session: 1,
+            key: harness_protocol::direct::s3::recovery_bundle_key(&run, 1),
+            version_id: None,
+            head_sha: READ_BACK.into(),
+            at: "2026-11-16T14:05:00Z".into(),
+            newest_write_at: None,
+            bundle_bytes: object.len() as u64,
+        }));
+    }
+    let h = home(&fake, "pull-snapshot-read-back");
+    let p = shell(&h, &["pull", &run, "--snapshot"]).await;
+    assert_eq!(p.code, 0, "{} {}", p.out, p.err);
+    let file = h.downloads.join(format!("{run}-read-back-1.bundle"));
+    assert_eq!(std::fs::read(&file).unwrap(), object);
+    for said in [
+        format!("pulled the snapshot of run {run}"),
+        format!("Commit    {READ_BACK} (read back from the storage of session 1)"),
+        "Note      This copy is what the service read back from the storage of session 1 after that session ended. It is newer than \
+         the last copy saved while the run worked."
+            .to_string(),
+        format!("Look      git clone -b snapshot {} <dir>", file.display()),
+    ] {
+        assert!(p.out.contains(&said), "missing {said:?} in:\n{}", p.out);
+    }
+    assert!(
+        !p.out.contains("changes after"),
+        "a copy read back is not worded as a copy made while the run worked:\n{}",
+        p.out
+    );
+}
+
+/// `--read-back` stands alone and takes the number of a session.
+#[tokio::test]
+async fn b854_pull_read_back_takes_a_session_number_and_no_other_selector() {
+    let fake = Fake::start().await;
+    let run = start(&fake, "A run for the usage of read back").await;
+    let h = home(&fake, "pull-read-back-usage");
+    for (args, said) in [
+        (
+            vec!["pull", run.as_str(), "--read-back", "1", "--snapshot"],
+            "ham pull takes --read-back <n> alone, without --snapshot or --artifact",
+        ),
+        (
+            vec![
+                "pull",
+                run.as_str(),
+                "--read-back",
+                "1",
+                "--artifact",
+                "zip",
+            ],
+            "ham pull takes --read-back <n> alone, without --snapshot or --artifact",
+        ),
+        (
+            vec!["pull", run.as_str(), "--read-back", "0"],
+            "--read-back takes the number of a session of the run, 1 to 256, got \"0\"",
+        ),
+        (
+            vec!["pull", run.as_str(), "--read-back", "two"],
+            "--read-back takes the number of a session of the run, 1 to 256, got \"two\"",
+        ),
+    ] {
+        let p = shell(&h, &args).await;
+        assert_ne!(p.code, 0, "{args:?}: {}", p.out);
+        assert!(p.err.contains(said), "{args:?}: {}", p.err);
+    }
+    // The parser gives the command back as it was typed.
+    let inv = parse(&["pull", &run, "--read-back", "12"]).unwrap();
+    assert_eq!(
+        inv.to_argv(),
+        vec![
+            "pull".to_string(),
+            run.clone(),
+            "--read-back".to_string(),
+            "12".to_string()
+        ]
+    );
+    // The help names the option.
+    let help = shell(&h, &["pull", "--help"]).await;
+    assert!(
+        help.out.contains("--read-back <n>"),
+        "the help of ham pull names the option:\n{}",
+        help.out
+    );
+}

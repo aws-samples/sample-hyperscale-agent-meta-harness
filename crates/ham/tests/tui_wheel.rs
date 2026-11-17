@@ -27,6 +27,8 @@ const RUNS: [&str; 3] = [
 
 fn summary(id: &str) -> RunSummary {
     RunSummary {
+        session_silent_since: None,
+        cancel_requested_at: None,
         needs_input: None,
         run_id: id.into(),
         status: GoalStatus::Active,

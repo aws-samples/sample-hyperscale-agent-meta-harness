@@ -96,7 +96,7 @@ ACCT_B2_PROFILE, ACCT_TWO_PROFILE = PROFILE_OF[ACCOUNT], PROFILE_OF[ACCT_TWO]
 OWNER_OF = {t.account: aws_target.owner_of(t) for t in aws_target.load(sf.ACCOUNTS)}
 CLINE_SHA = "d" * 64
 # The series pin of the test repository (engine/cline/lock.toml): the values of the real lock; the fake fork build writes them into its metadata.
-SERIES_TREE = "f8990b6745402aec9bf0458611c763a1a7e710f8"
+SERIES_TREE = "c75466739c34f810ccc10e1c721210215dc0de68"
 UPSTREAM_COMMIT = "1a5c3f84e0933268a9dba14a55a6383a6578414d"
 TOOLCHAIN = {
     "bun_version": "1.4.2",
@@ -526,7 +526,7 @@ if spec == "images/codebuild/cline-fork-arm64.yml":
             "binary": {"file": "cline", "size_bytes": len(content), "sha256": bin_sha, "elf_machine": "aarch64", "version": "3.0.71", "expected_version": "3.0.71"},
             "gate": {"ran": True}}
     record = {"kind": "cline-fork-build", "result": "pass", "measurements": {"telemetry": "off", "leaks": 0, "binarySha256": bin_sha,
-              "seriesTree": lock["series"]["tree"], "lastLine": "FORK-BUILD PASS series=15 tree=%s bin=%s telemetry=off leaks=0" % (lock["series"]["tree"][:12], bin_sha[:12])}}
+              "seriesTree": lock["series"]["tree"], "lastLine": "FORK-BUILD PASS series=16 tree=%s bin=%s telemetry=off leaks=0" % (lock["series"]["tree"][:12], bin_sha[:12])}}
     smoke = {"jsonrpc": "2.0", "id": 1, "result": {"agentInfo": {"name": "cline", "version": "3.0.71"}}}
     out_id = bid
     if bad == "tree": meta["series"]["tree"] = "0" * 40
@@ -2131,7 +2131,7 @@ class DeployCase(unittest.TestCase):
         self.assertIn('printf \'%s\\n\' "$CODEBUILD_BUILD_ID" > "$OUT/build-id.txt"', spec)
         self.assertIn('cp "$OUT"/*-cline-fork-build-arm64-*.json "$OUT/build-record.json"', spec)
         lines = [ln.strip() for ln in spec.splitlines()]
-        pass_check = next(i for i, ln in enumerate(lines) if "FORK-BUILD PASS series=15" in ln)
+        pass_check = next(i for i, ln in enumerate(lines) if "FORK-BUILD PASS series=16" in ln)
         self.assertLess(pass_check, next(i for i, ln in enumerate(lines) if "build-id.txt" in ln), "the files are written after the build passed")
         self.assertLess(next(i for i, ln in enumerate(lines) if "build-record.json" in ln), next(i for i, ln in enumerate(lines) if ln.startswith("finally:")))
 

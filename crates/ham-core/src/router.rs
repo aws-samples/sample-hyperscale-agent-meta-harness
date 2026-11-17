@@ -332,8 +332,9 @@ fn one_line(rest: &str) -> Result<&str, &'static str> {
 }
 
 /// The shell options that take a value; their value is not a positional word.
-const VALUED_OPTIONS: [&str; 15] = [
+const VALUED_OPTIONS: [&str; 16] = [
     "--artifact",
+    "--read-back",
     "--branch",
     "--request",
     "--text",
@@ -660,7 +661,7 @@ fn run_id_of(command: &Command) -> Option<&str> {
     match command {
         Command::Watch { run_id } => run_id.as_deref(),
         Command::Resume { run_id, .. } => run_id.as_deref(),
-        Command::Cancel { run_id }
+        Command::Cancel { run_id, .. }
         | Command::Pr { run_id }
         | Command::Pull { run_id, .. }
         | Command::Clone { run_id, .. }
@@ -749,7 +750,15 @@ fn preview_of(inv: &Invocation) -> Preview {
         confirm_with: None,
     };
     match &inv.command {
-        Command::Cancel { run_id } => plain(format!(
+        // The discard is the explicit clear; the copies the run saved stay.
+        Command::Cancel {
+            run_id,
+            discard: true,
+        } => plain(format!(
+            "Discard run {}: the run is stopped now and delivers nothing. The copies it saved stay.",
+            clip(run_id, 40)
+        )),
+        Command::Cancel { run_id, .. } => plain(format!(
             "Cancel run {}: Cline is asked to stop and the work so far is kept.",
             clip(run_id, 40)
         )),

@@ -12,11 +12,11 @@ Owned by `engine/AGENTS.md`. This directory owns `lock.toml`, `rebase.sh` and `p
 
 ## Local Contracts
 
-- Upstream: `https://github.com/cline/cline.git`, tag `cli-v3.0.71`, commit `1a5c3f84e0933268a9dba14a55a6383a6578414d` (tag object `7418804b1460929f3ff701bcccc8184fb69c8e26`). After patches 0001-0015 the tree is `f8990b6745402aec9bf0458611c763a1a7e710f8` (0012 and 0013 are
-  the Bedrock additions for GLM 5.3; 0014 keeps blank keys out of the tool inputs replayed to Bedrock; 0015 lets one `run_commands` command run 10 minutes instead of 30 seconds). History includes series-13 build `491020e731f2`, patches 0001-0013, and series-14 build
-  `6c12d3927676`, patches 0001-0014. `engine/lock.toml` pins the promoted linux-arm64 build of exactly the 15-patch tree. Its first 12 SHA-256 characters are `248ea4c01c87`. CodeBuild ARM build `7cb7a9bf` (the `builtBy` line of the lock) at code `cfe8cc3b` printed `FORK-BUILD
-  PASS series=15 tree=f8990b674540`. It was promoted to the harness bucket at the `artifact` URL of `engine/lock.toml`. Native probe build `84d55154` ran it on arm64 first. The development linux-x64 build `12cdc2cb9414` is a record only. It is not pinned. Builds are not
-  bit-reproducible. A change to the series needs a new promotion ("Promoting a series" below). Until then a worker image ships a binary that does not match the lock tree.
+- Upstream: `https://github.com/cline/cline.git`, tag `cli-v3.0.71`, commit `1a5c3f84e0933268a9dba14a55a6383a6578414d` (tag object `7418804b1460929f3ff701bcccc8184fb69c8e26`). After patches 0001-0016 the tree is `c75466739c34f810ccc10e1c721210215dc0de68` (0012 and 0013 are the Bedrock additions for GLM 5.3; 0014 keeps blank keys out of the tool inputs replayed to Bedrock; 0015 lets one `run_commands` command run 10
+  minutes instead of 30 seconds; 0016 keeps a bounded wait that is sent again out of the guard on identical calls). History includes series-13 build `491020e731f2`, patches 0001-0013, series-14 build `6c12d3927676`, patches 0001-0014, and series-15 build `248ea4c01c87`, patches 0001-0015 (tree `bb25f432eac07048189f7dec52e78e6da14ba3fa`). `engine/lock.toml` pins the promoted linux-arm64 build of exactly the 16-patch tree.
+  Its first 12 SHA-256 characters are `6cb5fad761a0`. CodeBuild ARM build `65762baa` (the `builtBy` line of the lock) at code `06c3ac22` printed `FORK-BUILD PASS series=16 tree=c75466739c34`. It was promoted to the harness bucket at the `artifact` URL of `engine/lock.toml`. Native probe build `c35d1ec2` ran it on arm64 first, with the wait cases of patch 0016 (`FORK-PROBE PASS ... enginestop=16 waits=6`). The development
+  linux-x64 build `3ca4d8ed7548` of this tree (a build host; `FORK-BUILD PASS series=16 tree=c75466739c34 bin=3ca4d8ed7548`, SHA-256 `3ca4d8ed7548c300048cf4350efc761a376a8962dce547f61edb7a4dcab2c0d4`) is a record only: the engine-stop measurement (`ENGINESTOP PASS cases=16`) and the wait probe with the 100 second case (`WAITPROBE PASS cases=7`) ran on it. It is not pinned. Builds are not bit-reproducible. A change to the
+  series needs a new promotion ("Promoting a series" below). Until then a worker image ships a binary that does not match the lock tree.
 - `lock.toml` holds `schema`; `[upstream]` url, tag, commit; `[series]` tree; one `[[patches]]`
   table per patch in apply order (file, sha256); one `[[tdd]]` table per test-only patch (a file under
   `patches/tdd/`, sha256, commit, parent, tree); `[toolchain]` bun version, the bun
@@ -26,7 +26,7 @@ Owned by `engine/AGENTS.md`. This directory owns `lock.toml`, `rebase.sh` and `p
   `key = "string"`, and full-line comments. Unknown keys fail.
 - `patches/` holds exactly the series files the lock lists, byte for byte as `git format-patch`
   wrote them. The numbering has no gaps.
-- `patches/tdd/` holds exactly the test-only patches the lock lists (0003 to 0015): the failing-test commit of
+- `patches/tdd/` holds exactly the test-only patches the lock lists (0003 to 0016): the failing-test commit of
   each built patch, exported from the fork checkout, with an
   `X-Harness-Test-Only: commit=<sha> parent=<sha> tree=<sha>` header after `Date:`. Applied with
   `git am` onto the tag plus the series patches before its number, it gives the recorded tree;
@@ -88,6 +88,7 @@ Patch series:
 | 0012 | GLM 5.3 on Bedrock Converse (exactly `us.zai.glm-5.3`, `global.zai.glm-5.3` and `zai.glm-5.3`; profile-only, not on Mantle) gets its level as `additionalModelRequestFields.reasoning_effort` (rule `provider.bedrock.zai-glm-5.3.reasoning-effort`; low, medium, high, xhigh, max; reasoning off or unset sends `low`, reasoning on without a level `medium`, `minimal` is `low`) instead of the top-level `reasoning` object Bedrock ignores; the generic GLM rule skips these ids and still serves every other GLM route; the portable level is no longer also sent (a nested `additionalModelRequestFields.reasoning_effort` counts as a native reasoning control); the llms catalog override file replaces the generated catalog's efforts `none, low, high, max` for the two profile ids with `low, medium, high, xhigh, max` (Bedrock rejects `none`; the override survives a catalog regeneration). Additive: no other provider's behavior changes | `patches/tdd/0012-test-only.patch`; the wire test `bedrock-glm-reasoning.wire.test.ts` pins the Converse body |
 | 0013 | On Bedrock, tool call ids stay unique across turns: an id that an earlier call or result of the conversation, or an id handed out earlier in the same session (`metadata.sessionId`, the 128 most recent sessions, so compaction and retries cannot repeat an id an ACP client still shows), already uses gets the smallest free numeric suffix (`call_0` becomes `call_0-2`; the result stays within Bedrock's 64 characters), one raw id mapping to one result per response; other providers keep their ids; ids that do not collide are unchanged. GLM 5.3 numbers its calls `call_0`.. in every response, which ACP clients that key tool calls by `toolCallId` (agentd, the S1 library) merged | `patches/tdd/0013-test-only.patch` (`ai-sdk.tool-call-ids.test.ts`) |
 | 0014 | On Bedrock Converse (a model id that Bedrock does not serve through Mantle), the input of each replayed tool call loses its blank object keys, at every depth and inside arrays (`bedrock-tool-use-input.ts`; the option `normalizeToolCallInput` of `toAiSdkMessages` in `ai-sdk.ts`). A key is blank when it is empty or made only of Java whitespace (`Character.isWhitespace`); keys such as `" a"`, `"a b"`, U+00A0 and U+200B stay. Only the copy sent to Bedrock changes: the conversation history, inputs that are not objects (`@ai-sdk/amazon-bedrock` wraps them as `{rawInvalidInput}`) and other providers stay as they are. In two live runs GPT-6 Astra returned `run_commands` with `{"commands": [...], " ": ""}` on its fourth call; Bedrock accepted that reply and refused the replay with ValidationException at `messages.7.content.0.toolUse.input`, on all five supported models | `patches/tdd/0014-test-only.patch` (`bedrock-tool-use-input.wire.test.ts` through the real Bedrock Converse adapter, `bedrock-tool-use-input.test.ts`) |
+| 0016 | The guard on identical tool calls (a warning at the third, the end of the run at the fifth) no longer counts a bounded wait that is sent again. A repeat of an identical call is not counted, and gets no warning, when the earlier identical call blocked for at least the threshold: the larger of 5 seconds and the smaller of half of `HAMH_WAIT_S` and 50 seconds. `HAMH_WAIT_S` is the bound of one wait on a background job that the harness sets in the launch, in seconds; without the variable nothing is exempt. The threshold stops at 50 seconds because the waits that sessions send are shorter than half of a long bound: a rules file of an earlier lifecycle pack names `timeout 100`, and the default bound is 240 seconds. agentd holds the same rule for the stop it sees (`crates/agentd/src/direct/collector.rs`, `MAX_WAIT_THRESHOLD`). The time the exempt repeats of one run of identical calls may take is capped: `HAMH_WAIT_CAP_S` seconds, two hours when unset; past the cap the repeats count again, from where the count stood. agentd does not set `HAMH_WAIT_CAP_S`, so the cap is two hours in every run: that equals the default of the goal loop's grace for a running command (`AGENTD_GOAL_COMMAND_GRACE_S`, 7200), and a stage that changes that grace keeps the two hours in the engine. The rule looks at how long a call blocked, never at its text: `SessionRuntime` tells the tracker how long each finished call took (`loop-detection.ts`, `session-runtime-orchestrator.ts`). Calls that return quickly count as before. |
 
 Cline fork binary in a stage:
 
@@ -149,7 +150,7 @@ Code lint-staged step that does not apply here.
 Promoting a series (the procedure for every promotion):
 
 1. Build the linux-arm64 binary of this lock in CodeBuild ARM. `images/codebuild/cline-fork-arm64.yml` greps for the series number the build must print (`FORK-BUILD PASS
-   series=15`), and `images/AGENTS.md` names the same number: change both to the new patch count first. The build prints `FORK-BUILD PASS series=<n> tree=<12> bin=<12>
+   series=16`), and `images/AGENTS.md` names the same number: change both to the new patch count first. The build prints `FORK-BUILD PASS series=<n> tree=<12> bin=<12>
    telemetry=off leaks=0`. It must end `FORK-PROBE PASS`; promote only after that.
 2. Promote the artifact with the conditional put (a create-only put; a 412 means the object exists: download it and compare), then in one commit replace `engine/lock.toml`
    `[cline]` `binarySha256`, `artifact`, `builtBy` and the FORK-BUILD comment line and `engine/profiles/cline.toml`
@@ -162,9 +163,9 @@ Promoting a series (the procedure for every promotion):
 ```bash
 export CLINE_FORK_WORK_DIR="$TMPDIR/<label>/work"
 scripts/build-cline-fork.sh --verify-only        # last line VERIFY PASS
-engine/cline/rebase.sh cli-v3.0.71               # last line REBASE-PASS ... patches=15
+engine/cline/rebase.sh cli-v3.0.71               # last line REBASE-PASS ... patches=16
 scripts/build-cline-fork.sh --target linux-x64
-                                                 # FORK-BUILD PASS series=15 tree=<12> bin=<12> telemetry=off leaks=0
+                                                 # FORK-BUILD PASS series=16 tree=<12> bin=<12> telemetry=off leaks=0
 uv run --no-project --python 3.12 python -m unittest scripts/tests/test_build_cline_fork.py
                                                  # FK1 PASS lines: the command limit of patch 0015 through the real binary under ACP
 ```

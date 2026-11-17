@@ -52,6 +52,8 @@ fn fetched(
         record_stale: false,
         final_copy,
         engine: engine.map(str::to_string),
+        read_back_from: None,
+        asked_read_back: false,
     }
 }
 

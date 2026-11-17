@@ -711,6 +711,10 @@ pub const MAX_FOLD_CLOSED: usize = 8;
 
 /// The `kind` of the payload of the harness's `run.waiting` event that says a session was lost.
 pub const SESSION_LOST_KIND: &str = "session-lost";
+/// The `kind` of the payload of the harness's `run.waiting` event that says the user's cancel is recorded. The
+/// payload is an [`crate::api::v1::CancelRecorded`] with this `kind`. A client that predates the event reads `run.waiting` of the harness
+/// only for [`SESSION_LOST_KIND`] and shows nothing for this one.
+pub const CANCEL_RECORDED_KIND: &str = "cancel-recorded";
 /// The `how` of a request that was open when its session was lost: no engine knows the request any more.
 pub const CLOSED_SESSION_LOST: &str = "session-lost";
 

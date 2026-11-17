@@ -57,11 +57,27 @@ pub struct Config {
     pub provider_silence_s: Option<u32>,
     /// Unix milliseconds now; a function so a test can fix the clock.
     pub clock_ms: fn() -> u64,
+    /// Waits this many milliseconds;
+    /// a function so a test can move its clock instead of sleeping.
+    pub pause: fn(u64) -> Pause,
+}
+
+/// A wait in progress, as [`Config::pause`] returns it.
+pub type Pause = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Waits `ms` milliseconds on the runtime's timer.
+pub fn system_pause(ms: u64) -> Pause {
+    Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
 }
 
 impl Config {
     pub fn now_ms(&self) -> u64 {
         (self.clock_ms)()
+    }
+
+    /// Waits `ms` milliseconds ([`Config::pause`]).
+    pub fn wait_ms(&self, ms: u64) -> Pause {
+        (self.pause)(ms)
     }
 
     /// Whether the utility model serves `purpose` in this function (`UTILITY_PURPOSES`).
@@ -118,6 +134,18 @@ pub struct SessionState {
     pub failure: Option<StatesFailure>,
 }
 
+impl SessionState {
+    /// The notice that ended the wait for the session, when the task ended with one: worker-api completes the task with
+    /// `{"sessionEnded": {...}}` when the worker gives notice that its session is being ended. It is no result of the session: a session
+    /// that ended this way counts as lost, with the notice's cause.
+    pub fn ended(&self) -> Option<harness_protocol::direct::SessionEnded> {
+        self.turn
+            .as_ref()
+            .and_then(|v| v.get("sessionEnded"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+}
+
 /// The input of one op: `{"op": "<kebab-case name>", ...}` in camelCase members.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", rename_all_fields = "camelCase")]
@@ -136,6 +164,14 @@ pub enum Op {
     NextSlice {
         run_id: String,
         staged: Value,
+        session: SessionState,
+        #[serde(rename = "loop", default)]
+        loop_state: LoopState,
+    },
+    /// The session that just ended left no result: read what its storage still holds into one copy, within a hard limit, before
+    /// `next-slice` decides. The machine drops the answer and goes on to `next-slice` whatever this op does.
+    Recover {
+        run_id: String,
         session: SessionState,
         #[serde(rename = "loop", default)]
         loop_state: LoopState,
@@ -176,6 +212,7 @@ impl Op {
             Op::Prepare { .. } => "prepare",
             Op::StartSession { .. } => "start-session",
             Op::NextSlice { .. } => "next-slice",
+            Op::Recover { .. } => "recover",
             Op::PlanDelivery { .. } => "plan-delivery",
             Op::Finalize { .. } => "finalize",
             Op::MarkBlocked { .. } => "mark-blocked",
@@ -188,6 +225,7 @@ impl Op {
             Op::Prepare { run_id }
             | Op::StartSession { run_id, .. }
             | Op::NextSlice { run_id, .. }
+            | Op::Recover { run_id, .. }
             | Op::PlanDelivery { run_id, .. }
             | Op::Finalize { run_id, .. }
             | Op::MarkBlocked { run_id, .. }
@@ -229,6 +267,11 @@ where
             session,
             loop_state,
         } => to_value(slices::next_slice(deps, run_id, staged, session, loop_state).await?),
+        Op::Recover {
+            run_id,
+            session,
+            loop_state,
+        } => to_value(crate::recover::recover(deps, run_id, session, loop_state).await?),
         Op::PlanDelivery {
             run_id,
             staged,

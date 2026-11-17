@@ -531,6 +531,12 @@ pub(crate) async fn prepare<S: Store, B: Blobs, E: Execution>(
     if request.delivery_note == Some(true) {
         request.delivery_note = None;
     }
+    // Reading a stopped session's storage back is on unless the request says `false`. `true` is the default said out loud and is
+    // stored as no member, so the stored request of a default run is the one of protocol 1.62.0. `false` is stored as sent:
+    // start-session copies it to the Agent item, where the recover op and worker-api read it.
+    if request.recover_after_stop == Some(true) {
+        request.recover_after_stop = None;
+    }
     // The follow-up's source is read before anything is written; the stored request carries the head resolved here.
     if let Some(c) = request.continue_from.clone() {
         request.continue_from = Some(resolve_continue(&c, &request.target, caller, deps).await?);
@@ -681,6 +687,7 @@ async fn create_run<S: Store, B: Blobs, E: Execution>(
     let request_uri = deps.blobs.put(&s3::request_key(run_id), canonical).await?;
     let now = now_rfc3339();
     let run = RunItem {
+        cancel_requested_at: None,
         run_id: run_id.to_string(),
         owner_principal_arn: caller.to_string(),
         prompt_sha256: sha256_hex(request.prompt.as_bytes()),
@@ -708,6 +715,8 @@ async fn create_run<S: Store, B: Blobs, E: Execution>(
         max_run_s: request.max_run_s,
         // The engine the request named, stored as sent; absent means Cline, as in the stored request.
         engine: request.engine,
+        // Written by run-session when it goes on from a copy it read back from a stopped session's storage.
+        recovered_copy: None,
     };
     let goal = GoalItem {
         run_id: run_id.to_string(),

@@ -5,7 +5,7 @@
 
 use crate::acp::{AcpHandler, read_usage};
 use crate::direct::classify::clean_message;
-use crate::direct::engine_stop::AttemptFacts;
+use crate::direct::engine_stop::{AttemptFacts, LOOP_GUARD_CALLS};
 use crate::direct::hooks::{Event, Hooks, LadderEvent};
 use crate::direct::recorder::{
     Anomaly, MESSAGES_KEPT, Recorder, RecorderCounters, StopContext, StopDigest, ToolNote,
@@ -26,6 +26,16 @@ use tokio::time::Instant;
 
 /// The progress line of the latest message goes out at most this often.
 pub const MESSAGE_PROGRESS_EVERY: Duration = Duration::from_secs(5);
+/// The least time a call must have blocked for the engine's guard on its identical repeats to count as a wait that was sent again.
+pub const MIN_WAIT_BLOCK: Duration = Duration::from_secs(5);
+/// The most a call must have blocked to count as a wait, however long the session's bound is. The waits that sessions send are shorter
+/// than half of a long bound: a rules file of an earlier lifecycle pack names 100 s, models were seen to write 110 s and 115 s, and the default
+/// bound is 240 s. Fork patch 0016 holds the same number in the engine's own guard (`MAX_WAIT_THRESHOLD_MS`).
+pub const MAX_WAIT_THRESHOLD: Duration = Duration::from_secs(50);
+/// How many guard stops on a wait one session of a run is forgiven (the collector lives for one session).
+pub const MAX_WAIT_STOPS_FORGIVEN: u32 = 3;
+/// The hint word of an engine stop that was forgiven as a wait.
+pub const WAIT_STOP_HINT: &str = "wait-repeated";
 /// The progress line carries the last this-many characters of the message.
 pub const MESSAGE_PROGRESS_CHARS: usize = 2_000;
 /// The tool call ids the attempt facts remember as resolved, to count a repeated terminal update once.
@@ -62,6 +72,25 @@ pub struct DirectCollector {
     hooks: Hooks,
     /// Notified when a tool call ended ([`Self::with_tree_wake`]).
     tree_wake: Option<Arc<tokio::sync::Notify>>,
+    /// The engine's profile name, for the words of a notice that name it.
+    engine: String,
+    /// The least time each call of a run of identical calls must have blocked for the engine's guard on it to count as a wait
+    /// that was sent again ([`Self::with_wait_bound`]); `None` forgives nothing.
+    wait_threshold: Option<Duration>,
+    /// When the calls that are still open started, each with the number of the run of identical calls it belongs to (the newest few).
+    open_calls: VecDeque<(String, u64, Instant)>,
+    /// The number of the run of identical calls in progress: it moves when a call differs from the one before it and at every prompt.
+    tail_no: u64,
+    /// The id of the newest call of the run of identical calls in progress.
+    tail_newest: Option<String>,
+    /// How long the newest call of that run blocked, once it ended. It joins [`Self::tail_shortest`] when a later identical call starts.
+    tail_newest_blocked: Option<Duration>,
+    /// The shortest time a finished call of that run blocked, its newest call left out.
+    tail_shortest: Option<Duration>,
+    /// Guard stops on a wait that did not spend the automatic resume, in this session of the run.
+    wait_stops_forgiven: u32,
+    /// This engine session was already told that a command was cut at another number than the run's limit.
+    limit_miss_told: bool,
 }
 
 impl DirectCollector {
@@ -83,12 +112,65 @@ impl DirectCollector {
             started: Instant::now(),
             hooks: Hooks::none(),
             tree_wake: None,
+            engine: String::new(),
+            wait_threshold: None,
+            open_calls: VecDeque::new(),
+            tail_no: 0,
+            tail_newest: None,
+            tail_newest_blocked: None,
+            tail_shortest: None,
+            wait_stops_forgiven: 0,
+            limit_miss_told: false,
+        }
+    }
+
+    /// The bound of one wait on a background job that the launch carries, in seconds (`engine::direct::guard_wait_bound`). A session
+    /// that waits for a long job sends the same bounded wait again while the job runs, and the first engine's guard ends a prompt at the
+    /// fifth identical call. Such a stop is no loop: when every finished call of the identical run but its newest blocked for at least the
+    /// threshold, the stop does not spend the run's automatic resume ([`Self::forgive_wait_stop`]). The threshold is the larger of
+    /// [`MIN_WAIT_BLOCK`] and the smaller of half of this bound and [`MAX_WAIT_THRESHOLD`]. `None` forgives nothing.
+    pub fn with_wait_bound(mut self, seconds: Option<u32>) -> Self {
+        self.wait_threshold = seconds.map(|s| {
+            Duration::from_millis(u64::from(s) * 500)
+                .min(MAX_WAIT_THRESHOLD)
+                .max(MIN_WAIT_BLOCK)
+        });
+        self
+    }
+
+    /// Whether the attempt ended in the engine's guard on a wait that was sent again: [`LOOP_GUARD_CALLS`] or more identical calls at
+    /// its end, of which every one that finished, the newest call left out, blocked for at least the threshold of
+    /// [`Self::with_wait_bound`]. The newest call is the one the guard refused: the first engine answers it at once as a completed call
+    /// whose command was aborted (live proof of release 5.22), or leaves it open, so it says nothing about a wait. It looks at how long
+    /// the calls blocked, never at their text.
+    pub fn guard_stop_on_wait(&self) -> bool {
+        self.facts.identical_tail >= LOOP_GUARD_CALLS
+            && matches!((self.wait_threshold, self.tail_shortest), (Some(least), Some(shortest)) if shortest >= least)
+    }
+
+    /// Says once per stop whether the engine's stop is forgiven as a wait that was sent again ([`Self::guard_stop_on_wait`]): at most
+    /// [`MAX_WAIT_STOPS_FORGIVEN`] times in this session of the run, so a model that only waits still ends. The count is not stored: a
+    /// run that goes on in a later session starts it again.
+    pub fn forgive_wait_stop(&mut self) -> bool {
+        if self.guard_stop_on_wait() && self.wait_stops_forgiven < MAX_WAIT_STOPS_FORGIVEN {
+            self.wait_stops_forgiven += 1;
+            true
+        } else {
+            false
         }
     }
 
     /// The engine of the run (the profile name): the recorder reads the engine's tool titles and checks its tools by that engine's table.
     pub fn with_engine(mut self, engine: &str) -> Self {
         self.recorder.set_engine(engine);
+        self.engine = engine.to_string();
+        self
+    }
+
+    /// The run's command time limit in milliseconds, for an engine whose cut names the limit that applied: a shell call that named no
+    /// limit and was cut at another number is told to the run once per engine session. `None` (the first engine, the fake engine) says nothing.
+    pub fn with_command_limit(mut self, limit_ms: Option<u64>) -> Self {
+        self.recorder.set_command_limit(limit_ms);
         self
     }
 
@@ -335,6 +417,20 @@ impl DirectCollector {
         self.facts = AttemptFacts::default();
         self.last_call = None;
         self.resolved.clear();
+        self.restart_tail();
+    }
+
+    /// A new run of identical calls starts: nothing is known about how long its calls blocked.
+    fn restart_tail(&mut self) {
+        self.tail_no += 1;
+        self.tail_newest = None;
+        self.tail_newest_blocked = None;
+        self.tail_shortest = None;
+    }
+
+    /// A call of the run of identical calls in progress, not its newest, blocked for `blocked`.
+    fn earlier_call_blocked(&mut self, blocked: Duration) {
+        self.tail_shortest = Some(self.tail_shortest.map_or(blocked, |d| d.min(blocked)));
     }
 
     /// What the attempt in progress (or the one just ended) did: tool calls started, completed, and the failed and identical tails.
@@ -355,6 +451,19 @@ impl DirectCollector {
             self.resolved.pop_front();
         }
         self.resolved.push_back(id.to_string());
+        // How long the call blocked, kept for the run of identical calls it belongs to. The newest call of the run is kept apart:
+        // when the engine's guard ends the prompt, that call is the one it refused.
+        if let Some(at) = self.open_calls.iter().position(|(open, _, _)| open == id)
+            && let Some((_, tail, started)) = self.open_calls.remove(at)
+            && tail == self.tail_no
+        {
+            let blocked = started.elapsed();
+            if self.tail_newest.as_deref() == Some(id) {
+                self.tail_newest_blocked = Some(blocked);
+            } else {
+                self.earlier_call_blocked(blocked);
+            }
+        }
         // The tool call may have changed the work tree; the copy task looks.
         if let Some(wake) = &self.tree_wake {
             wake.notify_one();
@@ -385,9 +494,23 @@ impl DirectCollector {
         );
         if self.last_call.as_ref() == Some(&key) {
             self.facts.identical_tail = self.facts.identical_tail.saturating_add(1);
+            // The call before this one is no longer the newest of the run: its time is judged with the others'.
+            if let Some(blocked) = self.tail_newest_blocked.take() {
+                self.earlier_call_blocked(blocked);
+            }
         } else {
             self.facts.identical_tail = 1;
             self.last_call = Some(key);
+            self.restart_tail();
+        }
+        let id = update.get("toolCallId").and_then(Value::as_str);
+        self.tail_newest = id.map(str::to_string);
+        if let Some(id) = id {
+            if self.open_calls.len() >= RESOLVED_REMEMBERED {
+                self.open_calls.pop_front();
+            }
+            self.open_calls
+                .push_back((id.to_string(), self.tail_no, Instant::now()));
         }
     }
 
@@ -418,6 +541,30 @@ impl DirectCollector {
                 hint,
                 attempt,
                 of,
+                backoff_s,
+                detail: &self.clean(detail),
+            }));
+        }
+    }
+
+    /// The engine's guard ended a prompt on a wait that was sent again and the stop is not counted:
+    /// the prompt is resumed after `backoff_s`.
+    pub fn record_wait_stop(&self, backoff_s: u64, detail: &str) {
+        self.rec.record(
+            EventType::TurnProgress,
+            json!({
+                "turn": DIRECT_TURN,
+                "kind": "engine-stop",
+                "hint": WAIT_STOP_HINT,
+                "backoffS": backoff_s,
+                "detail": self.clean(detail),
+            }),
+        );
+        if !self.hooks.is_empty() {
+            self.hooks.event(&Event::Ladder(LadderEvent::EngineStop {
+                hint: WAIT_STOP_HINT,
+                attempt: 0,
+                of: 0,
                 backoff_s,
                 detail: &self.clean(detail),
             }));
@@ -494,6 +641,8 @@ impl DirectCollector {
     /// The engine session the run is in (1 for the first, 2 after a fresh session); the outage notice and the card count it.
     pub fn set_session(&mut self, session: u32) {
         self.session = session.max(1);
+        // A new engine session is told again when its limit is not applied.
+        self.limit_miss_told = false;
     }
 
     pub fn tool_calls(&self) -> u64 {
@@ -598,6 +747,20 @@ impl AcpHandler for DirectCollector {
             }
             "tool_call_update" => {
                 self.recorder.on_tool_call_update(update);
+                if let Some(miss) = self.recorder.take_limit_miss()
+                    && !self.limit_miss_told
+                {
+                    self.limit_miss_told = true;
+                    self.record_notify(
+                        crate::engine::direct::LIMIT_REASON,
+                        None,
+                        &crate::engine::direct_words::limit_not_applied(
+                            &self.engine,
+                            miss.cut_ms / 1000,
+                            miss.limit_ms / 1000,
+                        ),
+                    );
+                }
                 if let (Some(id), Some(status)) = (
                     update.get("toolCallId").and_then(Value::as_str),
                     update.get("status").and_then(Value::as_str),

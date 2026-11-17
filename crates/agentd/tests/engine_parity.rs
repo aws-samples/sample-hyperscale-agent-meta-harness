@@ -341,6 +341,7 @@ fn credentials_binding(engine: &str) -> Result<(), String> {
         max_output_tokens: None,
         context_tokens: None,
         compaction: None,
+        command_limit_ms: None,
     };
     let cfg = emit_aws_config(&ctx).map_err(|e| e.to_string())?;
     let text = std::fs::read_to_string(&cfg).unwrap();
@@ -417,6 +418,7 @@ fn opencode_emitted(label: &str) -> (EmitContext, agentd::emit::Emitted) {
         max_output_tokens: Some(64_000),
         context_tokens: Some(1_000_000),
         compaction: None,
+        command_limit_ms: None,
     };
     let out = agentd::emit::emit_engine_for(&ctx, &profile("opencode").version).unwrap();
     (ctx, out)
@@ -785,18 +787,18 @@ fn egress_allowlist(engine: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The shell command time limit: one setting, `commands.timeout_seconds`, with one range and one default in the engine's key table; the
-/// user's value reaches the engine's own variable in milliseconds; with no setting the engine ends up with ten minutes (OpenCode is given them in
-/// every launch because its own default is two, Cline's fork has them as its own default); a launch without the variable is refused.
+/// The shell command time limit, the placement: one setting, `commands.timeout_seconds`, with one range and one default in the engine's key
+/// table; the user's value reaches the place the engine reads it (Cline: its own variable in milliseconds, only when the user set it, because the
+/// fork has ten minutes as its own default; OpenCode: the options of the harness's plugin in both layers of the session document, in every launch,
+/// because its own default is two minutes); a launch without the placement is refused by the read-back. That the engine honours it is the row
+/// "command time limit by effect".
 fn command_time_limit(engine: &str) -> Result<(), String> {
-    use agentd::engine::direct::launch_env;
-    use agentd::engine::user_settings::{UserSettings, check_command_limit};
+    use agentd::engine::direct::{launch_env, run_limit};
+    use agentd::engine::user_settings::{CommandSeconds, UserSettings, check_command_limit};
     use harness_protocol::direct::{EngineConfig, KeyKind, check_engine_config, keys_for};
-    let (var, placed_by_default) = match engine {
-        "cline" => ("CLINE_RUN_COMMANDS_TIMEOUT_MS", false),
-        "opencode" => ("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS", true),
-        other => return Err(format!("no variable named for {other}")),
-    };
+    if !["cline", "opencode"].contains(&engine) {
+        return Err(format!("no placement named for {engine}"));
+    }
     let row = keys_for(engine)
         .and_then(|rows| rows.iter().find(|r| r.path == "commands.timeout_seconds"))
         .ok_or("the key table has no commands.timeout_seconds")?;
@@ -816,20 +818,16 @@ fn command_time_limit(engine: &str) -> Result<(), String> {
     };
     check_engine_config(&member).map_err(|e| e.to_string())?;
     let set = UserSettings::from_checked(&member)?;
-    let env = launch_env(engine, &set);
-    if env.len() != 1 || env.get(var).map(String::as_str) != Some("900000") {
-        return Err(format!(
-            "a limit of 900 s is placed as {env:?}, not {var}=900000"
-        ));
-    }
-    let none = launch_env(engine, &UserSettings::default());
-    if placed_by_default {
-        if none.len() != 1 || none.get(var).map(String::as_str) != Some("600000") {
+    let none = UserSettings::default();
+    let gone = Path::new("/nonexistent-parity");
+    if engine == "cline" {
+        let var = "CLINE_RUN_COMMANDS_TIMEOUT_MS";
+        let env = launch_env(engine, &set);
+        if env.len() != 1 || env.get(var).map(String::as_str) != Some("900000") {
             return Err(format!(
-                "no setting is placed as {none:?}, not {var}=600000"
+                "a limit of 900 s is placed as {env:?}, not {var}=900000"
             ));
         }
-    } else {
         let patches = repo_file("engine/cline/patches");
         let patch = std::fs::read_dir(&patches)
             .map_err(|e| e.to_string())?
@@ -841,16 +839,70 @@ fn command_time_limit(engine: &str) -> Result<(), String> {
             })
             .ok_or("patch 0015 is missing")?;
         let text = std::fs::read_to_string(patch).map_err(|e| e.to_string())?;
-        if !none.is_empty() || !text.contains("a 600000 ms default") {
+        let unset = launch_env(engine, &none);
+        if !unset.is_empty() || !text.contains("a 600000 ms default") {
             return Err(format!(
-                "no setting adds {none:?}, or the fork's own default is not 600000 ms"
+                "no setting adds {unset:?}, or the fork's own default is not 600000 ms"
             ));
         }
+        check_command_limit(engine, gone, &env, &set)?;
+        if check_command_limit(engine, gone, &BTreeMap::new(), &set).is_ok() {
+            return Err("a launch without the variable is accepted".into());
+        }
+        return Ok(());
     }
-    if check_command_limit(engine, &BTreeMap::new(), &set).is_ok() {
-        return Err("a launch without the variable is accepted".into());
+    // OpenCode: no variable carries the limit; the plugin entry does, in both layers, for a setting and for the default.
+    if !launch_env(engine, &set).is_empty() || !launch_env(engine, &none).is_empty() {
+        return Err("a variable is set for the limit, and the pinned engine reads none".into());
+    }
+    for (settings, ms) in [(&set, 900_000u64), (&none, 600_000)] {
+        if run_limit(engine, settings).map(CommandSeconds::millis) != Some(ms) {
+            return Err(format!("the limit of the launch is not {ms} ms"));
+        }
+        let base = common::scratch("parity-limit");
+        let ctx = EmitContext {
+            engine: engine.into(),
+            model: MODEL.into(),
+            region: "us-west-2".into(),
+            data_dir: base.join("data"),
+            config_dir: base.join("config"),
+            agentd_exe: PathBuf::from("/opt/harness/bin/agentd"),
+            socket: base.join("creds.sock"),
+            max_output_tokens: None,
+            context_tokens: None,
+            compaction: None,
+            command_limit_ms: Some(ms),
+        };
+        let out = agentd::emit::emit_engine_for(&ctx, &profile(engine).version)
+            .map_err(|e| e.to_string())?;
+        let want = json!([{
+            "package": ctx.config_dir.with_file_name("harness-config").join("plugins/hamh-shell-limit").display().to_string(),
+            "options": {"timeoutMs": ms},
+        }]);
+        let inline: serde_json::Value =
+            serde_json::from_str(&out.env["OPENCODE_CONFIG_CONTENT"]).map_err(|e| e.to_string())?;
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&out.env["OPENCODE_CONFIG"]).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if inline["plugins"] != want || on_disk["plugins"] != want {
+            return Err(format!(
+                "the limit of {ms} ms is not in both layers of the session document"
+            ));
+        }
+        check_command_limit(engine, &ctx.config_dir, &out.env, settings)?;
+        if check_command_limit(engine, gone, &BTreeMap::new(), settings).is_ok() {
+            return Err("a launch without the placement is accepted".into());
+        }
     }
     Ok(())
+}
+
+/// The command time limit by effect: the engine's profile carries the gating row that starts the pinned engine with the harness's
+/// launch and judges what the engine does to a command. The row is run in every CI round of this repository; the tests of its scripts
+/// hold that, because the CI entry point is no part of a public copy of the tree and this file is.
+fn limit_proof(engine: &str) -> Result<(), String> {
+    gating_row(engine, "K16")
 }
 
 fn rows() -> Vec<Row> {
@@ -926,9 +978,17 @@ fn rows() -> Vec<Row> {
         },
         Row {
             name: "command time limit",
-            what: "the shell command time limit of the engine is one setting, placed in the launch, and is ten minutes when the user sets none",
+            what: "the shell command time limit of the engine is one setting, placed where the engine reads it, and is ten minutes when the user sets none",
             cline: A(command_time_limit),
             opencode: A(command_time_limit),
+        },
+        Row {
+            name: "command time limit by effect",
+            what: "the engine's profile gates it on a run of the pinned engine with the harness's launch: a command that names no limit runs past the engine's own default; on OpenCode a limit the model names is kept, on Cline none can be named",
+            cline: E(
+                "Cline's limit is the fork's own code (patch 0015): the model cannot name a limit, and probe FK1 runs the fork's binary with a command past the old limit and with a hung command at every fork build.",
+            ),
+            opencode: A(limit_proof),
         },
         Row {
             name: "task text that starts with a slash",
@@ -1213,8 +1273,37 @@ fn b800_parity_the_command_time_limit_is_a_row_of_the_table_asserted_for_both_en
             _ => panic!("the command time limit is not asserted for {engine}"),
         }
     }
-    // The assertion can fail: an engine it has no variable for, and a table without the key, are refused by name.
+    // The assertion can fail: an engine it has no placement for, and a table without the key, are refused by name.
     assert!(command_time_limit("pi").unwrap_err().contains("pi"));
+}
+
+#[test]
+fn b800_parity_the_limit_is_proved_by_effect_for_the_second_engine() {
+    let row = rows()
+        .into_iter()
+        .find(|r| r.name == "command time limit by effect")
+        .expect("the row \"command time limit by effect\" is missing");
+    // OpenCode: asserted through the gating row of its profile that runs the pinned engine.
+    match row.proof("opencode") {
+        Proof::Asserted(f) => f("opencode").unwrap_or_else(|e| panic!("opencode: {e}")),
+        _ => panic!("the limit by effect is not asserted for opencode"),
+    }
+    let k16 = profile("opencode")
+        .rows
+        .into_iter()
+        .find(|r| r.id == "K16-O")
+        .expect("row K16-O");
+    assert!(k16.local, "the row runs on a build host, with no AWS call");
+    // Cline: a named reason, not an assertion: its limit is the fork's own code.
+    match row.proof("cline") {
+        Proof::Exception(why) => {
+            assert!(why.contains("patch 0015") && why.contains("FK1"), "{why}")
+        }
+        _ => panic!("Cline's row must carry its reason"),
+    }
+    // The assertion can fail: a profile without the row is refused by name.
+    assert!(limit_proof("cline").unwrap_err().contains("K16"));
+    assert!(limit_proof("pi").unwrap_err().contains("pi"));
 }
 
 #[test]

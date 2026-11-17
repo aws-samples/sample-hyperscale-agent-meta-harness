@@ -137,7 +137,7 @@ fn opencode_runs_opencode_acp_with_its_kill_switches() {
         assert!(p.hidden_paths.contains(&h.to_string()), "{h}");
     }
     for id in [
-        "K0-O", "K1-O", "K3-O", "K5-O", "K6-O", "K7-O", "K10-O", "K13-O",
+        "K0-O", "K1-O", "K3-O", "K5-O", "K6-O", "K7-O", "K10-O", "K13-O", "K16-O",
     ] {
         row(&p, id);
     }

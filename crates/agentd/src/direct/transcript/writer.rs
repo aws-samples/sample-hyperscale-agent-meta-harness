@@ -575,6 +575,8 @@ fn summarize(s: &Shared) -> TranscriptSummary {
     TranscriptSummary {
         last_transcript_seq: up.last_ok.or(up.prior.map(|p| p.0)),
         entries,
+        // The tokens of the prompts that answered, as the pipeline added them up where it made the records.
+        answered_tokens: stats.answered_tokens.filter(|_| !stats.answered_overflow),
     }
 }
 

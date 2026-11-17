@@ -21,6 +21,7 @@ pub mod direct_flow;
 pub mod direct_goal;
 pub mod direct_input;
 pub mod direct_limits;
+pub mod direct_recovery;
 pub mod direct_request;
 pub mod direct_review;
 pub mod direct_skills;

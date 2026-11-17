@@ -169,6 +169,7 @@ pub fn session_started(
     engine: Engine,
     model_id: &str,
     context_tokens: u32,
+    reads_back: bool,
 ) -> Envelope {
     harness_event_in(
         run_id,
@@ -183,6 +184,8 @@ pub fn session_started(
             model_id: model_id.to_string(),
             role: Some(DIRECT_AGENT_ID.to_string()),
             context_tokens: Some(context_tokens),
+            // Only `true` is written: the service reads a stopped session's storage back for this run.
+            storage_read_back: reads_back.then_some(true),
         },
     )
 }
@@ -255,28 +258,30 @@ pub fn run_completed(
     detail: Option<String>,
     observations: Vec<harness_protocol::direct::DirectObservation>,
 ) -> Envelope {
+    let label = outcome.label_for_engine(engine, detail.as_deref());
     run_completed_as(
         run_id,
         planned_at_ms,
         GoalStatus::Complete,
-        engine,
         outcome,
+        label,
         detail,
         observations,
     )
 }
 
-/// Row 13 with the status the run ends in: `complete`, or `paused` and `stalled` for a run that stopped delivered. The label is the same.
+/// Row 13 with the status the run ends in: `complete`, or `paused` and `stalled` for a run that stopped delivered. The label is
+/// the caller's: `finalize` passes the label of the delivery plan, because the detail of this event may begin with a note that
+/// stands in front of the plan's own detail, and a label built from that text would lose the reason of a run the harness ended.
 pub fn run_completed_as(
     run_id: &str,
     planned_at_ms: u64,
     status: GoalStatus,
-    engine: Engine,
     outcome: DirectOutcome,
+    label: String,
     detail: Option<String>,
     observations: Vec<harness_protocol::direct::DirectObservation>,
 ) -> Envelope {
-    let label = outcome.label_for_engine(engine, detail.as_deref());
     harness_event(
         run_id,
         planned_at_ms + offset::RUN_COMPLETED,

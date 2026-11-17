@@ -277,6 +277,7 @@ async fn a_reported_done_run_with_a_pull_request_completes_with_the_label() {
             "StageRepo",
             "Init",
             "StartSession",
+            "HasResult",
             "NextSlice",
             "SliceChoice",
             "Plan",
@@ -375,13 +376,28 @@ async fn a_new_repository_is_created_before_it_is_staged() {
 }
 
 /// The states a run walks to the end of its third lost session in a row: each lost session is replayed (`NextSlice` decides, `SliceChoice` sends the run
-/// through `ResetSession` to `StartSession` again) until the third, and then the run goes on to `Plan`.
+/// through `ResetSession` to `StartSession` again) until the third, and then the run goes on to `Plan`. A session that left no
+/// result passes `HasResult` and `Recover` on its way to `NextSlice`.
 fn three_lost_sessions() -> Vec<&'static str> {
     let mut want = vec!["Name", "Prepare", "NeedsRepo", "StageRepo", "Init"];
     for _ in 0..2 {
-        want.extend(["StartSession", "NextSlice", "SliceChoice", "ResetSession"]);
+        want.extend([
+            "StartSession",
+            "HasResult",
+            "Recover",
+            "NextSlice",
+            "SliceChoice",
+            "ResetSession",
+        ]);
     }
-    want.extend(["StartSession", "NextSlice", "SliceChoice", "Plan"]);
+    want.extend([
+        "StartSession",
+        "HasResult",
+        "Recover",
+        "NextSlice",
+        "SliceChoice",
+        "Plan",
+    ]);
     want
 }
 

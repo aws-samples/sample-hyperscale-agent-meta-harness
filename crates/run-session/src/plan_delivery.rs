@@ -8,6 +8,13 @@
 //!
 //! The decision is written once to `runs/<run>/evidence/direct.json`, which the packager zips; a retry reads it back
 //! and keeps its `plannedAtMs`, so the ids of the delivery events never change.
+//!
+//! A run whose keep-the-work cancel is recorded (`cancelRequestedAt` of the Run item) and whose session left no result ends in the
+//! words of a run the harness ended: the outcome is `stopped_other`, the detail begins with [`HARNESS_STOP_PREFIX`] and says when the user
+//! stopped the run, and the label carries that sentence as its reason. No engine stop was observed, so the label claims none. The op reads
+//! the record itself, so a run whose `next-slice` failed ends the same way, and it stores the time with its decision
+//! (`cancelRequestedAt` of the evidence file): a retry and `finalize` read what was decided. A refusal of the run's final files and a
+//! session that left a summary keep their own outcome and detail.
 
 use crate::error::RunSessionError;
 use crate::events;
@@ -19,7 +26,7 @@ use crate::slices::{self, EndReason, LoopState};
 use crate::text::{self, Continues, OBJECTIVE_MAX_CHARS, PrFacts};
 use harness_protocol::api::internal::TurnCompleteRequest;
 use harness_protocol::api::v1::StartDirectRunRequest;
-use harness_protocol::common::Engine;
+use harness_protocol::common::{Engine, parse_utc_unix};
 use harness_protocol::direct::{
     DIRECT_AGENT_ID, DirectEvidence, DirectObservation, DirectOutcome, DirectRuleRef,
     DirectSummary, HARNESS_STOP_PREFIX, HeadSource, MAX_DIRECT_DETAIL_CHARS,
@@ -97,6 +104,11 @@ pub struct PlannedDelivery {
     /// the status, the reason and the resume mode of the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_reason: Option<EndReason>,
+    /// The sessions of the run that were invoked: `slice`, or one less when the last slice was planned and its start refused (a
+    /// cancel recorded between the decision to go on and the start). `finalize` counts these in the card. Absent in a plan made before
+    /// the member existed: `slice` then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<u32>,
 }
 
 fn first_slice() -> u32 {
@@ -137,6 +149,10 @@ pub struct EvidenceFile {
     /// delivered from that run's final files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integrity_refusal: Option<String>,
+    /// When the user's keep-the-work cancel was recorded, for a run that ended because of it: no session answered the cancel (the
+    /// detail then says so), or the slice loop ended with the reason `cancelled`. Absent for every other run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_requested_at: Option<String>,
 }
 
 /// `snapshot.json`.
@@ -184,6 +200,13 @@ pub(crate) fn utc_words(at: &str) -> Option<String> {
     ok.then(|| format!("{} {} UTC", &at[..10], &at[11..16]))
 }
 
+/// What the detail says when the delivered work is the copy the service read back from a stopped session's storage.
+pub const READ_BACK_SENTENCE: &str =
+    "The work is what the service read back from the session's storage after the session ended.";
+
+/// What the detail says of a session whose wait ended on the worker's notice that the session was being ended.
+pub const ENDED_FROM_OUTSIDE: &str = "the session was asked to end from outside";
+
 /// What the detail says when the delivered work is the last snapshot and not the session's final bundle.
 fn snapshot_sentence(at: Option<&str>) -> String {
     match at.and_then(utc_words) {
@@ -202,6 +225,81 @@ fn with_snapshot_sentence(detail: Option<&str>, sentence: &str) -> String {
         ),
         None => sentence.to_string(),
     }
+}
+
+/// How the detail of a run begins that the harness ended for a recorded cancel that no session answered. It begins with
+/// [`HARNESS_STOP_PREFIX`], which makes its first sentence the reason in the label.
+const CANCEL_DETAIL_HEAD: &str = "The harness ended the run: you stopped it";
+
+/// The detail of a run whose keep-the-work cancel was recorded at `at` and whose session left no result. The second sentence is
+/// worded from the records: `started_after` names the run's last invoked session and whether it was invoked after the cancel was
+/// recorded (the invoke was in flight, and that session never answered); `None` drops the sentence.
+fn cancel_detail(at: Option<&str>, started_after: Option<(u32, bool)>) -> String {
+    let first = match at.and_then(utc_words) {
+        Some(t) => format!("{CANCEL_DETAIL_HEAD} at {t} while its session was not answering."),
+        None => format!("{CANCEL_DETAIL_HEAD} while its session was not answering."),
+    };
+    match started_after {
+        Some((n, true)) => format!(
+            "{first} Session {n} was already starting when you stopped the run, and it did not answer."
+        ),
+        Some((_, false)) => format!("{first} No further session was started."),
+        None => first,
+    }
+}
+
+/// Whether `detail` is one [`cancel_detail`] made: how a decision that is read back says that no session answered the cancel.
+fn is_cancel_detail(detail: Option<&str>) -> bool {
+    detail.is_some_and(|d| d.starts_with(CANCEL_DETAIL_HEAD))
+}
+
+/// `detail` of a session that left a summary and got no successor because the cancel was recorded at `at`, with the sentence
+/// that says so after it.
+fn with_cancel_sentence(detail: Option<&str>, at: Option<&str>) -> String {
+    let sentence = match at.and_then(utc_words) {
+        Some(t) => format!("You stopped the run at {t}, so no further session was started."),
+        None => "You stopped the run, so no further session was started.".to_string(),
+    };
+    with_snapshot_sentence(detail, &sentence)
+}
+
+/// Why nothing is delivered for a run whose cancel no session answered and that had saved no copy.
+fn cancel_no_copy_reason(at: Option<&str>) -> String {
+    let what = "while its session was not answering; no copy of its work had been saved, so there is nothing to deliver";
+    match at.and_then(utc_words) {
+        Some(t) => format!("you stopped the run at {t} {what}"),
+        None => format!("you stopped the run {what}"),
+    }
+}
+
+/// The run's last invoked session, of `slice` or of the slice before it, and whether it was invoked after the cancel was recorded
+/// at `cancel_at`. Both times are compared as UTC seconds. `None` when no session was invoked or a time is missing or does not read.
+async fn started_after_cancel<S, T, M, R, B, P>(
+    deps: &Deps<S, T, M, R, B, P>,
+    run_id: &str,
+    slice: u32,
+    cancel_at: Option<&str>,
+) -> Res<Option<(u32, bool)>>
+where
+    S: Store,
+{
+    let Some(cancelled) = cancel_at.and_then(parse_utc_unix) else {
+        return Ok(None);
+    };
+    for n in [slice, slice.saturating_sub(1)] {
+        if n == 0 {
+            continue;
+        }
+        let invoked = deps
+            .store
+            .get_turn(run_id, DIRECT_AGENT_ID, n)
+            .await?
+            .and_then(|t| t.invoked_at);
+        if let Some(at) = invoked {
+            return Ok(parse_utc_unix(&at).map(|at| (n, at > cancelled)));
+        }
+    }
+    Ok(None)
 }
 
 /// The facts agentd recorded beside the label, when there is a summary.
@@ -230,6 +328,14 @@ fn outcome_without_summary(
             Some(format!("no heartbeat for {SESSION_HEARTBEAT_S} s")),
         )
     };
+    // The wait for the session ended on the worker's notice. That is no result of the session: it is a lost session, and the
+    // detail says what was known.
+    if session.ended().is_some() {
+        return (
+            DirectOutcome::StoppedSessionLost,
+            Some(ENDED_FROM_OUTSIDE.to_string()),
+        );
+    }
     match session.failure.as_ref().and_then(|f| f.error.as_deref()) {
         Some("States.HeartbeatTimeout") => lost(),
         Some("States.Timeout")
@@ -626,6 +732,7 @@ struct Decision {
     planned_at_ms: u64,
     source_key: Option<String>,
     integrity_refusal: Option<String>,
+    cancel_requested_at: Option<String>,
 }
 
 impl From<EvidenceFile> for Decision {
@@ -640,6 +747,7 @@ impl From<EvidenceFile> for Decision {
             planned_at_ms: e.planned_at_ms,
             source_key: e.source_key,
             integrity_refusal: e.integrity_refusal,
+            cancel_requested_at: e.cancel_requested_at,
         }
     }
 }
@@ -661,12 +769,14 @@ where
 {
     let bucket = deps.cfg.bucket.as_str();
     let slice = loop_state.slice.max(1);
-    let end_reason = loop_state.end_reason;
     let run = deps
         .store
         .get_run(run_id)
         .await?
         .ok_or_else(|| RunSessionError::Invalid(format!("run {run_id} has no Run item")))?;
+    // The record of the user's keep-the-work cancel. It is read here and not taken from the loop state, so a run whose `next-slice`
+    // failed (the machine then comes here with the loop state of a slice that was never decided) still ends as a cancelled run.
+    let cancel_at = run.cancel_requested_at.clone();
     let (request, _) = read_request(&deps.store, &deps.blobs, run_id).await?;
     // The engine of the run is the request's; a request that named none is a Cline run.
     let engine = Engine::or_default(request.engine);
@@ -709,6 +819,7 @@ where
         planned_at_ms,
         source_key,
         integrity_refusal,
+        cancel_requested_at,
     } = match existing {
         Some(d) => d,
         None => {
@@ -744,29 +855,54 @@ where
                     None
                 }
             };
-            // The head: the final bundle, else the last snapshot, else (a slice after the first that left nothing of its own) the work it
-            // restored from an earlier slice.
-            let (head_sha, head_source, snapshot_at, source_key) = if refusal.is_some() {
-                (None, None, None, None)
+            // The head: the final bundle, else the copy the service read back from this slice's storage when next-slice chose it,
+            // else the last snapshot, else (a slice after the first that left nothing of its own) the work it restored from an earlier
+            // slice: the read-back copy its plan named, or the bundle or snapshot. `read_back` says that the work is a copy read back.
+            let (head_sha, head_source, snapshot_at, source_key, read_back) = if refusal.is_some() {
+                (None, None, None, None, false)
             } else {
                 match found {
-                    Some(sha) => (Some(sha), Some(HeadSource::Final), None, None),
-                    None => match snapshot_head(&deps.blobs, run_id, slice).await? {
-                        Some(s) => (Some(s.head_sha), Some(HeadSource::Snapshot), s.at, None),
-                        None => match restored_head(&deps.blobs, run_id, slice).await? {
-                            Some(r) => {
-                                // When the restored work is the snapshot of an earlier session, its record names the time,
-                                // and the detail says it as for a snapshot of the last session.
-                                let at = slices::copy_time(
-                                    &deps.blobs,
-                                    run_id,
-                                    slice.saturating_sub(1),
-                                    &r,
-                                )
-                                .await?;
-                                (r.head, Some(HeadSource::Snapshot), at, Some(r.key))
-                            }
-                            None => (None, None, None, None),
+                    Some(sha) => (Some(sha), Some(HeadSource::Final), None, None, false),
+                    None => match read_back_head(&deps.blobs, run_id, slice).await? {
+                        Some(r) => (
+                            Some(r.head),
+                            Some(HeadSource::Snapshot),
+                            None,
+                            Some(r.key),
+                            true,
+                        ),
+                        None => match snapshot_head(&deps.blobs, run_id, slice).await? {
+                            Some(s) => (
+                                Some(s.head_sha),
+                                Some(HeadSource::Snapshot),
+                                s.at,
+                                None,
+                                false,
+                            ),
+                            None => match restored_read_back(&deps.blobs, run_id, slice).await? {
+                                Some(r) => (
+                                    Some(r.head),
+                                    Some(HeadSource::Snapshot),
+                                    None,
+                                    Some(r.key),
+                                    true,
+                                ),
+                                None => match restored_head(&deps.blobs, run_id, slice).await? {
+                                    Some(r) => {
+                                        // When the restored work is the snapshot of an earlier session, its record names the
+                                        // time, and the detail says it as for a snapshot of the last session.
+                                        let at = slices::copy_time(
+                                            &deps.blobs,
+                                            run_id,
+                                            slice.saturating_sub(1),
+                                            &r,
+                                        )
+                                        .await?;
+                                        (r.head, Some(HeadSource::Snapshot), at, Some(r.key), false)
+                                    }
+                                    None => (None, None, None, None, false),
+                                },
+                            },
                         },
                     },
                 }
@@ -784,18 +920,45 @@ where
             } else {
                 None
             };
+            let by_loop = loop_state.end_reason == Some(EndReason::Cancelled);
+            let mut unanswered_cancel = false;
             let (outcome, detail) = match (&summary, refusal) {
                 (_, Some(object)) => (DirectOutcome::StoppedOther, Some(unmatched_detail(object))),
+                // A session that left a summary and got no successor because the cancel was recorded keeps its outcome and
+                // detail, and one sentence says why no further session was started.
+                (Some(s), None) if by_loop => (
+                    s.outcome,
+                    Some(with_cancel_sentence(
+                        s.detail.as_deref(),
+                        cancel_at.as_deref(),
+                    )),
+                ),
                 (Some(s), None) => (s.outcome, s.detail.clone()),
                 // The session ended with a turn-complete, but a run that requires version records got none: its files are not the harness's.
                 (None, None) if turn.is_some() && trust == Trust::Unattested => (
                     DirectOutcome::StoppedOther,
                     Some(NOTE_NO_RECORD.to_string()),
                 ),
+                // The cancel is recorded and the session left no result. No engine stop was observed, so the outcome is the
+                // harness's own end of the run, and the detail says what the user did and what became of the sessions.
+                (None, None) if cancel_at.is_some() => {
+                    unanswered_cancel = true;
+                    let started_after =
+                        started_after_cancel(deps, run_id, slice, cancel_at.as_deref()).await?;
+                    (
+                        DirectOutcome::StoppedOther,
+                        Some(cancel_detail(cancel_at.as_deref(), started_after)),
+                    )
+                }
                 (None, None) => outcome_without_summary(session, turn.as_ref(), age_s),
             };
             // A delivery from a snapshot says so in the detail, which the card, `run.completed` and EVIDENCE.md carry.
             let detail = match head_source {
+                // A copy read back is not worded as a saved snapshot.
+                Some(HeadSource::Snapshot) if read_back => Some(with_snapshot_sentence(
+                    detail.as_deref(),
+                    READ_BACK_SENTENCE,
+                )),
                 Some(HeadSource::Snapshot) => Some(with_snapshot_sentence(
                     detail.as_deref(),
                     &snapshot_sentence(snapshot_at.as_deref()),
@@ -823,6 +986,8 @@ where
                     Trust::Legacy | Trust::Unattested => None,
                 },
                 integrity_refusal: refusal.map(str::to_string),
+                // The time of the cancel is part of the decision when the run ends because of it.
+                cancel_requested_at: cancel_at.clone().filter(|_| unanswered_cancel || by_loop),
             };
             let body = serde_json::to_vec_pretty(&file)
                 .map_err(|e| RunSessionError::Invalid(format!("evidence/direct.json: {e}")))?;
@@ -838,13 +1003,38 @@ where
         }
     };
 
+    // Why the loop ended, as `finalize` reads it. A decision (new or read back) that holds the time of a cancel ends the run for
+    // the cancel, whatever the loop state says: the state of a failed `next-slice` names no reason. The run's total time and a run that
+    // someone else ended keep their own reason.
+    let end_reason = match loop_state.end_reason {
+        Some(EndReason::TotalTime | EndReason::RunEnded) => loop_state.end_reason,
+        _ if cancel_requested_at.is_some() => Some(EndReason::Cancelled),
+        other => other,
+    };
+    // The sessions that were invoked. A slice whose start was refused never ran and is not counted.
+    let sessions = if deps
+        .store
+        .get_turn(run_id, DIRECT_AGENT_ID, slice)
+        .await?
+        .is_some_and(|t| t.invoked_at.is_some())
+    {
+        slice
+    } else {
+        slice.saturating_sub(1)
+    };
+
     let (Some(head_sha), Some(head_source)) = (head_sha, head_source) else {
         return Ok(PlannedDelivery {
+            sessions: Some(sessions),
             deliver: false,
             reason: Some(match &integrity_refusal {
                 Some(object) => format!(
                     "the {object} saved at the end of the run does not match the harness's record of it; nothing was delivered"
                 ),
+                // No session answered the cancel and no copy had been saved.
+                None if cancel_requested_at.is_some() && is_cancel_detail(detail.as_deref()) => {
+                    cancel_no_copy_reason(cancel_requested_at.as_deref())
+                }
                 None => "the session ended before any work was saved".into(),
             }),
             outcome,
@@ -1029,6 +1219,7 @@ where
     };
 
     Ok(PlannedDelivery {
+        sessions: Some(sessions),
         deliver: true,
         reason: None,
         outcome,
@@ -1146,6 +1337,55 @@ async fn source_base<B: Blobs>(blobs: &B, source: &str) -> Res<Option<String>> {
         .and_then(Value::as_str)
         .filter(|s| sha_ok(s))
         .map(str::to_string))
+}
+
+/// The copy the service read back from the storage of slice `slice`, when `next-slice` chose to go on from it (the end record
+/// says `used`) and the object is still in the bucket. A copy that is missing at delivery is no refusal: the delivery takes what it
+/// would have taken without it.
+pub(crate) async fn read_back_head<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    slice: u32,
+) -> Res<Option<slices::PlanRecovery>> {
+    let Some(decision) = slices::read_end(blobs, run_id, slice)
+        .await?
+        .and_then(|end| end.recovery)
+        .filter(|d| d.used)
+    else {
+        return Ok(None);
+    };
+    let (Some(key), Some(head)) = (decision.key, decision.head) else {
+        return Ok(None);
+    };
+    if !sha_ok(&head) || !blobs.exists(&key).await? {
+        return Ok(None);
+    }
+    Ok(Some(slices::PlanRecovery { key, head }))
+}
+
+/// The read-back copy slice `slice` restored, when that is all there is to deliver: its plan names one, the slice worked on it
+/// (it did not end as a start that failed on that copy) and the object is still there. Otherwise the delivery takes the saved copy the
+/// plan names ([`restored_head`]).
+pub(crate) async fn restored_read_back<B: Blobs>(
+    blobs: &B,
+    run_id: &str,
+    slice: u32,
+) -> Res<Option<slices::PlanRecovery>> {
+    let Some(named) = slices::read_plan(blobs, run_id, slice)
+        .await?
+        .and_then(|plan| plan.recovery)
+    else {
+        return Ok(None);
+    };
+    let never_worked = slices::read_end(blobs, run_id, slice)
+        .await?
+        .is_some_and(|end| {
+            end.lost_cause.as_deref() == Some(ham_core::lost_session::CAUSE_RESTORE_FAILED)
+        });
+    if never_worked || !sha_ok(&named.head) || !blobs.exists(&named.key).await? {
+        return Ok(None);
+    }
+    Ok(Some(named))
 }
 
 /// The work slice `slice` restored, when that is all there is to deliver: the bundle or snapshot of an earlier slice that its plan names, if it

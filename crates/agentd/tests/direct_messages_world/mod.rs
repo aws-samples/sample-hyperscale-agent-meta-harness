@@ -134,6 +134,56 @@ impl World {
         }
     }
 
+    /// A world on a named scenario of the fake engine, with the engine environment and the configuration every other test of that
+    /// scenario has.
+    pub async fn start_scenario(scenario: &'static str, settings: Settings, pids: &Path) -> Self {
+        let d = Direct::start(Opts {
+            scenario,
+            timeout_s: 120,
+            ..Opts::default()
+        })
+        .await;
+        let store = MemoryStore::new();
+        let seen: Arc<dyn MessageStore> = store.clone();
+        let hook = MessagesHook::new(seen, settings);
+        Self {
+            d,
+            store,
+            hook,
+            canceller: Arc::new(Canceller::default()),
+            pids: pids.to_path_buf(),
+            pump: Mutex::new(None),
+        }
+    }
+
+    /// A world around a session that is arranged already, with the module on `store`, the
+    /// control plane as the sessions before it left it.
+    pub fn around(d: Direct, store: Arc<MemoryStore>, settings: Settings, pids: &Path) -> Self {
+        let seen: Arc<dyn MessageStore> = store.clone();
+        let hook = MessagesHook::new(seen, settings);
+        Self {
+            d,
+            store,
+            hook,
+            canceller: Arc::new(Canceller::default()),
+            pids: pids.to_path_buf(),
+            pump: Mutex::new(None),
+        }
+    }
+
+    /// As [`World::run`], with these modules registered first: the message module stays last, its place in the product.
+    pub fn run_after(&self, first: Vec<Arc<dyn DirectHook>>) -> JoinHandle<InvocationResponse> {
+        let mut modules = first;
+        modules.push(self.canceller.clone() as Arc<dyn DirectHook>);
+        modules.push(self.hook.clone() as Arc<dyn DirectHook>);
+        let deps = Deps {
+            hooks: Some(Hooks::new(modules)),
+            ..Deps::default()
+        };
+        let (app, req) = (self.d.app.clone(), self.d.req.clone());
+        tokio::spawn(async move { agentd::direct::run_with(&app, req, &deps).await })
+    }
+
     pub fn run(&self) -> JoinHandle<InvocationResponse> {
         let deps = Deps {
             hooks: Some(Hooks::new(vec![

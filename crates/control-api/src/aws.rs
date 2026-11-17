@@ -2,8 +2,8 @@
 //! harness-protocol serde types plus `PK`/`SK` from their key builders.
 
 use crate::handler::{
-    Blobs, DeployLock, DeployedAs, Execution, ObjectError, ObjectInfo, ObjectPage, ObjectPrefix,
-    RunUsage, Store, StoreError, TagRead,
+    Blobs, CancelWrite, DeployLock, DeployedAs, Execution, ObjectError, ObjectInfo, ObjectPage,
+    ObjectPrefix, RunUsage, Store, StoreError, TagRead,
 };
 use crate::ids::rfc3339;
 use aws_sdk_dynamodb::error::DisplayErrorContext;
@@ -19,9 +19,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ham_core::run_index::{RunIndexItem, owner_pk, search_sk};
 use ham_core::runsearch::{SK_CEILING, SearchItem, chat_ceiling, chat_floor};
 use ham_core::runtag::dynamo::{Av, UpdateSpec};
-use ham_core::transcript::{TRANSCRIPT_FEATURE, TranscriptSummary};
+use ham_core::transcript::TRANSCRIPT_FEATURE;
 use harness_protocol::api::v1::DownloadUrlResponse;
-use harness_protocol::direct::{DIRECT_AGENT_ID, DIRECT_TURN};
+use harness_protocol::direct::DIRECT_AGENT_ID;
 use harness_protocol::envelope::Envelope;
 use harness_protocol::messages::{MessageView, MessagesPage, SendMessageRequest};
 use harness_protocol::store::{
@@ -721,14 +721,99 @@ impl Store for DynamoStore {
     }
 
     async fn run_usage(&self, run_id: &str) -> Result<RunUsage, StoreError> {
+        // The Turn items are read once, as raw attributes: the items themselves and what the stored conversation summary
+        // of each declares as the tokens of the prompts that answered, which `TurnItem` does not carry.
+        let agents = self.run_items(run_id, &keys::agent_sk("")).await?;
+        let raw: Vec<Value> = self.run_items(run_id, "TURN#").await?;
+        let answered = crate::cost::answered_of_turns(&raw);
+        let turns = raw
+            .into_iter()
+            .map(|turn| {
+                serde_json::from_value::<harness_protocol::store::TurnItem>(turn)
+                    .map_err(|e| StoreError::Unavailable(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(RunUsage {
-            agents: self.run_items(run_id, &keys::agent_sk("")).await?,
-            turns: self.run_items(run_id, "TURN#").await?,
+            agents,
+            turns,
+            answered,
         })
     }
 
     async fn list_agents(&self, run_id: &str) -> Result<Vec<AgentItem>, StoreError> {
         self.run_items(run_id, &keys::agent_sk("")).await
+    }
+
+    /// One transaction of an `Update` of the Run item (`SET cancelRequestedAt`, only while the status is `active` and the
+    /// attribute is absent) and a `Put` of the event. The update names one attribute, so it erases nothing another writer set and
+    /// leaves `version` alone. A cancelled transaction is read by its reasons: a conflict with another writer of the item is `Busy`;
+    /// a failed condition leads to a consistent read of the item, which says whether a cancel is recorded already, whether the run is
+    /// no longer active, or (active without the record: the read raced a writer) `Busy`.
+    async fn record_cancel(
+        &self,
+        run_id: &str,
+        at: &str,
+        event: &Envelope,
+    ) -> Result<CancelWrite, StoreError> {
+        let update = Update::builder()
+            .table_name(&self.table)
+            .key("PK", s(keys::run_pk(run_id)))
+            .key("SK", s(keys::META))
+            .update_expression("SET #cancel = :at")
+            .condition_expression("#status = :active AND attribute_not_exists(#cancel)")
+            .expression_attribute_names("#cancel", "cancelRequestedAt")
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":at", s(at))
+            .expression_attribute_values(":active", s("active"))
+            .build()
+            .map_err(unavailable)?;
+        let item = item_of(&EventItem {
+            envelope: event.clone(),
+        })?;
+        let sent = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(update).build())
+            .transact_items(self.conditional_put(item)?)
+            .send()
+            .await;
+        let reasons: Vec<String> = match sent {
+            Ok(_) => return Ok(CancelWrite::Recorded),
+            Err(e) => {
+                let cancelled = match e.as_service_error() {
+                    Some(TransactWriteItemsError::TransactionCanceledException(t)) => Some(
+                        t.cancellation_reasons()
+                            .iter()
+                            .filter_map(|r| r.code().map(str::to_string))
+                            .collect::<Vec<String>>(),
+                    ),
+                    _ => None,
+                };
+                match cancelled {
+                    Some(reasons) => reasons,
+                    None => return Err(unavailable(e)),
+                }
+            }
+        };
+        if reasons.iter().any(|c| c == "TransactionConflict") {
+            return Ok(CancelWrite::Busy);
+        }
+        if !reasons.iter().any(|c| c == "ConditionalCheckFailed") {
+            return Err(StoreError::Unavailable(format!(
+                "the cancel of run {run_id} was not recorded: {}",
+                reasons.join(", ")
+            )));
+        }
+        Ok(match self.get_run(run_id).await? {
+            Some(run) if run.status != harness_protocol::goal::GoalStatus::Active => {
+                CancelWrite::NotActive
+            }
+            Some(run) => match run.cancel_requested_at {
+                Some(at) => CancelWrite::Already(at),
+                None => CancelWrite::Busy,
+            },
+            None => CancelWrite::NotActive,
+        })
     }
 
     async fn update_run(
@@ -1245,13 +1330,15 @@ impl Store for DynamoStore {
         self.ledger().close(run_id, reason).await
     }
 
-    /// Reads the Agent item's `features` and the Turn item's `transcript` summary as raw attributes, so an image that predates them
-    /// reads as one that writes no transcript. Both reads are consistent.
+    /// Reads the Agent item's `features` and the `transcript` summaries of the direct agent's Turn items as raw attributes, so an image
+    /// that predates them reads as one that writes no transcript. Both reads are consistent. Every Turn item of the agent
+    /// is read with one Query (a later session stores its summary on its own Turn item), and
+    /// [`crate::transcript::facts_of_turns`] makes the facts from them.
     async fn transcript_facts(
         &self,
         run_id: &str,
     ) -> Result<crate::transcript::TranscriptFacts, StoreError> {
-        use crate::transcript::{SummaryFact, TranscriptFacts};
+        use crate::transcript::TranscriptFacts;
         let agent: Option<Value> = self
             .get(keys::run_pk(run_id), keys::agent_sk(DIRECT_AGENT_ID))
             .await?;
@@ -1263,28 +1350,10 @@ impl Store for DynamoStore {
         if !supported {
             return Ok(TranscriptFacts::default());
         }
-        let turn: Option<Value> = self
-            .get(
-                keys::run_pk(run_id),
-                keys::turn_sk(DIRECT_AGENT_ID, DIRECT_TURN),
-            )
+        let turns: Vec<Value> = self
+            .run_items(run_id, &format!("TURN#{DIRECT_AGENT_ID}#"))
             .await?;
-        let summary = match turn
-            .as_ref()
-            .and_then(|t| t.get("transcript"))
-            .filter(|v| !v.is_null())
-        {
-            None => SummaryFact::Absent,
-            Some(v) => match serde_json::from_value::<TranscriptSummary>(v.clone()) {
-                Ok(s) if s.validate() => SummaryFact::Valid(s),
-                _ => SummaryFact::Invalid,
-            },
-        };
-        Ok(TranscriptFacts {
-            supported: true,
-            purged: false,
-            summary,
-        })
+        Ok(crate::transcript::facts_of_turns(&turns))
     }
 
     /// The run index's items of one page of the owner's runs (one Query, newest first, eventually consistent; small items), each joined

@@ -127,7 +127,7 @@ describe("names and configuration", () => {
 describe("the five routes", () => {
   test("a research resource below internal holds search, fetch, repo, job and limits", () => {
     const parts = onInternal("AWS::ApiGateway::Resource").map((p) => p.PathPart);
-    expect(parts.sort()).toEqual(["internal", "creds", "heartbeat", "turn-complete", "events", "message-session", "message-claim", "message-seal", "message-outcome", "research", ...ROUTES].sort());
+    expect(parts.sort()).toEqual(["internal", "creds", "heartbeat", "turn-complete", "events", "message-session", "message-claim", "message-seal", "message-outcome", "message-history", "research", ...ROUTES].sort());
     const research = idOf("AWS::ApiGateway::Resource", (p) => p.PathPart === "research" && p.RestApiId?.Ref === internalApiId());
     const internal = idOf("AWS::ApiGateway::Resource", (p) => p.PathPart === "internal" && p.RestApiId?.Ref === internalApiId());
     expect(Object.values(resourcesOf(t, "AWS::ApiGateway::Resource")).map((r) => r.Properties as Props)
@@ -141,8 +141,9 @@ describe("the five routes", () => {
 
   test("each is a POST with IAM auth and a Lambda proxy integration with research-api, and none reaches worker-api", () => {
     const methods = onInternal("AWS::ApiGateway::Method");
-    // Four calls of agentd (creds, heartbeat, turn-complete, events), four of message control, and the five research routes.
-    expect(methods).toHaveLength(13);
+    // Four calls of agentd (creds, heartbeat, turn-complete, events), four of message control, the read of the delivered
+    // messages, and the five research routes.
+    expect(methods).toHaveLength(14);
     const researchFn = idOf("AWS::Lambda::Function", (p) => p.FunctionName === "hamh-direct-research-api");
     const workerFn = idOf("AWS::Lambda::Function", (p) => p.FunctionName === "hamh-direct-worker-api");
     const research = idOf("AWS::ApiGateway::Resource", (p) => p.PathPart === "research" && p.RestApiId?.Ref === internalApiId());
@@ -159,7 +160,7 @@ describe("the five routes", () => {
       expect(JSON.stringify(m.Integration.Uri)).not.toContain(workerFn);
     }
     const others = methods.filter((m) => resourceIds[m.ResourceId?.Ref] === undefined);
-    expect(others).toHaveLength(8);
+    expect(others).toHaveLength(9);
     for (const m of others) expect(JSON.stringify(m.Integration.Uri)).toContain(`"Fn::GetAtt":["${workerFn}","Arn"]`);
   });
 
@@ -181,8 +182,8 @@ describe("the five routes", () => {
   // The deployment's logical id carries a hash of the routes and the resource policy (control.ts `deploymentId`), so a new route makes
   // CloudFormation create a new deployment and repoint the stage. The policy holds a cross-stack token (the worker endpoint), whose
   // resolved form differs before and after synthesis, so the hash itself is not recomputed here (the v1 test does that for a token-free
-  // policy); this test pins that the deployment exists once, is named by a hash, and depends on every one of the thirteen methods.
-  test("the internal deployment is hashed, is created after all thirteen methods, and the stage points at it", () => {
+  // policy); this test pins that the deployment exists once, is named by a hash, and depends on every one of the fourteen methods.
+  test("the internal deployment is hashed, is created after all fourteen methods, and the stage points at it", () => {
     const deployments = Object.entries(resourcesOf(t, "AWS::ApiGateway::Deployment"))
       .filter(([, r]) => (r.Properties as Props).RestApiId?.Ref === internalApiId());
     expect(deployments).toHaveLength(1);
@@ -190,7 +191,7 @@ describe("the five routes", () => {
     expect(id).toMatch(/^InternalDeployment[0-9a-f]{8}$/);
     const methodIds = Object.entries(resourcesOf(t, "AWS::ApiGateway::Method"))
       .filter(([, r]) => (r.Properties as Props).RestApiId?.Ref === internalApiId()).map(([mid]) => mid);
-    expect(methodIds).toHaveLength(13);
+    expect(methodIds).toHaveLength(14);
     expect([...resource.DependsOn].sort()).toEqual([...methodIds].sort());
     expect(onInternal("AWS::ApiGateway::Stage")[0].DeploymentId).toEqual({ Ref: id });
   });

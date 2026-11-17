@@ -115,9 +115,13 @@ async fn b842_a_session_lost_with_a_copy_is_announced_with_the_session_that_star
         "the time the copy's record names"
     );
     assert_eq!(e.last_heartbeat_at.as_deref(), Some("2027-09-21T15:34:10Z"));
+    // The decision waits until 75 s after the service first knew the session was ending (here: this op's own stop), because a copy
+    // the stopped machine was uploading can still land; the clock is read again after the wait.
     assert_eq!(
         e.decided_at,
-        dispatcher::items::rfc3339((T0 + 700_000) / 1000)
+        dispatcher::items::rfc3339(
+            (T0 + 700_000) / 1000 + harness_protocol::direct::OLD_WORKER_TAIL_S
+        )
     );
     // The run goes on: the event changes no status.
     assert_eq!(mem.run().status, GoalStatus::Active);
