@@ -49,9 +49,12 @@ fn set_stores_the_full_id_for_an_alias_and_for_an_id() {
     for (value, want) in [
         ("opus", OPUS),
         ("Sonnet", SONNET),
-        (" astra ", "us.openai.gpt-6-astra"),
+        (" astra-6 ", "us.openai.gpt-6-astra"),
         (OPUS, OPUS),
-        ("sol", "us.openai.gpt-6.1-sol"),
+        ("sol-6.1", "us.openai.gpt-6.1-sol"),
+        // The two names that moved store the full id of the model they name now; a stored id never moves.
+        ("sol", "us.openai.gpt-6.2-sol"),
+        ("ASTRA", "us.openai.gpt-6.2-astra"),
     ] {
         for key in ["default_model", "defaultModel"] {
             let cfg = set_key(&Config::default(), key, value).unwrap();

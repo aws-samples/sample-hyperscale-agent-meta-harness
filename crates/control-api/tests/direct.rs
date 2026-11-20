@@ -355,15 +355,15 @@ async fn an_unknown_model_is_422_before_anything_is_written() {
         assert_eq!((status, code(&v)), (422, "unknown-model"), "{model:?}: {v}");
         assert!(
             message(&v).contains("us.anthropic.claude-opus-5-5"),
-            "lists the five: {v}"
+            "lists the models: {v}"
         );
         assert!(f.untouched(), "{model:?}");
     }
 }
 
 #[tokio::test]
-async fn the_six_models_are_all_accepted() {
-    // Claude Fable 5.2 is accepted with the request member `providerSharing: true`; the other five need nothing.
+async fn the_listed_models_are_all_accepted() {
+    // Claude Fable 5.2 is accepted with the request member `providerSharing: true`; the others need nothing.
     for m in builtin().models().iter().filter(|m| m.selectable()) {
         let f = Fake::direct();
         let mut b = body();
@@ -736,8 +736,8 @@ async fn the_model_list_names_the_default_and_marks_what_can_be_chosen() {
     assert_eq!(status, 200, "{v}");
     let list: ham_core::models::ModelList = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(list.default, MODEL, "the default is Claude Sonnet 5.5");
-    // The six Cline rows (Claude Fable 5.2 among them), then one row for each model with an OpenCode record (five).
-    assert_eq!(list.models.len(), 11);
+    // The eight Cline rows (Claude Fable 5.2 among them), then one row for each model with an OpenCode record (seven).
+    assert_eq!(list.models.len(), 15);
     // One row is marked default for each engine that has rows: the default engine's (no `engine` member) and OpenCode's.
     let marked: Vec<(&str, bool)> = list
         .models
@@ -755,7 +755,7 @@ async fn the_model_list_names_the_default_and_marks_what_can_be_chosen() {
     assert!(sonnet.selectable);
     // The list is exactly the built-in file: the Cline rows as ever, then the OpenCode rows.
     assert_eq!(list, ham_core::models::builtin_catalog().list());
-    assert_eq!(list.models[..6], builtin().list().models[..]);
+    assert_eq!(list.models[..8], builtin().list().models[..]);
     // JSON keys are camelCase for the TUI and scripts.
     assert_eq!(
         v["models"][0]["contextTokens"],

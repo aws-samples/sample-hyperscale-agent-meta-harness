@@ -1,4 +1,4 @@
-//! `engine/catalog/models.json`: the owner's six supported models, each with
+//! `engine/catalog/models.json`: the supported models, each with
 //! its one route, context window and smoke-record id. control-api refuses every other id, and a listed entry without a
 //! passing smoke record (invariant 6). The new line does not use harness-catalog.
 
@@ -9,14 +9,22 @@ use control_api::direct_models::{
 };
 use serde_json::{Value, json};
 
-const SIX: [(&str, &str, u32); 6] = [
+/// The Cline rows in file order. File order is the order of failover targets, so a new model is appended.
+const LISTED: [(&str, &str, u32); 8] = [
     ("us.anthropic.claude-opus-5-5", "converse", 1_000_000),
     ("global.anthropic.claude-sonnet-5-5", "converse", 1_000_000),
-    ("us.openai.gpt-6.1-sol", "converse", 1_000_000),
-    ("us.openai.gpt-6-astra", "converse", 1_050_000),
+    // The Cline rows of the two OpenAI models carry the input Bedrock accepts, not the maker's window.
+    ("us.openai.gpt-6.1-sol", "converse", 920_000),
+    ("us.openai.gpt-6-astra", "converse", 920_000),
     ("us.zai.glm-5.3", "converse", 1_048_576),
     ("global.anthropic.claude-fable-5-2", "converse", 1_000_000),
+    ("us.openai.gpt-6.2-sol", "converse", 920_000),
+    ("us.openai.gpt-6.2-astra", "converse", 920_000),
 ];
+
+/// GPT-6.2 Sol and GPT-6.2 Astra stand on the committed audits `engine/catalog/smoke-us.openai.gpt-6.2-sol.json` and
+/// `smoke-us.openai.gpt-6.2-astra.json`: the S6 pass of both Converse routes of each model, with the measured output and input limits.
+const AUDITED_6_2: [&str; 2] = ["us.openai.gpt-6.2-sol", "us.openai.gpt-6.2-astra"];
 
 /// Claude Fable 5.2 was smoked on 2026-11-10 in one test account and Region: the S6 pass of both of its Converse routes
 /// (`us.` and `global.`) is the committed audit `engine/catalog/smoke-global.anthropic.claude-fable-5-2.json`, which names no account, profile or host.
@@ -38,7 +46,7 @@ fn entry(id: &str) -> Value {
 }
 
 #[test]
-fn the_built_in_file_lists_exactly_the_owners_six_models_in_order() {
+fn the_built_in_file_lists_exactly_these_models_in_order() {
     let m = builtin();
     let got: Vec<(&str, &str, u32)> = m
         .models()
@@ -46,10 +54,10 @@ fn the_built_in_file_lists_exactly_the_owners_six_models_in_order() {
         .filter(|x| x.selectable())
         .map(|x| (x.id.as_str(), x.protocol.as_str(), x.context_tokens))
         .collect();
-    assert_eq!(got, SIX);
+    assert_eq!(got, LISTED);
     assert_eq!(
         builtin().models().len(),
-        6,
+        LISTED.len(),
         "every listed row is selectable now"
     );
 }
@@ -84,6 +92,49 @@ fn every_built_in_model_has_a_smoke_record_a_window_and_a_real_route() {
             assert_eq!(rec["regions"][x.region.as_str()], "pass");
             assert_eq!(rec["results"]["routes"][FABLE]["result"], "pass");
             assert_eq!(rec["results"]["routes"][FABLE_ALTERNATE]["result"], "pass");
+            // The record carries no account number, profile name or host.
+            assert!(
+                !text
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .windows(12)
+                    .any(|w| w.iter().all(char::is_ascii_digit)),
+                "a twelve-digit number in the audit record"
+            );
+            for key in ["account", "accountAlias", "profile", "host"] {
+                assert!(!text.contains(&format!("\"{key}\"")), "{key}");
+            }
+            assert!(!text.contains("arn:"));
+        } else if AUDITED_6_2.contains(&x.id.as_str()) {
+            let file = format!("smoke-{}.json", x.id);
+            assert_eq!(
+                id,
+                format!("s6:{}:us-east-1:converse+audit:2026-11-17/{file}", x.id)
+            );
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../engine/catalog")
+                .join(&file);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let rec: Value = serde_json::from_str(&text).unwrap();
+            let other = format!("global.{}", x.base_model_id);
+            assert_eq!(rec["profileId"], x.id.as_str());
+            assert_eq!(rec["alsoVerified"], json!([other]));
+            assert_eq!(rec["bedrockBaseModelId"], x.base_model_id.as_str());
+            assert_eq!(rec["protocol"], x.protocol.as_str());
+            assert_eq!(rec["limits"]["maxOutputTokens"], x.max_output_tokens);
+            // The window of the row is at or below the largest input Bedrock accepted: the engine reads it as the most input it may send.
+            let measured = rec["limits"]["contextTokensMeasured"].as_u64().unwrap();
+            assert!(
+                u64::from(x.context_tokens) <= measured,
+                "{}: the row says {} and Bedrock accepted {measured}",
+                x.id,
+                x.context_tokens
+            );
+            assert_eq!(rec["regions"][x.region.as_str()], "pass");
+            assert_eq!(rec["results"]["routes"][x.id.as_str()]["result"], "pass");
+            assert_eq!(rec["results"]["routes"][other.as_str()]["result"], "pass");
+            assert_eq!(x.alternate_routes.len(), 1, "{}", x.id);
+            assert_eq!(x.alternate_routes[0].id, other);
             // The record carries no account number, profile name or host.
             assert!(
                 !text
@@ -178,27 +229,27 @@ fn the_alternate_routes_equal_the_committed_models_json() {
         }
     }
     assert_eq!(
-        checked, 5,
-        "Opus, Sonnet, Sol, Astra and Fable each carry one other profile"
+        checked, 7,
+        "Opus, Sonnet, the four OpenAI models and Fable each carry one other profile"
     );
 }
 
 #[test]
 fn the_list_a_client_sees_does_not_show_the_alternate_routes() {
-    // `GET /v1/direct/models` lists the six a run may name; an alternate is a route the control plane adds, never a choice.
+    // `GET /v1/direct/models` lists the models a run may name; an alternate is a route the control plane adds, never a choice.
     let ids: Vec<String> = builtin().list().models.into_iter().map(|m| m.id).collect();
     assert_eq!(
         ids.len(),
-        6,
-        "the five that need nothing and Claude Fable 5.2, which needs provider data sharing"
+        8,
+        "the seven that need nothing and Claude Fable 5.2, which needs provider data sharing"
     );
     assert!(
         ids.iter()
             .all(|i| !i.starts_with("global.anthropic.claude-opus"))
     );
     let rows = models_response().rows;
-    // The six Cline rows and the five OpenCode rows; no row is a route the control plane adds.
-    assert_eq!(rows.len(), 11);
+    // The eight Cline rows and the seven OpenCode rows; no row is a route the control plane adds.
+    assert_eq!(rows.len(), 15);
     assert!(
         rows.iter()
             .all(|r| r.profile_id != "global.anthropic.claude-opus-5-5")
@@ -206,15 +257,15 @@ fn the_list_a_client_sees_does_not_show_the_alternate_routes() {
 }
 
 #[test]
-fn the_six_are_accepted() {
-    for (id, _, window) in SIX {
+fn the_listed_models_are_accepted() {
+    for (id, _, window) in LISTED {
         let m = builtin().check(id).unwrap();
         assert_eq!((m.id.as_str(), m.context_tokens), (id, window));
     }
 }
 
 #[test]
-fn an_unknown_model_is_refused_and_the_message_lists_the_six() {
+fn an_unknown_model_is_refused_and_the_message_lists_the_models() {
     for id in [
         "",
         " ",
@@ -237,7 +288,7 @@ fn an_unknown_model_is_refused_and_the_message_lists_the_six() {
         let e = builtin().check(id).unwrap_err();
         assert!(matches!(e, ModelRefusal::Unknown { .. }), "{id:?}: {e:?}");
         let text = e.to_string();
-        for (known, _, _) in SIX {
+        for (known, _, _) in LISTED {
             assert!(text.contains(known), "{id:?}: {text}");
         }
     }
@@ -317,6 +368,6 @@ fn the_models_endpoint_lists_only_the_models_that_can_be_selected() {
         ["us.example.smoked"]
     );
     assert_eq!(rows[0].smoke_record_id, "s6:x+K3:y");
-    // the endpoint over the built-in list shows the six Cline models and the five OpenCode rows
-    assert_eq!(models_response().rows.len(), 11);
+    // the endpoint over the built-in list shows the eight Cline models and the seven OpenCode rows
+    assert_eq!(models_response().rows.len(), 15);
 }

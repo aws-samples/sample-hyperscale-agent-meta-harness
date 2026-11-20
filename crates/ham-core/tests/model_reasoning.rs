@@ -61,8 +61,8 @@ fn row_mut<'a>(v: &'a mut Value, id: &str) -> &'a mut Value {
 
 #[test]
 fn every_listed_model_has_a_reasoning_row_whose_default_it_accepts() {
-    assert_eq!(builtin().models().len(), 6);
-    // Every row a run can use has one, Claude Fable 5.2 included.
+    assert_eq!(builtin().models().len(), 8);
+    // Every row a run can use has one, Claude Fable 5.2 and the two models included.
     for m in builtin().models().iter().filter(|m| m.selectable()) {
         let r = m
             .reasoning
@@ -96,6 +96,10 @@ fn the_defaults_are_the_levels_the_live_table_supports() {
         (ASTRA, "xhigh"),
         (GLM, "high"),
         (FABLE, "high"),
+        // GPT-6.2 Sol and GPT-6.2 Astra: each finished its three hard runs at xhigh, the longest silent stretch 70 s and 269 s
+        // against an idle limit of 362 s measured on the same engine build.
+        ("us.openai.gpt-6.2-sol", "xhigh"),
+        ("us.openai.gpt-6.2-astra", "xhigh"),
     ];
     for (id, level) in want {
         assert_eq!(
@@ -230,8 +234,10 @@ fn a_row_without_a_reasoning_object_still_parses_and_has_no_default() {
     let glm = m.find(GLM).unwrap();
     assert!(glm.reasoning.is_none());
     assert_eq!(glm.reasoning_default(), None);
+    // Read from a home whose list holds this route whatever the size of a vendor: a home whose vendor has four models keeps three places for
+    // other vendors, and this route is not among them.
     assert!(
-        m.failover_routes(SOL)
+        m.failover_routes(OPUS)
             .iter()
             .find(|r| r.id == GLM)
             .unwrap()

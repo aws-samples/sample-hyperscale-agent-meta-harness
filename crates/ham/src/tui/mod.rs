@@ -21,6 +21,7 @@ pub mod keys;
 pub mod markdown;
 pub mod mascot;
 pub mod matchrow;
+pub mod model_window;
 pub mod mouse;
 pub mod reader;
 mod rung;
@@ -596,7 +597,9 @@ async fn submit<P: ControlPlane>(
                 None => Msg::Started(Ok(response)),
             }
         }
-        Err(e) => Msg::Started(Err(cleared.failed(crate::api::start_failure(&e)))),
+        Err(e) => Msg::Started(Err(
+            cleared.failed(crate::api::start_failure_for(&e, &request))
+        )),
     }
 }
 

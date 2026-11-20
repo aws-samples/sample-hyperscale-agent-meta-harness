@@ -67,8 +67,8 @@ The Lambda behind the public `/v1` API starts direct runs from one prompt. It li
   `src/cost/prices.json` (its `version` member names the Region and the date of the table), USD per 1M tokens, 5-minute cache
   write) and `costUsd` (the lines' sum to the micro-dollar); `cost` is absent until a turn reports
   usage. A turn without usage or without its Agent item counts in `turnsWithoutUsage`; a model
-  without a price row counts at zero in `unpricedModels`. Four models are priced: Claude Opus 5.5, GPT-6.1 Sol,
-  GPT-6 Astra and Claude Sonnet 5.5 (its global profile); `tests/cost.rs` requires a row for every model of `models.json` except
+  without a price row counts at zero in `unpricedModels`. The priced models are Claude Opus 5.5, GPT-6.1 Sol,
+  GPT-6 Astra, Claude Fable 5.2 and Claude Sonnet 5.5 (its global profile); GLM 5.3, GPT-6.2 Sol and GPT-6.2 Astra have no row, because Bedrock has published no price for them, and a run on one of them shows its cost as unknown; `tests/cost.rs` requires a row for every model of `models.json` except
   the ones it lists as unpriced. `tokensUsed` is the larger of the root goal's counter (the old line's budget
   counter, which a direct run never moves) and `cost::total_tokens`, the four kinds of token (input, output, cache read, cache write)
   on every line of `cost`: the sum the delivery card prints and the chat view's header shows. It is 0 until a turn reports usage

@@ -21,8 +21,8 @@ async fn start(mem: &Mem) -> Value {
     handle(&mem.deps(), &op).await.unwrap()
 }
 
-/// The five models the maintainers supports, as a request names them.
-fn the_five() -> Vec<String> {
+/// The models the maintainers supports, as a request names them.
+fn the_listed() -> Vec<String> {
     builtin()
         .models()
         .iter()
@@ -49,7 +49,7 @@ fn base(id: &str) -> &str {
 
 #[tokio::test]
 async fn the_invocation_lists_the_failover_routes_of_the_chosen_model() {
-    for id in the_five() {
+    for id in the_listed() {
         let mem = Mem::default();
         mem.seed(repo_target(), "p", &id);
         start(&mem).await;
@@ -75,7 +75,7 @@ async fn the_invocation_lists_the_failover_routes_of_the_chosen_model() {
 
 #[tokio::test]
 async fn the_credentials_are_minted_with_a_policy_that_covers_every_route_and_fits_sts() {
-    for id in the_five() {
+    for id in the_listed() {
         let mem = Mem::default();
         mem.seed(repo_target(), "p", &id);
         start(&mem).await;
@@ -119,7 +119,7 @@ async fn no_route_outside_the_catalog_is_ever_granted() {
     for r in leased(&policy) {
         assert!(
             builtin().models().iter().any(|m| r.ends_with(base(&m.id))),
-            "{r} is not one of the five models"
+            "{r} is not one of the listed models"
         );
     }
 }

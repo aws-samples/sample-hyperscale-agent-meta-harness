@@ -16,6 +16,7 @@ use super::head::{self, Split};
 use super::input::{ChatBox, Kind};
 use super::keys::{self, Mode};
 use super::matchrow;
+use super::model_window::{model_box_title, model_window};
 use super::mouse::{BoxId, PaneId, Target, stable_id};
 use super::runs_table::{self, RunsColumns};
 use crate::pull::{Pulled, card, local_name};
@@ -560,15 +561,22 @@ impl App {
     fn draw_composer(&self, f: &mut Frame, v: &super::app::DirectView, split: &Split) {
         let c = &self.composer;
         let area = split.area;
+        // The Backend box exists only while the client holds two backends or more; with one it has no rows, so nothing moves.
+        let backends = self.backend_choices();
+        let backend_rows: u16 = if backends.len() >= 2 { 3 } else { 0 };
+        // The Model box is a window onto the list: on a short terminal it shows the rows around the picked one, so a longer list
+        // takes no row from the prompt box. The rule reads the height alone, so a message under the list does not move it.
+        let picked = v.rows.iter().position(|r| r.chosen).unwrap_or(0);
+        let (first_row, shown) = model_window(v.rows.len(), picked, area.height, backend_rows);
         // The question about provider data sharing takes the place of the model list, with the lines it needs at this width, and no message
-        // line below it.
+        // line below it. It keeps at least the rows the window had, so the boxes above it do not move when it appears.
         let rows = match &c.sharing {
             Some(ask) => {
                 let width = usize::from(area.width.saturating_sub(2).max(1));
                 let lines = (ask.question.chars().count() * 11 / 10).div_ceil(width) + 1;
-                v.rows.len().max(1).max(lines).min(40) as u16
+                shown.max(1).max(lines).min(40) as u16
             }
-            None => v.rows.len().max(1) as u16,
+            None => shown.max(1) as u16,
         };
         let msg = c
             .error
@@ -584,9 +592,6 @@ impl App {
             let chars = e.chars().count() + "error: ".len();
             (chars.div_ceil(usize::from(area.width.max(1))) as u16).clamp(1, max_msg)
         });
-        // The Backend box exists only while the client holds two backends or more; with one it has no rows, so nothing moves.
-        let backends = self.backend_choices();
-        let backend_rows: u16 = if backends.len() >= 2 { 3 } else { 0 };
         let [
             title,
             prompt,
@@ -714,9 +719,20 @@ impl App {
         }
         // Wide terminals show the Bedrock id beside the alias; narrow ones keep the alias, the name and the window.
         let wide = area.width >= 110;
+        // The name column is as wide as the longest name of the list and never under the width it always had, as in the listing of
+        // `ham models`: a list of short names draws as it always did, and a longer name keeps the rows in line.
+        let name_width = v
+            .rows
+            .iter()
+            .map(|r| r.alias.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(ham_core::models::ALIAS_COLUMN_MIN);
         let lines: Vec<Line> = v
             .rows
             .iter()
+            .skip(first_row)
+            .take(shown)
             .map(|r| {
                 let cursor = if focus(Field::Model) && r.chosen {
                     "›"
@@ -730,7 +746,7 @@ impl App {
                     String::new()
                 };
                 let text = format!(
-                    "{cursor}{dot} {:<7} {id}{:<18} ctx {:>9}  {}",
+                    "{cursor}{dot} {:<name_width$} {id}{:<18} ctx {:>9}  {}",
                     s(&r.alias),
                     s(&r.name),
                     group_digits(u64::from(r.window)),
@@ -759,7 +775,7 @@ impl App {
             ),
             None => f.render_widget(
                 Paragraph::new(lines).block(block(
-                    "Model (↑↓ picks for this run, d saves it as your default)",
+                    &model_box_title(first_row, shown, v.rows.len()),
                     focus(Field::Model),
                 )),
                 models,
@@ -818,8 +834,15 @@ impl App {
                 );
             }
             let first = models.y.saturating_add(1);
-            for (i, r) in v.rows.iter().enumerate() {
-                let y = first.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+            for (line, (i, r)) in v
+                .rows
+                .iter()
+                .enumerate()
+                .skip(first_row)
+                .take(shown)
+                .enumerate()
+            {
+                let y = first.saturating_add(u16::try_from(line).unwrap_or(u16::MAX));
                 if y >= models.bottom().saturating_sub(1) {
                     break;
                 }

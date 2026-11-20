@@ -9,7 +9,7 @@ invariant 3).
 ## Ownership
 
 Owned by the root contract. `cline/` owns the Cline fork's lock, patches, rebase script and fork documentation. `profiles/` holds one
-profile per engine (`cline`, `fake-acp`, `opencode`). `catalog/` holds the static list of the five supported models. `policy/` holds the
+profile per engine (`cline`, `fake-acp`, `opencode`). `catalog/` holds the static list of the supported models. `policy/` holds the
 pinned worker image key. `rules/deps/` holds recorded dependency data. `PARITY.md` is the parity table of the engines. `sources/` holds the source declarations (one file per engine or plugin). `plugins/` holds the observer plugin the
 worker image ships, the lock of both plugin folders and the helpers that check them; the goal plugin folder itself is fetched at build. The build entry points live in `scripts/` and
 read the locks and the source files from here.
@@ -56,4 +56,4 @@ scripts/build-cline-fork.sh --verify-only   # needs CLINE_FORK_WORK_DIR; see eng
 | `policy/AGENTS.md` | `image-key.pin`, the pinned worker image key that `scripts/image-key-guard.sh` checks |
 | `sources/AGENTS.md` | The pins of every third-party engine and plugin the product fetches (`cline`, `goal-plugin`, `esbuild`, `opencode`): kind, URL, commit or SHA-256, build recipe id, SPDX licence; the authored recipe files; the rules for moving a pin (`scripts/engine-fetch update`) |
 | `plugins/AGENTS.md` | The goal plugin's lock and rules (the folder is fetched and bundled at image build), the harness-rounds observer plugin, the lock of both and the helpers that check them |
-| `catalog/AGENTS.md` | `models.json`, the static list of the five supported models with their smoke records, and the GLM 5.3 smoke record |
+| `catalog/AGENTS.md` | `models.json`, the static list of the supported models with their smoke records, and the smoke record files |

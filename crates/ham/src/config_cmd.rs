@@ -838,6 +838,52 @@ pub fn default_drift(server: &ModelList) -> Option<String> {
     })
 }
 
+/// A note for `ham models --server` when the stage holds another short name for a model than this build. The list is compiled
+/// into each binary and a short name is resolved in the client only, so after a release renames a row a client and a stage of different
+/// releases show different names for one model id: the stage's table then holds a name that `--model` here does not take, or takes for
+/// another model. The table keeps the stage's rows as they are; this is the one line under it.
+///
+/// A row is compared only with this build's row of the same id for the same engine; a model one side does not list has no second name to
+/// compare. A model both engines list is named once. The stage's name is text of another machine and is made safe for the terminal.
+pub fn name_drift(server: &ModelList) -> Option<String> {
+    let catalog = ham_core::models::builtin_catalog();
+    let mut named: Vec<&str> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
+    for row in &server.models {
+        let engine = row
+            .engine
+            .unwrap_or(harness_protocol::common::Engine::DEFAULT);
+        let Some(own) = catalog
+            .for_engine(engine)
+            .and_then(|list| list.models().iter().find(|m| m.id == row.id))
+        else {
+            continue;
+        };
+        if own.alias == row.alias || named.contains(&own.id.as_str()) {
+            continue;
+        }
+        named.push(own.id.as_str());
+        let there = match &row.alias {
+            Some(a) => format!("is {} on the stage", sanitize_line(a)),
+            None => "has no short name on the stage".to_string(),
+        };
+        let here = match &own.alias {
+            Some(a) => format!("is {a} in this ham"),
+            None => "has no short name in this ham".to_string(),
+        };
+        parts.push(format!("{} {there} and {here}", own.id));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "note: the stage's short names differ from this ham's for {} model{}: {}. --model, HAMH_MODEL and default_model take this ham's names (ham models lists them); a full id means the same model on both.",
+        parts.len(),
+        if parts.len() == 1 { "" } else { "s" },
+        parts.join("; ")
+    ))
+}
+
 /// `ham models`: the compiled-in list.
 pub fn run_models(env: Env<'_>, json_out: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let (cfg, _) = match load(env) {

@@ -66,7 +66,7 @@ fn a_set_of_the_value_a_key_already_has_plans_no_text() {
 #[test]
 fn a_fresh_machine_gets_exactly_the_one_line_it_got_before() {
     assert_eq!(
-        set_text("", "default_model", "astra"),
+        set_text("", "default_model", "astra-6"),
         format!("defaultModel = \"{ASTRA}\"\n")
     );
     // The connection keys land in struct order whatever order they are set in.
@@ -127,7 +127,7 @@ fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
         ("aws_profile", "other"),
         ("default_repo", "cc:my-service"),
         ("download_dir", "/downloads"),
-        ("default_model", "sol"),
+        ("default_model", "sol-6.1"),
         ("input_wait_minutes", "7"),
         ("mouse", "auto"),
         ("report_tests", "off"),

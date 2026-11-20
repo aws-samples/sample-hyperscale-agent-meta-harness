@@ -1,4 +1,4 @@
-//! The static model list of a direct run: the maintainers' five
+//! The static model list of a direct run: the owner's
 //! supported models, each with the one route it runs on, its context window and its smoke-record id, and the one row marked
 //! default. The new line does not read the DynamoDB `CATALOG` partition or use
 //! `harness-catalog`: `POST /v1/direct/runs` accepts a model if and only if it is listed here with a passing smoke record

@@ -587,7 +587,7 @@ async fn doctor_prints_one_line_per_check_and_lists_the_allowlist() {
     );
     // The age of the newest smoke record is shown and is never a warning without `--catalog-max-age`, however old the compiled-in list is.
     assert!(
-        lines[3].starts_with("PASS catalog 11 selectable rows, newest smoke "),
+        lines[3].starts_with("PASS catalog 15 selectable rows, newest smoke "),
         "{out}"
     );
     assert_eq!(

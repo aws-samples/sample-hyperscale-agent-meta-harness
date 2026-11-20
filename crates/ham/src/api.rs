@@ -308,6 +308,77 @@ pub fn start_failure(e: &ApiError) -> String {
     }
 }
 
+/// The two ways out that end the sentence of [`older_backend_line`]. A sentence that asks for an update names the product's own update command,
+/// and the list to pick from is the stage's, which `ham models --server` prints.
+const OLDER_BACKEND_WAYS_OUT: &str = "Update the stage (run ham update), or pick a model it lists (ham models --server shows the stage's list).";
+
+/// The sentence `ham` adds when a stage refuses a start because its model list lacks a model this client lists. The list is compiled
+/// into each binary, so a client that is newer than the stage can offer a model the stage does not know yet; the stage answers 422
+/// `unknown-model` (or `model-not-smoked`) with its own list of ids, which does not say why a model that `ham models` shows is refused.
+///
+/// `e` is the failure of the start and `req` the request that was sent. `client` is this client's version and `backend` the version the
+/// refusing answer carried in its version header, `None` when it carried none. The sentence is made only when all of this holds:
+/// the answer is 422 with one of the two codes; this client's own list holds the request's model as selectable for the request's engine
+/// (an id the client does not offer gets the service's words alone); and the backend is older than the client, or sent no version, which
+/// only a backend that predates the version header does. A backend of the client's version or a newer one has the client's rows or later
+/// ones, so updating the stage would not help and nothing is added; a value that is no version (the word a client with several backends
+/// reads while their versions differ) names no backend, so nothing is added either. Nothing is substituted and nothing is sent again.
+///
+/// The model's name comes from this client's list and the version passed [`crate::version::compare`], which takes digits and one dot only,
+/// so no text of the answer reaches the sentence.
+pub fn older_backend_line(
+    e: &ApiError,
+    req: &StartDirectRunRequest,
+    client: &str,
+    backend: Option<&str>,
+) -> Option<String> {
+    let ApiError::Http { status: 422, error } = e else {
+        return None;
+    };
+    if !matches!(error.code.as_str(), "unknown-model" | "model-not-smoked") {
+        return None;
+    }
+    let engine = req
+        .engine
+        .unwrap_or(harness_protocol::common::Engine::DEFAULT);
+    let model = ham_core::models::builtin_catalog()
+        .check(engine, &req.model)
+        .ok()?;
+    let runs = match backend {
+        None => "an older backend".to_string(),
+        Some(v) if crate::version::compare(v, client) == Some(std::cmp::Ordering::Less) => {
+            format!("backend v{v}")
+        }
+        Some(_) => return None,
+    };
+    Some(format!(
+        "This stage runs {runs}, which does not list {}. {OLDER_BACKEND_WAYS_OUT}",
+        model.name
+    ))
+}
+
+/// [`older_backend_line`] for the answer this client just got: its own version, and the backend's version as the refusing answer's header
+/// reported it (the transport hands every answer of the control plane to [`crate::version`], errors included).
+pub fn older_backend_note(e: &ApiError, req: &StartDirectRunRequest) -> Option<String> {
+    older_backend_line(
+        e,
+        req,
+        crate::version::CLIENT,
+        crate::version::backend().as_deref(),
+    )
+}
+
+/// [`start_failure`] for a start whose request is at hand, as one message for a screen (the New run screen, a follow-up). When
+/// [`older_backend_note`] has a sentence it comes first and the service's words follow: the message area of the New run screen holds two
+/// or three lines, and the service's list of ids alone fills them.
+pub fn start_failure_for(e: &ApiError, req: &StartDirectRunRequest) -> String {
+    let words = start_failure(e);
+    match older_backend_note(e, req) {
+        Some(line) => format!("{line} {words}"),
+        None => words,
+    }
+}
+
 /// What the screen says when the service has no tag edit route (an older backend answers 404): the edits cannot be made, nothing is broken.
 pub const TAGS_UNSUPPORTED: &str = "this service cannot edit tags yet";
 

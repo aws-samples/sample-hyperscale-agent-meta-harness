@@ -46,8 +46,9 @@ fn builtin_with_fable_smoked() -> Models {
 #[test]
 fn b803_the_catalog_lists_claude_fable_5_2_after_the_five() {
     let m = builtin();
-    assert_eq!(m.models().len(), 6);
-    let last = m.models().last().unwrap();
+    assert_eq!(m.models().len(), 8);
+    // Claude Fable 5.2 came after the five and is the sixth row; the two models were appended after it.
+    let last = &m.models()[5];
     assert_eq!(last.id, FABLE);
     assert_eq!(last.name, "Claude Fable 5.2");
     assert_eq!(last.vendor, "anthropic");
@@ -107,8 +108,8 @@ fn b803_the_default_is_still_sonnet_and_the_other_rows_are_unchanged() {
     assert_eq!(m.default_model().unwrap().id, SONNET);
     assert_eq!(
         m.models().iter().filter(|x| x.selectable()).count(),
-        6,
-        "the five that were selectable still are, and Claude Fable 5.2 joins them"
+        8,
+        "the five that were selectable still are, Claude Fable 5.2 joined them, and the two models added after it follow"
     );
 }
 

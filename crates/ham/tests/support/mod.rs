@@ -1414,6 +1414,12 @@ pub struct Faults {
     /// `POST /v1/direct/runs` with a `snapshotEveryS` member: answer this many times as a stage of a release before that member does, whose strict
     /// request type refuses the body and names the member (400 `bad-request`, serde's `unknown field`).
     pub predates_copy_interval: AtomicU32,
+    /// `POST /v1/direct/runs` for this model id: answer as a stage of an older release whose model list lacks it (422 `unknown-model`, in the
+    /// words the service uses for a model it does not list), every time. `None` answers as the stage does.
+    pub lacks_model: Mutex<Option<String>>,
+    /// `GET /v1/direct/models`: answer with this list (the JSON of a `ModelList`) instead of this build's, as a stage of another release
+    /// does. `None` answers as the stage does.
+    pub models_answer: Mutex<Option<String>>,
     /// Events reads: answer 503 this many times.
     pub events_503: AtomicU32,
     /// Events reads: wait this many milliseconds before the answer (0 = answer at once).
@@ -1580,6 +1586,34 @@ impl Fake {
                 "unavailable",
                 "the harness is unavailable; retry with the same Idempotency-Key",
             );
+        }
+        if method == Method::GET && v1_path == "/v1/direct/models" {
+            let served = self.faults.models_answer.lock().unwrap().clone();
+            if let Some(list) = served {
+                return (StatusCode::OK, [("content-type", "application/json")], list)
+                    .into_response();
+            }
+        }
+        if method == Method::POST && v1_path == "/v1/direct/runs" {
+            let lacking = self.faults.lacks_model.lock().unwrap().clone();
+            let asked = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|b| b["model"].as_str().map(str::to_string));
+            if let Some(id) = lacking
+                && asked.as_deref() == Some(id.as_str())
+            {
+                // The list of a stage that lacks the model: every other selectable model of this build's list. The list and the refusal are
+                // reached through control-api's own names for them, so that this module needs no `ham-core` (it is also built into
+                // `ham-admin`'s tests, which do not depend on it).
+                let known: Vec<String> = control_api::direct_models::builtin()
+                    .models()
+                    .iter()
+                    .filter(|m| m.selectable() && m.id != id)
+                    .map(|m| m.id.clone())
+                    .collect();
+                let refusal = control_api::direct_models::ModelRefusal::Unknown { id, known };
+                return api_error(422, refusal.code(), &refusal.to_string());
+            }
         }
         if method == Method::POST
             && v1_path == "/v1/direct/runs"

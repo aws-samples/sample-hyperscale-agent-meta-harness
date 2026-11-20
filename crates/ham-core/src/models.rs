@@ -1,7 +1,7 @@
 //! The model list of a direct run and the choice of the model a run uses.
 //!
-//! The file lists the five supported models, each with the one route it runs on, its context window, its smoke-record
-//! id, a short `alias` (`opus`, `sonnet`, `sol`, `astra`, `glm`) and, on exactly one row, `"default": true`. A model is
+//! The file lists the supported models, each with the one route it runs on, its context window, its smoke-record
+//! id, a short `alias` (`opus`, `sonnet`, `glm`; [`ALIAS_RULE`]) and, on exactly one row, `"default": true`. A model is
 //! selectable only with a passing smoke record (invariant 6). `ham`, the TUI and control-api all read this one parse:
 //! control-api refuses a request whose `model` is not a selectable `id`; `ham` resolves what the user typed.
 //!
@@ -55,6 +55,35 @@ pub struct ModelReasoning {
     pub smoked_at: Option<String>,
 }
 
+/// The most routes of the home model's own vendor that a failover list holds before the routes of other vendors, not counting the home model's
+/// other profile. A list holds at most [`MAX_DIRECT_ROUTES`] routes. Without this bound a vendor with four models filled the list and left
+/// one route of another vendor, which is thin cover when the vendor itself fails. Four is the most any list held before the bound existed (the
+/// model that needs provider data sharing has two other models of its vendor, each with two profiles), so the bound changed no earlier list.
+pub const SAME_VENDOR_ROUTES_MAX: usize = 4;
+
+/// Pairs of models between which no conversation was moved when the rows of GPT-6.2 Sol and GPT-6.2 Astra were added. The switch
+/// record of those rows moved a conversation along every pair with a new model, through the pinned default engine. For these four pairs it could
+/// not, in either direction: when the record was made GLM 5.3 answered no call (every call was throttled) and Claude Fable 5.2 answered
+/// none (the accounts of the record lacked the data retention mode it needs). A failover list never holds a route of one model of a pair
+/// for a run on the other, in every engine's list. A pair names the two rows by their ids and covers their other profiles. A pair
+/// leaves this list when its switch has been measured in both directions and passed.
+const UNMEASURED_SWITCH_PAIRS: [(&str, &str); 4] = [
+    ("us.zai.glm-5.3", "us.openai.gpt-6.2-sol"),
+    ("us.zai.glm-5.3", "us.openai.gpt-6.2-astra"),
+    ("global.anthropic.claude-fable-5-2", "us.openai.gpt-6.2-sol"),
+    (
+        "global.anthropic.claude-fable-5-2",
+        "us.openai.gpt-6.2-astra",
+    ),
+];
+
+/// Whether the switch between the rows `a` and `b` is one of [`UNMEASURED_SWITCH_PAIRS`], in either direction.
+fn switch_unmeasured(a: &str, b: &str) -> bool {
+    UNMEASURED_SWITCH_PAIRS
+        .iter()
+        .any(|&(x, y)| (x == a && y == b) || (x == b && y == a))
+}
+
 /// Prefixes of cross-Region inference profile ids (`dispatcher::policy`, `agentd::direct::failover`).
 const GEO_PREFIXES: [&str; 8] = ["us", "us-gov", "eu", "apac", "jp", "au", "ca", "global"];
 
@@ -83,7 +112,7 @@ pub struct Model {
     pub id: String,
     pub name: String,
     pub vendor: String,
-    /// The short name the flag, `HAMH_MODEL` and the config file accept: lower-case letters, digits and `-`.
+    /// The short name the flag, `HAMH_MODEL` and the config file accept: lower-case letters, digits, `-` and `.` ([`ALIAS_RULE`]).
     #[serde(default)]
     pub alias: Option<String>,
     /// The built-in default of the list (exactly one row of `models.json`).
@@ -255,11 +284,17 @@ impl ModelRefusal {
     }
 }
 
+/// What a short name of a model looks like, in the words of the refusal. A dot lets a name carry a version (`sol-6.1`).
+pub const ALIAS_RULE: &str = "1 to 24 characters of lower-case letters, digits, '-' and '.', starting and ending with a letter or a digit, with no two dots in a row";
+
 fn valid_alias(a: &str) -> bool {
-    (1..=24).contains(&a.len())
-        && a.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !a.starts_with('-')
+    let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let bytes = a.as_bytes();
+    (1..=24).contains(&bytes.len())
+        && bytes.iter().all(|b| edge(b) || matches!(b, b'-' | b'.'))
+        && bytes.first().is_some_and(edge)
+        && bytes.last().is_some_and(edge)
+        && !a.contains("..")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,16 +408,18 @@ impl Models {
         for m in &doc.models {
             if let Some(a) = m.alias.as_deref() {
                 if !valid_alias(a) {
-                    return invalid(format!(
-                        "model {}: alias {a:?} must be 1-24 lower-case letters, digits or '-', not starting with '-'",
-                        m.id
-                    ));
+                    return invalid(format!("model {}: alias {a:?} must be {ALIAS_RULE}", m.id));
                 }
                 if aliases.contains(&a) {
                     return invalid(format!("alias {a:?} is used by two models"));
                 }
-                if seen.contains(&a) {
-                    return invalid(format!("alias {a:?} of model {} is also a model id", m.id));
+                // `find` reads an id before a name, so a name that is an id could never be typed; and an alternate route is no model a
+                // run may name, so a name must not look like one.
+                if route_ids.contains(&a) {
+                    return invalid(format!(
+                        "alias {a:?} of model {} is also a model id or an alternate route id",
+                        m.id
+                    ));
                 }
                 aliases.push(a);
             }
@@ -527,10 +564,18 @@ impl Models {
         }
     }
 
-    /// The routes agentd may switch to when the run's own route fails: the other profiles of the
-    /// chosen model first, then every other selectable model, the same vendor first and the rest in file order, each model's own
-    /// route followed by its other profiles. Never the chosen route, never a route twice, at most [`MAX_DIRECT_ROUTES`], and only
-    /// routes with a passing smoke record. `chosen` is a model id or the id of one of its alternate routes; an unknown id has none. A model that needs
+    /// The routes agentd may switch to when the run's own route fails, in the order it tries them. Each model
+    /// gives its own route followed by its other profiles:
+    ///
+    /// 1. the other profiles of the chosen model;
+    /// 2. the other selectable models of the chosen model's vendor in file order, at most [`SAME_VENDOR_ROUTES_MAX`] routes;
+    /// 3. the models of the other vendors in file order;
+    /// 4. the routes of the chosen model's vendor that step 2 left out, while places are left.
+    ///
+    /// Never the chosen route, never a route twice, at most [`MAX_DIRECT_ROUTES`], and only routes with a passing smoke record. A model whose
+    /// switch with the chosen model was not measured is left out with all its routes (`UNMEASURED_SWITCH_PAIRS`). File order is
+    /// failover order, so a new model is appended to the list and never inserted: the lists of the models before it stay what they were.
+    /// `chosen` is a model id or the id of one of its alternate routes; an unknown id has none. A model that needs
     /// provider data sharing is left out; [`Models::failover_routes_for`] with sharing on includes it.
     pub fn failover_routes(&self, chosen: &str) -> Vec<DirectModelSpec> {
         self.failover_routes_for(chosen, false)
@@ -548,26 +593,36 @@ impl Models {
             return Vec::new();
         };
         let allow_sharing = sharing && home.requires_provider_sharing;
+        let others: Vec<&Model> = self
+            .models
+            .iter()
+            .filter(|m| {
+                m.id != home.id
+                    && m.selectable()
+                    && (allow_sharing || !m.requires_provider_sharing)
+                    && !switch_unmeasured(&home.id, &m.id)
+            })
+            .collect();
+        // The home's vendor in file order. What goes past the bound waits until the other vendors have had their places.
+        let mut own_vendor: Vec<DirectModelSpec> = others
+            .iter()
+            .filter(|m| m.vendor == home.vendor)
+            .flat_map(|m| routes_of(m))
+            .collect();
+        let left_out = own_vendor.split_off(own_vendor.len().min(SAME_VENDOR_ROUTES_MAX));
+        let other_vendors = others
+            .iter()
+            .filter(|m| m.vendor != home.vendor)
+            .flat_map(|m| routes_of(m));
         let mut out: Vec<DirectModelSpec> = Vec::new();
-        let mut push = |spec: DirectModelSpec| {
+        for spec in routes_of(home)
+            .into_iter()
+            .chain(own_vendor)
+            .chain(other_vendors)
+            .chain(left_out)
+        {
             if spec.id != chosen && !out.iter().any(|r| r.id == spec.id) {
                 out.push(spec);
-            }
-        };
-        for spec in routes_of(home) {
-            push(spec);
-        }
-        let others = self.models.iter().filter(|m| {
-            m.id != home.id && m.selectable() && (allow_sharing || !m.requires_provider_sharing)
-        });
-        for same_vendor in [true, false] {
-            for m in others
-                .clone()
-                .filter(|m| (m.vendor == home.vendor) == same_vendor)
-            {
-                for spec in routes_of(m) {
-                    push(spec);
-                }
             }
         }
         out.truncate(MAX_DIRECT_ROUTES);
@@ -895,11 +950,29 @@ fn lookup<'a>(
     }
 }
 
+/// The narrowest the name column of `ham models` is: the width it has always had. A name may be longer than that since a name can carry a
+/// version ([`ALIAS_RULE`] allows 24 characters).
+pub const ALIAS_COLUMN_MIN: usize = 7;
+
+/// The width of the name column for `list`: its longest name, never less than [`ALIAS_COLUMN_MIN`]. A list of short names prints as it always
+/// did, and a longer name keeps every column of the table in line.
+fn alias_column(list: &ModelList) -> usize {
+    list.models
+        .iter()
+        .filter_map(|m| m.alias.as_deref())
+        .map(|a| a.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(ALIAS_COLUMN_MIN)
+}
+
 /// The text of `ham models`: one line per model with its alias, id, name, window and notes, the default marked, the model the
 /// next run uses marked with `*` (`selected` is its id and where the choice came from), and the ways to change the choice.
 pub fn render_models(list: &ModelList, selected: Option<(&str, ModelSource)>) -> String {
-    let mut out = String::from(
-        "  alias   model id                            name                context  notes\n",
+    let width = alias_column(list);
+    let mut out = format!(
+        "  {:<width$} {:<35} {:<19} context  notes\n",
+        "alias", "model id", "name"
     );
     for m in &list.models {
         let mut notes: Vec<String> = Vec::new();
@@ -922,7 +995,7 @@ pub fn render_models(list: &ModelList, selected: Option<(&str, ModelSource)>) ->
             _ => ' ',
         };
         out.push_str(&format!(
-            "{mark} {:<7} {:<35} {:<19} {:>8}  {}\n",
+            "{mark} {:<width$} {:<35} {:<19} {:>8}  {}\n",
             m.alias.as_deref().unwrap_or("-"),
             m.id,
             m.name,
@@ -935,7 +1008,7 @@ pub fn render_models(list: &ModelList, selected: Option<(&str, ModelSource)>) ->
         out.push_str("\nNotes:\n");
         for m in noted {
             out.push_str(&format!(
-                "  {:<7} {}\n",
+                "  {:<width$} {}\n",
                 m.alias.as_deref().unwrap_or(m.id.as_str()),
                 m.note.as_deref().unwrap_or_default()
             ));

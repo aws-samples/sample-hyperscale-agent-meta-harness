@@ -40,7 +40,7 @@ ham is the terminal app; a harness is a coding-agent program. The project runs t
   - [Keys and commands of the terminal app](#keys-and-commands-of-the-terminal-app)
 - [Frequently asked questions](#frequently-asked-questions)
 - [Models and accounts](#models-and-accounts)
-  - [The six models](#the-six-models)
+  - [The eight models](#the-eight-models)
   - [Pick a model](#pick-a-model)
   - [Accounts and Regions](#accounts-and-regions)
 - [Costs](#costs)
@@ -81,7 +81,7 @@ Hyperscale Agent Meta Harness is a sample project for multi-harness orchestratio
 
 - **Short-lived credentials.** The service makes per-session AWS STS credentials outside the microVM. AWS STS is the AWS service issuing short-lived credentials. Cline gets them only through a `credential_process` helper. No long-lived AWS key or GitHub token enters the microVM. The package proxy, the microVM's local package-fetching program, fetches packages from AWS CodeArtifact, the AWS package service. The proxy holds the CodeArtifact token; Cline never sees it.
 
-- **Bedrock only.** Amazon Bedrock is the only model provider. Choose among six models: Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2. Claude Sonnet 5.5 is the default. Claude Fable 5.2 runs only with provider data sharing on. Pick in the terminal app, with `--model`, with `HAMH_MODEL`, or with `ham config set default_model`.
+- **Bedrock only.** Amazon Bedrock is the only model provider. Choose among eight models: Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra. Claude Sonnet 5.5 is the default. Claude Fable 5.2 runs only with provider data sharing on. Pick in the terminal app, with `--model`, with `HAMH_MODEL`, or with `ham config set default_model`.
 
 - **Limited network.** AWS Network Firewall, the AWS managed host-list firewall, allows a short host list. It drops and logs every other outbound request. AWS services in the Region use VPC endpoints. The pinned Cline build has telemetry compiled out. Cline is pinned by hash.
 
@@ -97,7 +97,7 @@ Each count comes from the source file in the last column. Message-box commands a
 
 | Construct | Count | Source of truth |
 | --- | --- | --- |
-| Amazon Bedrock models you can pick | 6 | `engine/catalog/models.json` |
+| Amazon Bedrock models you can pick | 8 | `engine/catalog/models.json` |
 | `ham` subcommands | 21 | `crates/ham-core/src/command.rs` |
 | Message-box commands | 34 | `crates/ham-core/src/registry.rs` |
 | Key bindings in the terminal app | 48 (14 typing-mode keys and 34 browse-mode keys) | `crates/ham/src/tui/keys.rs` |
@@ -141,7 +141,7 @@ A run that ends as `blocked` delivers no zip. Its work is kept: `ham pull <runId
 | Terminal app (TUI, a full-screen text interface) | Screens show runs, dashboard, artifacts and a new-run composer. `ham "<prompt>" --s3-only --direct` starts a run from the command line. |
 | One prompt, passed through | Your prompt reaches Cline byte for byte, after one short block of the harness on how the run delivers. Cline plans and picks its own modes and sub-agents. |
 | Sub-agents (several agents?) | Sub-agents are helpers Cline starts itself. Each run uses one Cline session. The harness starts no other agent. It runs no planner or roles. Cline can use `spawn_agent` to start a helper. The harness leaves this tool on by default; you can switch it off with `tools.disable` in the engine file. The harness does not start or steer helpers. Cline decides whether to use helpers, so a run may use none. See [Does a run use several agents?](docs/user-guide.md#does-a-run-use-several-agents). |
-| Six Bedrock models | Claude Opus 5.5; Claude Sonnet 5.5 (default); GPT-6.1 Sol; GPT-6 Astra; GLM 5.3; Claude Fable 5.2 (needs provider data sharing). Choose through TUI, `--model`, `HAMH_MODEL`, or `ham config set default_model`. |
+| Eight Bedrock models | Claude Opus 5.5; Claude Sonnet 5.5 (default); GPT-6.1 Sol; GPT-6 Astra; GLM 5.3; Claude Fable 5.2 (needs provider data sharing); GPT-6.2 Sol; GPT-6.2 Astra. Choose through TUI, `--model`, `HAMH_MODEL`, or `ham config set default_model`. |
 | Your own rules | Editable markdown rules accompany every run: `ham rules init`, `ham rules edit`, `ham rules show`. The optional `continue.md` nudge file is off by default. |
 | Laptop-closed runs | Step Functions, the AWS workflow service, keeps runs going with AgentCore, Amazon Bedrock AgentCore hosting agent sessions. You can close your laptop. `ham watch` rebuilds state later. |
 | Delivery | An S3 zip (source, a git bundle, EVIDENCE.md, checksums) and, for a CodeCommit target, a pull request. `ham pull` resumes downloads and checks SHA-256. `ham clone` builds a local git clone. `ham link` gives a 15-minute download link. `ham pr` prints the pull request link. |
@@ -224,7 +224,7 @@ This is the fastest path from a fresh clone to a first run.
 - The only tool you must already have is the AWS CLI, version 2 (plus git, or a zip download of this repository, to get setup.sh). Installing the client and the full setup need git on PATH. The full setup and `--update` also need a git clone; a zip download does not work for them. `--status`, `--doctor` and `--teardown` need neither git nor a clone.
 - You need an AWS account you may deploy into, with credentials in an AWS CLI profile or in `AWS_*` environment variables. Supported profile kinds are static keys, `credential_process`, IAM Identity Center (SSO), and assume-role. SSO and assume-role profiles need AWS CLI version 2.9.0 or later. Your credentials must be allowed to create IAM roles, normally through administrator access. Use a dedicated sandbox account.
 - You need a Mac with Apple silicon (macOS 13 or later), or a Linux x86_64 or arm64 machine, with a terminal.
-- Your AWS account needs access to Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2 for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Your account needs a valid payment method for AWS Marketplace purchases. Anthropic requires a first-time use case form once per AWS account. A Marketplace model's first call starts a subscription; stage roles lack Marketplace permission, so you make that call with your own identity with `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`, for example in the Bedrock console playground in the stage Region. A model still returning `AccessDeniedException` can need additional account-level access that AWS grants on request. The run drops a refused model for its remainder and ends with "Cline stopped: the model provider failed" if every route is refused. See "Before you start" in [Set up, step by step](#set-up-step-by-step).
+- Your AWS account needs access to Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Your account needs a valid payment method for AWS Marketplace purchases. Anthropic requires a first-time use case form once per AWS account. A Marketplace model's first call starts a subscription; stage roles lack Marketplace permission, so you make that call with your own identity with `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`, for example in the Bedrock console playground in the stage Region. A model still returning `AccessDeniedException` can need additional account-level access that AWS grants on request. The run drops a refused model for its remainder and ends with "Cline stopped: the model provider failed" if every route is refused. See "Before you start" in [Set up, step by step](#set-up-step-by-step).
 
 ```bash quickstart
 git clone <repository-url> hyperscale-agent-meta-harness
@@ -355,7 +355,7 @@ The full setup builds the Cline binary in your account from pinned source. It ne
 - [ ] The only tool you must already have is the AWS CLI, version 2 (plus git, or a zip download of this repository, to get setup.sh). Installing the client and the full setup need git on PATH. The full setup and `--update` also need a git clone; a zip download does not work for them. `--status`, `--doctor` and `--teardown` need neither git nor a clone.
 - [ ] You need credentials for the AWS account you deploy into. Use an AWS CLI profile or `AWS_*` environment variables. Profiles can use static keys, `credential_process`, SSO, or assume-role. SSO and assume-role profiles need AWS CLI version 2.9.0 or later. Before an SSO session, run `aws sso login --profile NAME`. [Which stage, and how you get in](#which-stage-and-how-you-get-in) shows a profile of each kind.
 - [ ] You need permission to create IAM roles, normally through administrator access. Use a dedicated sandbox account.
-- [ ] Your AWS account needs access to invoke Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2 for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to invoke Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Model access is separate for each AWS account. AWS requires the Anthropic first-time use case form once per AWS account, or once at the management account of an AWS organization, before the first call. You submit the form by selecting an Anthropic model in the Bedrock console model catalog or with `aws bedrock put-use-case-for-model-access`. Calls return `AccessDeniedException` while access remains pending, until the status is `AVAILABLE`. The first invocation of a model sold through AWS Marketplace starts its subscription. Your AWS account needs a valid payment method configured for AWS Marketplace purchases; see [Request access to models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html). The identity making that call needs `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`. After activation by one identity, every role in the account can invoke the model without those Marketplace permissions. Models that AWS does not sell through AWS Marketplace need no subscription. The stage's roles have no Marketplace permission. You make the first call with your own identity, for example in the Bedrock console playground in the stage Region. Some models need additional account-level access beyond the form and subscription. You contact AWS Sales for additional access if a model still returns `AccessDeniedException` after you meet the requirements. The run drops a refused model for the rest of the run and ends with "Cline stopped: the model provider failed" if every route is refused.
+- [ ] Your AWS account needs access to invoke Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to invoke Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Model access is separate for each AWS account. AWS requires the Anthropic first-time use case form once per AWS account, or once at the management account of an AWS organization, before the first call. You submit the form by selecting an Anthropic model in the Bedrock console model catalog or with `aws bedrock put-use-case-for-model-access`. Calls return `AccessDeniedException` while access remains pending, until the status is `AVAILABLE`. The first invocation of a model sold through AWS Marketplace starts its subscription. Your AWS account needs a valid payment method configured for AWS Marketplace purchases; see [Request access to models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html). The identity making that call needs `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`. After activation by one identity, every role in the account can invoke the model without those Marketplace permissions. Models that AWS does not sell through AWS Marketplace need no subscription. The stage's roles have no Marketplace permission. You make the first call with your own identity, for example in the Bedrock console playground in the stage Region. Some models need additional account-level access beyond the form and subscription. You contact AWS Sales for additional access if a model still returns `AccessDeniedException` after you meet the requirements. The run drops a refused model for the rest of the run and ends with "Cline stopped: the model provider failed" if every route is refused.
 - [ ] You need a Mac with Apple silicon (macOS 13 or later) or a Linux machine with a terminal.
 - [ ] You need the repository's address, the `<repository-url>` of Step 1. The full setup needs a git clone. A zip download supports the client-only setup.
 - [ ] For Step 5 only, ask the person who runs the stage for its endpoint ending in `/direct`, its Region and a role in the stage's AWS account. For `--repo` runs, also ask for an allowlisted CodeCommit repository whose name the stage's repository names cover (by default a name that starts with `hamh-e2e-`). Runs with `--s3-only` need no repository.
@@ -520,7 +520,7 @@ The config file is `~/.config/ham/config.toml` or `$XDG_CONFIG_HOME/ham/config.t
 
 #### Step 6. Write your rules and look at the models
 
-`ham rules init` writes `~/.config/ham/rules/00-my-rules.md`, `~/.config/ham/rules/10-lifecycle.md`, `~/.config/ham/continue.md`, `~/.config/ham/review.md` and the pack's seven skills in `~/.config/ham/skills/`. `~/.config/ham/rules/10-lifecycle.md` holds the lifecycle pack's rules: testing and completion rules. These rules say to test first. Never weaken a test. Run the whole suite before saying done. Complete one real end-to-end run before saying done. `ham rules init` installs the text of the rules file that the setting `run.lifecycle_flow` names (`auto`, the default, `full` or `quick`; see [Choosing a flow](docs/user-guide.md#choosing-a-flow)). `ham rules init` creates missing files, including skill files you deleted; the output says `created`. It replaces files that you did not edit only when they still hold exactly earlier default or pack text from ham; the output says `updated`. Every file you edited is kept; the output says `kept`. `ham rules init --no-skills` leaves the skills out. `ham rules init --pack none` writes only `~/.config/ham/rules/00-my-rules.md`, `~/.config/ham/continue.md` and `~/.config/ham/review.md`. A run sends the skills it finds in `~/.config/ham/skills/`, and it takes at most 8 in all, yours included. One skill of your own fits beside the pack's seven. With two or more of your own, `ham rules init` installs the contract, leaves the skills folder as it is and says why. Cline reads the name and description of every installed skill when a session starts, about 500 tokens for the seven, and opens a skill's instructions only when the request matches its description. `ham rules show` prints the rules your next run will send. It also prints the skills your next run will send. The output includes sizes and SHA-256 hashes. `ham models` lists the six models. It marks the model your next run uses. All these commands work offline. They need no credentials.
+`ham rules init` writes `~/.config/ham/rules/00-my-rules.md`, `~/.config/ham/rules/10-lifecycle.md`, `~/.config/ham/continue.md`, `~/.config/ham/review.md` and the pack's seven skills in `~/.config/ham/skills/`. `~/.config/ham/rules/10-lifecycle.md` holds the lifecycle pack's rules: testing and completion rules. These rules say to test first. Never weaken a test. Run the whole suite before saying done. Complete one real end-to-end run before saying done. `ham rules init` installs the text of the rules file that the setting `run.lifecycle_flow` names (`auto`, the default, `full` or `quick`; see [Choosing a flow](docs/user-guide.md#choosing-a-flow)). `ham rules init` creates missing files, including skill files you deleted; the output says `created`. It replaces files that you did not edit only when they still hold exactly earlier default or pack text from ham; the output says `updated`. Every file you edited is kept; the output says `kept`. `ham rules init --no-skills` leaves the skills out. `ham rules init --pack none` writes only `~/.config/ham/rules/00-my-rules.md`, `~/.config/ham/continue.md` and `~/.config/ham/review.md`. A run sends the skills it finds in `~/.config/ham/skills/`, and it takes at most 8 in all, yours included. One skill of your own fits beside the pack's seven. With two or more of your own, `ham rules init` installs the contract, leaves the skills folder as it is and says why. Cline reads the name and description of every installed skill when a session starts, about 500 tokens for the seven, and opens a skill's instructions only when the request matches its description. `ham rules show` prints the rules your next run will send. It also prints the skills your next run will send. The output includes sizes and SHA-256 hashes. `ham models` lists the eight models. It marks the model your next run uses. All these commands work offline. They need no credentials.
 
 The default rules file points to the lifecycle pack. Edit your rules with `ham rules edit`. An edit applies to the next run. Rules are plain markdown files in `~/.config/ham/rules/`. ham, control-api and agentd check the same limits. The limit is 100 files, of any size. A rule file may not be named `AGENTS.md`. Rules steer Cline; they enforce nothing.
 
@@ -538,16 +538,18 @@ ham rules show
 ham models
 ```
 
-You should see `created` or `kept` lines. You should also see the rules text. The model list should contain the six models below, with Claude Sonnet 5.5 marked as the default.
+You should see `created` or `kept` lines. You should also see the rules text. The model list should contain the eight models below, with Claude Sonnet 5.5 marked as the default.
 
 | Alias | Name | Bedrock model id | Context window (tokens) | Default |
 |---|---|---|---|---|
 | `opus` | Claude Opus 5.5 | `us.anthropic.claude-opus-5-5` | 1,000,000 | no |
 | `sonnet` | Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | 1,000,000 | yes |
-| `sol` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 1,000,000 | no |
-| `astra` | GPT-6 Astra | `us.openai.gpt-6-astra` | 1,050,000 | no |
+| `sol-6.1` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 920,000 | no |
+| `astra-6` | GPT-6 Astra | `us.openai.gpt-6-astra` | 920,000 | no |
 | `glm` | GLM 5.3 | `us.zai.glm-5.3` | 1,048,576 | no |
 | `fable` | Claude Fable 5.2 | `global.anthropic.claude-fable-5-2` | 1,000,000 | no |
+| `sol` | GPT-6.2 Sol | `us.openai.gpt-6.2-sol` | 920,000 | no |
+| `astra` | GPT-6.2 Astra | `us.openai.gpt-6.2-astra` | 920,000 | no |
 
 A run takes its model from the first source that is set: the `--model <alias>` flag, the `HAMH_MODEL` variable, `ham config set default_model <alias>`, then the built-in default. The picker in the TUI composer also chooses a model.
 
@@ -729,14 +731,21 @@ It wins over `download_dir`, followed by the current directory.
 
 ### Choosing the model
 
-ham knows six models.
+ham knows eight models.
 
 - `opus` selects Claude Opus 5.5.
 - `sonnet` selects Claude Sonnet 5.5, the default.
-- `sol` selects GPT-6.1 Sol.
-- `astra` selects GPT-6 Astra.
+- `sol-6.1` selects GPT-6.1 Sol.
+- `astra-6` selects GPT-6 Astra.
 - `glm` selects GLM 5.3.
 - `fable` selects Claude Fable 5.2. It needs provider data sharing; see Models that need provider data sharing below.
+- `sol` selects GPT-6.2 Sol.
+- `astra` selects GPT-6.2 Astra.
+
+`sol` and `astra` select the newest Sol and Astra models.
+GPT-6.1 Sol and GPT-6 Astra keep their full ids, and their names are `sol-6.1` and `astra-6`.
+A default saved with `ham config set default_model` holds a full id, so it keeps its model.
+`ham models` prints a note for each of the two earlier models that says so.
 
 `--model` accepts an alias or a full Bedrock model id.
 Aliases match in any letter case; full ids must match exactly.
@@ -744,7 +753,7 @@ Aliases match in any letter case; full ids must match exactly.
 
 The order is `--model`, `HAMH_MODEL`, `default_model`, then Claude Sonnet 5.5.
 `ham config set default_model sol` checks the list and stores the full id.
-`ham models` lists six models offline.
+`ham models` lists eight models offline.
 It marks your next run's model with `*`.
 A start prints `model: <name> (<id>), from <source>` on standard error.
 
@@ -824,7 +833,7 @@ Use `--repo cc:<name>` for an existing CodeCommit repository. Use `--new-repo cc
 
 Pull requests go only to CodeCommit repositories whose names the stage's repository names cover. The default rule is the safety prefix `hamh-e2e-` (`e2e` is short for end to end). The operator must put the repository on the stage's allowlist; see [Allow a repository for pull requests](#allow-a-repository-for-pull-requests). For `--new-repo`, you must use the name form `hamh-e2e-new-<yyyymmdd>`.
 
-`--model` takes an id or an alias. The aliases are opus, sonnet, sol, astra and glm.
+`--model` takes an id or an alias. The aliases are opus, sonnet, sol-6.1, astra-6, glm, fable, sol and astra.
 
 ```bash
 ham "Add input validation to the signup handler" --repo cc:hamh-e2e-demo --direct
@@ -1149,7 +1158,7 @@ Cline's goal loop is on by default and keeps queueing follow-up prompts until Cl
 
 **Which models can I choose?**
 
-Six Amazon Bedrock models: Claude Opus 5.5, Claude Sonnet 5.5 (the default), GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2.
+Eight Amazon Bedrock models: Claude Opus 5.5, Claude Sonnet 5.5 (the default), GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra.
 Choose one in the terminal app, with `--model`, or with `HAMH_MODEL`. Use `ham config set default_model` to set your default.
 Bedrock is the only model provider.
 
@@ -1243,11 +1252,11 @@ Two engines run, Cline and OpenCode.
 See [Harnesses and engines](#harnesses-and-engines) for the engine design.
 ## Models and accounts
 
-Amazon Bedrock is the only model provider. A stage is one deployment of the service, whose AWS account pays the bill. This section covers the six models and the account a stage uses. [Costs](#costs) covers what the stage and its runs cost, and the limits that bound a run.
+Amazon Bedrock is the only model provider. A stage is one deployment of the service, whose AWS account pays the bill. This section covers the eight models and the account a stage uses. [Costs](#costs) covers what the stage and its runs cost, and the limits that bound a run.
 
-### The six models
+### The eight models
 
-All six models use the Amazon Bedrock Converse API. Their inference Region is `us-east-1`. A call can also reach the other Regions named under [Accounts and Regions](#accounts-and-regions).
+All eight models use the Amazon Bedrock Converse API. Their inference Region is `us-east-1`. A call can also reach the other Regions named under [Accounts and Regions](#accounts-and-regions).
 
 A second route is the model's other inference profile (the `us.` or the `global.` kind).
 
@@ -1255,14 +1264,16 @@ A second route is the model's other inference profile (the `us.` or the `global.
 |---|---|---|---|---|---|---|
 | `opus` | Claude Opus 5.5 | `us.anthropic.claude-opus-5-5` | 1,000,000 | 128,000 | `global.anthropic.claude-opus-5-5` | no |
 | `sonnet` | Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | 1,000,000 | 128,000 | `us.anthropic.claude-sonnet-5-5` | yes |
-| `sol` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 1,000,000 | 131,072 | `global.openai.gpt-6.1-sol` | no |
-| `astra` | GPT-6 Astra | `us.openai.gpt-6-astra` | 1,050,000 | 128,000 | `global.openai.gpt-6-astra` | no |
+| `sol-6.1` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 920,000 | 131,072 | `global.openai.gpt-6.1-sol` | no |
+| `astra-6` | GPT-6 Astra | `us.openai.gpt-6-astra` | 920,000 | 128,000 | `global.openai.gpt-6-astra` | no |
 | `glm` | GLM 5.3 | `us.zai.glm-5.3` | 1,048,576 | 128,000 | none | no |
 | `fable` | Claude Fable 5.2 | `global.anthropic.claude-fable-5-2` | 1,000,000 | 128,000 | `us.anthropic.claude-fable-5-2` | no |
+| `sol` | GPT-6.2 Sol | `us.openai.gpt-6.2-sol` | 920,000 | 128,000 | `global.openai.gpt-6.2-sol` | no |
+| `astra` | GPT-6.2 Astra | `us.openai.gpt-6.2-astra` | 920,000 | 128,000 | `global.openai.gpt-6.2-astra` | no |
 
-A run uses Claude Sonnet 5.5 when you set nothing. GLM 5.3 defaults to high reasoning effort, like the three Claude models. GPT-6.1 Sol and GPT-6 Astra default to xhigh reasoning effort. `ham`, the terminal client, prints GLM 5.3's note under the `ham models` table.
+A run uses Claude Sonnet 5.5 when you set nothing. GLM 5.3 defaults to high reasoning effort, like the three Claude models. GPT-6.1 Sol, GPT-6 Astra, GPT-6.2 Sol and GPT-6.2 Astra default to xhigh reasoning effort. `ham`, the terminal client, prints a note under the `ham models` table for GLM 5.3 and for GPT-6.1 Sol and GPT-6 Astra. The four GPT models show a context window of 920,000 tokens: Amazon Bedrock accepts an input of about 921,500 tokens for them, and Cline shortens a long conversation before that limit.
 
-Run names, the labels of 5 to 7 words in the Runs list, and run tags come from a separate small model, Claude Haiku 5.5, which is not one of the six and which you cannot choose; Cline keeps the model you chose.
+Run names, the labels of 5 to 7 words in the Runs list, and run tags come from a separate small model, Claude Haiku 5.5, which is not one of the eight and which you cannot choose; Cline keeps the model you chose.
 
 The model list is `engine/catalog/models.json`. The list is compiled into `ham`. It is also compiled into the control API, the AWS Lambda function accepting your requests.
 
@@ -1274,7 +1285,7 @@ Each second route has its own smoke record. A run never names that route. `agent
 
 Provider failover resumes the same Cline session after provider failure. It then rotates routes and models. When every route is down, it waits and sends small probes. A run pays for tokens from each model it uses.
 
-Changing the list requires edits to `engine/catalog/models.json` and the two tests that pin the list. The change also requires rebuilding `ham` and redeploying the control API. Users need the new `ham` build. `ham models --server` reports differences between stage and client defaults.
+Changing the list requires edits to `engine/catalog/models.json` and the two tests that pin the list. The change also requires rebuilding `ham` and redeploying the control API. Users need the new `ham` build. `ham models --server` reports differences between the stage's and the client's default model and short names.
 
 ### Models that need provider data sharing
 
@@ -1320,7 +1331,7 @@ When Cline needs your answer, `ham try-model <runId> <model>` switches models. T
 
 The stage is named `direct`. It uses one AWS account, one Region, and one Availability Zone.
 
-Workers call Amazon Bedrock with the stage's own AWS account. The six models are listed with `us-east-1`. A worker reaches Bedrock in the stage's own Region through an interface VPC endpoint, and in the other two of `us-west-2`, `us-east-1` and `us-east-2` through the Network Firewall allowlist. A stage deploys only in `us-east-1` or `us-west-2`.
+Workers call Amazon Bedrock with the stage's own AWS account. The eight models are listed with `us-east-1`. A worker reaches Bedrock in the stage's own Region through an interface VPC endpoint, and in the other two of `us-west-2`, `us-east-1` and `us-east-2` through the Network Firewall allowlist. A stage deploys only in `us-east-1` or `us-west-2`.
 
 The full setup leaves `accounts.json` unchanged. It writes an account file for your account. The environment variable `HAMH_ACCOUNTS_FILE` supplies its absolute path. The deploy scripts, the CDK app, the Rust build scripts, and the nested CodeBuild packaging all use that file in place of `accounts.json`. When `HAMH_ACCOUNTS_FILE` is unset, they read the committed file.
 
@@ -1379,7 +1390,7 @@ Watch Amazon Bedrock model tokens first. Token use grows with run count and run 
 
 The usage field in `summary.json` shows tokens. The final card shows tokens when the stage reports usage. Bedrock invocation logging records calls when enabled. The Bedrock invocation logs are the token record of a run.
 
-The card's Tokens/USD line shows stage-reported tokens and US dollar cost. Its dollar figure uses a price table pinned in control API code. The table covers Claude Opus 5.5, GPT-6.1 Sol, GPT-6 Astra, Claude Fable 5.2, and Claude Sonnet 5.5. GLM 5.3 has no price row, so its USD figure reads `unknown`. The line is absent when the stage reports no usage. Read your AWS bill for the charged amount.
+The card's Tokens/USD line shows stage-reported tokens and US dollar cost. Its dollar figure uses a price table pinned in control API code. The table covers Claude Opus 5.5, GPT-6.1 Sol, GPT-6 Astra, Claude Fable 5.2, and Claude Sonnet 5.5. GLM 5.3, GPT-6.2 Sol and GPT-6.2 Astra have no price row, so the USD figure of a run on one of them reads `unknown`. The line is absent when the stage reports no usage. Read your AWS bill for the charged amount.
 
 Amazon Bedrock AgentCore uses one microVM per run, alive for the whole session. Its idle timeout is 30 minutes.
 

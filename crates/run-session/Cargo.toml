@@ -22,7 +22,7 @@ message-ledger.workspace = true
 dispatcher.workspace = true
 # The token-encryption context, the STS minter and the nonce of the credential refresh.
 worker-api.workspace = true
-# `models::builtin()`: the one list of the five supported models (`engine/catalog/models.json`).
+# `models::builtin()`: the one list of the supported models (`engine/catalog/models.json`).
 ham-core.workspace = true
 # The CodeArtifact token call (`packages::mint_token`), its index settings and its signed HTTP client.
 agentd.workspace = true

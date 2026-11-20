@@ -13,7 +13,7 @@ use agentd::engine::user_settings::{
 };
 use common::repo_root;
 use harness_core::engine_profile::load_profile;
-use harness_protocol::direct::{EngineConfig, check_engine_config};
+use harness_protocol::direct::{EngineConfig, REASONING_LEVELS, check_engine_config};
 use serde_json::{Value, json};
 
 fn words(a: &[&str]) -> Vec<String> {
@@ -218,65 +218,53 @@ fn the_read_back_finds_the_level_in_the_argv_or_names_the_part_that_differs() {
     }
 }
 
-/// The six supported models, read from the shipped catalog (a test-only read: agentd never reads `engine/catalog`): each launches with its own level
-/// when the user keeps `default`, and the user's words still win or switch it off. Claude Fable 5.2 is the sixth row and defaults to high.
+/// Each level a model's row may give: it launches the engine when the user keeps `default`, each of the four can be asked for by name, and `off`
+/// removes it. The list is fixed here. The worker never reads the model list, and no test of this crate does either: every file of the crate is an
+/// input of the worker image key, so a test that followed the list would move the key with every new model. The rows of the shipped list are
+/// checked in `crates/run-session/tests/b862_catalog_launch.rs`.
 #[test]
-fn each_model_of_the_shipped_catalog_launches_with_its_own_level() {
-    let catalog: Value = serde_json::from_str(
-        &std::fs::read_to_string(repo_root().join("engine/catalog/models.json")).unwrap(),
-    )
-    .unwrap();
-    // The rows of the default engine carry the reasoning levels; a row that names another engine is the same model smoked with it and has none.
-    let rows: Vec<&Value> = catalog["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|r| r.get("engine").is_none())
-        .collect();
-    assert_eq!(rows.len(), 6);
-    let mut seen = Vec::new();
-    for row in rows {
-        let id = row["id"].as_str().unwrap();
-        let level = row["reasoning"]["default"].as_str().unwrap();
-        let accepted: Vec<&str> = row["reasoning"]["accepted"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(accepted.contains(&level), "{id}");
-        // keep default (or no settings): the model's level reaches the argv.
+fn each_level_a_catalog_row_may_give_reaches_the_launch_argv() {
+    const LEVELS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+    assert_eq!(
+        LEVELS, REASONING_LEVELS,
+        "the fixture is the protocol's list"
+    );
+    for level in LEVELS {
+        // keep default (or no settings): the model's level reaches the argv, once and last.
         for settings in [
             UserSettings::default(),
             settings_of(json!({"reasoning": {"effort": "default"}})),
         ] {
             let launch = settings.reasoning_launch(Some(level));
-            assert_eq!(launch.effort.flag(), Some(level), "{id}");
+            assert_eq!(launch.effort.flag(), Some(level), "{level}");
+            assert_eq!(launch.source, Some(ReasoningSource::Default), "{level}");
             let argv = direct_launch_argv("cline", profile_argv(), launch.effort);
             assert_eq!(
                 argv.iter().filter(|a| *a == "--thinking").count(),
                 1,
-                "{id}"
+                "{level}"
             );
-            assert_eq!(argv.last().map(String::as_str), Some(level), "{id}");
+            assert_eq!(argv.last().map(String::as_str), Some(level), "{level}");
             check_reasoning_launch(&argv, &launch).unwrap();
         }
-        // every accepted level can be asked for explicitly, and off removes it.
-        for word in &accepted {
+        // every level can be asked for explicitly whatever the model's own is, and off removes it.
+        for word in LEVELS {
             let launch =
                 settings_of(json!({"reasoning": {"effort": word}})).reasoning_launch(Some(level));
-            assert_eq!(launch.effort.flag(), Some(*word), "{id} {word}");
+            assert_eq!(launch.effort.flag(), Some(word), "{level} {word}");
             assert_eq!(launch.source, Some(ReasoningSource::Explicit));
+            let argv = direct_launch_argv("cline", profile_argv(), launch.effort);
+            assert_eq!(
+                argv.last().map(String::as_str),
+                Some(word),
+                "{level} {word}"
+            );
+            check_reasoning_launch(&argv, &launch).unwrap();
         }
         let off =
             settings_of(json!({"reasoning": {"effort": "off"}})).reasoning_launch(Some(level));
         let argv = direct_launch_argv("cline", profile_argv(), off.effort);
-        assert!(!argv.iter().any(|a| a == "--thinking"), "{id}");
-        seen.push((id.to_string(), level.to_string()));
+        assert!(!argv.iter().any(|a| a == "--thinking"), "{level}");
+        check_reasoning_launch(&argv, &off).unwrap();
     }
-    assert_eq!(
-        seen.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
-        ["high", "high", "xhigh", "xhigh", "high", "high"],
-        "{seen:?}"
-    );
 }

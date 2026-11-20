@@ -753,7 +753,14 @@ async fn cmd_start_direct(
             Ok(s) => s,
             // A stage that is being updated says so in one sentence, which is shown alone
             Err(e) if crate::api::stage_updating(&e) => return fail(crate::api::start_failure(&e)),
-            Err(e) => return fail(format!("POST /v1/direct/runs: {e}")),
+            Err(e) => {
+                let code = fail(format!("POST /v1/direct/runs: {e}"));
+                // A stage whose model list lacks a model this client lists is named, with its version, under the service's message.
+                if let Some(line) = crate::api::older_backend_note(&e, &request) {
+                    eprintln!("ham: {line}");
+                }
+                return code;
+            }
         };
     if json {
         let mut start = json!({"runId": started.run_id, "status": started.status, "idempotencyKey": started.idempotency_key,
@@ -888,7 +895,12 @@ async fn cmd_models_server<P: ControlPlane>(
         out.err_line(format!("ham: {note}"));
     }
     let (mut o, mut e) = (out.writer(Stream::Out), out.writer(Stream::Err));
-    config_cmd::print_models(&list, env, cfg, json, &mut o, &mut e)
+    let code = config_cmd::print_models(&list, env, cfg, json, &mut o, &mut e);
+    // The stage's rows are printed as the stage holds them; a short name it holds differently from this build is said under the table.
+    if let Some(note) = config_cmd::name_drift(&list) {
+        out.err_line(format!("ham: {note}"));
+    }
+    code
 }
 
 /// The TUI dashboard on a terminal, else line output until the run is finished.

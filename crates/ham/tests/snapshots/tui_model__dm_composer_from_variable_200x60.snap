@@ -40,8 +40,6 @@ ham · New run · model: GPT-6 Astra (HAMH_MODEL)
 │                                                                                                                                                                                                      │
 │                                                                                                                                                                                                      │
 │                                                                                                                                                                                                      │
-│                                                                                                                                                                                                      │
-│                                                                                                                                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌ Target (←→ changes) ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐┌ Engine (↑↓ changes) ───┐
 │(•) --repo   ( ) --new-repo   ( ) --s3-only                                                                                                                                 ││(•) Cline   ( ) OpenCode│
@@ -55,10 +53,12 @@ ham · New run · model: GPT-6 Astra (HAMH_MODEL)
 ┌ Model (↑↓ picks for this run, d saves it as your default) ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ ( ) opus    us.anthropic.claude-opus-5-5        Claude Opus 5.5    ctx 1,000,000                                                                                                                     │
 │ ( ) sonnet  global.anthropic.claude-sonnet-5-5  Claude Sonnet 5.5  ctx 1,000,000                                                                                                                     │
-│ ( ) sol     us.openai.gpt-6.1-sol               GPT-6.1 Sol        ctx 1,000,000                                                                                                                     │
-│ (•) astra   us.openai.gpt-6-astra               GPT-6 Astra        ctx 1,050,000  default (HAMH_MODEL)                                                                                               │
+│ ( ) sol-6.1 us.openai.gpt-6.1-sol               GPT-6.1 Sol        ctx   920,000                                                                                                                     │
+│ (•) astra-6 us.openai.gpt-6-astra               GPT-6 Astra        ctx   920,000  default (HAMH_MODEL)                                                                                               │
 │ ( ) glm     us.zai.glm-5.3                      GLM 5.3            ctx 1,048,576                                                                                                                     │
 │ ( ) fable   global.anthropic.claude-fable-5-2   Claude Fable 5.2   ctx 1,000,000  needs provider data sharing                                                                                        │
+│ ( ) sol     us.openai.gpt-6.2-sol               GPT-6.2 Sol        ctx   920,000                                                                                                                     │
+│ ( ) astra   us.openai.gpt-6.2-astra             GPT-6.2 Astra      ctx   920,000                                                                                                                     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
   [ Submit ]  (Ctrl-S)
 Tab next field · Shift-Tab previous · Ctrl-S submit · Esc cancel

@@ -366,23 +366,22 @@ async fn cancel_twice_queues_a_second_control_and_still_changes_nothing() {
 }
 
 #[tokio::test]
-async fn models_are_the_six_cline_rows_then_the_opencode_rows_of_models_json_with_no_catalog_read()
-{
+async fn models_are_the_cline_rows_then_the_opencode_rows_of_models_json_with_no_catalog_read() {
     let f = Fake::direct(vec![]);
     let out = handle(req("GET", "/v1/models", &[]), &deps(&f)).await;
     assert_eq!(out.status, 200, "{}", out.body);
     let m: ModelsResponse = serde_json::from_str(&out.body).unwrap();
     assert!(m.excluded.is_empty());
-    // `GET /v1/models` shows the rows with a smoke record: all six, Claude Fable 5.2 among them.
+    // `GET /v1/models` shows the rows with a smoke record: all eight, Claude Fable 5.2 among them.
     let want: Vec<&str> = builtin()
         .models()
         .iter()
         .filter(|m| m.selectable())
         .map(|m| m.id.as_str())
         .collect();
-    assert_eq!(want.len(), 6);
+    assert_eq!(want.len(), 8);
     let got: Vec<&str> = m.rows.iter().map(|r| r.profile_id.as_str()).collect();
-    assert_eq!(got[..6], want[..]);
+    assert_eq!(got[..8], want[..]);
     // After them come the rows of OpenCode, each naming its engine.
     let opencode: Vec<&str> = ham_core::models::builtin_catalog()
         .for_engine(Engine::OPENCODE)
@@ -391,8 +390,8 @@ async fn models_are_the_six_cline_rows_then_the_opencode_rows_of_models_json_wit
         .iter()
         .map(|m| m.id.as_str())
         .collect();
-    assert_eq!(got[6..], opencode[..]);
-    assert!(m.rows[6..].iter().all(|r| r.engine == Engine::OPENCODE));
+    assert_eq!(got[8..], opencode[..]);
+    assert!(m.rows[8..].iter().all(|r| r.engine == Engine::OPENCODE));
     for (row, model) in m
         .rows
         .iter()

@@ -44,7 +44,7 @@ You need:
 - **An AWS account.**
   - With the full setup, you deploy the stage into your own AWS account. Your credentials must be allowed to create IAM roles, normally through administrator access. Use a dedicated sandbox account.
   - With the client-only setup, you use a deployed stage named `direct`. The person who runs the stage gives you its endpoint URL and Region. The endpoint looks like `https://<api-id>.execute-api.<region>.amazonaws.com/direct`. The last part, `/direct`, is the stage name.
-- **Access to the models.** Your AWS account needs access to invoke Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2 for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to invoke Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Model access is separate for each AWS account. AWS requires the Anthropic first-time use case form once per AWS account, or once at the management account of an AWS organization, before the first call. You submit the form by selecting an Anthropic model in the Bedrock console model catalog or with `aws bedrock put-use-case-for-model-access`. Calls return `AccessDeniedException` while access remains pending, until the status is `AVAILABLE`. The first invocation of a model sold through AWS Marketplace starts its subscription. Your AWS account needs a valid payment method configured for AWS Marketplace purchases; see [Request access to models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html). The identity making that call needs `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`. After activation by one identity, every role in the account can invoke the model without those Marketplace permissions. Models that AWS does not sell through AWS Marketplace need no subscription. The stage's roles have no Marketplace permission. You make the first call with your own identity, for example in the Bedrock console playground in the stage Region. Some models need additional account-level access beyond the form and subscription. You contact AWS Sales for additional access if a model still returns `AccessDeniedException` after you meet the requirements. The run drops a refused model for the rest of the run and ends with "Cline stopped: the model provider failed" if every route is refused.
+- **Access to the models.** Your AWS account needs access to invoke Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra for runs in the stage's Region, `us-east-1` or `us-west-2`. Claude Fable 5.2 also needs the Bedrock data retention mode of your account in that Region to let it run (`provider_data_share` or `aws_review`); `ham` switches the mode when a run agrees to share and your credentials may, or the account owner sets it; see "Models that need provider data sharing" in docs/user-guide.md. In `us-east-1`, your account also needs access to invoke Claude Haiku 5.5, which only writes run names and tags; a stage in `us-west-2` has run names off and never calls Claude Haiku 5.5. Model access is separate for each AWS account. AWS requires the Anthropic first-time use case form once per AWS account, or once at the management account of an AWS organization, before the first call. You submit the form by selecting an Anthropic model in the Bedrock console model catalog or with `aws bedrock put-use-case-for-model-access`. Calls return `AccessDeniedException` while access remains pending, until the status is `AVAILABLE`. The first invocation of a model sold through AWS Marketplace starts its subscription. Your AWS account needs a valid payment method configured for AWS Marketplace purchases; see [Request access to models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html). The identity making that call needs `aws-marketplace:Subscribe` and `aws-marketplace:ViewSubscriptions`. After activation by one identity, every role in the account can invoke the model without those Marketplace permissions. Models that AWS does not sell through AWS Marketplace need no subscription. The stage's roles have no Marketplace permission. You make the first call with your own identity, for example in the Bedrock console playground in the stage Region. Some models need additional account-level access beyond the form and subscription. You contact AWS Sales for additional access if a model still returns `AccessDeniedException` after you meet the requirements. The run drops a refused model for the rest of the run and ends with "Cline stopped: the model provider failed" if every route is refused.
 - The only tool you must already have is the AWS CLI, version 2 (plus git, or a zip download of this repository, to get setup.sh). Installing the client and the full setup need git on PATH. The full setup and `--update` also need a git clone; a zip download does not work for them. `--status`, `--doctor` and `--teardown` need neither git nor a clone.
 - **An IAM identity in the same AWS account.** The same person grants you a role in the stage's own account. The API accepts only principals from that account. A session from another account is refused. The profile name does not matter. The account behind it does. The next subsection, [Which stage, and how you get in](#which-stage-and-how-you-get-in), shows the steps.
 - **Credentials from an AWS CLI profile.** `ham` signs calls with AWS SigV4. It first uses `awsProfile`, the config's AWS profile setting. Without that setting, it reads `AWS_*` environment variables first. Then it tries `AWS_PROFILE`. Then it tries the default profile. Profiles can use static keys, `credential_process`, SSO, or assume-role. SSO and assume-role profiles need AWS CLI version 2.9.0 or later. See [Which stage, and how you get in](#which-stage-and-how-you-get-in).
@@ -1098,7 +1098,7 @@ ham rules init
 
 This command never overwrites a file you edited.
 
-List the six models offline; `*` marks the next-run model.
+List the eight models offline; `*` marks the next-run model.
 
 ```bash
 ham models
@@ -1688,6 +1688,8 @@ You change no setting to get it.
 | --- | --- |
 | GPT-6.1 Sol | `xhigh` |
 | GPT-6 Astra | `xhigh` |
+| GPT-6.2 Sol | `xhigh` |
+| GPT-6.2 Astra | `xhigh` |
 | Claude Opus 5.5 | `high` |
 | Claude Sonnet 5.5 | `high` |
 | GLM 5.3 | `high` |
@@ -1704,7 +1706,7 @@ Then the cycle starts again.
 You cannot set a level for one run from the command line.
 
 `off` sends no reasoning request to Claude Opus 5.5 or Claude Sonnet 5.5.
-It also sends no reasoning request to GPT-6.1 Sol or GPT-6 Astra.
+It also sends no reasoning request to GPT-6.1 Sol, GPT-6 Astra, GPT-6.2 Sol or GPT-6.2 Astra.
 GLM 5.3 cannot switch reasoning off.
 With `off`, GLM 5.3 receives `low`.
 Bedrock rejects `none` on every route.
@@ -4329,7 +4331,7 @@ In the terminal app, `/engine opencode` chooses OpenCode for the runs you start 
 | Helper agents | Starts them with `spawn_agent`. | Starts them with `subagent`. |
 | Tool-idle limit | Off. | 3600 seconds. |
 | Name of the code search tool | `ham__code_search` | `ham_code_search` |
-| Models | Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3 and Claude Fable 5.2, each with a smoke record. | Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra and Claude Fable 5.2, each with a smoke record. GLM 5.3 has no OpenCode record yet and is not offered. |
+| Models | Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra, each with a smoke record. | Claude Opus 5.5, Claude Sonnet 5.5, GPT-6.1 Sol, GPT-6 Astra, Claude Fable 5.2, GPT-6.2 Sol and GPT-6.2 Astra, each with a smoke record. GLM 5.3 has no OpenCode record yet and is not offered. |
 
 A model is offered on an engine only with a passing smoke record for that engine.
 The service names the engine and model pair when it refuses one without a record.
@@ -4448,10 +4450,16 @@ The title line shows the model the run will use.
 
 ### Picking a model in the composer
 
-Model lists the six supported models.
+Model lists the eight supported models.
 Each row shows an alias, name and context window.
 Bedrock id appears on terminals 110 columns wide or more.
 The chosen row is marked with •.
+
+On a short terminal the Model box shows part of the list.
+It keeps the picked model in view.
+Its title then starts with the rows on screen, for example `Model 2-4 of 6`.
+A terminal of 24 rows has room for 6 rows of the list, or for 3 when the screen also has a Backend box.
+The prompt box keeps its rows however long the list is.
 
 Up/Down/Left/Right move through the selectable models.
 Home/PageUp go to the first model.
@@ -5728,7 +5736,7 @@ ham config set run.review_round off
 A stage can also switch the round off for all runs, and a run cannot switch it back on.
 ## Choosing a model
 
-There are six models.
+There are eight models.
 All use the Bedrock Converse API in the Region of the stage. The list shows them with `us-east-1`.
 Bedrock is the only provider.
 
@@ -5738,10 +5746,12 @@ These are the models of Cline, the default engine. Each engine has its own smoke
 |---|---|---|---|---|
 | `opus` | Claude Opus 5.5 | `us.anthropic.claude-opus-5-5` | 1,000,000 | 128,000 |
 | `sonnet` | Claude Sonnet 5.5 | `global.anthropic.claude-sonnet-5-5` | 1,000,000 | 128,000 |
-| `sol` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 1,000,000 | 131,072 |
-| `astra` | GPT-6 Astra | `us.openai.gpt-6-astra` | 1,050,000 | 128,000 |
+| `sol-6.1` | GPT-6.1 Sol | `us.openai.gpt-6.1-sol` | 920,000 | 131,072 |
+| `astra-6` | GPT-6 Astra | `us.openai.gpt-6-astra` | 920,000 | 128,000 |
 | `glm` | GLM 5.3 | `us.zai.glm-5.3` | 1,048,576 | 128,000 |
 | `fable` | Claude Fable 5.2 | `global.anthropic.claude-fable-5-2` | 1,000,000 | 128,000 |
+| `sol` | GPT-6.2 Sol | `us.openai.gpt-6.2-sol` | 920,000 | 128,000 |
+| `astra` | GPT-6.2 Astra | `us.openai.gpt-6.2-astra` | 920,000 | 128,000 |
 
 Claude Fable 5.2 needs provider data sharing. See "Models that need provider data sharing" below.
 
@@ -5913,6 +5923,9 @@ ham models --server
 
 The stage serves it from `GET /v1/direct/models`.
 It notes when the stage's default differs from this build's.
+It also notes when the stage's short name of a model differs from this build's.
+`--model`, `HAMH_MODEL` and `default_model` take this build's names, the ones `ham models` lists.
+A full id means the same model on both.
 
 Set the config choice:
 
@@ -6051,7 +6064,7 @@ Run names and run tags come from a small model, Claude Haiku 5.5 (Bedrock route 
 It answers the service's own helper calls, outside Cline, the coding engine.
 Its median answer takes 935 milliseconds.
 
-It is not one of the six models, and you cannot choose it.
+It is not one of the eight models, and you cannot choose it.
 It is not in the list that `ham models` prints.
 `--model haiku`, the `HAMH_MODEL` variable and the `default_model` key refuse it, as they refuse any name outside the five.
 Cline never uses it and keeps the model you chose.
@@ -6075,7 +6088,7 @@ A tag you removed from a run does not count for that run.
 The service calls the model with the stage's own AWS account in the Regions described under [Accounts and Regions](../README.md#accounts-and-regions).
 Whichever coding model you chose, that excerpt goes to Anthropic's Claude Haiku 5.5, and so does the list of your own tags when it writes tags.
 With Claude Sonnet 5.5 or Claude Opus 5.5 this adds no new provider.
-With GPT-6.1 Sol, GPT-6 Astra or GLM 5.3 it adds Anthropic as a second reader of the excerpt.
+With GPT-6.1 Sol, GPT-6 Astra, GPT-6.2 Sol, GPT-6.2 Astra or GLM 5.3 it adds Anthropic as a second reader of the excerpt.
 
 An operator can switch the model off for a stage at deploy; every run on that stage then keeps its seed name and gets no model tags. Claude Haiku 5.5 writes run names and
 tags only in us-east-1. A stage in us-west-2 deploys with the model off, so every run there keeps its seed name and gets no model tags. The setup plan says which case
@@ -6509,7 +6522,7 @@ ham finish <runId>
 ```
 
 `ham say <runId> -` reads text from standard input.
-`<model>` is a model id or alias: opus, sonnet, sol, astra, glm, fable.
+`<model>` is a model id or alias: opus, sonnet, sol-6.1, astra-6, glm, fable, sol, astra.
 It must be one of the models the question lists.
 
 | Option | What it does |
@@ -7403,11 +7416,12 @@ Find your symptom below, then follow the fix in that row.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `unknown model "<x>" (from --model); choose one of: ...` | The model name is not one of the models `ham models` lists. | Run `ham models`; use opus, sonnet, sol, astra, glm, fable, or a full id. If the source says HAMH_MODEL or config default_model, follow that message's fix. |
+| `unknown model "<x>" (from --model); choose one of: ...` | The model name is not one of the models `ham models` lists. | Run `ham models`; use opus, sonnet, sol-6.1, astra-6, glm, fable, sol, astra, or a full id. If the source says HAMH_MODEL or config default_model, follow that message's fix. |
 | `model "<x>" (from <source>) is listed as <id> but has no passing smoke record, so it is not selectable yet` | The model has no passing smoke record. | Pick another model. |
 | ``no rules found in <dir>: run `ham rules init` to write the default rules, or start with --no-rules`` | The rules folder is missing or empty. | Run `ham rules init`, or add `--no-rules` for this run. |
 | `rule "<name>" ...`, such as `rule "AGENTS.md" cannot be called AGENTS.md: Cline would load it as a repository instruction file; rename it` | A rule file breaks a name, empty-file, or frontmatter limit. | Change the named file. Run `ham rules show` to list what would be sent. |
 | `ham: POST /v1/direct/runs: HTTP 422: ... (unknown-model)` | Your `ham` build and the stage have different model lists. | Run `ham models --server` to see the stage's list. Update `ham` or ask the operator. |
+| `This stage runs backend v<N.NN>, which does not list <model>. Update the stage (run ham update), or pick a model it lists (ham models --server shows the stage's list).` | Your `ham` is newer than the stage and offers a model the stage does not list yet. `ham` adds this sentence to the stage's refusal of the start, on the command line and on the New run screen. It says `an older backend` when the stage sent no version. | Update the stage with `ham update`, or pick a model the stage lists; `ham models --server` shows them. `ham` starts no other model in its place. |
 | `HTTP 413: the request is <size>; a request carries at most <limit> in all ... (payload-too-large)` | The prompt, rules, skills, attachments and prompt files together are over what one request carries. The message names the largest part. | Shorten the largest part, or send fewer files. |
 | `HTTP 404: this stage does not serve direct runs; ... (direct-runs-not-served)` | The endpoint belongs to a stage other than `direct`, the direct-run stage. | Use the `direct` endpoint. It ends in /direct. |
 | `HTTP 400: prompt is empty (bad-request)` | The prompt is empty. | Write a prompt. |
@@ -7570,7 +7584,7 @@ The product changes nothing else about Cline.
 **Which model should I use?**
 
 Claude Sonnet 5.5 is the default.
-The other four are Claude Opus 5.5, GPT-6.1 Sol, GPT-6 Astra, GLM 5.3.
+The others you can pick without a setting are Claude Opus 5.5, GPT-6.2 Sol, GPT-6.2 Astra, GPT-6.1 Sol, GPT-6 Astra and GLM 5.3.
 
 **Where does the name of a run come from?**
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "about": "The supported models, each with the one route it runs on. All inference is Bedrock. The GLM 5.3 row is from the smoke record engine/catalog/smoke-us.zai.glm-5.3.json: window 1,048,576 tokens measured, 128,000 output tokens, Converse in us-east-1 and us-west-2. `alias` is the short name that `ham --model`, HAMH_MODEL, the config file's default_model and the TUI accept; the row with `default: true` (Claude Sonnet 5.5) is the model a run uses when the user sets nothing. A model is selectable only with a smokeRecordId (a passing smoke test) and a known contextTokens (the engine compacts only when the window is known); a row without one is listed as pending and refused. control-api refuses every id that is not listed here. A row may carry `alternateRoutes`: the other inference profile of the same model (`us.` <-> `global.`) with its own smoke record; a run never names it, and agentd may switch to it when the model's own route fails (provider failover). Edit by hand only to add a smoked route; the tests crates/ham-core/tests/models.rs, crates/ham-core/tests/model_routes.rs and crates/control-api/tests/direct_models.rs pin the models and their alternates. Each row also carries `reasoning`: `default` is the level the model reasons at when the user keeps `reasoning.effort = default`, `accepted` lists the launch levels (low, medium, high, xhigh) that passed the live check of that model, and `smokeRecordId` names the record of that check; a model is never offered at a level the check does not show as accepted. The two older Claude models and GLM 5.3 default to high because xhigh ended in the engine's idle limit or without an answer in that check, and Claude Fable 5.2 defaults to high because none of its xhigh long-reasoning turns finished (the provider's content filter ended them) while its high one did; a one-line edit of `default` moves a model, and it takes a deploy of the Lambdas, not a worker image. A row may carry `engine`, the engine whose smoke record it stands on (`cline` when absent). The OpenCode rows are the five models that passed on the pinned OpenCode release, each with the record engine/catalog/smoke-opencode-<model id>.json as its smokeRecordId; a model with no passing OpenCode record has no OpenCode row and is refused for that engine. The tests crates/ham-core/tests/b787_opencode_rows.rs and crates/control-api/tests/b787_engine_start.rs pin the rows to the record files. A row with `requiresProviderSharing` true runs only in an account in provider data sharing mode and only for a run that agrees to share its prompts and answers with the model's provider (the client setting run.provider_sharing and the request member providerSharing); the id of such a row is written here once, and until the row has a smokeRecordId it is listed as pending and refused.",
+  "about": "The supported models, each with the one route it runs on. All inference is Bedrock. The GLM 5.3 row is from the smoke record engine/catalog/smoke-us.zai.glm-5.3.json: window 1,048,576 tokens measured, 128,000 output tokens, Converse in us-east-1 and us-west-2. `alias` is the short name that `ham --model`, HAMH_MODEL, the config file's default_model and the TUI accept; the row with `default: true` (Claude Sonnet 5.5) is the model a run uses when the user sets nothing. A model is selectable only with a smokeRecordId (a passing smoke test) and a known contextTokens (the engine compacts only when the window is known); a row without one is listed as pending and refused. control-api refuses every id that is not listed here. A row may carry `alternateRoutes`: the other inference profile of the same model (`us.` <-> `global.`) with its own smoke record; a run never names it, and agentd may switch to it when the model's own route fails (provider failover). Edit by hand only to add a smoked route; the tests crates/ham-core/tests/models.rs, crates/ham-core/tests/model_routes.rs and crates/control-api/tests/direct_models.rs pin the models and their alternates. Each row also carries `reasoning`: `default` is the level the model reasons at when the user keeps `reasoning.effort = default`, `accepted` lists the launch levels (low, medium, high, xhigh) that passed the live check of that model, and `smokeRecordId` names the record of that check; a model is never offered at a level the check does not show as accepted. The two older Claude models and GLM 5.3 default to high because xhigh ended in the engine's idle limit or without an answer in that check, and Claude Fable 5.2 defaults to high because none of its xhigh long-reasoning turns finished (the provider's content filter ended them) while its high one did; a one-line edit of `default` moves a model, and it takes a deploy of the Lambdas, not a worker image. A row may carry `engine`, the engine whose smoke record it stands on (`cline` when absent). The OpenCode rows are the models that passed on the pinned OpenCode release, each with the record engine/catalog/smoke-opencode-<model id>.json as its smokeRecordId; a model with no passing OpenCode record has no OpenCode row and is refused for that engine. The tests crates/ham-core/tests/b787_opencode_rows.rs and crates/control-api/tests/b787_engine_start.rs pin the rows to the record files. A row with `requiresProviderSharing` true runs only in an account in provider data sharing mode and only for a run that agrees to share its prompts and answers with the model's provider (the client setting run.provider_sharing and the request member providerSharing); the id of such a row is written here once, and until the row has a smokeRecordId it is listed as pending and refused. The Cline rows of the four OpenAI models carry `contextTokens` 920,000: Bedrock accepted an input of 921,553 tokens for GPT-6.2 Sol and GPT-6.2 Astra and of 921,663 tokens for GPT-6.1 Sol and GPT-6 Astra and refused a larger one, and the Cline engine shortens a conversation at nine tenths of the row's value, so it does so before Bedrock refuses the input. The OpenCode rows of those models carry the maker's window and the measured output limit, which that engine is told as two figures. A row has one `alias`. `sol` and `astra` are the names of GPT-6.2 Sol and GPT-6.2 Astra; GPT-6.1 Sol and GPT-6 Astra are `sol-6.1` and `astra-6` in the rows of both engines, and the `note` of their Cline rows says so. A new model is appended after the last row of its engine and never inserted, because file order is the order of failover targets.",
   "models": [
     {
       "id": "us.anthropic.claude-opus-5-5",
@@ -71,11 +71,11 @@
       "id": "us.openai.gpt-6.1-sol",
       "name": "GPT-6.1 Sol",
       "vendor": "openai",
-      "alias": "sol",
+      "alias": "sol-6.1",
       "baseModelId": "openai.gpt-6.1-sol",
       "protocol": "converse",
       "region": "us-east-1",
-      "contextTokens": 1000000,
+      "contextTokens": 920000,
       "maxOutputTokens": 131072,
       "smokeRecordId": "s6:us.openai.gpt-6.1-sol:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-95+K16:01M49ZAB62KF94M7K44YMW2EFA/k16-19",
       "smokedAt": "2026-10-06T21:38:12Z",
@@ -90,6 +90,7 @@
         "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.openai.gpt-6.1-sol:converse+launch",
         "smokedAt": "2026-10-27T16:03:59Z"
       },
+      "note": "An earlier Sol model. The name sol now selects GPT-6.2 Sol; sol-6.1 selects this model.",
       "alternateRoutes": [
         {
           "id": "global.openai.gpt-6.1-sol",
@@ -103,11 +104,11 @@
       "id": "us.openai.gpt-6-astra",
       "name": "GPT-6 Astra",
       "vendor": "openai",
-      "alias": "astra",
+      "alias": "astra-6",
       "baseModelId": "openai.gpt-6-astra",
       "protocol": "converse",
       "region": "us-east-1",
-      "contextTokens": 1050000,
+      "contextTokens": 920000,
       "maxOutputTokens": 128000,
       "smokeRecordId": "s6:us.openai.gpt-6-astra:us-east-1:converse+K3:01M49HB78G3S3B8BMG2P25AF9M/k3-89+K16:01M4A80HTRMXEMEGCDJQE8WQDN/k16-03",
       "smokedAt": "2026-10-06T21:38:00Z",
@@ -122,6 +123,7 @@
         "smokeRecordId": "b649:reasoning-levels:2026-10-27:us.openai.gpt-6-astra:converse+launch",
         "smokedAt": "2026-10-27T16:03:59Z"
       },
+      "note": "An earlier Astra model. The name astra now selects GPT-6.2 Astra; astra-6 selects this model.",
       "alternateRoutes": [
         {
           "id": "global.openai.gpt-6-astra",
@@ -190,6 +192,70 @@
       ]
     },
     {
+      "id": "us.openai.gpt-6.2-sol",
+      "name": "GPT-6.2 Sol",
+      "vendor": "openai",
+      "alias": "sol",
+      "baseModelId": "openai.gpt-6.2-sol",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 920000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:us.openai.gpt-6.2-sol:us-east-1:converse+audit:2026-11-17/smoke-us.openai.gpt-6.2-sol.json",
+      "smokedAt": "2026-11-17T19:26:18Z",
+      "reasoning": {
+        "default": "xhigh",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-11-17:us.openai.gpt-6.2-sol:converse+launch",
+        "smokedAt": "2026-11-17T19:45:06Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "global.openai.gpt-6.2-sol",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:global.openai.gpt-6.2-sol:us-east-1:converse+audit:2026-11-17/smoke-us.openai.gpt-6.2-sol.json",
+          "smokedAt": "2026-11-17T19:26:22Z"
+        }
+      ]
+    },
+    {
+      "id": "us.openai.gpt-6.2-astra",
+      "name": "GPT-6.2 Astra",
+      "vendor": "openai",
+      "alias": "astra",
+      "baseModelId": "openai.gpt-6.2-astra",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 920000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "s6:us.openai.gpt-6.2-astra:us-east-1:converse+audit:2026-11-17/smoke-us.openai.gpt-6.2-astra.json",
+      "smokedAt": "2026-11-17T19:26:20Z",
+      "reasoning": {
+        "default": "xhigh",
+        "accepted": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "smokeRecordId": "b649:reasoning-levels:2026-11-17:us.openai.gpt-6.2-astra:converse+launch",
+        "smokedAt": "2026-11-17T19:45:06Z"
+      },
+      "alternateRoutes": [
+        {
+          "id": "global.openai.gpt-6.2-astra",
+          "region": "us-east-1",
+          "smokeRecordId": "s6:global.openai.gpt-6.2-astra:us-east-1:converse+audit:2026-11-17/smoke-us.openai.gpt-6.2-astra.json",
+          "smokedAt": "2026-11-17T19:26:25Z"
+        }
+      ]
+    },
+    {
       "id": "us.anthropic.claude-opus-5-5",
       "name": "Claude Opus 5.5",
       "vendor": "anthropic",
@@ -222,7 +288,7 @@
       "id": "us.openai.gpt-6.1-sol",
       "name": "GPT-6.1 Sol",
       "vendor": "openai",
-      "alias": "sol",
+      "alias": "sol-6.1",
       "engine": "opencode",
       "baseModelId": "openai.gpt-6.1-sol",
       "protocol": "converse",
@@ -236,7 +302,7 @@
       "id": "us.openai.gpt-6-astra",
       "name": "GPT-6 Astra",
       "vendor": "openai",
-      "alias": "astra",
+      "alias": "astra-6",
       "engine": "opencode",
       "baseModelId": "openai.gpt-6-astra",
       "protocol": "converse",
@@ -260,6 +326,34 @@
       "requiresProviderSharing": true,
       "smokeRecordId": "smoke-opencode:2.2.6:global.anthropic.claude-fable-5-2:us-east-1:converse:20261110",
       "smokedAt": "2026-11-10T03:48:03Z"
+    },
+    {
+      "id": "us.openai.gpt-6.2-sol",
+      "name": "GPT-6.2 Sol",
+      "vendor": "openai",
+      "alias": "sol",
+      "engine": "opencode",
+      "baseModelId": "openai.gpt-6.2-sol",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "smoke-opencode:2.2.6:us.openai.gpt-6.2-sol:us-east-1:converse:20261117",
+      "smokedAt": "2026-11-17T19:29:18Z"
+    },
+    {
+      "id": "us.openai.gpt-6.2-astra",
+      "name": "GPT-6.2 Astra",
+      "vendor": "openai",
+      "alias": "astra",
+      "engine": "opencode",
+      "baseModelId": "openai.gpt-6.2-astra",
+      "protocol": "converse",
+      "region": "us-east-1",
+      "contextTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "smokeRecordId": "smoke-opencode:2.2.6:us.openai.gpt-6.2-astra:us-east-1:converse:20261117",
+      "smokedAt": "2026-11-17T19:29:34Z"
     }
   ]
 }

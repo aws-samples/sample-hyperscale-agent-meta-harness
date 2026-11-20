@@ -1234,7 +1234,8 @@ fn a_start_line_with_a_repository_a_base_a_model_and_odd_file_names_fills_the_fo
     let text = screen(&app, 140, 40);
     assert!(text.contains("cc:my-repo"), "{text}");
     assert!(text.contains("main"), "{text}");
-    assert!(text.contains("GPT-6.1 Sol"), "{text}");
+    // `sol` names GPT-6.2 Sol since the names moved; GPT-6.1 Sol is `sol-6.1`.
+    assert!(text.contains("GPT-6.2 Sol"), "{text}");
     assert!(text.contains("--rules \"my rules\""), "{text}");
     assert!(text.contains("--continue 'say \"hi\".md'"), "{text}");
     assert!(text.contains("--input-wait 0"), "{text}");

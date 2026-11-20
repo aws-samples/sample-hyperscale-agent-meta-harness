@@ -83,17 +83,17 @@ fn the_request_names_the_resolved_model_and_the_flag_wins() {
     let r = direct_run_request(
         &none,
         DirectInputs::default(),
-        &prefs(Some("sol"), Some("opus")),
+        &prefs(Some("sol-6.1"), Some("opus")),
     )
     .unwrap();
     assert_eq!(r.model, SOL, "HAMH_MODEL beats the config file");
     let r = direct_run_request(&none, DirectInputs::default(), &prefs(None, Some("opus"))).unwrap();
     assert_eq!(r.model, OPUS, "the config file beats the built-in default");
-    let flag = direct(&["p", "--s3-only", "--direct", "--model", "astra"]);
+    let flag = direct(&["p", "--s3-only", "--direct", "--model", "astra-6"]);
     let r = direct_run_request(
         &flag,
         DirectInputs::default(),
-        &prefs(Some("sol"), Some("opus")),
+        &prefs(Some("sol-6.1"), Some("opus")),
     )
     .unwrap();
     assert_eq!(

@@ -561,6 +561,9 @@ fn b814_the_chosen_row_that_needs_sharing_shows_what_happens_on_submit() {
         press(&mut app, KeyCode::Tab);
     }
     press(&mut app, KeyCode::End);
+    // Claude Fable 5.2 is the sixth row of the list; the two rows appended after it are the last two.
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
     assert_eq!(app.chosen_model(), Some(FABLE));
     let text = flat(&screen_text(&app, 120, 40));
     assert!(text.contains("asks before"), "{text}");

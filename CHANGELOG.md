@@ -6,6 +6,26 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.24] - 2026-11-17
+
+### Added
+
+- GPT-6.2 Sol and GPT-6.2 Astra are selectable for both engines, Cline and OpenCode. On Cline both reason at xhigh effort by default.
+- On a short terminal the Model box of the New run screen shows the models around the picked one, and its title says which rows show.
+- When a stage refuses a model that this `ham` lists, `ham` names the backend's version and says to run `ham update` or to pick a model that `ham models --server` lists.
+- `ham models --server` adds a note when the stage holds another short name for a model than this `ham`.
+
+### Changed
+
+- `sol` and `astra` now select GPT-6.2 Sol and GPT-6.2 Astra. GPT-6.1 Sol and GPT-6 Astra are `sol-6.1` and `astra-6` and stay selectable by their full ids. A default saved with `ham config set default_model` holds a full id and keeps its model. The default model stays Claude Sonnet 5.5.
+- `ham models` prints a note for GPT-6.1 Sol and for GPT-6 Astra that says which name selects them.
+- When a model route fails, a run on an OpenAI model tries at most four other OpenAI routes and then routes of other providers.
+- The cost of a run on GPT-6.2 Sol or GPT-6.2 Astra reads `unknown`: Amazon Bedrock has published no price for them.
+
+### Fixed
+
+- Cline runs on GPT-6 Astra and GPT-6.1 Sol now shorten a long conversation before Bedrock's input limit.
+
 ## [5.23] - 2026-11-17
 
 ### Added

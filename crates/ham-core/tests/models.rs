@@ -72,20 +72,24 @@ fn the_built_in_default_is_claude_sonnet_5_5_in_the_constant_and_in_the_file() {
 }
 
 #[test]
-fn the_five_aliases_name_the_owners_five_models() {
+fn each_alias_names_its_model() {
     let m = builtin();
     for (alias, id) in [
         ("opus", OPUS),
         ("sonnet", SONNET),
-        ("sol", SOL),
-        ("astra", ASTRA),
+        // GPT-6.1 Sol and GPT-6 Astra answer to a name of their own since `sol` and `astra` name the newer models.
+        ("sol-6.1", SOL),
+        ("astra-6", ASTRA),
         ("glm", GLM),
+        ("sol", "us.openai.gpt-6.2-sol"),
+        ("astra", "us.openai.gpt-6.2-astra"),
     ] {
         assert_eq!(m.find(alias).unwrap().id, id, "{alias}");
         assert_eq!(m.find(id).unwrap().id, id, "the full id of {alias}");
     }
-    // Claude Fable 5.2 is the sixth row; it is selectable with its live record (tests/b803_catalog_sharing.rs).
-    assert_eq!(m.models().len(), 6);
+    // Claude Fable 5.2 is the sixth row; it is selectable with its live record (tests/b803_catalog_sharing.rs). The two models
+    // are the seventh and the eighth.
+    assert_eq!(m.models().len(), 8);
 }
 
 #[test]
@@ -127,13 +131,19 @@ fn precedence_is_flag_then_env_then_config_then_built_in() {
     let cases: [Case; 8] = [
         (
             Some("opus"),
-            Some("sol"),
-            Some("astra"),
+            Some("sol-6.1"),
+            Some("astra-6"),
             OPUS,
             ModelSource::Flag,
         ),
-        (None, Some("sol"), Some("astra"), SOL, ModelSource::Env),
-        (None, None, Some("astra"), ASTRA, ModelSource::Config),
+        (
+            None,
+            Some("sol-6.1"),
+            Some("astra-6"),
+            SOL,
+            ModelSource::Env,
+        ),
+        (None, None, Some("astra-6"), ASTRA, ModelSource::Config),
         (Some(SOL), None, Some("opus"), SOL, ModelSource::Flag),
         (
             Some("sonnet"),
@@ -296,7 +306,6 @@ fn the_parser_refuses_a_default_or_alias_that_would_misroute() {
         "",
         "Has Space",
         "UPPER",
-        "a.b",
         "-x",
         "x_y",
         "way-too-long-alias-way-too-long",
@@ -390,14 +399,15 @@ fn the_text_listing_marks_the_default_and_the_model_the_next_run_uses() {
 }
 
 /// GLM 5.3 is slow at high effort and can end without an answer at xhigh, so the list says so: selectable, not recommended for a first run.
+/// The two earlier OpenAI rows carry the note that says which name selects them now; no other row has a note.
 #[test]
-fn only_glm_5_3_carries_a_note_and_the_listing_prints_it_under_the_table() {
+fn glm_5_3_carries_its_note_and_the_listing_prints_it_under_the_table() {
     let list = builtin().list();
     for row in &list.models {
         assert_eq!(
             row.note.is_some(),
-            row.alias.as_deref() == Some("glm"),
-            "{}: only the GLM row has a note",
+            matches!(row.alias.as_deref(), Some("glm" | "sol-6.1" | "astra-6")),
+            "{}: the GLM row and the two earlier OpenAI rows have a note, no other row",
             row.id
         );
     }

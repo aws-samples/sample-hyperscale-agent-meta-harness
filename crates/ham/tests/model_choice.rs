@@ -158,7 +158,7 @@ async fn config_set_default_model_stores_the_full_id_and_keeps_every_other_key()
         assert!(text.contains(kept), "{kept} lost: {text}");
     }
     // The full id and the alias spelling of a different case give the same file.
-    let o = ham(&h, &["config", "set", "defaultModel", "SOL"], &[]).await;
+    let o = ham(&h, &["config", "set", "defaultModel", "SOL-6.1"], &[]).await;
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert!(
         h.read_config()
@@ -175,7 +175,7 @@ async fn config_set_default_model_stores_the_full_id_and_keeps_every_other_key()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_works_on_a_fresh_machine_with_no_config_file_and_no_endpoint() {
     let h = bare_home("cfg-fresh");
-    let o = ham(&h, &["config", "set", "default_model", "astra"], &[]).await;
+    let o = ham(&h, &["config", "set", "default_model", "astra-6"], &[]).await;
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     assert_eq!(h.read_config(), format!("defaultModel = \"{ASTRA}\"\n"));
     let o = ham(&h, &["config", "get", "default_model"], &[]).await;
@@ -390,14 +390,14 @@ async fn models_marks_the_model_the_next_run_uses_by_the_same_order_as_a_start()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn models_json_carries_the_default_and_the_selection() {
     let h = bare_home("models-json");
-    let o = ham(&h, &["models", "--json"], &[("HAMH_MODEL", "astra")]).await;
+    let o = ham(&h, &["models", "--json"], &[("HAMH_MODEL", "astra-6")]).await;
     assert_eq!(o.status.code(), Some(0), "{}", err(&o));
     let v: Value = serde_json::from_str(out(&o).trim()).unwrap();
     assert_eq!(v["default"], SONNET);
     assert_eq!(v["selected"]["id"], ASTRA);
     assert_eq!(v["selected"]["source"], "HAMH_MODEL");
     let models = v["models"].as_array().unwrap();
-    assert_eq!(models.len(), 6);
+    assert_eq!(models.len(), 8);
     let default_rows: Vec<&str> = models
         .iter()
         .filter(|m| m["default"] == true)
@@ -473,9 +473,9 @@ async fn the_flag_beats_the_variable_beats_the_config_file_beats_the_default() {
     );
     type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], &'a str);
     let cases: [Case; 6] = [
-        (&["--model", "opus"], &[("HAMH_MODEL", "sol")], OPUS),
+        (&["--model", "opus"], &[("HAMH_MODEL", "sol-6.1")], OPUS),
         (&["--model", SOL], &[], SOL),
-        (&[], &[("HAMH_MODEL", "sol")], SOL),
+        (&[], &[("HAMH_MODEL", "sol-6.1")], SOL),
         (&[], &[("HAMH_MODEL", "")], ASTRA),
         (&[], &[], ASTRA),
         (&["--model", "Sonnet"], &[], SONNET),

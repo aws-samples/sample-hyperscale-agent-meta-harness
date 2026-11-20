@@ -256,7 +256,7 @@ fn b787_the_model_list_of_a_build_with_only_cline_rows_has_no_engine_member() {
     let c = catalog_with_only_cline_rows();
     let v = serde_json::to_value(c.list()).unwrap();
     let rows = v["models"].as_array().unwrap();
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 8);
     assert!(rows.iter().all(|r| r.get("engine").is_none()), "{v}");
     assert_eq!(v, serde_json::to_value(models::builtin().list()).unwrap());
 }
@@ -268,20 +268,20 @@ async fn b787_the_model_list_route_shows_the_cline_rows_as_ever_then_the_opencod
     let (status, v) = chat_support::get(&w, ME, "/v1/direct/models", &[]).await;
     assert_eq!(status, 200, "{v}");
     let rows = v["models"].as_array().unwrap();
-    assert_eq!(rows.len(), 11, "{v}");
-    assert!(rows[..6].iter().all(|r| r.get("engine").is_none()), "{v}");
-    assert!(rows[6..].iter().all(|r| r["engine"] == "opencode"), "{v}");
-    let cline: Vec<&Value> = rows[..6].iter().collect();
+    assert_eq!(rows.len(), 15, "{v}");
+    assert!(rows[..8].iter().all(|r| r.get("engine").is_none()), "{v}");
+    assert!(rows[8..].iter().all(|r| r["engine"] == "opencode"), "{v}");
+    let cline: Vec<&Value> = rows[..8].iter().collect();
     assert_eq!(
         Value::Array(cline.into_iter().cloned().collect()),
         serde_json::to_value(models::builtin().list().models).unwrap()
     );
-    let open: Vec<&str> = rows[6..]
+    let open: Vec<&str> = rows[8..]
         .iter()
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert!(!open.contains(&GLM), "{open:?}");
-    assert_eq!(open.len(), 5);
+    assert_eq!(open.len(), 7);
     assert_eq!(
         v,
         serde_json::to_value(models::builtin_catalog().list()).unwrap()
@@ -331,23 +331,23 @@ async fn b787_a_start_on_opencode_with_glm_is_422_model_not_smoked_and_the_messa
 #[test]
 fn b787_the_catalog_rows_of_the_cost_route_name_the_engine_of_each_row() {
     use control_api::direct_models::{models_response, models_response_of_catalog};
-    // The shipped list: the six Cline rows first, then one row for each model with an OpenCode record.
+    // The shipped list: the eight Cline rows first, then one row for each model with an OpenCode record.
     let today = models_response();
-    assert_eq!(today.rows.len(), 11);
-    assert!(today.rows[..6].iter().all(|r| r.engine == Engine::CLINE));
-    assert!(today.rows[6..].iter().all(|r| r.engine == Engine::OPENCODE));
+    assert_eq!(today.rows.len(), 15);
+    assert!(today.rows[..8].iter().all(|r| r.engine == Engine::CLINE));
+    assert!(today.rows[8..].iter().all(|r| r.engine == Engine::OPENCODE));
     assert!(
-        today.rows[6..]
+        today.rows[8..]
             .iter()
             .all(|r| !r.smoke_record_id.is_empty())
     );
-    assert!(today.rows[6..].iter().all(|r| r.profile_id != GLM));
+    assert!(today.rows[8..].iter().all(|r| r.profile_id != GLM));
     // With an OpenCode row that has a smoke record, the row names its engine; a row without a record is not selectable and is not shown.
     let c = catalog_with_opencode();
     let rows = models_response_of_catalog(&c).rows;
     assert_eq!(
         rows.len(),
-        7,
+        9,
         "{:?}",
         rows.iter()
             .map(|r| (&r.profile_id, r.engine))

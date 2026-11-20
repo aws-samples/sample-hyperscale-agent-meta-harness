@@ -14,13 +14,13 @@ ham · New run · model: GLM 5.3 (chosen here)
 ┌ Base ref (optional) ─────┐┌ Options ─────────────────────────────────────────┐
 │                          ││--no-rules · --rules · --continue · --input-wait  │
 └──────────────────────────┘└──────────────────────────────────────────────────┘
-┌ ▶ Model (↑↓ picks for this run, d saves it as your default) ─────────────────┐
-│ ( ) opus    Claude Opus 5.5    ctx 1,000,000                                 │
+┌ ▶ Model 2-7 of 8 (↑↓ picks for this run, d saves it as your default) ────────┐
 │ ( ) sonnet  Claude Sonnet 5.5  ctx 1,000,000                                 │
-│ ( ) sol     GPT-6.1 Sol        ctx 1,000,000                                 │
-│ ( ) astra   GPT-6 Astra        ctx 1,050,000                                 │
+│ ( ) sol-6.1 GPT-6.1 Sol        ctx   920,000                                 │
+│ ( ) astra-6 GPT-6 Astra        ctx   920,000                                 │
 │›(•) glm     GLM 5.3            ctx 1,048,576  your default                   │
 │ ( ) fable   Claude Fable 5.2   ctx 1,000,000  needs provider data sharing    │
+│ ( ) sol     GPT-6.2 Sol        ctx   920,000                                 │
 └──────────────────────────────────────────────────────────────────────────────┘
   [ Submit ]  (Ctrl-S)
 Saved GLM 5.3 as your default (config default_model); new composers open on it.

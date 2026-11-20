@@ -14,7 +14,13 @@ const SONNET: &str = "global.anthropic.claude-sonnet-5-5";
 
 /// The models of `engine/catalog/models.json` that have no price row yet. A model belongs here only until its row is added,
 /// and the test below fails the day it is: remove it from this list then.
-const UNPRICED: [&str; 1] = ["us.zai.glm-5.3"];
+/// GLM 5.3, and GPT-6.2 Sol and GPT-6.2 Astra: Bedrock has published no price for the two new models, so they get no row, and a
+/// run on one of them shows its cost as unknown. A row is added from Bedrock's own price, never from the maker's list price.
+const UNPRICED: [&str; 3] = [
+    "us.zai.glm-5.3",
+    "us.openai.gpt-6.2-sol",
+    "us.openai.gpt-6.2-astra",
+];
 
 fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 2e-6
@@ -79,7 +85,7 @@ fn the_pinned_table_prices_the_direct_models_per_million_tokens() {
 fn every_direct_model_is_priced_except_the_ones_named_as_gaps() {
     let p = pinned();
     let ids: Vec<&str> = builtin().models().iter().map(|m| m.id.as_str()).collect();
-    assert_eq!(ids.len(), 6, "{ids:?}");
+    assert_eq!(ids.len(), 8, "{ids:?}");
     for id in &ids {
         let priced = p.price(id).is_some();
         assert_eq!(

@@ -1191,7 +1191,7 @@ async fn download_url<S: Store, B: Blobs, E: Execution>(
     }
 }
 
-/// `GET /v1/models`: the five models of `engine/catalog/models.json` as catalog rows, read from no table (`ham doctor` reads it).
+/// `GET /v1/models`: the models of `engine/catalog/models.json` as catalog rows, read from no table (`ham doctor` reads it).
 fn models() -> Reply {
     json(200, &crate::direct_models::models_response())
 }

@@ -1,15 +1,15 @@
 //! The alternate routes of the model list and the failover routes of a chosen model.
 //!
-//! `engine/catalog/models.json` gives each of the owner's models its one route and, for the five that have them, the other
+//! `engine/catalog/models.json` gives each of the owner's models its one route and, for those that have one, the other
 //! inference profile of the same model (`us.` <-> `global.`) with its own smoke record. A run names one model; the control plane
 //! turns the list into the routes agentd may switch to when the model fails: the other profile of the same model first, then the
-//! other models (same vendor first, then catalog order), each followed by its own other profile. Only routes with a smoke record
-//! are ever offered.
+//! other models (same vendor first, at most four of its routes, then catalog order), each followed by its own other profile. Only
+//! routes with a smoke record are ever offered.
 
 #![allow(clippy::unwrap_used)]
 
-use ham_core::models::{Models, ModelsError, builtin};
-use harness_protocol::common::Protocol;
+use ham_core::models::{Models, ModelsError, builtin, builtin_catalog};
+use harness_protocol::common::{Engine, Protocol};
 use harness_protocol::direct::MAX_DIRECT_ROUTES;
 use serde_json::{Value, json};
 
@@ -24,6 +24,10 @@ const ASTRA_GL: &str = "global.openai.gpt-6-astra";
 const GLM: &str = "us.zai.glm-5.3";
 const FABLE_GL: &str = "global.anthropic.claude-fable-5-2";
 const FABLE_US: &str = "us.anthropic.claude-fable-5-2";
+const NEW_SOL_US: &str = "us.openai.gpt-6.2-sol";
+const NEW_SOL_GL: &str = "global.openai.gpt-6.2-sol";
+const NEW_ASTRA_US: &str = "us.openai.gpt-6.2-astra";
+const NEW_ASTRA_GL: &str = "global.openai.gpt-6.2-astra";
 
 fn ids(chosen: &str) -> Vec<String> {
     builtin()
@@ -40,7 +44,7 @@ fn strs(v: &[&str]) -> Vec<String> {
 // ---- the file ---------------------------------------------------------------------------------------------------------
 
 #[test]
-fn five_models_carry_their_other_profile_and_glm_has_none() {
+fn seven_models_carry_their_other_profile_and_glm_has_none() {
     let by_id = |id: &str| builtin().find(id).unwrap();
     let alt = |id: &str| -> Vec<String> {
         by_id(id)
@@ -54,6 +58,8 @@ fn five_models_carry_their_other_profile_and_glm_has_none() {
     assert_eq!(alt(SOL_US), strs(&[SOL_GL]));
     assert_eq!(alt(ASTRA_US), strs(&[ASTRA_GL]));
     assert_eq!(alt(FABLE_GL), strs(&[FABLE_US]));
+    assert_eq!(alt(NEW_SOL_US), strs(&[NEW_SOL_GL]));
+    assert_eq!(alt(NEW_ASTRA_US), strs(&[NEW_ASTRA_GL]));
     assert!(alt(GLM).is_empty(), "GLM 5.3 has no smoked second profile");
 }
 
@@ -88,7 +94,7 @@ fn an_alternate_route_has_its_own_smoke_record_and_the_homes_region() {
 
 #[test]
 fn an_alternate_id_is_not_a_model_a_request_may_name() {
-    // A request names one of the five by its own id; the other profile is a route the control plane adds, not a choice.
+    // A request names a model by its own id; the other profile is a route the control plane adds, not a choice.
     assert!(builtin().check(OPUS_GL).is_err());
     assert!(builtin().find(OPUS_GL).is_none());
 }
@@ -185,10 +191,11 @@ fn sonnet_the_default_falls_back_to_us_then_opus_then_the_openai_models_then_glm
 
 #[test]
 fn sol_prefers_astra_the_same_vendor_before_the_anthropic_models() {
+    // Its first target stays GPT-6 Astra; GPT-6.2 Sol, appended to the list, follows; three routes of another vendor end the list.
     assert_eq!(
         ids(SOL_US),
         strs(&[
-            SOL_GL, ASTRA_US, ASTRA_GL, OPUS_US, OPUS_GL, SONNET_GL, SONNET_US, GLM
+            SOL_GL, ASTRA_US, ASTRA_GL, NEW_SOL_US, NEW_SOL_GL, OPUS_US, OPUS_GL, SONNET_GL
         ])
     );
 }
@@ -198,8 +205,244 @@ fn astra_prefers_sol_then_the_anthropic_models() {
     assert_eq!(
         ids(ASTRA_US),
         strs(&[
-            ASTRA_GL, SOL_US, SOL_GL, OPUS_US, OPUS_GL, SONNET_GL, SONNET_US, GLM
+            ASTRA_GL, SOL_US, SOL_GL, NEW_SOL_US, NEW_SOL_GL, OPUS_US, OPUS_GL, SONNET_GL
         ])
+    );
+}
+
+/// The lists the release ships, id by id: the rule of `Models::failover_routes_for` on the shipped rows. A conversation was moved
+/// along every hop with a new model that these lists hold, through the pinned Cline, before the rows were added: each such pair passed.
+/// A pair that could not be measured is in no list: GLM 5.3 and Claude Fable 5.2 are no target of a new model, and a new model is no
+/// target of theirs. The rule leaves those pairs out itself (`NOT_MEASURED` and the tests after this one).
+#[test]
+fn b862_the_real_lists_are_those_of_the_design() {
+    let with_sharing = |chosen: &str, sharing: bool| -> Vec<String> {
+        builtin()
+            .failover_routes_for(chosen, sharing)
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    };
+    let lists: [(&str, [&str; 8]); 8] = [
+        (
+            OPUS_US,
+            [
+                OPUS_GL, SONNET_GL, SONNET_US, SOL_US, SOL_GL, ASTRA_US, ASTRA_GL, GLM,
+            ],
+        ),
+        (
+            SONNET_GL,
+            [
+                SONNET_US, OPUS_US, OPUS_GL, SOL_US, SOL_GL, ASTRA_US, ASTRA_GL, GLM,
+            ],
+        ),
+        (
+            SOL_US,
+            [
+                SOL_GL, ASTRA_US, ASTRA_GL, NEW_SOL_US, NEW_SOL_GL, OPUS_US, OPUS_GL, SONNET_GL,
+            ],
+        ),
+        (
+            ASTRA_US,
+            [
+                ASTRA_GL, SOL_US, SOL_GL, NEW_SOL_US, NEW_SOL_GL, OPUS_US, OPUS_GL, SONNET_GL,
+            ],
+        ),
+        (
+            GLM,
+            [
+                OPUS_US, OPUS_GL, SONNET_GL, SONNET_US, SOL_US, SOL_GL, ASTRA_US, ASTRA_GL,
+            ],
+        ),
+        (
+            FABLE_GL,
+            [
+                FABLE_US, OPUS_US, OPUS_GL, SONNET_GL, SONNET_US, SOL_US, SOL_GL, ASTRA_US,
+            ],
+        ),
+        (
+            NEW_SOL_US,
+            [
+                NEW_SOL_GL, SOL_US, SOL_GL, ASTRA_US, ASTRA_GL, OPUS_US, OPUS_GL, SONNET_GL,
+            ],
+        ),
+        (
+            NEW_ASTRA_US,
+            [
+                NEW_ASTRA_GL,
+                SOL_US,
+                SOL_GL,
+                ASTRA_US,
+                ASTRA_GL,
+                OPUS_US,
+                OPUS_GL,
+                SONNET_GL,
+            ],
+        ),
+    ];
+    // Every row of the list is a home here, in file order.
+    let homes: Vec<&str> = builtin().models().iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(homes, lists.map(|(home, _)| home));
+    for (home, want) in lists {
+        assert_eq!(ids(home), strs(&want), "{home}");
+        // Provider data sharing changes no list: the one model that needs it keeps the routes it had.
+        assert_eq!(with_sharing(home, true), strs(&want), "{home} with sharing");
+    }
+    let is_new = |id: &str| id.contains("gpt-6.2");
+    for (home, routes) in lists {
+        let unmeasured = home == GLM || home == FABLE_GL;
+        for r in routes {
+            if is_new(home) {
+                assert!(
+                    r != GLM && !r.contains("fable"),
+                    "{home}: {r} is a pair that was not measured"
+                );
+            }
+            if unmeasured {
+                assert!(!is_new(r), "{home}: {r} is a pair that was not measured");
+            }
+        }
+        // Three routes of another vendor cover a failure of the whole vendor of an OpenAI home.
+        if home.contains("openai") {
+            assert_eq!(
+                routes.iter().filter(|r| !r.contains("openai")).count(),
+                3,
+                "{home}"
+            );
+        }
+    }
+}
+
+/// The pairs of models the switch record of the release lists as not measured, the home first. When the record was made GLM 5.3
+/// answered no call (every call was throttled) and Claude Fable 5.2 answered none (the accounts of the record lacked the data retention mode
+/// it needs), so no conversation reached either model, to or from GPT-6.2 Sol and GPT-6.2 Astra. A pair names the two models by the ids of
+/// their rows and covers every route of both.
+const NOT_MEASURED: [(&str, &str); 8] = [
+    (GLM, NEW_SOL_US),
+    (GLM, NEW_ASTRA_US),
+    (FABLE_GL, NEW_SOL_US),
+    (FABLE_GL, NEW_ASTRA_US),
+    (NEW_SOL_US, GLM),
+    (NEW_SOL_US, FABLE_GL),
+    (NEW_ASTRA_US, GLM),
+    (NEW_ASTRA_US, FABLE_GL),
+];
+
+/// The lists the release ships for the other engine, id by id, beside the lists of the default engine above. Its rows have no
+/// second profile and it has no row of GLM 5.3. Every pair with a new model that these lists hold passed in the switch record, which moved
+/// the conversations through the pinned Cline; no switch was measured through OpenCode itself.
+#[test]
+fn b862_the_lists_of_the_other_engine_are_those_of_the_design() {
+    let catalog = builtin_catalog();
+    let list = catalog.for_engine(Engine::OPENCODE).unwrap();
+    let lists: [(&str, &[&str]); 7] = [
+        (
+            OPUS_US,
+            &[SONNET_GL, SOL_US, ASTRA_US, NEW_SOL_US, NEW_ASTRA_US],
+        ),
+        (
+            SONNET_GL,
+            &[OPUS_US, SOL_US, ASTRA_US, NEW_SOL_US, NEW_ASTRA_US],
+        ),
+        (
+            SOL_US,
+            &[ASTRA_US, NEW_SOL_US, NEW_ASTRA_US, OPUS_US, SONNET_GL],
+        ),
+        (
+            ASTRA_US,
+            &[SOL_US, NEW_SOL_US, NEW_ASTRA_US, OPUS_US, SONNET_GL],
+        ),
+        // The model that needs provider data sharing keeps the list it had before the two models: its pairs with them were not measured.
+        (FABLE_GL, &[OPUS_US, SONNET_GL, SOL_US, ASTRA_US]),
+        (
+            NEW_SOL_US,
+            &[SOL_US, ASTRA_US, NEW_ASTRA_US, OPUS_US, SONNET_GL],
+        ),
+        (
+            NEW_ASTRA_US,
+            &[SOL_US, ASTRA_US, NEW_SOL_US, OPUS_US, SONNET_GL],
+        ),
+    ];
+    // Every row of that engine's list is a home here, in file order.
+    let homes: Vec<&str> = list.models().iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(homes, lists.map(|(home, _)| home));
+    for (home, want) in lists {
+        for sharing in [false, true] {
+            let got: Vec<String> = catalog
+                .failover_routes_for(Engine::OPENCODE, home, sharing)
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            assert_eq!(got, strs(want), "{home} with sharing {sharing}");
+        }
+    }
+}
+
+/// No list of either engine holds a pair the switch record did not measure: for every home of such a pair in every engine's list,
+/// on its own route and on its other profile, with and without provider data sharing.
+#[test]
+fn b862_no_list_of_either_engine_holds_a_pair_that_was_not_measured() {
+    let catalog = builtin_catalog();
+    let mut engines_read = Vec::new();
+    for engine in catalog.engines() {
+        let list = catalog.for_engine(engine).unwrap();
+        for (home, target) in NOT_MEASURED {
+            let Some(row) = list.models().iter().find(|m| m.id == home) else {
+                continue;
+            };
+            let chosen = std::iter::once(row.id.clone())
+                .chain(row.alternate_routes.iter().map(|a| a.id.clone()));
+            for route in chosen {
+                for sharing in [false, true] {
+                    for r in list.failover_routes_for(&route, sharing) {
+                        let of = list.find_route(&r.id).unwrap();
+                        assert_ne!(
+                            of.id, target,
+                            "{engine}: a run on {route} with sharing {sharing} may switch to {}, a pair that was not measured",
+                            r.id
+                        );
+                    }
+                }
+            }
+            if !engines_read.contains(&engine) {
+                engines_read.push(engine);
+            }
+        }
+    }
+    assert_eq!(engines_read, vec![Engine::CLINE, Engine::OPENCODE]);
+}
+
+/// The rule leaves such a pair out; the cut at eight routes is not what keeps it away. On a list of four of the shipped rows (GLM 5.3,
+/// Claude Fable 5.2 and the two new models) no list reaches the cut.
+#[test]
+fn b862_a_pair_that_was_not_measured_is_left_out_by_the_rule_and_not_by_the_cut() {
+    let mut doc: Value =
+        serde_json::from_str(include_str!("../../../engine/catalog/models.json")).unwrap();
+    doc["models"].as_array_mut().unwrap().retain(|r| {
+        r.get("engine").is_none()
+            && [GLM, FABLE_GL, NEW_SOL_US, NEW_ASTRA_US].contains(&r["id"].as_str().unwrap())
+    });
+    let list = Models::parse(&doc.to_string()).unwrap();
+    assert_eq!(list.models().len(), 4);
+    let ids = |chosen: &str, sharing: bool| -> Vec<String> {
+        list.failover_routes_for(chosen, sharing)
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    };
+    // GLM 5.3 has no other profile, Claude Fable 5.2 is no route of a run that is not on it, and the pairs with the new models were not measured.
+    assert_eq!(ids(GLM, false), strs(&[]));
+    // Claude Fable 5.2: its other profile and GLM 5.3, never a new model, with the agreement and without it.
+    assert_eq!(ids(FABLE_GL, true), strs(&[FABLE_US, GLM]));
+    assert_eq!(ids(FABLE_GL, false), strs(&[FABLE_US, GLM]));
+    // A new model: its other profile and the other new model, never GLM 5.3 and never Claude Fable 5.2.
+    assert_eq!(
+        ids(NEW_SOL_US, false),
+        strs(&[NEW_SOL_GL, NEW_ASTRA_US, NEW_ASTRA_GL])
+    );
+    assert_eq!(
+        ids(NEW_ASTRA_GL, true),
+        strs(&[NEW_ASTRA_US, NEW_SOL_US, NEW_SOL_GL])
     );
 }
 
@@ -257,13 +500,13 @@ fn a_route_carries_the_models_own_limits_and_its_own_region() {
     let sol_gl = routes.iter().find(|r| r.id == SOL_GL).unwrap();
     assert_eq!(
         (sol_gl.context_tokens, sol_gl.max_output_tokens),
-        (1_000_000, 131_072),
+        (920_000, 131_072),
         "the other profile of Sol has Sol's limits, not the 0 the account catalog stores for it"
     );
     assert_eq!(sol_gl.region, "us-east-1");
     assert_eq!(sol_gl.protocol, Protocol::Converse);
     let astra = routes.iter().find(|r| r.id == ASTRA_US).unwrap();
-    assert_eq!(astra.context_tokens, 1_050_000);
+    assert_eq!(astra.context_tokens, 920_000);
     let glm = routes.iter().find(|r| r.id == GLM).unwrap();
     assert_eq!(glm.context_tokens, 1_048_576);
 }

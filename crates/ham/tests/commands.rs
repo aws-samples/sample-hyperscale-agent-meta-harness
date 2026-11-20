@@ -181,7 +181,7 @@ async fn doctor_prints_one_pass_line_per_check_and_fails_with_a_wrong_profile() 
         lines[0].contains(support::ME) && lines[0].contains("800000000022"),
         "{out}"
     );
-    assert!(lines[3].contains("11 selectable rows"), "{out}");
+    assert!(lines[3].contains("15 selectable rows"), "{out}");
     let o = ham(&h, &["doctor", "--json"]).await;
     let j = one_json(&o);
     assert!(

@@ -1,0 +1,96 @@
+{
+ "model": "GPT-6.2 Sol",
+ "vendor": "OpenAI",
+ "bedrockBaseModelId": "openai.gpt-6.2-sol",
+ "profileId": "us.openai.gpt-6.2-sol",
+ "alsoVerified": [
+  "global.openai.gpt-6.2-sol"
+ ],
+ "protocol": "converse",
+ "regions": {
+  "us-east-1": "pass"
+ },
+ "date": "2026-11-17",
+ "window": "19:26-19:26 UTC",
+ "probe": "the S6 smoke probe (Smoke.check_converse, check_limit, classify_converse, routes_of, finish) run on the two inference profiles in us-east-1 only; every check is the probe's own",
+ "limits": {
+  "contextTokens": 921553,
+  "contextTokensDoc": "1,050,000",
+  "contextTokensSource": "the maker's model page: context window 1,050,000 tokens, maximum input 922,000 tokens, maximum output 128,000 tokens",
+  "contextTokensMeasured": 921553,
+  "contextTokensMeasuredAt": "2026-11-17T20:58:32Z",
+  "contextTokensMeasuredHow": "Converse calls of plain repeated text on both routes: the largest input that was accepted, counted as inputTokens + cacheReadInputTokens + cacheWriteInputTokens of the call's usage, with maxTokens 64 and with maxTokens 128,000",
+  "inputRefusedFromTokens": 921663,
+  "inputRefusal": "ValidationException: The model returned the following errors: Your input exceeds the context window of this model. Please adjust your input and try again.",
+  "maxOutputTokens": 128000,
+  "maxOutputTokensSource": "Converse ValidationException ceiling probe (maxTokens 10,000,000), both routes"
+ },
+ "results": {
+  "converseTool": "pass",
+  "converseStream": "pass",
+  "toolRoundTrip": "pass",
+  "parallelTools": "pass",
+  "integerArgAbove2e31": "pass",
+  "cachePointSystemAndMessages": "pass",
+  "routes": {
+   "us.openai.gpt-6.2-sol": {
+    "result": "pass",
+    "protocol": "converse",
+    "toolStreaming": true,
+    "ttftMs": {
+     "converse-tool": 808,
+     "converse-stream-tool": 615,
+     "parallel-tools": 801,
+     "integer-arg": 591,
+     "cache-point": 477
+    },
+    "outputTokens": {
+     "converse-tool": 21,
+     "converse-stream-tool": 21,
+     "parallel-tools": 63,
+     "integer-arg": 31
+    },
+    "cacheUsage": {
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 1818
+    },
+    "attempts": 1,
+    "smokedAt": "2026-11-17T19:26:18Z"
+   },
+   "global.openai.gpt-6.2-sol": {
+    "result": "pass",
+    "protocol": "converse",
+    "toolStreaming": true,
+    "ttftMs": {
+     "converse-tool": 980,
+     "converse-stream-tool": 509,
+     "parallel-tools": 626,
+     "integer-arg": 804,
+     "cache-point": 702
+    },
+    "outputTokens": {
+     "converse-tool": 21,
+     "converse-stream-tool": 21,
+     "parallel-tools": 63,
+     "integer-arg": 31
+    },
+    "cacheUsage": {
+     "cacheReadInputTokens": 1818,
+     "cacheWriteInputTokens": 0
+    },
+    "attempts": 1,
+    "smokedAt": "2026-11-17T19:26:22Z"
+   }
+  },
+  "retriedChecks": [],
+  "retentionRefused": [],
+  "throttles": 0
+ },
+ "notes": [
+  "The account's Bedrock data retention mode was inherit, the default, during the calls: the model needs no agreement to share prompts with its provider.",
+  "contextTokens 921,553 is the largest input Bedrock accepted on both routes; an input of 921,663 tokens was refused. The maker's model page gives a context window of 1,050,000 tokens and a maximum input of 922,000 tokens.",
+  "The output ceiling of 128,000 tokens was measured on both routes and equals the maker's page figure.",
+  "The cache check is the probe's own: one Converse call with a cache point after a system text; the us. route wrote the cache tokens and the global. route, called seconds later, read them.",
+  "The catalog row's reasoning table is engine/catalog/reasoning-levels.json (cells for model sol)."
+ ]
+}

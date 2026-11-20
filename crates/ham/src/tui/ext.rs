@@ -431,7 +431,7 @@ async fn start_follow_up<P: ControlPlane>(
         .start_direct_run_set_by(&request, &key, resolved.copy_interval_key())
         .await
         .map(|r| r.run_id)
-        .map_err(|e| crate::api::start_failure(&e))
+        .map_err(|e| crate::api::start_failure_for(&e, &request))
 }
 
 /// `run.provider_sharing` of the config file as it is now; a file that cannot be read counts as off.

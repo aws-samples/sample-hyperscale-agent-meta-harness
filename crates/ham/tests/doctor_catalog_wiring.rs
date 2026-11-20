@@ -47,7 +47,7 @@ async fn the_limit_reaches_the_catalog_check_and_nothing_else_changes() {
     );
     assert!(c.detail.contains(" hours old (refresh them)"), "{c:?}");
     assert!(
-        c.detail.starts_with("11 selectable rows, newest smoke "),
+        c.detail.starts_with("15 selectable rows, newest smoke "),
         "{c:?}"
     );
 

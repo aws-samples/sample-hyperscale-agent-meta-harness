@@ -154,8 +154,8 @@ fn the_direct_composer_opens_on_claude_sonnet_5_5_and_lists_the_supported_models
 #[test]
 fn it_opens_on_the_users_default_in_the_order_variable_then_config_then_built_in() {
     for (p, want, label) in [
-        (prefs(None, Some("sol")), SOL, "config default_model"),
-        (prefs(Some("astra"), Some("sol")), ASTRA, "HAMH_MODEL"),
+        (prefs(None, Some("sol-6.1")), SOL, "config default_model"),
+        (prefs(Some("astra-6"), Some("sol-6.1")), ASTRA, "HAMH_MODEL"),
         (prefs(Some(""), Some(OPUS)), OPUS, "config default_model"),
         (prefs(Some("  "), None), SONNET, "built-in default"),
     ] {
@@ -216,14 +216,14 @@ fn a_fallback_must_be_confirmed_before_it_is_sent() {
     let (args, _) = only_direct(submit(&mut app));
     assert_eq!(args.model.as_deref(), Some(OPUS));
     // A good default never asks.
-    let mut app = composer(prefs(None, Some("sol")));
+    let mut app = composer(prefs(None, Some("sol-6.1")));
     type_text(&mut app, "Fix it");
     assert_eq!(only_direct(submit(&mut app)).0.model.as_deref(), Some(SOL));
 }
 
 #[test]
 fn saving_a_default_under_a_ham_model_override_says_the_variable_still_wins() {
-    let mut app = composer(prefs(Some("astra"), None));
+    let mut app = composer(prefs(Some("astra-6"), None));
     focus_model(&mut app);
     press(&mut app, KeyCode::Up);
     let id = app.chosen_model().unwrap().to_string();
@@ -369,7 +369,7 @@ fn submit_sends_the_model_on_the_screen_with_the_prompt_unchanged() {
     assert!(matches!(args.target, TargetArg::Repo(_)));
     assert!(args.no_rules && args.rules.is_none());
     // A pick.
-    let mut app = composer(prefs(None, Some("sol")));
+    let mut app = composer(prefs(None, Some("sol-6.1")));
     type_text(&mut app, "Fix it");
     focus_model(&mut app);
     press(&mut app, KeyCode::Up);
@@ -473,7 +473,7 @@ fn a_failed_save_says_so_and_changes_no_default() {
 
 // ---- a short terminal keeps every model on the screen ------------------------------------------------------------------
 
-const ALIASES: [&str; 5] = ["opus", "sonnet", "sol", "astra", "glm"];
+const ALIASES: [&str; 5] = ["opus", "sonnet", "sol-6.1", "astra-6", "glm"];
 
 /// The rows of the Model box, one per listed alias, by the `) <alias> ` that follows the radio mark.
 fn model_rows(text: &str) -> Vec<String> {
@@ -498,13 +498,14 @@ fn all_five_model_rows_stay_on_an_80x24_screen_when_the_message_wraps_to_two_lin
     }
 }
 
-/// Picking the last model and saving it adds a note under the list; the chosen row stays visible with its mark.
+/// Picking the fifth model and saving it adds a note under the list; the chosen row stays visible with its mark. With eight models the
+/// Model box is a window onto the list at 80x24: it follows the pick, so the first row leaves the screen and the picked row stays.
 #[test]
 fn the_picked_fifth_model_and_the_saved_note_fit_together_on_an_80x24_screen() {
     let mut app = composer(ModelPrefs::default());
     focus_model(&mut app);
     for _ in 0..3 {
-        press(&mut app, KeyCode::Down); // sonnet, sol, astra, glm
+        press(&mut app, KeyCode::Down); // sonnet, sol-6.1, astra-6, glm
     }
     let picked = app.chosen_model().unwrap().to_string();
     assert!(picked.contains("glm"), "the fifth row is GLM 5.3: {picked}");
@@ -517,8 +518,12 @@ fn the_picked_fifth_model_and_the_saved_note_fit_together_on_an_80x24_screen() {
     );
     let rows = model_rows(&text);
     assert!(
-        rows.iter().all(|r| !r.is_empty()),
-        "every row is shown at 80x24:\n{text}"
+        rows[0].is_empty() && rows[1..].iter().all(|r| !r.is_empty()),
+        "the window shows the rows around the pick at 80x24:\n{text}"
+    );
+    assert!(
+        text.contains("Model 2-7 of 8 (↑↓ picks for this run, d saves it as your default)"),
+        "the title says which rows show:\n{text}"
     );
     assert!(
         rows[4].contains("(•)") && rows[4].contains("your default"),
@@ -630,7 +635,7 @@ fn snapshots_of_the_direct_composer() {
     app.update(Msg::DefaultSaved(Ok(id)));
     snapshot_sizes(&app, "dm_composer_saved");
 
-    let mut app = composer(prefs(Some("astra"), Some("sol")));
+    let mut app = composer(prefs(Some("astra-6"), Some("sol-6.1")));
     type_text(&mut app, "Use the variable");
     snapshot_sizes(&app, "dm_composer_from_variable");
 

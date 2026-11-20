@@ -1,12 +1,22 @@
 {
  "schemaVersion": 1,
- "about": "The live table behind the `reasoning` rows of models.json. `route` cells: one Converse call on the route with the request fields the pinned engine sends (Claude: thinking adaptive plus output_config.effort; GPT-6.1 Sol and GPT-6 Astra: reasoning.effort; GLM 5.3: reasoning_effort), at each word the route might take. `launch` cells: one coding turn through the pinned engine launched with `--thinking <level>`; `wire` is the word the engine sent. `hardRuns`: one no-tool counting prompt per model and level, to see whether the engine's own idle limit (`idleLimitS`, no stream event for that long) ends the turn. A row of models.json lists as `accepted` the launch levels whose launch cell is accepted; `default` is chosen from the hard runs. crates/ham-core/tests/model_reasoning.rs holds the two together. The rows of model `fable` were recorded on 2026-11-10 with the same engine, time in `recordedAtByModel`; its `hardRuns` rows carry `prompt` (`matrices-8x8` is the counting prompt of the other rows, `matrices-6x6` its smaller form) and are repeated: three runs of the 8 by 8 form and one of the 6 by 6 form at each level, because the 8 by 8 form ended in the provider's content filter every time.",
+ "about": "The live table behind the `reasoning` rows of models.json. `route` cells: one Converse call on the route with the request fields the pinned engine sends (Claude: thinking adaptive plus output_config.effort; GPT-6.1 Sol and GPT-6 Astra: reasoning.effort; GLM 5.3: reasoning_effort), at each word the route might take. `launch` cells: one coding turn through the pinned engine launched with `--thinking <level>`; `wire` is the word the engine sent. `hardRuns`: one no-tool counting prompt per model and level, to see whether the engine's own idle limit (`idleLimitS`, no stream event for that long) ends the turn. A row of models.json lists as `accepted` the launch levels whose launch cell is accepted; `default` is chosen from the hard runs. crates/ham-core/tests/model_reasoning.rs holds the two together. The rows of model `fable` were recorded on 2026-11-10 with the same engine, time in `recordedAtByModel`; its `hardRuns` rows carry `prompt` (`matrices-8x8` is the counting prompt of the other rows, `matrices-6x6` its smaller form) and are repeated: three runs of the 8 by 8 form and one of the 6 by 6 form at each level, because the 8 by 8 form ended in the provider's content filter every time. The rows of models `sol` and `astra` (GPT-6.2 Sol and GPT-6.2 Astra) were recorded on 2026-11-17, time in `recordedAtByModel`, with the engine build named in `engineByModel`; their route cells carry the field of the other GPT rows (reasoning.effort), `idleLimitSByModel` is the idle limit measured on that build, and their `hardRuns` rows carry `prompt` and are repeated: three runs of the counting prompt at each level.",
  "recordedAt": "2026-10-27T16:03:59Z",
  "recordedAtByModel": {
-  "fable": "2026-11-10T01:05:55Z"
+  "fable": "2026-11-10T01:05:55Z",
+  "sol": "2026-11-17T19:45:06Z",
+  "astra": "2026-11-17T19:45:06Z"
  },
  "engine": "Cline 3.0.71 series with the 15 patches of engine/cline (tree bb25f432eac0)",
+ "engineByModel": {
+  "sol": "Cline 3.0.71 series with the 16 patches of engine/cline (tree c75466739c34), linux-x64 development build 3ca4d8ed7548",
+  "astra": "Cline 3.0.71 series with the 16 patches of engine/cline (tree c75466739c34), linux-x64 development build 3ca4d8ed7548"
+ },
  "idleLimitS": 360.4,
+ "idleLimitSByModel": {
+  "sol": 361.8,
+  "astra": 361.8
+ },
  "cells": [
   {
    "kind": "route",
@@ -458,7 +468,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "low",
    "sent": {
@@ -471,7 +481,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "medium",
    "sent": {
@@ -484,7 +494,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "high",
    "sent": {
@@ -497,7 +507,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "xhigh",
    "sent": {
@@ -510,7 +520,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "max",
    "sent": {
@@ -523,7 +533,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "minimal",
    "sent": {
@@ -536,7 +546,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "none",
    "sent": {
@@ -549,7 +559,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "low",
    "sent": {
@@ -562,7 +572,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "medium",
    "sent": {
@@ -575,7 +585,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "high",
    "sent": {
@@ -588,7 +598,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "xhigh",
    "sent": {
@@ -601,7 +611,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "max",
    "sent": {
@@ -614,7 +624,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "minimal",
    "sent": {
@@ -627,7 +637,7 @@
   },
   {
    "kind": "route",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "global.openai.gpt-6.1-sol",
    "level": "none",
    "sent": {
@@ -640,7 +650,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "low",
    "sent": {
@@ -653,7 +663,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "medium",
    "sent": {
@@ -666,7 +676,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "high",
    "sent": {
@@ -679,7 +689,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "xhigh",
    "sent": {
@@ -692,7 +702,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "max",
    "sent": {
@@ -705,7 +715,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "minimal",
    "sent": {
@@ -718,7 +728,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "none",
    "sent": {
@@ -731,7 +741,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "low",
    "sent": {
@@ -744,7 +754,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "medium",
    "sent": {
@@ -757,7 +767,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "high",
    "sent": {
@@ -770,7 +780,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "xhigh",
    "sent": {
@@ -783,7 +793,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "max",
    "sent": {
@@ -796,7 +806,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "minimal",
    "sent": {
@@ -809,7 +819,7 @@
   },
   {
    "kind": "route",
-   "model": "astra",
+   "model": "astra-6",
    "route": "global.openai.gpt-6-astra",
    "level": "none",
    "sent": {
@@ -1122,6 +1132,370 @@
    "detail": "unknown variant `none`, expected one of `low`, `medium`, `high`, `xhigh`, `max`, `Unhandled`"
   },
   {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'us.openai.gpt-6.2-sol' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "GPT-6.2 Sol does not support reasoning effort 'none'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'global.openai.gpt-6.2-sol' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "sol",
+   "route": "global.openai.gpt-6.2-sol",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "GPT-6.2 Sol does not support reasoning effort 'none'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'us.openai.gpt-6.2-astra' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'us.openai.gpt-6.2-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "low",
+   "sent": {
+    "reasoning": {
+     "effort": "low"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "medium",
+   "sent": {
+    "reasoning": {
+     "effort": "medium"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "high",
+   "sent": {
+    "reasoning": {
+     "effort": "high"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "sent": {
+    "reasoning": {
+     "effort": "xhigh"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "max",
+   "sent": {
+    "reasoning": {
+     "effort": "max"
+    }
+   },
+   "accepted": true,
+   "detail": null
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "minimal",
+   "sent": {
+    "reasoning": {
+     "effort": "minimal"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'minimal' is not supported with the 'global.openai.gpt-6.2-astra' model. Supported values are: 'none', 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
+   "kind": "route",
+   "model": "astra",
+   "route": "global.openai.gpt-6.2-astra",
+   "level": "none",
+   "sent": {
+    "reasoning": {
+     "effort": "none"
+    }
+   },
+   "accepted": false,
+   "detail": "Unsupported value: 'none' is not supported with the 'global.openai.gpt-6.2-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
+  },
+  {
    "kind": "launch",
    "model": "opus",
    "route": "us.anthropic.claude-opus-5-5",
@@ -1195,7 +1569,7 @@
   },
   {
    "kind": "launch",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "low",
    "wire": "low",
@@ -1204,7 +1578,7 @@
   },
   {
    "kind": "launch",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "medium",
    "wire": "medium",
@@ -1213,7 +1587,7 @@
   },
   {
    "kind": "launch",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "high",
    "wire": "high",
@@ -1222,7 +1596,7 @@
   },
   {
    "kind": "launch",
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "xhigh",
    "wire": "max",
@@ -1231,7 +1605,7 @@
   },
   {
    "kind": "launch",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "low",
    "wire": "low",
@@ -1240,7 +1614,7 @@
   },
   {
    "kind": "launch",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "medium",
    "wire": "medium",
@@ -1249,7 +1623,7 @@
   },
   {
    "kind": "launch",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "high",
    "wire": "high",
@@ -1258,7 +1632,7 @@
   },
   {
    "kind": "launch",
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "xhigh",
    "wire": "max",
@@ -1336,6 +1710,78 @@
    "wire": "max",
    "accepted": true,
    "detail": "turn ended end_turn, file written, 25.7 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 5.5 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 6.4 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 3.9 s"
+  },
+  {
+   "kind": "launch",
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 7.3 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "low",
+   "wire": "low",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 6.9 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "medium",
+   "wire": "medium",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 6.5 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "high",
+   "wire": "high",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 6.3 s"
+  },
+  {
+   "kind": "launch",
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "wire": "max",
+   "accepted": true,
+   "detail": "turn ended end_turn, file written, 11.1 s"
   }
  ],
  "hardRuns": [
@@ -1388,7 +1834,7 @@
    "detail": "Internal error: The operation timed out."
   },
   {
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "high",
    "finished": true,
@@ -1400,7 +1846,7 @@
    "detail": null
   },
   {
-   "model": "sol",
+   "model": "sol-6.1",
    "route": "us.openai.gpt-6.1-sol",
    "level": "xhigh",
    "finished": true,
@@ -1412,7 +1858,7 @@
    "detail": null
   },
   {
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "high",
    "finished": true,
@@ -1424,7 +1870,7 @@
    "detail": null
   },
   {
-   "model": "astra",
+   "model": "astra-6",
    "route": "us.openai.gpt-6-astra",
    "level": "xhigh",
    "finished": true,
@@ -1562,6 +2008,162 @@
    "idleLimitHit": false,
    "end": "error:-32603",
    "detail": "Internal error: Model returned no content because the response was blocked by a content filter. Retrying is unlikely to help — try rephrasing the request."
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 6.2,
+   "longestSilentGapS": 2.8,
+   "events": 713,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 44.2,
+   "longestSilentGapS": 40.1,
+   "events": 931,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 10.8,
+   "longestSilentGapS": 6.4,
+   "events": 739,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 75.0,
+   "longestSilentGapS": 69.7,
+   "events": 1043,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 10.6,
+   "longestSilentGapS": 6.3,
+   "events": 562,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "sol",
+   "route": "us.openai.gpt-6.2-sol",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 49.1,
+   "longestSilentGapS": 43.9,
+   "events": 887,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 28.2,
+   "longestSilentGapS": 22.2,
+   "events": 744,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 239.8,
+   "longestSilentGapS": 232.7,
+   "events": 935,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 51.6,
+   "longestSilentGapS": 45.7,
+   "events": 559,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 275.2,
+   "longestSilentGapS": 269.0,
+   "events": 803,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "high",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 24.7,
+   "longestSilentGapS": 17.6,
+   "events": 660,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
+  },
+  {
+   "model": "astra",
+   "route": "us.openai.gpt-6.2-astra",
+   "level": "xhigh",
+   "prompt": "matrices-8x8",
+   "finished": true,
+   "wallS": 187.2,
+   "longestSilentGapS": 180.0,
+   "events": 869,
+   "idleLimitHit": false,
+   "end": "end_turn",
+   "detail": null
   }
  ],
  "earlierRuns": {
@@ -1583,14 +2185,14 @@
     "idleLimitHits": 3
    },
    {
-    "model": "sol",
+    "model": "sol-6.1",
     "level": "xhigh",
     "runs": 3,
     "finished": 3,
     "idleLimitHits": 0
    },
    {
-    "model": "astra",
+    "model": "astra-6",
     "level": "xhigh",
     "runs": 3,
     "finished": 3,
@@ -1618,14 +2220,14 @@
     "idleLimitHits": 0
    },
    {
-    "model": "sol",
+    "model": "sol-6.1",
     "level": "high",
     "runs": 2,
     "finished": 2,
     "idleLimitHits": 0
    },
    {
-    "model": "astra",
+    "model": "astra-6",
     "level": "high",
     "runs": 2,
     "finished": 2,

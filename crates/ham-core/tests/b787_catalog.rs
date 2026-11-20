@@ -64,7 +64,7 @@ fn b787_a_row_without_an_engine_is_a_cline_row_and_the_build_lists_cline_then_op
             .iter()
             .all(|m| m.engine == Engine::CLINE)
     );
-    assert_eq!(c.default_list().models().len(), 6);
+    assert_eq!(c.default_list().models().len(), 8);
     // `builtin()` is the Cline list, the same object.
     assert_eq!(models::builtin(), c.default_list());
 }
@@ -78,7 +78,7 @@ fn b787_the_same_model_id_may_be_listed_once_for_each_engine() {
     assert_eq!(open.models()[0].id, SOL);
     assert_eq!(open.models()[0].engine, Engine::OPENCODE);
     // The Cline list did not change.
-    assert_eq!(c.default_list().models().len(), 6);
+    assert_eq!(c.default_list().models().len(), 8);
 }
 
 #[test]
@@ -93,12 +93,12 @@ fn b787_the_same_model_id_twice_for_one_engine_is_refused() {
 
 #[test]
 fn b787_aliases_and_the_default_are_per_engine() {
-    // The alias `sol` of the Cline row is also the alias of the OpenCode row: they are in different lists.
+    // The alias `sol-6.1` of the Cline row is also the alias of the OpenCode row: they are in different lists.
     let mut row = engine_row(SOL, "opencode", true);
     row["default"] = json!(true);
     let c = catalog(vec![row]);
     let open = c.for_engine(Engine::OPENCODE).unwrap();
-    assert_eq!(open.find("sol").map(|m| m.id.as_str()), Some(SOL));
+    assert_eq!(open.find("sol-6.1").map(|m| m.id.as_str()), Some(SOL));
     assert_eq!(open.default_model().map(|m| m.id.as_str()), Some(SOL));
     // The Cline default is still Sonnet.
     assert_eq!(c.default_list().default_model().unwrap().id, SONNET);
@@ -205,7 +205,7 @@ fn b787_models_parse_reads_the_cline_rows_of_a_document_that_has_other_rows_too(
     ]);
     let cline_only = Models::parse(&text).unwrap();
     assert_eq!(cline_only, *models::builtin());
-    assert_eq!(cline_only.models().len(), 6);
+    assert_eq!(cline_only.models().len(), 8);
 }
 
 #[test]
@@ -213,9 +213,9 @@ fn b787_the_server_list_marks_the_rows_of_other_engines_and_leaves_cline_rows_un
     let c = catalog(vec![engine_row(SOL, "opencode", true)]);
     let list = c.list();
     assert_eq!(list.default, SONNET);
-    assert_eq!(list.models.len(), 7);
+    assert_eq!(list.models.len(), 9);
     let (cline, other): (Vec<_>, Vec<_>) = list.models.iter().partition(|r| r.engine.is_none());
-    assert_eq!(cline.len(), 6);
+    assert_eq!(cline.len(), 8);
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].engine, Some(Engine::OPENCODE));
     assert!(other[0].selectable);
@@ -223,7 +223,7 @@ fn b787_the_server_list_marks_the_rows_of_other_engines_and_leaves_cline_rows_un
     assert_eq!(catalog(vec![]).list(), models::builtin().list());
     // The shipped list has the same Cline rows first, then the rows of OpenCode.
     assert_eq!(
-        models::builtin_catalog().list().models[..6],
+        models::builtin_catalog().list().models[..8],
         models::builtin().list().models[..]
     );
     assert!(

@@ -171,7 +171,7 @@ async fn set_run_compute_writes_the_word_in_lower_case_and_another_word_changes_
 async fn a_fresh_machine_set_writes_exactly_the_one_line_it_wrote_before() {
     let h = bare("verbs-fresh");
     assert!(!path(&h).exists());
-    let o = ham(&h, &["config", "set", "default_model", "astra"]).await;
+    let o = ham(&h, &["config", "set", "default_model", "astra-6"]).await;
     assert_eq!(code(&o), 0, "{}", err(&o));
     assert_eq!(read(&h), format!("defaultModel = \"{ASTRA}\"\n"));
     assert_eq!(names_in_config_dir(&h), ["config.toml"]);
@@ -547,7 +547,7 @@ async fn show_prints_origin_and_applies_for_every_key_then_the_locked_rows() {
         ),
     );
     let env = [
-        ("HAMH_MODEL", "sol"),
+        ("HAMH_MODEL", "sol-6.1"),
         ("HAMH_INPUT_WAIT", "12"),
         ("HAMH_NOTIFY", "1"),
         ("AWS_REGION", "eu-west-1"),

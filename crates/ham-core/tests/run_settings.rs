@@ -83,7 +83,7 @@ fn precedence_flag_over_env_over_file_over_default_for_every_key_with_a_flag_or_
     let r = resolve(
         &cfg,
         &[("HAMH_MODEL", "opus")],
-        &["--model", "astra"],
+        &["--model", "astra-6"],
         false,
     )
     .unwrap();

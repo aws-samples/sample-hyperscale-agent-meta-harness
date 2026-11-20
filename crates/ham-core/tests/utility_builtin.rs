@@ -71,7 +71,7 @@ fn utility_ids_are_disjoint_from_the_five_models() {
             );
         }
     }
-    assert_eq!(coding.models().len(), 6, "models.json keeps its six rows");
+    assert_eq!(coding.models().len(), 8, "models.json keeps its eight rows");
 }
 
 #[test]
