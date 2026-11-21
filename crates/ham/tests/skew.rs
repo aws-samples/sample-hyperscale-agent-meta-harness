@@ -2,6 +2,11 @@
 //! (`deny_unknown_fields`), so a request with an `engineConfig` member meets a `400 bad-request` whose text is serde's "unknown field". `ham`
 //! maps it to "this stage predates engine settings; run `ham engine <name> unset <key>` or update the stage", names the keys the user set, and
 //! never retries without the member: a setting that a run does not get must not look as if it did.
+//!
+//! A newer `ham` against a stage whose download route predates copies that need the run's base. Such a route ignores the
+//! `parts` member of the request and signs whatever the worker saved, with no word about a base. A copy that holds the whole history
+//! downloads as it always did. A copy that holds what the run changed (a worker newer than its route) is kept as it came, and the
+//! text says what it needs in place of a command that would fail.
 #![allow(clippy::unwrap_used)]
 
 mod support;
@@ -92,7 +97,7 @@ async fn an_older_stage_400_becomes_the_stage_predates_message_and_no_retry_with
         .unwrap_err();
     let shown = e.to_string();
     assert!(
-        shown.contains("this stage predates engine settings; run `ham engine cline unset <key>` or update the stage"),
+        shown.contains("this stage predates engine settings; run `ham engine cline unset <key>` or update the stage (run ham update; ask the person who runs the stage if that is not you) (keys set: "),
         "{shown}"
     );
     // The keys the user set are named, so the person knows what to unset.
@@ -138,4 +143,157 @@ async fn another_400_with_the_member_present_keeps_the_stage_words() {
         assert!(matches!(e, ApiError::Http { status: 400, .. }));
         assert_eq!(stage.calls.lock().unwrap().len(), 1);
     }
+}
+
+// ----: the download route of an older stage ---------------------------------------------------------------------------------
+
+const COPY_RUN: &str = "01M4ZHFBV5SDX7J92E6YRH4QTW";
+const COPY_HEAD: &str = "9d2f1a7c4b8e03d56a1f7c9e2b4d6a8c0e1f3a5b";
+const COPY_BASE: &str = "1111111111111111111111111111111111111111";
+
+/// A stage whose download route predates the member `parts`: it answers with the copy the worker saved and no `base`, whatever the
+/// request says, and serves the object in ranges as the store does.
+struct OlderRoute {
+    object: Vec<u8>,
+    paths: Mutex<Vec<String>>,
+}
+
+impl ControlPlane for OlderRoute {
+    async fn call(
+        &self,
+        _method: &str,
+        path: &str,
+        _headers: &[(String, String)],
+        _body: Vec<u8>,
+    ) -> Result<Response, TransportError> {
+        self.paths.lock().unwrap().push(path.to_string());
+        let answer = serde_json::json!({
+            "url": "https://bucket.s3.us-east-1.amazonaws.com/runs/x/agents/direct/turns/1/snapshot.bundle?X-Amz-Signature=deadbeef",
+            "expiresAt": "2099-10-15T13:25:00Z", "headSha": COPY_HEAD, "baseSha": COPY_BASE, "takenAt": "2026-11-17T13:10:00Z",
+            "count": 3, "sizeBytes": self.object.len(), "etag": "\"abc\"", "runStatus": "active"
+        });
+        Ok(Response {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: serde_json::to_vec(&answer).unwrap(),
+        })
+    }
+    async fn fetch(
+        &self,
+        _url: &str,
+        range: Option<(u64, u64)>,
+        _if_match: Option<&str>,
+    ) -> Result<Response, TransportError> {
+        let size = self.object.len() as u64;
+        let (s, e) = range.unwrap_or((0, size - 1));
+        let e = e.min(size - 1);
+        Ok(Response {
+            status: 206,
+            headers: BTreeMap::from([(
+                "content-range".to_string(),
+                format!("bytes {s}-{e}/{size}"),
+            )]),
+            body: self.object[usize::try_from(s).unwrap()..=usize::try_from(e).unwrap()].to_vec(),
+        })
+    }
+}
+
+fn copy_bytes(needs_base: bool) -> Vec<u8> {
+    let needs = if needs_base {
+        format!("-{COPY_BASE} harness: base\n")
+    } else {
+        String::new()
+    };
+    let mut b =
+        format!("# v2 git bundle\n{needs}{COPY_HEAD} refs/heads/snapshot\n\nPACK").into_bytes();
+    b.extend((0..4_000).map(|i| (i % 251) as u8));
+    b
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b860_pull_says_when_a_stage_sent_no_base() {
+    let object = copy_bytes(true);
+    let stage = Arc::new(OlderRoute {
+        object: object.clone(),
+        paths: Mutex::new(Vec::new()),
+    });
+    let dir = support::scratch("b860-skew-no-base");
+    let got = ham::chat_routes::fetch_snapshot(&Api::new(stage.clone()), COPY_RUN, &dir)
+        .await
+        .unwrap();
+    // The client asked for the copy in parts; the stage ignored it and sent a copy that needs the base without one.
+    let paths = stage.paths.lock().unwrap().clone();
+    assert_eq!(
+        paths,
+        vec![format!("/v1/runs/{COPY_RUN}/snapshot/download-url?parts=1")]
+    );
+    println!(
+        "SKEW TRIGGER PRESENT: the stage ignored parts=1 and sent a copy whose header names a commit it needs, with no base"
+    );
+    // The file is kept as it came, under its usual name.
+    let path = dir.join(format!("{COPY_RUN}-snapshot-3.bundle"));
+    assert_eq!(got.path, path);
+    assert_eq!(std::fs::read(&path).unwrap(), object);
+    let left: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec![format!("{COPY_RUN}-snapshot-3.bundle")]);
+    // The text says what the copy needs, word for word, and prints no line that would fail.
+    let text = ham::snapshot_cmd::text(COPY_RUN, &got);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines.contains(
+            &"Note      this copy holds what the run changed and needs the repository the run started from, which this stage did not send; see \"Pull the work in progress\" in the user guide"
+        ),
+        "{text}"
+    );
+    assert!(!lines.iter().any(|l| l.starts_with("Look ")), "{text}");
+    assert!(!lines.iter().any(|l| l.starts_with("Needs ")), "{text}");
+    assert!(
+        lines.contains(&format!("Size      {} bytes", object.len()).as_str()),
+        "{text}"
+    );
+    let v = ham::snapshot_cmd::json_of(COPY_RUN, &got);
+    assert_eq!(v["snapshot"]["needsBase"], true, "{v}");
+    assert!(v["snapshot"].get("base").is_none(), "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b860_pull_from_an_older_stage_is_unchanged() {
+    let object = copy_bytes(false);
+    let stage = Arc::new(OlderRoute {
+        object: object.clone(),
+        paths: Mutex::new(Vec::new()),
+    });
+    let dir = support::scratch("b860-skew-whole");
+    let got = ham::chat_routes::fetch_snapshot(&Api::new(stage.clone()), COPY_RUN, &dir)
+        .await
+        .unwrap();
+    println!(
+        "SKEW TRIGGER PRESENT: the stage ignored parts=1 and sent a copy that holds the whole history"
+    );
+    let path = dir.join(format!("{COPY_RUN}-snapshot-3.bundle"));
+    assert_eq!(got.path, path);
+    assert_eq!(std::fs::read(&path).unwrap(), object);
+    // The text and the JSON object of today.
+    let text = ham::snapshot_cmd::text(COPY_RUN, &got);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines.contains(
+            &format!("Look      git clone -b snapshot {} <dir>", path.display()).as_str()
+        ),
+        "{text}"
+    );
+    assert!(
+        lines.contains(&format!("Size      {} bytes", object.len()).as_str()),
+        "{text}"
+    );
+    assert!(
+        !text.contains("the repository the run started from"),
+        "{text}"
+    );
+    let v = ham::snapshot_cmd::json_of(COPY_RUN, &got);
+    assert!(v["snapshot"].get("needsBase").is_none(), "{v}");
+    assert!(v["snapshot"].get("base").is_none(), "{v}");
 }

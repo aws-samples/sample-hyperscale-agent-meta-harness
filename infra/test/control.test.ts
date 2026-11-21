@@ -422,7 +422,11 @@ describe("control stack", () => {
     expect(list.Resource).toBe(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}`);
     // The keys the role may read (SnapshotDownload), as listing prefixes: nothing else under agents/ becomes listable.
     const read = stmts.find((x: any) => x.Sid === "SnapshotDownload");
-    const keys = [read.Resource].flat().map((r: string) => r.replace(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/`, "")).sort();
+    // The bundle a run started from is one of them. The route asks whether it is there by the same listing, so that a base that is gone
+    // is "no base" (the copy is then served alone) and not an outage.
+    const all = [read.Resource].flat().map((r: string) => r.replace(`arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/`, "")).sort();
+    expect(all).toContain("runs/*/input/repo.bundle");
+    const keys = all.filter((k: string) => k !== "runs/*/input/repo.bundle");
     // Six keys of the saved copies and three of the files read back from a stopped session's storage.
     expect(keys).toHaveLength(9);
     expect(keys.filter((k: string) => k.includes("agents/recovery/"))).toEqual([
@@ -430,7 +434,7 @@ describe("control stack", () => {
       "runs/*/agents/recovery/turns/??/recovery.bundle",
       "runs/*/agents/recovery/turns/???/recovery.bundle",
     ]);
-    expect([...list.Condition.StringLike["s3:prefix"]].sort()).toEqual(keys);
+    expect([...list.Condition.StringLike["s3:prefix"]].sort()).toEqual(all);
     expect(Object.keys(list.Condition)).toEqual(["StringLike"]);
     expect(JSON.stringify(list)).not.toMatch(/agents\/\*|turns\/\*|\/hidden|transcript|summary/);
     // Three listings in all, each by the keys of one route.
@@ -484,6 +488,8 @@ describe("control stack", () => {
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/?/recovery.bundle`,
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/??/recovery.bundle`,
       `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/agents/recovery/turns/???/recovery.bundle`,
+      // The bundle a run started from, which a saved copy may need (its own test is below).
+      `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/input/repo.bundle`,
     ]);
     // The role reads what a session and the worker of a read wrote; it writes nothing there.
     expect(JSON.stringify(stmts.filter((x: any) => JSON.stringify(x.Resource ?? "").includes("agents/")).flatMap((x: any) => [x.Action].flat())))
@@ -494,6 +500,26 @@ describe("control stack", () => {
     // own; each has its own test.
     expect(stmts.filter((x: any) => [x.Action].flat().includes("s3:ListBucket")).map((x: any) => x.Sid).sort()).toEqual(["ListDeliveredHead", "ListSnapshot", "ListTranscriptPrefix"]);
     expect(JSON.stringify(snap)).not.toMatch(/agents\/\*|turns\/\*|\/hidden/);
+  });
+
+  // A saved copy of a run's work may leave out what the bundle the run started from holds. The download route then signs a second
+  // GET, of that one object and pinned to the version it read, for a client that takes both parts. That is one more resource in the
+  // statement that already carries the route's version reads: no new statement, no listing, and nothing else under input/.
+  test("b860 the snapshot download grant names the bundle a run started from, and nothing else changes", () => {
+    const role = Object.values(resourcesOf(t, "AWS::IAM::Role")).map((r) => r.Properties as any)
+      .find((r) => r.RoleName === "hamh-direct-control-api");
+    const stmts = role.Policies.flatMap((p: any) => p.PolicyDocument.Statement);
+    const base = `arn:aws:s3:::hamh-direct-harness-${ACCOUNT}/runs/*/input/repo.bundle`;
+    const snap = stmts.find((x: any) => x.Sid === "SnapshotDownload");
+    expect([snap.Resource].flat()).toContain(base);
+    expect([snap.Resource].flat()).toHaveLength(10);
+    expect([snap.Action].flat().sort()).toEqual(["s3:GetObject", "s3:GetObjectVersion"]);
+    // The listing statement of the route names the same one key as a prefix, so the route can ask whether the base is there (a GET of an absent key
+    // is 403 for a role that may not list the bucket). No other statement of the role names the object, and nothing else under input/ is listable.
+    expect(stmts.filter((x: any) => JSON.stringify(x).includes("input/repo.bundle")).map((x: any) => x.Sid).sort()).toEqual(["ListSnapshot", "SnapshotDownload"]);
+    const list = stmts.find((x: any) => x.Sid === "ListSnapshot");
+    expect([list.Condition.StringLike["s3:prefix"]].flat().filter((k: string) => k.includes("input/"))).toEqual(["runs/*/input/repo.bundle"]);
+    // The role has the statements it had: the list of their ids is pinned by the run index test below.
   });
 
   // The run index lives in the harness table under OWNER#<hash of the caller>, written by control-api (the start and the

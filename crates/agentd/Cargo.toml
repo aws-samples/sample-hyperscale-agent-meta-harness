@@ -41,6 +41,9 @@ tokio = { workspace = true, features = ["signal"] }
 [dev-dependencies]
 # Paused-clock tests of the flusher's tick timing.
 tokio = { workspace = true, features = ["test-util"] }
+# The processor clock of a thread (`CLOCK_THREAD_CPUTIME_ID`), read by the tests that hold the store of a copy off the runtime's
+# threads (`tests/b860_store_stream.rs`). It adds no package.
+rustix = { workspace = true, features = ["time"] }
 
 [[bin]]
 name = "agentd"

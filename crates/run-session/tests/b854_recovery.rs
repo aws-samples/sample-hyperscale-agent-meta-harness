@@ -579,7 +579,8 @@ async fn b854_the_recovery_credentials_are_tagged_recovery_and_last_900_s() {
         assert!(tag(plan, k).is_some(), "{k}");
     }
     assert_eq!(tag(working, "agent").as_deref(), Some("direct"));
-    // The policy names the read-back key, the baseline and the two data-key actions, and nothing else.
+    // The policy names the read-back key, the baseline, the bundle the run started from
+    // and the two data-key actions, and nothing else.
     let policy: Value = serde_json::from_str(&plan.session_policy).unwrap();
     let text = plan.session_policy.as_str();
     assert!(text.contains(&format!(
@@ -590,6 +591,14 @@ async fn b854_the_recovery_credentials_are_tagged_recovery_and_last_900_s() {
         "arn:aws:s3:::{BUCKET}/{}",
         s3::snapshot_bundle_key_t(RUN, 1)
     )));
+    assert!(
+        text.contains(&format!(
+            "arn:aws:s3:::{BUCKET}/{}",
+            s3::repo_bundle_key(RUN)
+        )),
+        "b860: the read may fetch the bundle the run started from: {text}"
+    );
+    assert_eq!(text.matches("s3:GetObject").count(), 2, "{text}");
     assert!(text.contains("kms:GenerateDataKey") && text.contains("kms:Decrypt"));
     for banned in [
         "execute-api",
@@ -600,7 +609,7 @@ async fn b854_the_recovery_credentials_are_tagged_recovery_and_last_900_s() {
     ] {
         assert!(!text.contains(banned), "{banned} in {text}");
     }
-    assert_eq!(policy["Statement"].as_array().unwrap().len(), 3);
+    assert_eq!(policy["Statement"].as_array().unwrap().len(), 4);
     // The credentials reach the worker in the body and nowhere else: no record holds them.
     let body = &mem.recover_bodies()[0];
     assert!(
@@ -634,6 +643,14 @@ async fn b854_the_recovery_credentials_are_tagged_recovery_and_last_900_s() {
     assert!(body["baseline"].get("object").is_none());
     let minted = mem.0.minted.lock().unwrap().clone();
     assert!(!minted.last().unwrap().session_policy.contains("GetObject"));
+    // With no saved copy to fetch, the bundle the run started from is not named either.
+    assert!(
+        !minted
+            .last()
+            .unwrap()
+            .session_policy
+            .contains(&s3::repo_bundle_key(RUN))
+    );
 }
 
 #[tokio::test]

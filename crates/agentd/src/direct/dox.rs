@@ -133,7 +133,7 @@ pub enum Why {
 }
 
 impl Why {
-    fn words(&self) -> String {
+    pub(super) fn words(&self) -> String {
         match self {
             Self::NoStarter => "the request carries no starter".to_string(),
             Self::ContinueRun => {
@@ -402,7 +402,7 @@ pub async fn settle(
     }
 }
 
-fn short(sha: &str) -> String {
+pub(super) fn short(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 
@@ -555,7 +555,7 @@ async fn build_commit_in(
 }
 
 /// The Unix time in the `committer` line of a raw commit object (`committer Name <mail> <seconds> <zone>`).
-fn committer_time(raw: &[u8]) -> Option<u64> {
+pub(super) fn committer_time(raw: &[u8]) -> Option<u64> {
     let text = String::from_utf8_lossy(raw);
     let header = text.split("\n\n").next()?;
     let line = header.lines().find(|l| l.starts_with("committer "))?;
@@ -641,8 +641,9 @@ async fn undone(
     }
 }
 
-/// The checkout is as the bundle left it, and the paths may be written.
-async fn preconditions(wt: &Worktree, puts: &[Put]) -> Result<(), Why> {
+/// HEAD is the run's branch and the index equals the head, as the clone left them. The step that takes an earlier request's lifecycle
+/// records out of the work tree asks the same before it touches a checkout.
+pub(super) async fn as_cloned(wt: &Worktree) -> Result<(), Why> {
     let repo = wt.repo.as_path();
     let head_ref = git_text(repo, &["symbolic-ref", "-q", "HEAD"], &[], None)
         .await
@@ -653,6 +654,13 @@ async fn preconditions(wt: &Worktree, puts: &[Put]) -> Result<(), Why> {
     if !git_ok(repo, &["diff-index", "--cached", "--quiet", "HEAD", "--"]).await {
         return Err(Why::NotClean("the index differs from the head".to_string()));
     }
+    Ok(())
+}
+
+/// The checkout is as the bundle left it, and the paths may be written.
+async fn preconditions(wt: &Worktree, puts: &[Put]) -> Result<(), Why> {
+    let repo = wt.repo.as_path();
+    as_cloned(wt).await?;
     for put in puts {
         // exit 0: ignored; exit 1: not ignored; anything else is a refusal too. A tracked path is never reported as ignored.
         match git_run(
@@ -760,7 +768,7 @@ async fn undo_index(repo: &Path, origin: &str) -> Result<(), String> {
 
 // ---- git ---------------------------------------------------------------------------------------------------------------------------
 
-async fn git_run(
+pub(super) async fn git_run(
     repo: &Path,
     args: &[&str],
     vars: &[(&str, &str)],
@@ -770,7 +778,7 @@ async fn git_run(
 }
 
 /// The trimmed text of a git call that must succeed.
-async fn git_text(
+pub(super) async fn git_text(
     repo: &Path,
     args: &[&str],
     vars: &[(&str, &str)],
@@ -787,7 +795,7 @@ async fn git_text(
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-async fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, WsError> {
+pub(super) async fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, WsError> {
     let out = git_run(repo, args, &[], None).await?;
     if !out.status.success() {
         return Err(WsError::Git(format!(
@@ -800,14 +808,14 @@ async fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>, WsError> {
 }
 
 /// Whether a git call exits 0.
-async fn git_ok(repo: &Path, args: &[&str]) -> bool {
+pub(super) async fn git_ok(repo: &Path, args: &[&str]) -> bool {
     git_run(repo, args, &[], None)
         .await
         .is_ok_and(|o| o.status.success())
 }
 
 /// The path of the run's private index, in the run's private data folder; it is removed as soon as the tree is written.
-fn index_path(agent_data: &Path) -> PathBuf {
+pub(super) fn index_path(agent_data: &Path) -> PathBuf {
     agent_data.join("dox-starter.index")
 }
 

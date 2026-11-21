@@ -9,7 +9,10 @@ mod direct_support;
 use agentd::direct::{Deps, ProxyLauncher, ProxyRun, ProxyStart};
 use agentd::time::{format_rfc3339, now_unix};
 use common::{CANARY_NONCE, CANARY_SECRET, CANARY_TOKEN, canary_key_id, git, scratch};
-use direct_support::{BUCKET, Direct, MODEL, Opts, PROMPT, PutFailure, RUN, no_secrets, rule, sha};
+use direct_support::{
+    BUCKET, Direct, MODEL, Opts, PROMPT, PutFailure, RUN, checkout_of_copy_bytes, no_secrets, rule,
+    sha,
+};
 use harness_protocol::api::internal::ProcessCredentials;
 use harness_protocol::api::v1::ContinueSettings;
 use harness_protocol::common::Usage;
@@ -2341,18 +2344,10 @@ async fn a_snapshot_is_uploaded_while_the_prompt_runs_and_the_repository_is_unto
     std::fs::write(&bundle, &bundles[0].1).unwrap();
     let wt = d.worktree();
     git(&wt, &["bundle", "verify", bundle.to_str().unwrap()]);
-    // Cloning the bundle proves it is complete: its history reaches the base and its tree holds the engine's edits.
-    let clone = d.dir.join("snapshot-clone");
-    git(
-        &d.dir,
-        &[
-            "clone",
-            "-q",
-            bundle.to_str().unwrap(),
-            clone.to_str().unwrap(),
-        ],
-    );
-    let snap = "refs/remotes/origin/snapshot";
+    // A checkout of the copy proves it is complete: its history reaches the base and its tree holds the engine's edits. A copy that
+    // leaves out what the run's base holds is put on the bundle the run started from first, as every reader does.
+    let clone = checkout_of_copy_bytes(&d.aws, &d.dir, &bundles[0].1, "snapshot-clone");
+    let snap = "snapshot";
     assert_eq!(git(&clone, &["rev-parse", snap]), head);
     assert!(git(&clone, &["show", &format!("{snap}:src/calc.py")]).contains("def percent_change"));
     assert!(

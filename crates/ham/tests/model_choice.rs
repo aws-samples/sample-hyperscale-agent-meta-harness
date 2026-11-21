@@ -590,4 +590,11 @@ fn a_server_whose_default_differs_from_this_build_is_noted() {
     list.default = OPUS.into();
     let note = ham::config_cmd::default_drift(&list).unwrap();
     assert!(note.contains(OPUS) && note.contains(SONNET), "{note}");
+    // The note names the command and who can run it for the stage.
+    assert!(
+        note.ends_with(
+            "the lists differ, so update ham or the stage (run ham update; ask the person who runs the stage if that is not you)"
+        ),
+        "{note}"
+    );
 }

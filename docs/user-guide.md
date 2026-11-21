@@ -462,6 +462,7 @@ A second run, after AWS releases the interfaces, removes them.
 
 `ham update` updates the backend and then `ham` to the newest version on the main branch of the public repository.
 It runs the same `./setup.sh --update`, from a copy of that version that it fetches for you.
+The terminal app shows a notice when the repository holds a newer release (see "The update notice").
 
 ```bash
 ham update --check   # your versions, the newest version and the changes between; changes nothing
@@ -1088,7 +1089,7 @@ Print every config key.
 ham config
 ```
 
-The keys are `api_endpoint`, `region`, `aws_profile`, `default_repo`, `download_dir`, `default_model`, `input_wait_minutes`, `mouse`, `report_tests`, `run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`, `ui.mascot`, `run.report_command_minutes`, `run.stall_calls`, `run.stall_window_minutes`, `run.stall_min_calls`, `run.command_grace_minutes`, `run.final_message`, `run.lifecycle_flow`, `run.review_round`, `run.compute`, `run.stall_new_calls`, `run.cargo_no_debug_info`, `run.cargo_no_incremental`, `run.exclude_target_dir`, `run.outside_checkout_note`, `ui.deprecation_notices`, `ui.mascot_motion`, `run.max_run_hours`, `run.provider_sharing`, `default_backend`, `customer_content`, `ui.copy_limit_kib`, `run.max_interrupts`, `run.max_questions`, `run.max_fresh_sessions`, `research.max_file_mib`, `research.max_unpacked_mib`, `research.max_run_mib` and `run.container_signals`, `default_engine`, `update_source`, `run.copy_every_minutes`, `run.copy_every_seconds`, `run.delivery_note`, `run.recover_after_stop`.
+The keys are `api_endpoint`, `region`, `aws_profile`, `default_repo`, `download_dir`, `default_model`, `input_wait_minutes`, `mouse`, `report_tests`, `run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`, `ui.mascot`, `run.report_command_minutes`, `run.stall_calls`, `run.stall_window_minutes`, `run.stall_min_calls`, `run.command_grace_minutes`, `run.final_message`, `run.lifecycle_flow`, `run.review_round`, `run.compute`, `run.stall_new_calls`, `run.cargo_no_debug_info`, `run.cargo_no_incremental`, `run.exclude_target_dir`, `run.outside_checkout_note`, `ui.deprecation_notices`, `ui.mascot_motion`, `run.max_run_hours`, `run.provider_sharing`, `default_backend`, `customer_content`, `ui.copy_limit_kib`, `run.max_interrupts`, `run.max_questions`, `run.max_fresh_sessions`, `research.max_file_mib`, `research.max_unpacked_mib`, `research.max_run_mib` and `run.container_signals`, `default_engine`, `update_source`, `run.copy_every_minutes`, `run.copy_every_seconds`, `run.delivery_note`, `run.recover_after_stop`, `ui.update_notice`, `run.remove_earlier_records`.
 
 Create your rules file and `continue.md`, the continuation file.
 
@@ -1185,12 +1186,12 @@ You need to change nothing to use the defaults.
 With no file, a run sends the same request as before.
 The file that `setup.sh` writes also leaves that request unchanged.
 
-The file has 50 keys: `apiEndpoint`, `region`, `awsProfile`, `defaultRepo`, `downloadDir`, `defaultModel`, `inputWaitMinutes`, `mouse`, `reportTests`, `run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`, `ui.mascot`, `run.report_command_minutes`, `run.stall_calls`, `run.stall_window_minutes`, `run.stall_min_calls`, `run.command_grace_minutes`, `run.final_message`, `run.lifecycle_flow`, `run.review_round`, `run.compute`, `run.stall_new_calls`, `run.cargo_no_debug_info`, `run.cargo_no_incremental`, `run.exclude_target_dir`, `run.outside_checkout_note`, `ui.deprecation_notices`, `ui.mascot_motion`, `run.max_run_hours`, `run.provider_sharing`, `ui.copy_limit_kib`, `run.max_interrupts`, `run.max_questions`, `run.max_fresh_sessions`, `research.max_file_mib`, `research.max_unpacked_mib`, `research.max_run_mib`, `run.container_signals`, `run.copy_every_minutes`, `run.copy_every_seconds`, `run.delivery_note`, `run.recover_after_stop`, `defaultEngine`, `defaultBackend`, `customerContent` and `updateSource`.
+The file has 52 keys: `apiEndpoint`, `region`, `awsProfile`, `defaultRepo`, `downloadDir`, `defaultModel`, `inputWaitMinutes`, `mouse`, `reportTests`, `run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`, `ui.mascot`, `run.report_command_minutes`, `run.stall_calls`, `run.stall_window_minutes`, `run.stall_min_calls`, `run.command_grace_minutes`, `run.final_message`, `run.lifecycle_flow`, `run.review_round`, `run.compute`, `run.stall_new_calls`, `run.cargo_no_debug_info`, `run.cargo_no_incremental`, `run.exclude_target_dir`, `run.outside_checkout_note`, `ui.deprecation_notices`, `ui.mascot_motion`, `run.max_run_hours`, `run.provider_sharing`, `ui.copy_limit_kib`, `run.max_interrupts`, `run.max_questions`, `run.max_fresh_sessions`, `research.max_file_mib`, `research.max_unpacked_mib`, `research.max_run_mib`, `run.container_signals`, `run.copy_every_minutes`, `run.copy_every_seconds`, `run.delivery_note`, `run.recover_after_stop`, `ui.update_notice`, `run.remove_earlier_records`, `defaultEngine`, `defaultBackend`, `customerContent` and `updateSource`.
 The first nine and the last four are top-level keys in camelCase.
-The thirty-seven between them sit inside tables.
-The `[run]` table holds `goal`, `rules`, `skills`, `report_command_minutes`, `stall_calls`, `stall_window_minutes`, `stall_min_calls`, `command_grace_minutes`, `final_message`, `lifecycle_flow`, `review_round`, `compute`, `stall_new_calls`, `cargo_no_debug_info`, `cargo_no_incremental`, `exclude_target_dir`, `outside_checkout_note`, `max_run_hours`, `provider_sharing`, `max_interrupts`, `max_questions`, `max_fresh_sessions`, `container_signals`, `copy_every_minutes`, `copy_every_seconds`, `delivery_note` and `recover_after_stop`.
+The thirty-nine between them sit inside tables.
+The `[run]` table holds `goal`, `rules`, `skills`, `report_command_minutes`, `stall_calls`, `stall_window_minutes`, `stall_min_calls`, `command_grace_minutes`, `final_message`, `lifecycle_flow`, `review_round`, `compute`, `stall_new_calls`, `cargo_no_debug_info`, `cargo_no_incremental`, `exclude_target_dir`, `outside_checkout_note`, `max_run_hours`, `provider_sharing`, `max_interrupts`, `max_questions`, `max_fresh_sessions`, `container_signals`, `copy_every_minutes`, `copy_every_seconds`, `delivery_note`, `recover_after_stop` and `remove_earlier_records`.
 The `[research]` table holds `enabled`, `max_file_mib`, `max_unpacked_mib` and `max_run_mib`.
-The `[ui]` table holds `notify`, `bell`, `mascot`, `deprecation_notices`, `mascot_motion` and `copy_limit_kib`.
+The `[ui]` table holds `notify`, `bell`, `mascot`, `deprecation_notices`, `mascot_motion`, `copy_limit_kib` and `update_notice`.
 Commands name a key of a table with the table name and a dot, as in the list above.
 
 ham writes `configVersion = 1` with the first table key.
@@ -1295,6 +1296,8 @@ The Takes effect column says when a change applies.
 | `run.copy_every_seconds` | whole seconds, 15 to 3600 | 15 seconds | none | none | next run |
 | `run.delivery_note` | true or false | on | none | none | next run |
 | `run.recover_after_stop` | true or false | on | none | none | next run |
+| `ui.update_notice` | true or false | on | none | `HAMH_NO_UPDATE_NOTICE` (forces off) | now |
+| `run.remove_earlier_records` | true or false | on | none | none | next run |
 <!-- ham-settings:end -->
 
 The key `ui.deprecation_notices` controls every compatibility notice that `ham` prints and defaults to on.
@@ -1411,6 +1414,12 @@ A session on Instances compute has no storage of that kind: the service makes no
 `run.recover_after_stop = false` switches both off: the service makes no read and does not act on that notice, calls a stopped session lost after 600 seconds and starts the next session from the last saved copy.
 The saved copies are kept either way.
 It is sent as the request member `recoverAfterStop`; `true` and no setting send nothing.
+`run.remove_earlier_records` is a seventh.
+On, a follow-up of a run that reported done starts without the lifecycle records of that run (see “Start a follow-up run”).
+`run.remove_earlier_records = false` leaves them where they are.
+Off is sent as the request member `removeEarlierRecords: false`, in a follow-up only.
+`true` and no setting send nothing, and the service then decides from how the earlier run ended.
+A first request never carries the member, so it starts on a stage of any release.
 A run with the goal loop switched off sends no `outsideCheckoutNote`.
 The machine is chosen when the session starts and does not change for the run.
 `ham rules init` reads it and installs the matching text of the lifecycle contract as the rule `10-lifecycle.md` (see “Choosing a flow”).
@@ -1481,7 +1490,7 @@ Run `ham config check` afterwards.
 
 ### Older and newer versions of ham
 
-Setting any of the thirty-seven table keys adds a table.
+Setting any of the thirty-nine table keys adds a table.
 It also adds `configVersion`, and so do `defaultBackend`, `customerContent` and a `[[backend]]` table.
 Older ham builds refuse a file that holds a table.
 They report `unknown field`.
@@ -1508,12 +1517,12 @@ A file from a newer ham has a higher `configVersion`.
 Your ham reads the keys it knows.
 It warns about each key it does not know.
 It changes nothing in that file.
-A command that wants to change it prints `config.toml was written by a newer ham (configVersion 2); update ham to change it. Nothing was written`.
+A command that wants to change it prints `config.toml was written by a newer ham (configVersion 2); update ham (run ham update) to change it. Nothing was written`.
 
 An unknown key or table outside `[ui]` may steer a run.
 For such a file, your ham refuses to start a run.
 It also refuses `ham models` and `ham runs`.
-The message ends with `update ham or remove those keys`.
+The message ends with `Update ham (run ham update), or remove those keys`.
 An unknown key inside `[ui]` causes only a warning.
 `ham config get`, `show`, `check`, `edit` and `docs`, and `ham doctor`, still run on such a file.
 
@@ -1568,7 +1577,7 @@ Without that line, ham refuses the file.
 The message tells you to add it as the first line.
 A schema number above 1 is refused.
 The message says your file uses a newer schema.
-It tells you to update ham or change the file.
+It tells you to update ham (run `ham update`) or change the file.
 
 Your file must be UTF-8 text.
 It can be at most 64 KiB.
@@ -1861,12 +1870,12 @@ When your file now sets nothing, it adds this line:
 
 A stage deployed before engine settings existed refuses requests carrying them.
 ham shows this message for that answer:
-``this stage predates engine settings; run `ham engine cline unset <key>` or update the stage (keys set: <list>)``
+``this stage predates engine settings; run `ham engine cline unset <key>` or update the stage (run ham update; ask the person who runs the stage if that is not you) (keys set: <list>)``
 
 ham never sends the run again without the settings.
 A missing setting must not look as though your run received it.
 You can remove the keys with `ham engine cline unset <key>`.
-Or ask whoever runs your stage to update it.
+Or update the stage with `ham update`. If someone else runs your stage, ask that person to update it.
 
 An older ham build does not read the `engines/` folder.
 It starts your runs without these settings.
@@ -2019,6 +2028,7 @@ ham reads the header from each signed call. The tag updates after a redeploy wit
 The backend half is bold yellow when versions differ or remain unknown.
 Matching versions make the whole tag dim. Bold still shows on terminals with no colour.
 
+The widths below hold while no update notice shows. A notice takes room on the same row, and the tag then shortens earlier (see "The update notice").
 At 62 columns or more, `ham vN.NN | backend vN.NN` uses 25 characters.
 From 54 to 61 columns, the tag reads `h vN.NN | b vN.NN`.
 From 9 to 53 columns, it reads `N.NN|N.NN`. Below 9 columns, no tag appears.
@@ -2034,6 +2044,100 @@ Matching versions produce `PASS versions ham vN.NN | backend vN.NN`.
 Different versions produce a WARN: `backend older than this ham` or `backend newer than this ham`. A missing version produces a WARN saying the backend reports no version.
 `backend older than this ham` after an update means the backend has not taken the release yet: look again in a minute, or run `ham update`, which writes the label of a release that deployed no file of the stage and deploys one that did.
 A WARN never changes the exit code. In `--json`, the check name is `versions`.
+
+### The update notice
+
+The terminal app looks for a newer release by itself.
+When the update source holds a release that `ham update` can install, a notice shows on the first row of every screen, left of the version tag.
+It reads `vN.NN available`, for example `v5.NN available`.
+It is bold and reversed.
+On a narrow row the tag and the notice take shorter forms, and the notice then reads `update`.
+On a row with too little room, the tag shows alone.
+The screen's title keeps its place at the left.
+
+The notice only tells you that a newer release exists.
+To update, quit ham and run `ham update` in a shell (see "Update with ham update").
+
+**A click opens the repository's page.** With the mouse on, a click on the notice opens the web page of the update source, and the app stays open.
+The click acts when the button comes up on the notice after it went down on it.
+If `update_source` starts with `https://`, ham uses that address without a trailing `.git` or slash.
+The default source opens the public repository's page.
+ham opens the page with `open` on macOS, `xdg-open` on Linux, or the program that `HAMH_OPEN_COMMAND` names.
+The screen then says `Opened <address>. To update, quit ham and run ham update.`
+Any other source, such as a `file:///` mirror, opens nothing.
+The screen then says `vN.NN is available. To update, quit ham and run ham update.`
+If the link opener fails, the screen shows the usual link error and adds `To update, quit ham and run ham update.`
+With the mouse off, the notice still shows and nothing can be clicked.
+
+**When the notice shows.** ham compares the newest release of the update source with your ham and with the backend.
+The notice shows when `ham update` would update the backend, ham or both.
+A backend that is older or newer than your ham raises no notice by itself.
+The bold yellow half of the version tag shows that difference.
+A backend version that arrives or changes while the app is open counts at once, without another look.
+
+**When no notice can show.** ham finds a release by reading a tag `v<VERSION>` on the update source.
+A mirror without version tags never raises the notice.
+In the cases below ham does not look at all and starts no git:
+
+- `update_source` is `off` or is neither an `https://` URL nor a `file:///` path.
+- The notice is turned off (see "Turn the notice off" below).
+- ham does not run from a folder named `bin`, for example a build folder.
+  `ham update` could not install there.
+- `config.toml` names more than one backend or puts its only backend in a `[[backend]]` table.
+  `ham update` stops for such a file.
+- No `git` is on your PATH.
+- On a Mac, the only `git` is the system's own and the developer tools are not installed.
+  Starting it there would open the system's install dialog.
+
+`ham update` still runs in each of these cases and says what stops it.
+
+**When ham looks.** It looks when the terminal app starts and again a day later if the app is still open.
+After a look that failed, it looks again an hour later.
+It looks at once after you change the update source or the notice's setting on the Settings screen.
+The look runs in the background: no key press and no screen waits for it.
+A look that fails or takes too long changes nothing on the screen.
+After such a look, a notice that already shows stays, and no new notice appears.
+A look that finds no release shows no notice.
+If `config.toml` cannot be read when a look is due, ham starts no git.
+ham counts the look as failed.
+This can happen while an editor saves the file.
+It can also happen after a save leaves an error in the file.
+ham keeps what the last look found and tries again an hour later.
+Until then, a notice that already shows stays.
+After you repair the file, a notice that is due appears within an hour without a restart.
+A plain command (`ham runs`, `ham pull`, `ham doctor`, a script) never looks.
+
+**What the look is and what it sends.** The look is the first call the terminal app makes without a command of yours.
+It is one git call that asks the update source for the names of its branches and tags.
+ham reads the version tags from the answer.
+ham writes no file for the look and sends nothing of its own.
+The public repository is the default source.
+It gets no ham or user data from the app.
+As with any git request, git sends its own version and the host sees your network address.
+For a `file:///` source nothing leaves your machine.
+git reads your proxy and certificate variables, as for every git call.
+It does not read the git configuration of the folder you stand in.
+It starts no program and opens no dialog to ask for a login.
+If the source asks for a login, git uses the one in `~/.netrc` for that host, as with `ham update`.
+The public repository asks for none.
+On a Mac, the system's `git` keeps its own small cache file in the system temp folder, as for every git call.
+When you click, ham only hands the page's address to the program that opens links.
+
+**Turn the notice off.** The look is on by default.
+Any one of these turns off both the look and the notice:
+
+- Turn off the notice setting in `config.toml` or in the "Update notice" row on the Settings screen.
+- Set the environment switch that disables the notice.
+  It overrides the file.
+- Run `ham config set update_source off`, which turns `ham update` off too.
+
+The table under "The settings, key by key" names the key and the variable.
+
+**If someone else runs your stage.** `ham update` uses your AWS identity, so it cannot update a stage that another person runs.
+Ask that person to update the stage.
+Update your own ham the way you installed it (see "Client only").
+The notice still shows because ham cannot tell who may deploy the stage.
+You can turn it off as above.
 
 ### The terminal and the mouse
 
@@ -2575,7 +2679,7 @@ A find with no match shows `No tag matches` and your text.
 An older service's row may lack a `tags` member.
 That row shows only its derived project.
 It counts under `have no tags`.
-Without an edit route, removal answers `this service cannot edit tags yet`.
+Without an edit route, removal answers `this stage cannot edit tags yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you)`.
 
 #### Finding a run
 
@@ -3596,7 +3700,7 @@ Ham shows its words in the notice, keeps your text and starts nothing:
 | `409 no-delivered-head` or `409 head-mismatch` | The blocked run was a follow-up, and the earlier run it started from no longer holds the code. Start a new run. |
 | `422 stored-request-unreadable` | The service cannot read the saved request. Start a new run with the same prompt. |
 | `503` or no answer | Press the key again in a moment. The same key never starts a second run. If it keeps failing, start a new run with the same prompt. |
-| "does not offer retry yet" | The stage was deployed without retry support. Start a new run. |
+| "does not offer retry yet" | The stage was deployed without retry support. Start a new run. To get retry, update the stage with `ham update`; if someone else runs your stage, ask that person. |
 
 **Prepare a follow-up**
 
@@ -4213,7 +4317,7 @@ You can also remove a tag the model wrote.
 You can remove the derived project too.
 Only adding the tag again clears its removal.
 
-A service without an edit route answers `this service cannot edit tags yet`.
+A stage without an edit route answers `this stage cannot edit tags yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you)`.
 
 The run screen shows the new tags in its name row immediately.
 The Runs list gets the new tags from the edit's answer.
@@ -5226,6 +5330,38 @@ The earlier run must be finished.
 
 The new run starts at the earlier run's delivered head.
 Its full history travels with that code.
+
+A follow-up of a run that reported done starts without that run's lifecycle records in the work tree.
+Before the first prompt, the harness makes one commit of its own on the delivered head: `harness: earlier request's records removed from the work tree`.
+The commit takes out the goal card, the run log, the red records and the research notes that runs wrote under `.ham`.
+Cline then finds no goal card of the earlier request at the path where it looks for the card of the new task.
+Nothing is lost.
+The records are in the commit before that one: `git show <that commit>^:.ham/lifecycle/GOAL.md` prints the earlier card.
+They are also in the earlier run's zip (`ham pull <earlier runId>`) and in its clone (`ham clone <earlier runId>`).
+You see the commit in the history of the new run's code and in its pull request, where the earlier records show as removed files.
+Merging that pull request takes those files off the target branch.
+A third request's commit takes out the second request's records, and the first request's records are one step further back in the history.
+A follow-up that changes no file still delivers a tree without the earlier records.
+The context index under `.ham/context`, `.ham/records` and `.ham/test-command` always stay.
+
+The records stay where they are in these cases:
+
+- The earlier run did not report done, so its label starts with "Cline stopped". The task is still open, and `ham continue <runId> 'carry on'` finds that task's own goal card.
+- `ham resume`. A resumed run is the same request going on.
+- A file under `.ham/lifecycle` or `.ham/research` that you committed yourself, also when Cline changed it later, renamed it there or moved it there from another folder.
+- A records folder that `.ham/records` names. The earlier records stay there, and Cline may take the earlier goal card for its own, as before.
+- A tree in which the step cannot be made safely: a submodule or more than 1,000 files under the two folders. The run goes on with the records in place.
+- A repository whose attributes convert line endings, or apply another filter, to the records. The files in the work tree then differ from what git stored, and the harness leaves them alone.
+- Records that are switched off in `.ham/records`, and a file name under the two folders that is no UTF-8 text.
+- Records in the folder of an earlier release when taking them out would leave that folder without content.
+- The service could not read how the earlier run ended. The follow-up starts all the same, and the records stay.
+- `run.remove_earlier_records` set to off: `ham config set run.remove_earlier_records off`.
+
+When the records stay because of the tree, the log of the run's worker says why in one line that starts `direct turn earlier records: not removed:`.
+The person who runs the stage can read that log.
+
+A follow-up of a run that reported done that only adds what was missed starts without the earlier card too, so name what was missed in your prompt.
+
 The earlier run's branch does not travel.
 The new run goes where the earlier run went: the same CodeCommit repository, with a pull request, or a zip alone for an `s3-only` run.
 That includes a run made with `--new-repo`.
@@ -5263,6 +5399,8 @@ To start a new run from the earlier run's branch without `ham continue`, add `--
 
 Cline receives the prompt exactly as you typed it, after the harness's short block on how the run delivers.
 Nothing about the earlier run is added to that prompt.
+The history that Cline reads shows the one commit of the harness, and its message says where the earlier records are.
+
 ### Long runs, paused runs and resume
 
 A session lasts at most 8 hours. A run that is still working when its session nears that limit does not stop. The service saves the work, starts a new session from it and gives the new Cline the task, the messages you sent to the run that were delivered before, the state of the repository and the last message of the Cline before. The service supplies the messages from its message ledger. Cline receives them as your own words, like the task. They appear in the order you sent them. Text that you typed with an answer to a question is not one of these messages. A new session does not receive that text. Each message has a label that marks delivery in an earlier session. The new session carries at most 16,384 bytes of message text and at most 100 messages. It leaves out the oldest messages first when they do not fit. Cline sees how many messages were left out. The newest message always stays. When the newest message alone is longer than the bound, it keeps its start and its end. An older message that does not fit is left out, together with every message before it. A long older message is not shortened to make it fit. The new Cline receives a message that `ham` shows as `may have reached Cline` after the delivered messages, as your own words. A line says that the earlier session may or may not have read it. The new Cline does not receive a message that `ham` shows as `held`. The service keeps it until you confirm or withdraw it. The service sends neither kind again automatically. You can use `x` to send a message again. Cline may then read it twice. When the service runs an earlier release or gives no answer after three questions, the new Cline receives the record the earlier session kept in the run's storage. Cline receives that record as quoted data, like the last message of the Cline before. The record gives no instruction. The first prompt tells Cline about the fallback. The person who runs your stage can make new sessions use only the quoted record with the worker variable `AGENTD_MESSAGES_EARLIER=record`, set for the whole stage when the stage is deployed. After a failed request, the prompt warns that messages may be missing even if the record holds no messages. In that case, send a message again if something you asked for in it is still missing. The same holds when the service starts a new session after one it lost. The run keeps its id, its zip and its events. The delivery card and `ham runs --json` show which session the run is in.
@@ -5284,7 +5422,7 @@ The total time is the time of the whole run, counted from the start of its first
 
 Both keep the code they delivered. `ham runs --json` shows `statusReason`, a code and a sentence, and `resumeMode`, which reads `follow_up`. The note line under the Runs table gives the reason and the session number of the selected run, counts the runs `R` would resume, and the filter finds both by their status word.
 
-`ham resume <runId>` starts a new run from the code a paused or stalled run delivered. It sends the request that run was started with and adds a note to the prompt that says the run is a continuation. The new run has its own total time. `ham resume --all` does this for every paused and stalled run in your list that no later run continues, four at a time, and prints one line per run: the new run id, or why that run did not start. `--dry-run` prints what would start and starts nothing. Resuming the same run twice returns the run the first call started and never starts a second one. Each resumed run is billable like any new run.
+`ham resume <runId>` starts a new run from the code a paused or stalled run delivered. It sends the request that run was started with and adds a note to the prompt that says the run is a continuation. A resumed run keeps the lifecycle records where they are, because it is the same request. The new run has its own total time. `ham resume --all` does this for every paused and stalled run in your list that no later run continues, four at a time, and prints one line per run: the new run id, or why that run did not start. `--dry-run` prints what would start and starts nothing. Resuming the same run twice returns the run the first call started and never starts a second one. Each resumed run is billable like any new run.
 
 In the terminal app, `R` on the Runs screen asks one question that names how many runs it will resume and how many it leaves. Enter or `R` again, 0.3 seconds or more later, starts them, and Esc withdraws the question. On the screen of a run, `R` shows the preview of `/resume --all`, and `R` again starts it: it resumes every paused and stalled run in your list that no later run continues, and never the run on screen alone. The preview names how many runs that is before anything starts. The screen of a paused or stalled run names the key and what it resumes. When that run is the only one `R` would resume, its box title reads "Not available: run paused; Esc, then R resumes it" and its browse key line reads `R resume`. When your list holds three such runs, the title ends "Esc, then R resumes 3 runs" and the key line reads `R resume all`. When ham has not read your list of runs since the run stopped, for example when a run pauses while you watch it, the title ends "Esc, then R resumes all". The list is then read once more, and the title gives the count when it answers. To resume that run alone, type `/resume <runId>` in its box or run `ham resume <runId>`. A short line under the table reports what each run did, for example `resumed 1 of 2: 01K6A000 -> 01K6E000 · 01K6B000 not started`. When a run did not start, or ham switched the mode of provider data sharing for a run, a panel above that line shows the whole text: each line about the switch once, then each reason once with the runs it stopped. The next key closes the line and the panel. A run that did not start keeps its reason as a card titled `resume did not start` on its screen until a later resume of it starts or you close ham: the card is kept in memory only. The panel of `/resume --all` on a run's screen wraps its lines.
 
@@ -5423,6 +5561,10 @@ They are the goal card (`GOAL.md`), the run log (`LOG.md`), the red records, the
 By default they sit in the hidden folder `.ham`: the card, the log and the red records in `.ham/lifecycle`, the notes in `.ham/research` and the index in `.ham/context`.
 They sit beside `.ham/test-command`.
 Cline commits them with the work, so the zip and the clone carry them.
+
+A follow-up of a run that reported done starts with that run's records gone from `.ham/lifecycle` and `.ham/research` (see "Start a follow-up run").
+The context index, `.ham/records` and `.ham/test-command` stay.
+With a folder that `.ham/records` names, the earlier records stay in place, and Cline may take the earlier goal card for its own, as before.
 
 The records are not in `docs`, because many repositories check their documents and reject a file under `docs` that they do not know.
 Document checks that look at `docs` and at visible folders do not see `.ham`.
@@ -6758,7 +6900,7 @@ A run that ends is over: you cannot type a new prompt into the same session. To 
 
 ## The goal loop
 
-Your first prompt goes to Cline exactly as you typed it, after the harness's short block on how the run delivers. Cline's goal plugin then runs the goal loop by default. When Cline's first run ends, the plugin sends follow-up prompts by itself and asks Cline whether the goal is complete. The goal is short. If this task has a goal card (the lifecycle pack writes it as GOAL.md in `.ham/lifecycle`, or where `.ham/records` says), its numbered checks are the goal. Your run stays open while Cline works through the prompts, and `ham watch` keeps showing Cline's tool calls and messages.
+Your first prompt goes to Cline exactly as you typed it, after the harness's short block on how the run delivers. Cline's goal plugin then runs the goal loop by default. When Cline's first run ends, the plugin sends follow-up prompts by itself and asks Cline whether the goal is complete. The goal is short. If this task has a goal card (the lifecycle pack writes it as GOAL.md in `.ham/lifecycle`, or where `.ham/records` says), its numbered checks are the goal. In a follow-up of a run that reported done, the card of that run is not in the work tree, so the task has a card only when Cline writes one. Your run stays open while Cline works through the prompts, and `ham watch` keeps showing Cline's tool calls and messages.
 
 The loop ends when Cline calls its goal-complete tool after one of those prompts and that round ends with a message. The card then says “Cline reported done”, which does not say the work is good.
 
@@ -6890,12 +7032,12 @@ The command is `ham pull <runId> --snapshot`. It works while the run works and a
 - When the engine stops, the service saves the end state before it checks or delivers anything. A delivery that is refused does not remove this copy. This copy has two minutes: one that takes longer is given up, so that it never holds back the delivery. The service tries it once more after the session's own bundle is stored. A copy of the end that is still not stored is named at the end of the run. If that run then ends blocked, `ham pull <runId> --snapshot` downloads the last copy made while the engine worked, and the final work is in the stage's bucket only: the two commands after this list download it.
 - When the worker of a session receives a termination signal (SIGTERM or SIGINT) while the engine works, it saves a copy at once, before it does anything else. If another copy is being made at that moment, that one is finished first, within its own limits, and a new one follows it, so the last copy holds the files as they were when the signal came. If that copy cannot be saved, the worker tries again every 5 seconds for as long as the session's machine lives. Do not count on this copy when a session is stopped from outside or dies: the files of a stopped session stop answering before the signal arrives, so that copy saves nothing, and the session then leaves the copies of the timer and of the tool calls. What such a session wrote after its last copy is still on its own storage, which the service reads back before the next session starts (the block after this list).
 - Work is lost only when a session dies while the engine works, or when the copy of the end cannot be stored and the run delivers nothing. The most that can be lost then is about 15 seconds of file changes (the interval of `run.copy_every_seconds` or `run.copy_every_minutes` when one of them is set) plus the time one copy takes, or more for a repository whose copies take long or while the run says that a copy is late or could not be saved. With `run.copy_every_seconds` or `run.copy_every_minutes` set, read the 15 seconds as the interval you chose. A copy every 15 seconds does not save every write: what a session wrote after its last stored copy is in no saved copy when the session is stopped or dies. The read of the session's storage, in the block after this list, can still hold it. The time one copy takes to make and store is about a second for a small repository, and longer for a repository whose copies take long (the last point below). While the run says that a copy is late or could not be saved, every change since the time on the `Saved` line can be lost, until a new copy is stored. While the engine runs one long command, no tool call ends, so the copies come from the timer alone. A session that dies before its first copy leaves none.
-- No copy is waited for without a limit. While a copy reads the work tree, the service asks the tree's file system every 20 seconds whether it still answers, and gives the copy up when it gets no answer within 5 seconds. Reading the work tree for one copy is given up after five minutes, or after ten times as long as it took for the last stored copy when that is longer; a copy that was given up for this reason has twice the time at its next try, and never more than one hour. Storing a copy is given up after 30 seconds and one second more for each 1,048,576 bytes of it. A copy that was given up is made again at a later look, and the run is told (the sentences are below this list).
-- A copy holds what a delivery would hold: every file that git does not ignore. Ignored files and empty folders are not in it. If the repository's `.git` folder is removed or replaced, later copies hold the whole tree without its history.
+- No copy is waited for without a limit. While a copy reads the work tree, the service asks the tree's file system every 20 seconds whether it still answers, and gives the copy up when it gets no answer within 5 seconds. Reading the work tree for one copy is given up after five minutes, or after ten times as long as it took for the last stored copy when that is longer; a copy that was given up for this reason has twice the time at its next try, and never more than one hour. Storing a copy is given up after 30 seconds and one second more for each 1,048,576 bytes of it. Within that time, a request to the bucket that does not move for 30 seconds is given up and sent again. A copy that was given up is made again at a later look, and the run is told (the sentences are below this list).
+- A copy and the repository the run started from together hold what a delivery would hold: every file that git does not ignore. Ignored files and empty folders are not in a copy. If the repository's `.git` folder is removed or replaced, later copies hold the whole tree without its history.
 - The latest copy of a run is kept until the stage is removed. Each new copy replaces the one before it, and a replaced copy is kept for 30 days.
 - A copy is not checked by the harness. It can hold a file that a delivery check refused, such as a detected secret. Only you, the run's owner, can download it.
 - Clearing a run does not delete its copies.
-- A repository with a long history takes longer to copy, because each copy holds the whole history. Once a copy is larger than 8,388,608 bytes, copies follow the timer only, not each tool call. The service also leaves more time between copies when git takes long to make one, so that making copies takes at most a tenth of the session's time. The time an upload takes is not counted, and the extra wait is never longer than five minutes, also when you lengthened the timer. A copy that could not be saved is tried again 15 seconds later, or later when making it took long, also under a longer timer.
+- A copy holds what the run changed since it started. A run that changes much has larger copies, and larger copies come less often. The repository the run started from supplies the rest, and `ham pull <runId> --snapshot` downloads both. Once a copy is larger than 8,388,608 bytes, copies follow the timer only, not each tool call. The service also leaves more time between copies when git takes long to make one, so that making copies takes at most a tenth of the session's time. The time an upload takes is not counted, and the extra wait is never longer than five minutes, also when you lengthened the timer. A copy that could not be saved is tried again 15 seconds later, or later when making it took long, also under a longer timer.
 
 **When a session is stopped or lost, its storage is read back.** A session keeps its work tree on storage of its own, and that storage outlives the session's machine. Before the next session starts, the service reads that storage back into one copy.
 
@@ -6936,6 +7078,29 @@ The output names the file, commit, base, size, and run's status. You also get th
 git clone -b snapshot <file> <dir>
 ```
 
+A copy usually comes as two files. Nothing you type changes. A copy holds what the run changed since it started, and not the repository's history, so it needs the repository the run started from. `ham` downloads that repository too, as `<runId>-base.bundle` in the download directory, with the same checks; a file of that name is replaced. The output names it on a `Needs` line, gives both sizes, and prints this line in place of the one above. `ham` runs no git itself:
+
+```text
+git clone <base file> <dir> && git -C <dir> fetch <copy file> snapshot && git -C <dir> checkout -B ham-snapshot FETCH_HEAD
+```
+
+The line puts the copy on a branch of its own, `ham-snapshot`, so it works whatever the branches of your repository are called. A file path with a blank or another character that a shell reads in its own way is printed in single quotes, here and in the clone line above. The line names both files by their whole paths, also when the download directory is set as a relative path, because its second command changes to `<dir>` before it reads the copy.
+
+A copy that holds the whole tree or the whole history comes as one file, with the clone line above. That is a copy made after the repository's `.git` folder was removed or replaced, and a copy that a worker of an earlier release saved.
+
+A `ham` from before copies came as two files takes one file. The stage tells it to update, and it prints: `HTTP 409: this copy of the work needs a newer ham to download; the work is saved; run ham update and ask again (snapshot-needs-update)`. The work stays saved. Run `ham update` and ask again.
+
+If the repository the run started from cannot be downloaded or checked, the copy stays in the download directory and the command ends with exit code 1 and this sentence: "the copy is at <path>; the repository the run started from could not be downloaded (<reason>); run the command again".
+
+A stage whose download route is older than its worker sends such a copy without the second file. So does a stage whose bucket no longer holds the repository the run started from. `ham` keeps the copy and prints a `Note` in place of the look line: the copy holds what the run changed and needs the repository the run started from, which the stage did not send. The note names this section. That repository is the bundle the run started from, in the stage's bucket. An operator of the stage downloads it with the AWS CLI profile of the stage's account, and three git commands put the two files together (give the copy's file by its full path):
+
+```bash
+aws s3 cp s3://hamh-direct-harness-<account id>/runs/<runId>/input/repo.bundle ./base.bundle
+git clone ./base.bundle ./inspect
+git -C ./inspect fetch <copy file> snapshot
+git -C ./inspect checkout -B ham-snapshot FETCH_HEAD
+```
+
 The output ends with this warning:
 
 > "A worker snapshot, not checked by the harness: treat its contents as untrusted code and data."
@@ -6956,6 +7121,8 @@ With `--json`, you get one object containing `runId` and `snapshot`. The `snapsh
 - `recordStale`
 - `finalCopy`
 - `note`
+- `base`, with `path` and `sizeBytes`, when the copy came with the repository the run started from
+- `needsBase`, when the copy needs that repository and the stage did not send it
 
 You cannot use `--snapshot` and `--artifact` together. This causes a usage error with exit code 2.
 
@@ -7042,6 +7209,7 @@ Only a command that starts with the missing program is read this way.
 A repository script that runs a missing tool inside, a file of your repository that is not there, and any other exit code stay failures.
 When no source names a command and the root `Cargo.toml` is a workspace of more than one member, the harness picks `cargo test`, which runs the tests of every member. EVIDENCE.md says so in a paragraph under the sentence: `The repository names no test command, so the harness chose `cargo test` from the manifest (Cargo.toml). It runs the tests of the whole workspace, 14 members.` A manifest with a `[package]` runs that package alone, so it gets no such paragraph.
 To make the report run the commands you want, list them in `.ham/test-command`: it is the first source, and the report does not read `AGENTS.md`. The same file names the command of any layout the list above does not know.
+A follow-up of a run that reported done that writes no log and no card of its own finds its test command from `.ham/test-command` or the project's layout, and no longer from the earlier run's log.
 When no source gives a command, the sentence `No test command was found, so no clean-checkout test report was made` goes on with the list of where the report looked (the test command file, the run log, the goal card and each layout above) and says that a `.ham/test-command` file in the repository names the command.
 
 While the report runs, the screen says so. The run shows `active (running the repository's tests)` in place of `active (green)`, and the live row says which command of how many is running and how long it may run, for example `Running the repository's tests: command 2 of 2 (up to 5 min).` The stored phase of the run, which `ham runs` shows, does not change.
@@ -7210,6 +7378,8 @@ If opening the pull request fails, the zip still gets built. The run still compl
 ```text
 pull request not opened: <reason>
 ```
+
+The detail reads as sentences. When a sentence stands before either text, the text begins with a capital letter, for example `The run used 3 sessions. No pull request: Cline left the repository unchanged`.
 
 GitHub and GitLab targets are not supported.
 
@@ -7403,8 +7573,8 @@ Find your symptom below, then follow the fix in that row.
 | `Run: aws sso login --profile <name>` | Your IAM Identity Center sign-in has ended. | Run that command, then repeat the command that failed. |
 | `the AWS CLI was not found` or `older than 2.9.0` | SSO and assume-role profiles are read through the AWS CLI. It must be version 2.9.0 or later. | [Install or upgrade the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html). You can also set `HAMH_AWS_CLI` to a newer program's path. |
 | `did not answer within 30 seconds` | The AWS CLI took longer than the 30 seconds `ham` allows. `ham` stopped it. | Run `aws sts get-caller-identity --profile <name>` in a terminal to see why. Sign in again if needed. Then retry. |
-| `ham: config.toml: ...` or `unknown config key "<key>"; the keys are api_endpoint, region, aws_profile, default_repo, download_dir, default_model, input_wait_minutes, mouse, report_tests, run.goal, run.rules, run.skills, research.enabled, ui.notify, ui.bell, ui.mascot, run.report_command_minutes, run.stall_calls, run.stall_window_minutes, run.stall_min_calls, run.command_grace_minutes, run.final_message, run.lifecycle_flow, run.review_round, run.compute, run.stall_new_calls, run.cargo_no_debug_info, run.cargo_no_incremental, run.exclude_target_dir, run.outside_checkout_note, ui.deprecation_notices, ui.mascot_motion, run.max_run_hours, run.provider_sharing, default_backend, customer_content, ui.copy_limit_kib, run.max_interrupts, run.max_questions, run.max_fresh_sessions, research.max_file_mib, research.max_unpacked_mib, research.max_run_mib, run.container_signals, default_engine, update_source, run.copy_every_minutes, run.copy_every_seconds, run.delivery_note, run.recover_after_stop` | The file has an unknown key or bad TOML, or you typed the wrong key. `ham config set` never overwrites an unreadable file. | Fix ~/.config/ham/config.toml by hand. The thirteen top-level file keys use camelCase: apiEndpoint, region, awsProfile, defaultRepo, downloadDir, defaultModel, defaultEngine, inputWaitMinutes, mouse, reportTests, defaultBackend, customerContent and updateSource. The thirty-seven table keys use the table name and a dot: run.goal, run.rules, run.skills, research.enabled, ui.notify, ui.bell, ui.mascot, run.report_command_minutes, run.stall_calls, run.stall_window_minutes, run.stall_min_calls, run.command_grace_minutes, run.final_message, run.lifecycle_flow, run.review_round, run.compute, run.stall_new_calls, run.cargo_no_debug_info, run.cargo_no_incremental, run.exclude_target_dir, run.outside_checkout_note, ui.deprecation_notices, ui.mascot_motion, run.max_run_hours, run.provider_sharing, ui.copy_limit_kib, run.max_interrupts, run.max_questions, run.max_fresh_sessions, research.max_file_mib, research.max_unpacked_mib, research.max_run_mib, run.container_signals, run.copy_every_minutes, run.copy_every_seconds, run.delivery_note and run.recover_after_stop. |
-| `config.toml was written by a newer ham (configVersion 2); update ham to change it. Nothing was written`, or `ham models` or `ham runs` refusing a file with "written by a newer ham" | The file's `configVersion` is higher than your ham knows. A command wants to change the file, or a run would use keys your ham does not know. | Update ham. Or run `ham config check`, which still runs, and remove the keys your ham does not know. |
+| `ham: config.toml: ...` or `unknown config key "<key>"; the keys are api_endpoint, region, aws_profile, default_repo, download_dir, default_model, input_wait_minutes, mouse, report_tests, run.goal, run.rules, run.skills, research.enabled, ui.notify, ui.bell, ui.mascot, run.report_command_minutes, run.stall_calls, run.stall_window_minutes, run.stall_min_calls, run.command_grace_minutes, run.final_message, run.lifecycle_flow, run.review_round, run.compute, run.stall_new_calls, run.cargo_no_debug_info, run.cargo_no_incremental, run.exclude_target_dir, run.outside_checkout_note, ui.deprecation_notices, ui.mascot_motion, run.max_run_hours, run.provider_sharing, default_backend, customer_content, ui.copy_limit_kib, run.max_interrupts, run.max_questions, run.max_fresh_sessions, research.max_file_mib, research.max_unpacked_mib, research.max_run_mib, run.container_signals, default_engine, update_source, run.copy_every_minutes, run.copy_every_seconds, run.delivery_note, run.recover_after_stop, ui.update_notice, run.remove_earlier_records` | The file has an unknown key or bad TOML, or you typed the wrong key. `ham config set` never overwrites an unreadable file. | Fix ~/.config/ham/config.toml by hand. The thirteen top-level file keys use camelCase: apiEndpoint, region, awsProfile, defaultRepo, downloadDir, defaultModel, defaultEngine, inputWaitMinutes, mouse, reportTests, defaultBackend, customerContent and updateSource. The thirty-nine table keys use the table name and a dot: run.goal, run.rules, run.skills, research.enabled, ui.notify, ui.bell, ui.mascot, run.report_command_minutes, run.stall_calls, run.stall_window_minutes, run.stall_min_calls, run.command_grace_minutes, run.final_message, run.lifecycle_flow, run.review_round, run.compute, run.stall_new_calls, run.cargo_no_debug_info, run.cargo_no_incremental, run.exclude_target_dir, run.outside_checkout_note, ui.deprecation_notices, ui.mascot_motion, run.max_run_hours, run.provider_sharing, ui.copy_limit_kib, run.max_interrupts, run.max_questions, run.max_fresh_sessions, research.max_file_mib, research.max_unpacked_mib, research.max_run_mib, run.container_signals, run.copy_every_minutes, run.copy_every_seconds, run.delivery_note, run.recover_after_stop, ui.update_notice and run.remove_earlier_records. |
+| `config.toml was written by a newer ham (configVersion 2); update ham (run ham update) to change it. Nothing was written`, or `ham models` or `ham runs` refusing a file with "written by a newer ham" | The file's `configVersion` is higher than your ham knows. A command wants to change the file, or a run would use keys your ham does not know. | Update ham with `ham update`. If someone else runs your stage, update ham the way you installed it (see "Client only"). Or run `ham config check`, which still runs, and remove the keys your ham does not know. |
 | `config.toml changed on disk; reloaded; nothing written` | Another program or another ham changed the file after ham read it and before ham replaced it. | Run the command again. Nothing was lost. When two writers meet, the last write wins. |
 | ``line 5, column 1: unknown key `goall` in [run]; did you mean `goal`?`` or `line 6, column 2: unknown table [serch]; did you mean [research]?` from `ham config check`, `ham doctor`, `ham models` or a start | ham does not know a key or table in the file, often because of a typo. A top-level key typed below a `[table]` line belongs to that table. | Correct the line the message names, or run `ham config unset <key>` or `ham config edit`. `ham config get`, `show`, `check`, `edit`, `docs` and `ham doctor` still run on a file with a bad key. |
 | `WARN catalog ... catalog smoke records are N hours old (refresh them)` in `ham doctor --catalog-max-age <hours>` | You gave a limit, and the newest model smoke record is older than it. The models can still be selected, so doctor prints a warning and exits 0. Without the option, doctor states the age and prints no warning. | The warning does not block the run or mean setup is broken. Leave the option out, or tell the operator to refresh the records. |
@@ -7420,25 +7590,26 @@ Find your symptom below, then follow the fix in that row.
 | `model "<x>" (from <source>) is listed as <id> but has no passing smoke record, so it is not selectable yet` | The model has no passing smoke record. | Pick another model. |
 | ``no rules found in <dir>: run `ham rules init` to write the default rules, or start with --no-rules`` | The rules folder is missing or empty. | Run `ham rules init`, or add `--no-rules` for this run. |
 | `rule "<name>" ...`, such as `rule "AGENTS.md" cannot be called AGENTS.md: Cline would load it as a repository instruction file; rename it` | A rule file breaks a name, empty-file, or frontmatter limit. | Change the named file. Run `ham rules show` to list what would be sent. |
-| `ham: POST /v1/direct/runs: HTTP 422: ... (unknown-model)` | Your `ham` build and the stage have different model lists. | Run `ham models --server` to see the stage's list. Update `ham` or ask the operator. |
-| `This stage runs backend v<N.NN>, which does not list <model>. Update the stage (run ham update), or pick a model it lists (ham models --server shows the stage's list).` | Your `ham` is newer than the stage and offers a model the stage does not list yet. `ham` adds this sentence to the stage's refusal of the start, on the command line and on the New run screen. It says `an older backend` when the stage sent no version. | Update the stage with `ham update`, or pick a model the stage lists; `ham models --server` shows them. `ham` starts no other model in its place. |
+| `ham: POST /v1/direct/runs: HTTP 422: ... (unknown-model)` | Your `ham` build and the stage have different model lists. | Run `ham models --server` to see the stage's list. Update ham (run `ham update`), or ask the person who runs the stage. |
+| `This stage runs backend v<N.NN>, which does not list <model>. Update the stage (run ham update), or pick a model it lists (ham models --server shows the stage's list).` | Your `ham` is newer than the stage and offers a model the stage does not list yet. `ham` adds this sentence to the stage's refusal of the start, on the command line and on the New run screen. It says `an older backend` when the stage sent no version. | Update the stage with `ham update`, or pick a model the stage lists; `ham models --server` shows them. If someone else runs the stage, ask that person to update it. `ham` starts no other model in its place. |
 | `HTTP 413: the request is <size>; a request carries at most <limit> in all ... (payload-too-large)` | The prompt, rules, skills, attachments and prompt files together are over what one request carries. The message names the largest part. | Shorten the largest part, or send fewer files. |
 | `HTTP 404: this stage does not serve direct runs; ... (direct-runs-not-served)` | The endpoint belongs to a stage other than `direct`, the direct-run stage. | Use the `direct` endpoint. It ends in /direct. |
 | `HTTP 400: prompt is empty (bad-request)` | The prompt is empty. | Write a prompt. |
-| ``HTTP 400: StartDirectRunRequest: a member has the wrong type or a value this API does not accept (line 1, column 61) (bad-request)`` | The request body does not parse. This happens when you call the API by hand or when your ham and the stage are different versions. The message names the request type, the kind of problem and the place in the body (line, then the column counted in bytes). It never repeats what you sent, so a value or a name you pasted in by mistake does not come back in the answer. The other kinds are: the body is not valid JSON, the body ends before the JSON is complete, a number out of range, a required member is missing, a member this API does not know, a member twice, and any other mismatch. | Look at the body near the line and column the message names. Run `ham --version` and update ham if the stage is newer. |
+| ``HTTP 400: StartDirectRunRequest: a member has the wrong type or a value this API does not accept (line 1, column 61) (bad-request)`` | The request body does not parse. This happens when you call the API by hand or when your ham and the stage are different versions. The message names the request type, the kind of problem and the place in the body (line, then the column counted in bytes). It never repeats what you sent, so a value or a name you pasted in by mistake does not come back in the answer. The other kinds are: the body is not valid JSON, the body ends before the JSON is complete, a number out of range, a required member is missing, a member this API does not know, a member twice, and any other mismatch. | Look at the body near the line and column the message names. Run `ham --version` and update ham (run `ham update`) if the stage is newer. |
 | `engines/cline.toml line <n>: ... Nothing was sent.` | The engine file holds something the check refuses: a key that is not one of the five settings, a locked key such as `aws.profile`, a value out of range, or settings without a `schema = 1` line. ham stopped before it sent anything. On the command line it exits with code 2. | Correct the line the message names. `ham engine cline check` lists the problems it finds. `ham engine cline unset <key>` removes a key. |
-| ``this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage`` | The stage was deployed before the switch existed, and it refused the request. ham does not send the run again without the switch, because such a stage cannot leave the block out. | Run `ham config unset run.delivery_note`, or ask whoever runs the stage to update it. |
-| ``this stage predates the switch of reading a stopped session's storage back, so it cannot start a run with run.recover_after_stop = false; run `ham config unset run.recover_after_stop` or update the stage`` | The stage was deployed before the switch existed, and it refused the request. ham does not send the run again without the switch. | Run `ham config unset run.recover_after_stop`, or ask whoever runs the stage to update it. |
-| ``this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = <n>; run `ham config unset run.copy_every_seconds` or update the stage`` | The stage was deployed before the copy interval of a run existed, and it refused the request. ham does not send the run again without the interval. The sentence names the key your config sets: for `run.copy_every_minutes` it reads `run.copy_every_minutes = <m>` and `ham config unset run.copy_every_minutes`. | Run `ham config unset` for the key your config sets, or ask whoever runs the stage to update it. |
-| ``this stage predates copy intervals under one minute, so it cannot start a run with run.copy_every_seconds = <n>; set it to 60 or more, run `ham config unset run.copy_every_seconds` or update the stage`` | The stage runs a release whose shortest copy interval is one minute, and it refused the request. ham does not send the run again with another interval. | Set `run.copy_every_seconds` to 60 or more, or unset it, or ask whoever runs the stage to update it. |
-| ``this stage predates engine settings; run `ham engine cline unset <key>` or update the stage (keys set: <list>)`` | The stage was deployed before engine settings existed, and it refused the request. ham does not send the run again without the settings. | Remove the keys with `ham engine cline unset <key>`, or ask whoever runs the stage to update it. |
-| `HTTP 400: ... (invalid-engine-config)` | The stage's copy of the check refused the settings. That can happen when your ham and the stage are different versions. Nothing was written. | Run `ham engine cline check`. Update ham, or ask the operator. |
+| ``this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage (run ham update; ask the person who runs the stage if that is not you)`` | The stage was deployed before the switch existed, and it refused the request. ham does not send the run again without the switch, because such a stage cannot leave the block out. | Run `ham config unset run.delivery_note`, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| ``this stage predates the switch of reading a stopped session's storage back, so it cannot start a run with run.recover_after_stop = false; run `ham config unset run.recover_after_stop` or update the stage (run ham update; ask the person who runs the stage if that is not you)`` | The stage was deployed before the switch existed, and it refused the request. ham does not send the run again without the switch. | Run `ham config unset run.recover_after_stop`, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| ``this stage predates the switch for the earlier run's records, so it leaves them in place anyway; run `ham config unset run.remove_earlier_records` or update the stage (run ham update; ask the person who runs the stage if that is not you)`` | The stage was deployed before the switch existed, and it refused the request. Such a stage takes no records out of a follow-up's work tree, so the run would behave as the key asks. ham does not send the run again without the switch. | Run `ham config unset run.remove_earlier_records`, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| ``this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = <n>; run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)`` | The stage was deployed before the copy interval of a run existed, and it refused the request. ham does not send the run again without the interval. The sentence names the key your config sets: for `run.copy_every_minutes` it reads `run.copy_every_minutes = <m>` and `ham config unset run.copy_every_minutes`. | Run `ham config unset` for the key your config sets, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| ``this stage predates copy intervals under one minute, so it cannot start a run with run.copy_every_seconds = <n>; set it to 60 or more, run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)`` | The stage runs a release whose shortest copy interval is one minute, and it refused the request. ham does not send the run again with another interval. | Set `run.copy_every_seconds` to 60 or more, or unset it, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| ``this stage predates engine settings; run `ham engine cline unset <key>` or update the stage (run ham update; ask the person who runs the stage if that is not you) (keys set: <list>)`` | The stage was deployed before engine settings existed, and it refused the request. ham does not send the run again without the settings. | Remove the keys with `ham engine cline unset <key>`, or update the stage with `ham update`. If someone else runs the stage, ask that person to update it. |
+| `HTTP 400: ... (invalid-engine-config)` | The stage's copy of the check refused the settings. That can happen when your ham and the stage are different versions. Nothing was written. | Run `ham engine cline check`. Update ham (run `ham update`), or ask the person who runs the stage. |
 | A run ends with the label `Cline did not start` and a detail that names engine settings, or that reads `request.json is not a StartDirectRunRequest` | agentd refused the settings or could not read back what it placed for Cline, or the worker image is older than your ham and refuses them. The run stopped before the first model call. | Tell the operator. Remove the keys with `ham engine cline unset <key>` and start the run again without those settings. |
-| You set a key, but the run shows no engine settings card | You may be running an older ham, which does not read the `engines/` folder. The file may set no key (an empty file, or only `schema = 1`). The run may not have placed the settings yet. | Run `ham engine cline show`. It prints the settings a run would send, or says that none is set. Update ham if it does not know the command. |
+| You set a key, but the run shows no engine settings card | You may be running an older ham, which does not read the `engines/` folder. The file may set no key (an empty file, or only `schema = 1`). The run may not have placed the settings yet. | Run `ham engine cline show`. It prints the settings a run would send, or says that none is set. Update ham (run `ham update`) if it does not know the command. |
 | `--no-rules and --rules say opposite things; give one`, and similar usage errors, or `... is an option of a direct run; add --direct` | The flags do not go together. These errors exit with code 2. | Remove one of the conflicting flags. |
 | The name of a run stays dim (grey) in the Runs list, or under the header of the run screen | The name is a seed name, a short label cut from your prompt. The model's name may not have arrived yet. The prompt may have had fewer than 4 words. The model call, or its reply, may have failed a check. The run may be older than names. An operator may have switched the model off for the stage. A stage older than this feature sends no names, and the list then shows the first line of the prompt. | Wait a few seconds and press `r` on the Runs screen. A short prompt or an older run needs nothing. If every new run stays dim, tell the operator. |
 | A run shows no tags | Tags arrive a few seconds after the run starts. They may not have arrived yet. The prompt had fewer than 4 words. Such a run makes no model call. It shows only its derived project. The model call or its reply failed a check. The run is older than tags. An operator switched the model or tags off for the stage. A run with no repository (`s3-only`) has no derived project. | Wait a few seconds and press `r` on the Runs screen. A short prompt or an older run needs nothing. Add a tag with `/tag`. If every new run stays without tags, tell the operator. |
-| `this service cannot edit tags yet` after `/tag` or after `d` (remove a tag) in the tag explorer. | The stage runs a service older than the tags feature. It has no edit route. | Ask the operator to deploy the current service. Tags that were already sent still show. |
+| `this stage cannot edit tags yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you)` after `/tag` or after `d` (remove a tag) in the tag explorer. | The stage runs a service older than the tags feature. It has no edit route. | Update the stage with `ham update`. If someone else runs the stage, ask that person to update it. Tags that were already sent still show. |
 | `remove needs every run loaded: press r to load them all, then d` in the tag explorer. | The explorer holds only the newest 100 runs. Removing a tag everywhere would miss the others. | Press `r` to read every page of the list, then `d`. |
 
 ### A run that stops or does not deliver
@@ -7457,7 +7628,7 @@ Find your symptom below, then follow the fix in that row.
 | `queued, not acknowledged yet: the run may have ended; run: ham watch <runId>` | The service queued your answer, but agentd did not acknowledge it within 20 seconds. The run may have ended, or the window closed. | Run `ham watch <runId>`. If the question is still open, send the answer again with the same command. |
 | `this question was already answered with <action>` | Another terminal answered first. | Nothing to do. Read the run with `ham watch`. |
 | `the answer window closed` (HTTP 410) | The wait ended before your answer. | The run finished with what exists. Pull the zip. Start a new run, and raise `input_wait_minutes` next time. |
-| The dashboard shows the text of a question with no card and no keys | Your `ham` is an older build that does not draw the question card. `ham doctor` warns `backend newer than this ham` when the stage is newer than your build. | Update `ham`. Then answer with the keys or with `ham finish`. |
+| The dashboard shows the text of a question with no card and no keys | Your `ham` is an older build that does not draw the question card. `ham doctor` warns `backend newer than this ham` when the stage is newer than your build. | Update ham (run `ham update`). Then answer with the keys or with `ham finish`. |
 | Nobody was there and the run finished | The window ended. The detail says "Nobody answered in N min, so the run finished with what exists." | Read the zip's `EVIDENCE.md`. Set a longer wait for the next run. |
 | Label `Cline stopped: it ended its turn without changing a file` | Cline wrote a final message but left every file as it was, for example on a task it judged impossible. The zip holds the unchanged repository, and no pull request opens. | Read Cline's last message in EVIDENCE.md. Rewrite the prompt so that it can be done, then start again. |
 | The Detail line begins `Ran on <model> after <n> switches.` | The model you chose kept failing, so the harness moved the run to other routes. The work can come from more than one model. | Read "When the model provider fails". Pull the zip and check the work. Start again with `--model` if you need one model. |

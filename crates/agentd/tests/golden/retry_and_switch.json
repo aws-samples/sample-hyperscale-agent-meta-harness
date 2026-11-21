@@ -7,6 +7,7 @@
     "direct turn containers not started: no engine user",
     "direct turn rules placed: 1 file(s)",
     "direct turn config directory protected: given_to_root=false owner_uid=<n>",
+    "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn automatic recovery on, no answer window",
     "direct turn provider failure: try 2 of 4 follows in <n>s (transient): engine error -32603: Internal error: Service unavailable",
@@ -381,7 +382,7 @@
     "usage": null,
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.63.0"
+      "protocol": "1.64.0"
     }
   },
   "wire": [

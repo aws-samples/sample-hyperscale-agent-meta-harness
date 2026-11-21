@@ -25,6 +25,7 @@ pub mod delivery_word;
 pub mod disk;
 pub mod dox;
 pub mod driver;
+pub mod earlier_records;
 pub mod engine_config;
 pub mod engine_stop;
 pub mod failover;
@@ -79,8 +80,8 @@ use crate::direct::request::{rule_refs, rules_digest, rules_manifest};
 use crate::direct::retry::RetryPolicy;
 use crate::direct::review::{GitRepo, ReviewPlan};
 use crate::direct::snapshot::{
-    COPY_LATE_AFTER, COPY_SPACING_CAP, COPY_SPACING_MAX, Cadence, CopyClock, CopyTimer, GitBudget,
-    GitSource, GiveUp, STOP_COPY_BUDGET, STOP_COPY_RETRY, SnapshotMade, Snapshotter,
+    BundleForm, COPY_LATE_AFTER, COPY_SPACING_CAP, COPY_SPACING_MAX, Cadence, CopyClock, CopyTimer,
+    GitBudget, GitSource, GiveUp, STOP_COPY_BUDGET, STOP_COPY_RETRY, SnapshotMade, Snapshotter,
     TREE_ANSWER_LIMIT, TREE_ASK_EVERY, TreeAlive, cut_unix, failed_look_counts, late_after,
     snapshot_json, store_limit,
 };
@@ -112,6 +113,7 @@ use harness_core::engine_profile::{
     fixtures_dir, hidden_paths_union, load_profile, load_profiles, resolve_launch,
 };
 use harness_protocol::api::internal::TurnCompleteRequest;
+use harness_protocol::bundle_header::{self, HEADER_BYTES_MAX};
 use harness_protocol::common::{Engine, Transport};
 use harness_protocol::direct::DirectInvocationRequest;
 use harness_protocol::direct::{
@@ -697,6 +699,9 @@ struct State {
     /// Why the private repository of the copies could not be made. The run was told when it happened, and the end of the turn
     /// names it, because such a session saves no copy at all.
     copies_error: Option<String>,
+    /// The first bytes of the bundle the run started from, when this invocation downloaded that bundle (as its restore object, or
+    /// as the base of a copy that needs it). The copies of the session leave out what its heads hold ([`Copies::open`]).
+    base_header: Option<Vec<u8>>,
     /// Every try of the prompt, when the run retried after a provider failure.
     attempts: Vec<DirectAttempt>,
     /// Every confirmed switch of route or model (failover).
@@ -841,6 +846,17 @@ fn mkdirs(dirs: &[&Path]) -> Result<(), String> {
     Ok(())
 }
 
+/// The first `max` bytes of the file at `path`, or fewer when the file is shorter; nothing when it cannot be read. For the header
+/// of a bundle that this invocation downloaded.
+fn file_prefix(path: &Path, max: u64) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut prefix = Vec::new();
+    if let Ok(file) = std::fs::File::open(path) {
+        let _ = file.take(max).read_to_end(&mut prefix);
+    }
+    prefix
+}
+
 /// SHA-256 of a file, streamed (the engine binary is large); `None` when there is no such file.
 fn sha256_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
@@ -908,6 +924,62 @@ fn record_started(
         started["beatS"] = serde_json::json!(s);
     }
     rec.record_urgent(EventType::TurnStarted, started);
+}
+
+/// The base commit of the run's own work, settled once in step 4 before anything reads it, with the one commit the harness may make on
+/// the restored head first. A first request gets the DOX starter. A follow-up gets the commit that takes the
+/// earlier request's lifecycle records out of the work tree when the stored request asks for it
+/// (`removeEarlierRecords: true`, which only the service writes); a follow-up without that member starts on the head it restored.
+/// Returns the base and, for a follow-up, the commit the records step computes for the seed, whether or not this invocation made it.
+async fn settle_base(
+    app: &App,
+    wt: &Worktree,
+    start: &harness_protocol::api::v1::StartDirectRunRequest,
+    folder: &str,
+    agent_data: &Path,
+    origin: &str,
+    fresh: bool,
+) -> Result<(String, Option<String>), String> {
+    if let Some(from) = &start.continue_from {
+        let outcome = earlier_records::settle(
+            wt,
+            &earlier_records::Request {
+                head_sha: from.head_sha.as_deref(),
+                remove: harness_protocol::direct::removes_earlier_records(
+                    Some(from),
+                    start.remove_earlier_records,
+                ),
+                folder,
+                agent_data,
+            },
+            origin,
+            fresh,
+        )
+        .await
+        .map_err(|e| format!("worktree: {e}"))?;
+        if let Some(note) = &outcome.settled.note {
+            app.log
+                .line(&format!("direct turn earlier records: {note}"));
+        }
+        return Ok((outcome.settled.base, outcome.commit));
+    }
+    let starter = dox::settle(
+        wt,
+        &dox::Request {
+            skills: &start.skills,
+            prompt: &start.prompt,
+            continue_run: start.continue_from.is_some(),
+            agent_data,
+        },
+        origin,
+        fresh,
+    )
+    .await
+    .map_err(|e| format!("worktree: {e}"))?;
+    if let Some(note) = &starter.note {
+        app.log.line(&format!("direct turn DOX starter: {note}"));
+    }
+    Ok((starter.base, None))
 }
 
 /// Steps 2 to 13 of the startup sequence. An `Err` is a failure before the prompt (`stopped_setup_failed`).
@@ -1050,11 +1122,59 @@ async fn start_and_prompt(
         .get_to_file(&repo_uri, &creds, &bundle_file)
         .await
         .map_err(|e| format!("worktree: {e}"))?;
+    // A copy of the work may hold what the run changed and need what the bundle the run started from holds; its header says
+    // so. The base is then fetched too and the restore takes it first. A restore object that names no commit it needs is restored
+    // as before, with no read of the base.
+    let base_uri = s3::split_uri(&req.request.uri)
+        .map(|(bucket, _)| s3::uri(bucket, &s3::repo_bundle_key(run)));
+    let restores_base = base_uri.as_deref() == Some(repo_uri.as_str());
+    let restore_header = file_prefix(&bundle_file, HEADER_BYTES_MAX);
+    let restore_needs = bundle_header::needs(&restore_header)
+        .map(|commits| !commits.is_empty())
+        .unwrap_or(false);
+    let base_file = agent_data.join("base.bundle");
+    let mut base_for_restore: Option<&Path> = None;
+    // A checkout that an earlier invocation of the run left on this machine is returned as it is (`prepare_from_bundle_state`):
+    // nothing is restored, so the base is not downloaded for it, and a bucket that cannot give the base ends no setup that needs
+    // no restore.
+    let checkout_left = workspace::checkout_left(&cfg.workspace_root, run, DIRECT_AGENT_ID);
+    if restore_needs {
+        if restores_base {
+            return Err(
+                "worktree: the run's base bundle needs commits it does not hold".to_string(),
+            );
+        }
+        if !checkout_left {
+            let Some(base_uri) = base_uri.as_deref() else {
+                return Err(
+                    "worktree: the copy to restore needs the run's base bundle: the request names no bucket"
+                        .to_string(),
+                );
+            };
+            s3_objects
+                .get_to_file(base_uri, &creds, &base_file)
+                .await
+                .map_err(|e| {
+                    format!("worktree: the copy to restore needs the run's base bundle: {e}")
+                })?;
+            base_for_restore = Some(&base_file);
+        }
+    }
+    // The header of the base, when this invocation holds the base as a file: what the copies of this session leave out is read from
+    // it ([`Copies::open`]); a session that holds no such file asks the bucket for the first bytes of the object.
+    st.base_header = if restores_base {
+        Some(restore_header)
+    } else if base_for_restore.is_some() {
+        Some(file_prefix(&base_file, HEADER_BYTES_MAX))
+    } else {
+        None
+    };
     let (wt, fresh) = workspace::prepare_from_bundle_state(
         &cfg.workspace_root,
         run,
         DIRECT_AGENT_ID,
         &bundle_file,
+        base_for_restore,
     )
     .await
     .map_err(|e| format!("worktree: {e}"))?;
@@ -1112,26 +1232,16 @@ async fn start_and_prompt(
         app.log
             .line(&format!("direct turn start marker: {}", scrub_detail(&e)));
     }
-    // The DOX starter is written and committed before the base is read, so the engine loads it from its first request and the starter is
-    // not the run's own change. A later slice finds the commit in the history it restored and measures from it. Best effort: a refusal leaves the
-    // tree as it was and the run goes on.
-    let starter = dox::settle(
-        &wt,
-        &dox::Request {
-            skills: &start.skills,
-            prompt: &start.prompt,
-            continue_run: start.continue_from.is_some(),
-            agent_data: &agent_data,
-        },
-        &origin,
-        fresh,
-    )
-    .await
-    .map_err(|e| format!("worktree: {e}"))?;
-    if let Some(note) = &starter.note {
-        app.log.line(&format!("direct turn DOX starter: {note}"));
-    }
-    let base = starter.base;
+    // The one commit the harness may make before the base is read ([`settle_base`]): the DOX starter of a first request, or the
+    // commit that takes the earlier request's lifecycle records out of the work tree of a follow-up. Either is made before the base is read, so
+    // it is not the run's own change. A later slice finds the commit in the history it restored and measures from it. Best effort: a refusal
+    // leaves the tree as it was and the run goes on. The head the checkout had before is kept for the `continue_from` tripwire, which accepts
+    // the seed and exactly the commit the harness computes for it.
+    let found_head = workspace::head(&wt)
+        .await
+        .map_err(|e| format!("worktree: {e}"))?;
+    let (base, earlier_records_commit) =
+        settle_base(app, &wt, &start, folder, &agent_data, &origin, fresh).await?;
     st.base = Some(base.clone());
     st.git_state = Some(GitState::snapshot(&wt).map_err(|e| format!("worktree: {e}"))?);
 
@@ -1504,6 +1614,10 @@ async fn start_and_prompt(
             );
             // The runtime's processes were named when it started, before the engine existed: the engine cannot have chosen them.
             ctx.runtime_pids.clone_from(&runtime_pids);
+            // What the repository step found and what it computes for the seed of a follow-up, for the `continue_from` tripwire.
+            ctx.found_head = Some(found_head.clone());
+            ctx.earlier_records_commit
+                .clone_from(&earlier_records_commit);
             hooks.startup(&mut ctx).await?;
             loop_runs = ctx.nudge_off;
         }
@@ -1604,7 +1718,18 @@ async fn start_and_prompt(
 
         // The private repository of the copies is made for every session, before the engine starts: it is seeded from the base,
         // which agentd can read only while `.git` is the checkout's own, and an engine may move or remove `.git` at once.
-        match Copies::open(app, req, &agent_data, &wt, &base, st.snapshots.clone(), rec).await {
+        match Copies::open(
+            app,
+            req,
+            &agent_data,
+            &wt,
+            &base,
+            st.base_header.take(),
+            st.snapshots.clone(),
+            rec,
+        )
+        .await
+        {
             Ok(copies) => st.copies = Some(copies),
             Err(e) => {
                 copies_off(app, &st.snapshots, rec, &e);
@@ -2486,10 +2611,6 @@ pub const END_COPY_NOT_SAVED: &str = "The last copy of the work could not be sav
 pub const STOP_COPY_NOT_SAVED: &str =
     "The session was asked to end, and a copy of the work could not be saved.";
 
-/// One request of the first try of the copy of the end has the copy's budget divided by this (30 s of the default 120 s). A
-/// request that gets no answer then ends early enough for the tries after it: three fit with their pauses (30 + 2 + 30 + 4 + 30 s).
-pub const FINAL_COPY_REQUEST_SHARE: u32 = 4;
-
 /// The sentence the run is told when a session cannot make the private repository of its copies: it saves none, so nothing is
 /// promised but the delivery.
 pub const COPIES_OFF: &str = "Copies of the work cannot be saved in this session. The work is kept only if the run delivers it.";
@@ -2596,22 +2717,105 @@ pub fn copies_counted(recorded: Option<u32>, restored: Option<u32>) -> u32 {
     recorded.unwrap_or(0).max(restored.unwrap_or(0))
 }
 
+/// How often the first bytes of the bundle the run started from are asked for before the copies of the session are whole.
+const BASE_HEADER_TRIES: u32 = 3;
+
+/// The commits the copies of this session leave out: the heads that the bundle the run started from names in its own header
+/// (`runs/<run>/input/repo.bundle`), of which the private repository of the copies can read each. Nothing is taken from the checkout
+/// and nothing from the invocation's `baseSha`: a checkout that an earlier invocation left stands at a commit of the engine, which the
+/// base object does not hold, and a copy above such a commit could not be restored from the base.
+///
+/// `header` is the first bytes of that bundle when this invocation downloaded it. Without them the bucket is asked for the first
+/// [`HEADER_BYTES_MAX`] bytes of the object, [`BASE_HEADER_TRIES`] times with the upload pause. The error says why there is no floor:
+/// the header could not be read, it is no bundle header that ends inside those bytes, it names a commit the bundle itself needs, or
+/// it names no commit this repository can read.
+async fn floors_of_the_base(
+    app: &App,
+    req: &DirectInvocationRequest,
+    bucket: &str,
+    header: Option<Vec<u8>>,
+    snapshotter: &Snapshotter,
+) -> Result<Vec<String>, String> {
+    let header = match header {
+        Some(bytes) => bytes,
+        None => {
+            let uri = s3::uri(bucket, &s3::repo_bundle_key(&req.run_id));
+            let s3_objects = S3Objects::new(req.region.clone(), app.cfg.s3_endpoint.clone());
+            let mut got = Err("not asked".to_string());
+            for attempt in 1..=BASE_HEADER_TRIES {
+                got = match app.creds.current().await {
+                    Ok(c) => s3_objects.get_prefix(&uri, &c, HEADER_BYTES_MAX).await,
+                    Err(e) => Err(e.to_string()),
+                };
+                if got.is_ok() || attempt == BASE_HEADER_TRIES {
+                    break;
+                }
+                tokio::time::sleep(app.cfg.direct.upload_retry_pause).await;
+            }
+            got.map_err(|e| format!("the header of the run's base bundle could not be read: {e}"))?
+        }
+    };
+    let heads = bundle_header::heads(&header)
+        .map_err(|e| format!("the header of the run's base bundle: {e}"))?;
+    let mut floors = Vec::new();
+    for head in heads {
+        if snapshotter.has_commit(&head).await {
+            floors.push(head);
+        }
+    }
+    if floors.is_empty() {
+        return Err(
+            "the run's base bundle names no commit that the private repository of the copies can read"
+                .to_string(),
+        );
+    }
+    Ok(floors)
+}
+
 impl Copies {
     /// Makes the private repository of the session's copies for the work tree at `wt`; the error says why it cannot be made
     /// ([`copies_off`] tells the run).
+    #[allow(clippy::too_many_arguments)]
     async fn open(
         app: &App,
         req: &DirectInvocationRequest,
         agent_data: &Path,
         wt: &Worktree,
         base: &str,
+        base_header: Option<Vec<u8>>,
         stats: Arc<Mutex<DirectSnapshots>>,
         rec: &Arc<EventRecorder>,
     ) -> Result<Self, String> {
         let mut snapshotter = Snapshotter::new(agent_data, &wt.repo, base).await?;
+        // The tree was read once while the repository was made, before the engine starts, so that the first look of the copy
+        // task does not read every file in front of a tool call. A reading that was given up fails nothing: that look reads the files.
+        match snapshotter.take_prime_note() {
+            Some(Ok(took)) => app.log.line(&format!(
+                "direct turn copies: the first reading of the tree took {} ms",
+                took.as_millis()
+            )),
+            Some(Err(e)) => app.log.line(&format!(
+                "direct turn copies: the first reading of the tree was given up: {}",
+                scrub_detail(&e)
+            )),
+            None => {}
+        }
         let bucket = s3::split_uri(&req.request.uri)
             .map(|(b, _)| b.to_string())
             .unwrap_or_default();
+        // A copy leaves out what the bundle the run started from holds, when the form of the copies says so and that bundle's
+        // own header names commits this repository can read. With no such commit, for any reason, the copies of the session are whole.
+        let form = app.cfg.direct.copy_form;
+        snapshotter.set_form(form);
+        if form == BundleForm::AboveFloor {
+            match floors_of_the_base(app, req, &bucket, base_header, &snapshotter).await {
+                Ok(floors) => snapshotter.set_floors(floors),
+                Err(why) => app.log.line(&format!(
+                    "direct turn copies are whole in this session: {}",
+                    scrub_detail(&why)
+                )),
+            }
+        }
         // The copies of a run are numbered within the run, so a session after the first goes on from the newest earlier copy.
         let before = if req.turn > 1 {
             copies_before(app, req, agent_data, &wt.repo, &bucket).await
@@ -2653,8 +2857,8 @@ impl Copies {
     /// Uploads `made` (the bundle, then the record, so a reader that sees the record finds the bundle), counts it and tells the run: one
     /// `turn.progress` event with a `savedCopy` member and no `kind`, which a client that does not know the member ignores.
     ///
-    /// `request` is the limit of one request; `None` is the client's own. The first try of the copy of the end sets one
-    /// ([`FINAL_COPY_REQUEST_SHARE`]).
+    /// `request` is the whole-time limit of one request; `None` is the client's own. A look sets the limit of its store, and the first
+    /// try of the copy of the end sets the copy's budget. A request also ends when nothing of it moved for `s3::NO_PROGRESS`.
     async fn store(&self, made: &SnapshotMade, request: Option<Duration>) -> Result<(), String> {
         let s3_objects = S3Objects::new(self.region.clone(), self.endpoint.clone());
         let s3_objects = match request {
@@ -2666,7 +2870,22 @@ impl Copies {
             &self.bucket,
             &s3::snapshot_bundle_key_t(&self.run, self.turn),
         );
-        upload_file(&s3_objects, &bundle_uri, &c, &made.bundle, self.pause).await?;
+        // The bundle is hashed once. A look has hashed it as part of its own work (`snapshot::hash_bundle`); the copy of the
+        // end comes without a hash, and it is made here.
+        let digest = match &made.digest {
+            Some(digest) => digest.clone(),
+            None => crate::s3::digest_file(&made.bundle).await?,
+        };
+        s3_objects
+            .put_file_retrying_with(
+                &bundle_uri,
+                &c,
+                &made.bundle,
+                &digest,
+                UPLOAD_RETRIES,
+                self.pause,
+            )
+            .await?;
         // The bundle is in the bucket, so the storage now stands at this copy: the marker says so before the record is uploaded. A
         // bundle that was not stored never reaches this line, and a marker that cannot be written does not fail the copy.
         self.mark(made).await;
@@ -2728,11 +2947,19 @@ impl Copies {
     }
 
     /// What the clean-up of the private repository after a look could not do is logged; the copy itself is not affected.
+    /// And why a copy holds the whole tree when it does because its tree could not be staged (`Snapshotter::take_whole_note`):
+    /// the run is told that such a copy was stored, so the log is where its difference is said.
     fn log_tidy(&self, snapshotter: &mut Snapshotter) {
         if let Some(e) = snapshotter.take_tidy_error() {
             self.log.line(&format!(
                 "direct turn copy repository clean-up failed: {}",
                 scrub_detail(&e)
+            ));
+        }
+        if let Some(why) = snapshotter.take_whole_note() {
+            self.log.line(&format!(
+                "direct turn copy of the whole tree: {}",
+                scrub_detail(&why)
             ));
         }
     }
@@ -2805,11 +3032,18 @@ impl Copies {
         bound.git_starts();
         let looked = snapshotter.snapshot_until(&bound.git).await;
         self.log_tidy(&mut snapshotter);
-        let made = match looked {
+        let mut made = match looked {
             Ok(Some(made)) => made,
             Ok(None) => return Looked::Same,
             Err(e) => return self.look_failed(bound, &e),
         };
+        // The hash of the bundle is processor time of the copy, so it is part of the look's work: made within the look's limit
+        // and before that work ends, where the spacing counts it. The upload sends the bundle under this hash and does not hash again.
+        if let Err(e) = crate::direct::snapshot::hash_bundle(&mut made, &bound.git).await {
+            // The tree has no stored copy: the next look copies it again, changed or not.
+            snapshotter.forget_last();
+            return self.look_failed(bound, &e);
+        }
         // What the spacing counts ends here: the uploads cost the engine nothing, and one that hangs must not hold the next look back.
         let git_ended = std::time::Instant::now();
         bound.git_has_ended();
@@ -2920,12 +3154,14 @@ impl Copies {
     /// upload whose bytes were sent can still be stored after that, so the words are "not confirmed"; a bundle that went up without its
     /// record is served by the route from the bundle's own commit once it is old enough.
     ///
-    /// This is the first try. One request of it has a quarter of the budget ([`FINAL_COPY_REQUEST_SHARE`]), so that a request that gets
-    /// no answer leaves room for the tries after it. A failure is counted and logged; the run is told by [`Copies::save_final_again`] or
-    /// [`Copies::end_copy_not_saved`], once it is known that no later try stored the copy.
+    /// This is the first try. One request of it has the whole budget as its whole-time limit: an upload that moves is not cut,
+    /// however large its bundle. Before, a request had a quarter of the budget (30 s of the default 120 s), which a bundle of 812 MB
+    /// meets only at 27 MB a second. A request that gets no answer ends when nothing moved for `s3::NO_PROGRESS` (the same 30 s), so
+    /// it still leaves room for the tries after it: three fit with their pauses (30 + 2 + 30 + 4 + 30 s). A failure is counted and
+    /// logged; the run is told by [`Copies::save_final_again`] or [`Copies::end_copy_not_saved`], once it is known that no later try
+    /// stored the copy.
     async fn save_final(&self, head: Option<&str>) -> Option<String> {
-        self.save_final_within(head, Some(self.final_budget / FINAL_COPY_REQUEST_SHARE))
-            .await
+        self.save_final_within(head, Some(self.final_budget)).await
     }
 
     /// The copy of the end once more, for a first try that said `first`: the session's own bundle went up after it, so the

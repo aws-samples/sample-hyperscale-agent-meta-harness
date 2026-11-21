@@ -254,7 +254,12 @@ export class ControlStack extends Stack {
                 // same reason (`b854_the_recovery_download_grant_names_every_turn_number`); nothing else under agents/recovery/.
                 `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/?/recovery.bundle`,
                 `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/??/recovery.bundle`,
-                `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/???/recovery.bundle`] },
+                `arn:aws:s3:::${bucket}/runs/*/agents/recovery/turns/???/recovery.bundle`,
+                // A saved copy may hold what the run changed and leave out what the bundle the run started from holds. For a
+                // client that takes both parts the route reads the first byte of that one object (its size, ETag and version) and signs a
+                // GET of that version beside the copy's. ListSnapshot below names the key too: the route asks whether the base is there by
+                // a listing, and serves the copy alone when it is not (`b860 the snapshot download grant names the bundle a run started from`).
+                `arn:aws:s3:::${bucket}/runs/*/input/repo.bundle`] },
             // Whether a snapshot object exists is asked by a listing whose prefix is the key itself (`Blobs::exists`), as for the
             // delivered head above: a GET of an absent key is 403 for a role that may not list the bucket, so a run without a copy of its work, and
             // a run whose newest session has saved none yet, would answer 503 and never "no copy". The role may list the prefixes of exactly the
@@ -268,7 +273,10 @@ export class ControlStack extends Stack {
                 `runs/*/agents/direct/turns/???/snapshot.json`,
                 `runs/*/agents/recovery/turns/?/recovery.bundle`,
                 `runs/*/agents/recovery/turns/??/recovery.bundle`,
-                `runs/*/agents/recovery/turns/???/recovery.bundle`] } } },
+                `runs/*/agents/recovery/turns/???/recovery.bundle`,
+                // The bundle a run started from, by its exact key. Every run has it for its whole life and no rule removes it, but a
+                // base that a hand removed must read as "no base", so that the copy that needs it is still served, and never as an outage.
+                `runs/*/input/repo.bundle`] } } },
             { Sid: "DataKeyThroughDynamoDbAndS3", Effect: "Allow", Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
               Resource: security.dataKeyArn,
               Condition: { StringEquals: { "kms:ViaService": [`dynamodb.${region}.amazonaws.com`, `s3.${region}.amazonaws.com`] } } },

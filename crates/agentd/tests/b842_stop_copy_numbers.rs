@@ -8,12 +8,15 @@
 //! One run: session 1 ends with four copies on record. Session 2, a real `agentd serve`, restores its work under the 15-minute timer,
 //! saves the copies its tool calls ask for and one more when it is asked to end. Session 3 restores that last copy. No number of the
 //! run is used twice, none starts again at one, and each session's record says where the next one goes on.
+//!
+//! A run has one bucket, and the three sessions are three stand-in buckets here. Each of them is given the bundle the run started
+//! from: the copies of sessions 2 and 3 leave out what it holds, and session 3 takes it first to restore the copy of the stop.
 #![allow(clippy::unwrap_used)]
 
 mod common;
 mod direct_support;
 
-use direct_support::{BUCKET, Direct, Opts, RUN};
+use direct_support::{BUCKET, Direct, Opts, RUN, needs_the_base};
 use harness_protocol::direct::{DirectSlice, s3 as keys, validate_direct_invocation};
 use harness_protocol::envelope::EventType;
 use harness_protocol::runtime::{RepoSource, TurnOutcome};
@@ -25,7 +28,9 @@ const EVERY_S: u32 = 900;
 const BEFORE: u64 = 4;
 
 /// Runs session 1 to its end and returns what the service hands to the next session: the bundle, its head and the run's base.
-async fn first_session() -> (Vec<u8>, String, String) {
+/// The last member is the bundle the run started from. It is no hand-over: it is one object of the run's bucket, which every
+/// session of the run reads there.
+async fn first_session() -> (Vec<u8>, String, String, Vec<u8>) {
     let d1 = Direct::start(Opts::default()).await;
     let (_, resp) = d1.invoke().await;
     assert_eq!(resp.outcome, TurnOutcome::Completed, "{resp:?}");
@@ -36,7 +41,11 @@ async fn first_session() -> (Vec<u8>, String, String) {
         .aws
         .get(&keys::bundle_key(RUN))
         .expect("session 1 bundled its work");
-    (bundle, head, base)
+    let started_from = d1
+        .aws
+        .get(&keys::repo_bundle_key(RUN))
+        .expect("the bundle the run started from");
+    (bundle, head, base, started_from)
 }
 
 /// Every version of the `snapshot.json` of `session` in the bucket, oldest first.
@@ -85,7 +94,7 @@ fn counts_on(numbers: &[u64]) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn b842_b823_b841_a_restarted_session_with_a_long_timer_and_a_stop_copy_goes_on_counting_the_copies()
  {
-    let (bundle, head, base) = first_session().await;
+    let (bundle, head, base, started_from) = first_session().await;
 
     // Session 2 as the service starts it: a real worker process whose invocation names the interval of the run and the work to restore.
     let mut d = Direct::start_process(Opts {
@@ -96,6 +105,10 @@ async fn b842_b823_b841_a_restarted_session_with_a_long_timer_and_a_stop_copy_go
         ..Opts::default()
     })
     .await;
+    // Every stand-in bucket is made with a repository of its own, whose commits carry the second they were made in. Left as it
+    // is, this bucket would name a base that the work of session 1 holds only when both repositories were made within the same
+    // second, and the copies of this session would be whole or not as the clock reads. The object of the run takes its place.
+    d.aws.put(&keys::repo_bundle_key(RUN), started_from.clone());
     d.aws.put(&keys::bundle_key_t(RUN, 1), bundle);
     d.aws.put(
         &keys::snapshot_json_key_t(RUN, 1),
@@ -194,13 +207,20 @@ async fn b842_b823_b841_a_restarted_session_with_a_long_timer_and_a_stop_copy_go
     let stop_head = stop["headSha"]
         .as_str()
         .expect("the record names its commit");
-    let mut d3 = Direct::start(Opts::default()).await;
-    d3.aws.put(
-        &keys::snapshot_bundle_key_t(RUN, 2),
-        d.aws
-            .get(&keys::snapshot_bundle_key_t(RUN, 2))
-            .expect("the bundle of the copy of the stop"),
+    let stop_bundle = d
+        .aws
+        .get(&keys::snapshot_bundle_key_t(RUN, 2))
+        .expect("the bundle of the copy of the stop");
+    assert!(
+        needs_the_base(&stop_bundle),
+        "TRIGGER PRESENT: the copy of the stop holds the whole history, so session 3 would restore it without the bundle the run started from; log:\n{}",
+        d.process.as_ref().unwrap().log_text()
     );
+    let mut d3 = Direct::start(Opts::default()).await;
+    // The bucket of the same run: the bundle the run started from is there, and the restore of the copy takes it first.
+    d3.aws.put(&keys::repo_bundle_key(RUN), started_from);
+    d3.aws
+        .put(&keys::snapshot_bundle_key_t(RUN, 2), stop_bundle);
     d3.aws.put(
         &keys::snapshot_json_key_t(RUN, 2),
         serde_json::to_vec(&stop).unwrap(),

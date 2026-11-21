@@ -235,12 +235,11 @@ impl App {
         }
     }
 
-    /// Draws the box over the whole screen.
-    pub(crate) fn draw_openbox(&self, f: &mut Frame) {
+    /// Draws the box over `area`: the whole frame, less the rows under it that hold the sentence of a click on the update notice.
+    pub(crate) fn draw_openbox(&self, f: &mut Frame, area: Rect) {
         if !self.find.active {
             return;
         }
-        let area: Rect = f.area();
         self.hits.borrow_mut().push(area, Target::Block, "Esc");
         f.render_widget(Clear, area);
         let block = UiBlock::default().borders(Borders::ALL).title(

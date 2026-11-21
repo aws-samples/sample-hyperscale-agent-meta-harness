@@ -5,6 +5,9 @@
 //! overwrite the first. What continues is a new run that starts from the commit the stopped run delivered with
 //! the request the stopped run was started with and one more paragraph on its prompt that says it is a continuation.
 //! The new run has its own total time, the one the request names. The stopped run keeps its status: it is the record of what was delivered.
+//! The new run's request holds no `removeEarlierRecords` member, whatever the stopped run's request held: the lifecycle records
+//! in the delivered tree are the open task's own, an absent member means that the worker keeps them, and a worker image that predates the
+//! member still reads the request.
 //!
 //! The client chooses the `Idempotency-Key`. `ham` sends `resume-<stopped run id>`, so a second press, a repeat of `ham resume` or a send that
 //! got no answer returns the run the first one started. The claim compares a hash of the stopped run's id with the request, so the key of one
@@ -169,17 +172,21 @@ pub(crate) async fn resume<S: Store, B: Blobs, E: Execution>(
         head_sha: None,
     });
     stored.base_ref = None;
+    // A resume is the same request going on, so the lifecycle records at the live paths are this request's own. The new request
+    // holds no member, whatever the stopped run's request held: the worker then keeps the records, and `prepare` never asks the rule of
+    // a follow-up for this route.
+    stored.remove_earlier_records = None;
     if let RunTarget::NewRepo { repo } = stored.target.clone() {
         stored.target = RunTarget::Repo { repo };
     }
     stored
         .prompt
         .push_str(&continuation_note(run_id, source.status_reason.as_deref()));
-    let prepared = match direct::prepare(stored, caller, deps).await {
+    let prepared = match direct::prepare(stored, direct::Route::Resume, caller, deps).await {
         Ok(p) => p,
         Err(reply) => return reply,
     };
-    let claim = claim_hash(run_id, &prepared.canonical);
+    let claim = claim_hash(run_id, &prepared.claim);
     direct::start_prepared(&prepared, key, claim, Some(run_id), caller, deps).await
 }
 

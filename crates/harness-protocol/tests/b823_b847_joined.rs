@@ -48,11 +48,11 @@ fn parse(v: Value) -> Result<DirectInvocationRequest, serde_json::Error> {
 /// One version, 1.61.0, carried both changes; the version asserted below is the one this tree is at.
 #[test]
 fn b823_b847_one_protocol_version_carries_the_look_every_15_seconds_and_the_delivery() {
-    assert_eq!(PROTOCOL_VERSION, "1.63.0");
+    assert_eq!(PROTOCOL_VERSION, "1.64.0");
     assert_eq!((MIN_SNAPSHOT_EVERY_S, DEFAULT_SNAPSHOT_EVERY_S), (15, 15));
     let docs: std::collections::BTreeMap<&str, Value> = all_schemas().into_iter().collect();
-    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.63.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.63.0");
+    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.64.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.64.0");
     let invocation = &docs["runtime.schema.json"]["$defs"]["DirectInvocationRequest"]["properties"];
     assert!(
         invocation.get("delivery").is_some(),

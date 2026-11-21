@@ -44,6 +44,10 @@ pub struct DirectConfig {
     /// `AGENTD_DIRECT_STOP_COPY_BUDGET_MS`: replaces `snapshot::STOP_COPY_BUDGET`, how long the copy has that agentd saves
     /// when it is asked to end.
     pub stop_copy_budget: Option<Duration>,
+    /// `AGENTD_DIRECT_COPY_FORM`: what the bundle of a copy of the work holds. `whole` is the whole history the copy
+    /// reaches; `base` leaves out what the bundle the run started from holds. Unset, and any other word, is the form of the release
+    /// (`snapshot::BundleForm::RELEASE`). The form is a constant of the release: no deploy sets the variable, and no stage setting leads to it.
+    pub copy_form: crate::direct::snapshot::BundleForm,
     /// `AGENTD_DIRECT_PROVIDER_RETRIES` (default 3, at most 6): how many times the prompt is retried on the same engine session
     /// after a provider failure (the first slice of provider failover). 0 switches it off; a bad value is the default.
     pub provider_retries: u32,
@@ -202,6 +206,9 @@ impl DirectConfig {
             copy_git_limit: test_ms("AGENTD_DIRECT_COPY_GIT_LIMIT_MS"),
             copy_store_limit: test_ms("AGENTD_DIRECT_COPY_STORE_LIMIT_MS"),
             stop_copy_budget: test_ms("AGENTD_DIRECT_STOP_COPY_BUDGET_MS"),
+            copy_form: crate::direct::snapshot::BundleForm::from_word(
+                get("AGENTD_DIRECT_COPY_FORM").as_deref(),
+            ),
             provider_retries: get("AGENTD_DIRECT_PROVIDER_RETRIES")
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .map_or(3, |n| n.min(crate::direct::retry::MAX_CONFIGURED_RETRIES)),

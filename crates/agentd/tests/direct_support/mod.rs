@@ -161,6 +161,10 @@ pub struct AwsState {
     cancels_told: Mutex<u32>,
     /// `(substring of bucket/key, pause)`: a GET whose key contains the substring is answered after the pause.
     get_delays: Mutex<Vec<(String, Duration)>>,
+    /// Every GET of an object that arrived, in order: `bucket/key` and the `range` header it carried, if any.
+    gets: Mutex<Vec<(String, Option<String>)>>,
+    /// `(substring of bucket/key, left)`: the next `left` GETs whose key contains the substring answer 500.
+    get_failures: Mutex<Vec<(String, u32)>>,
     /// `(substring of bucket/key, pause)`: a PUT whose key contains the substring is answered after the pause.
     put_delays: Mutex<Vec<(String, Duration)>>,
     /// `(substring of bucket/key, pause, left)`: the next `left` PUTs whose key contains the substring are answered after the pause.
@@ -191,6 +195,13 @@ pub struct AwsState {
     ending_notices: Mutex<Vec<(HeartbeatRequest, Option<String>, usize)>>,
     /// The next this-many heartbeats with `ending: true` answer 503 (`u32::MAX`: every one).
     ending_failures: Mutex<u32>,
+    /// `(substring of bucket/key, bytes)`: the body of the next PUT whose key contains the substring is read up to that many
+    /// bytes and then held (`FakeAws::hold_put_body`).
+    put_body_hold: Mutex<Option<(String, usize)>>,
+    /// A PUT is held in its body now.
+    put_body_held: std::sync::atomic::AtomicBool,
+    /// The PUT that is held may go on (`FakeAws::release_put_body`).
+    put_body_released: std::sync::atomic::AtomicBool,
 }
 
 /// Picks the event a control rule waits for.
@@ -300,13 +311,67 @@ fn record_version(s: &AwsState, full: &str, body: &[u8]) -> String {
     id
 }
 
+/// The largest body a PUT of the fake store carries, unless a hold was set for its key ([`put_body`]).
+const MAX_PUT_BYTES: usize = 2 * 1024 * 1024;
+
+/// The body of a PUT of `full` (`bucket/key`), at most [`MAX_PUT_BYTES`] of it. When a hold is set for the key
+/// (`FakeAws::hold_put_body`), the body is read up to the bytes the hold names, then nothing more of it is read until the hold is
+/// released (`FakeAws::release_put_body`), and then the rest is read whatever its size: the request stays in flight with a part of
+/// its body on the way, as an upload to a bucket that stopped reading does.
+async fn put_body(
+    s: &AwsState,
+    full: &str,
+    body: axum::body::Body,
+) -> Result<Bytes, Box<axum::response::Response>> {
+    use http_body_util::BodyExt;
+    use std::sync::atomic::Ordering::SeqCst;
+    let hold = {
+        let mut hold = s.put_body_hold.lock().unwrap();
+        match hold.as_ref() {
+            Some((sub, _)) if full.contains(sub.as_str()) => hold.take(),
+            _ => None,
+        }
+    };
+    let Some((_, after)) = hold else {
+        return axum::body::to_bytes(body, MAX_PUT_BYTES)
+            .await
+            .map_err(|_| Box::new(StatusCode::PAYLOAD_TOO_LARGE.into_response()));
+    };
+    let mut body = body;
+    let mut got: Vec<u8> = Vec::new();
+    let mut held = false;
+    loop {
+        if !held && got.len() >= after {
+            held = true;
+            s.put_body_held.store(true, SeqCst);
+            while !s.put_body_released.load(SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            s.put_body_held.store(false, SeqCst);
+        }
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    got.extend_from_slice(&data);
+                }
+            }
+            Some(Err(_)) => return Err(Box::new(StatusCode::BAD_REQUEST.into_response())),
+            None => return Ok(Bytes::from(got)),
+        }
+    }
+}
+
 async fn s3_put(
     State(s): State<Shared>,
     AxPath((bucket, key)): AxPath<(String, String)>,
     headers: axum::http::HeaderMap,
-    body: Bytes,
+    body: axum::body::Body,
 ) -> axum::response::Response {
     let full = format!("{bucket}/{key}");
+    let body = match put_body(&s, &full, body).await {
+        Ok(body) => body,
+        Err(refusal) => return *refusal,
+    };
     let next = s
         .put_delays_next
         .lock()
@@ -553,8 +618,30 @@ async fn s3_list(
 async fn s3_get(
     State(s): State<Shared>,
     AxPath((bucket, key)): AxPath<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     let full = format!("{bucket}/{key}");
+    // A ranged GET names the bytes it wants (`bytes=0-<n>`); every GET is recorded with it.
+    let range = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    s.gets.lock().unwrap().push((full.clone(), range.clone()));
+    let failing = s
+        .get_failures
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|(sub, left)| *left > 0 && full.contains(sub.as_str()))
+        .map(|(_, left)| *left -= 1)
+        .is_some();
+    if failing {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>",
+        )
+            .into_response();
+    }
     let pause = s
         .get_delays
         .lock()
@@ -572,7 +659,23 @@ async fn s3_get(
         .iter()
         .any(|sub| full.contains(sub.as_str()));
     match s.objects.lock().unwrap().get(&full) {
-        Some(b) => (StatusCode::OK, b.clone()).into_response(),
+        // The first bytes of the object, as S3 answers `bytes=0-<n>`: 206 with the range, clipped to the object.
+        Some(b) => match range
+            .as_deref()
+            .and_then(|r| r.strip_prefix("bytes=0-"))
+            .and_then(|n| n.parse::<usize>().ok())
+        {
+            Some(last) if !b.is_empty() => {
+                let end = last.min(b.len() - 1);
+                (
+                    StatusCode::PARTIAL_CONTENT,
+                    [("content-range", format!("bytes 0-{end}/{}", b.len()))],
+                    b[..=end].to_vec(),
+                )
+                    .into_response()
+            }
+            _ => (StatusCode::OK, b.clone()).into_response(),
+        },
         None if hidden => (
             StatusCode::FORBIDDEN,
             "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
@@ -893,6 +996,37 @@ impl FakeAws {
             .push(sub.to_string());
     }
 
+    /// The GETs of `key` that arrived, in order: the `range` header of each (`None`: the whole object was asked for).
+    pub fn gets_of(&self, key: &str) -> Vec<Option<String>> {
+        let full = format!("{BUCKET}/{key}");
+        self.state
+            .gets
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k == full)
+            .map(|(_, range)| range.clone())
+            .collect()
+    }
+
+    /// Takes the object at `key` out of the bucket: a GET of it answers 404 from now on. Its earlier versions stay recorded.
+    pub fn remove(&self, key: &str) {
+        self.state
+            .objects
+            .lock()
+            .unwrap()
+            .remove(&format!("{BUCKET}/{key}"));
+    }
+
+    /// The next `times` GETs whose `bucket/key` contains `substring` answer 500.
+    pub fn fail_gets(&self, substring: &str, times: u32) {
+        self.state
+            .get_failures
+            .lock()
+            .unwrap()
+            .push((substring.to_string(), times));
+    }
+
     /// Every HEAD answers `status` with no body from now on (403: the role may not list the bucket, so S3 hides a missing key).
     pub fn heads_answer(&self, status: u16) {
         *self.state.head_status.lock().unwrap() = Some(status);
@@ -964,6 +1098,30 @@ impl FakeAws {
     }
 
     /// A PUT whose bucket/key contains `substring` is answered after `pause` (a store that is slow to take an object).
+    /// The body of the next PUT whose key contains `substring` is read up to `after` bytes and then held: the fake store reads
+    /// nothing more of it, and the request stays in flight, until [`Self::release_put_body`]. Such a PUT may be larger than the fake
+    /// store otherwise takes.
+    pub fn hold_put_body(&self, substring: &str, after: usize) {
+        self.state
+            .put_body_released
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self.state.put_body_hold.lock().unwrap() = Some((substring.to_string(), after));
+    }
+
+    /// Whether a PUT is held in its body now ([`Self::hold_put_body`]).
+    pub fn put_body_held(&self) -> bool {
+        self.state
+            .put_body_held
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The PUT that is held goes on ([`Self::hold_put_body`]).
+    pub fn release_put_body(&self) {
+        self.state
+            .put_body_released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn delay_puts(&self, substring: &str, pause: Duration) {
         self.state
             .put_delays
@@ -2009,6 +2167,71 @@ pub async fn http(method: &str, url: &str, body: Option<String>) -> (u16, String
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let (body, code) = text.rsplit_once('\n').unwrap();
     (code.parse().unwrap(), body.to_string())
+}
+
+/// Whether the bundle `bytes` names a commit it needs and does not hold (a copy that leaves out what the run's base holds).
+pub fn needs_the_base(bytes: &[u8]) -> bool {
+    let cut = bytes.len().min(65_536);
+    !harness_protocol::bundle_header::needs(&bytes[..cut])
+        .expect("a bundle header")
+        .is_empty()
+}
+
+/// A checkout of the copy of the work stored at `copy_key`, on its `snapshot` branch, in `<dir>/<name>`. A copy whose header
+/// names a commit it needs is put together the way every reader does it: the bundle the run started from is taken from the bucket
+/// first and the copy is fetched into it. A copy that holds the whole history is cloned alone, as the client's `Look` line says.
+pub fn checkout_of_copy(aws: &FakeAws, dir: &Path, copy_key: &str, name: &str) -> PathBuf {
+    let copy = aws.get(copy_key).expect("the stored copy");
+    checkout_of_copy_bytes(aws, dir, &copy, name)
+}
+
+/// [`checkout_of_copy`] for the bytes of a copy: an earlier version of the object, which the bucket keeps.
+pub fn checkout_of_copy_bytes(aws: &FakeAws, dir: &Path, copy: &[u8], name: &str) -> PathBuf {
+    let bundle = dir.join(format!("{name}.bundle"));
+    std::fs::write(&bundle, copy).unwrap();
+    let clone = dir.join(name);
+    if needs_the_base(copy) {
+        let base = dir.join(format!("{name}-base.bundle"));
+        std::fs::write(
+            &base,
+            aws.get(&keys::repo_bundle_key(RUN))
+                .expect("the bundle the run started from"),
+        )
+        .unwrap();
+        git(
+            dir,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                base.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git(
+            &clone,
+            &[
+                "fetch",
+                "-q",
+                bundle.to_str().unwrap(),
+                "+refs/heads/snapshot:refs/heads/snapshot",
+            ],
+        );
+        git(&clone, &["checkout", "-q", "snapshot"]);
+    } else {
+        git(
+            dir,
+            &[
+                "clone",
+                "-q",
+                "-b",
+                "snapshot",
+                bundle.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+    }
+    clone
 }
 
 pub fn no_secrets(s: &str) {

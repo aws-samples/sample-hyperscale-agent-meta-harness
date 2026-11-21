@@ -31,6 +31,7 @@ fn ui(notify: Option<bool>, bell: Option<bool>) -> Config {
             mascot: None,
             mascot_motion: None,
             copy_limit_kib: None,
+            update_notice: None,
             deprecation_notices: None,
         }),
         ..Config::default()

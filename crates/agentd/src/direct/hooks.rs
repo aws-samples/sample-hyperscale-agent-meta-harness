@@ -247,6 +247,12 @@ pub struct StartupCtx<'a> {
     /// empty when the run has no runtime or the launcher cannot name them. A module that stops processes of the engine's user leaves these,
     /// and everything below them, alone.
     pub runtime_pids: Vec<u32>,
+    /// The commit the checkout was at when the repository step of the session found it, before the harness made a commit of its own on
+    /// it. `None` when the caller did not say.
+    pub found_head: Option<String>,
+    /// The commit the harness computes for the seed of a follow-up (the earlier request's lifecycle records taken out of the work tree),
+    /// whether or not this invocation made it. `None` when it computes none.
+    pub earlier_records_commit: Option<String>,
     /// The directory of `session/new`: the repository's git top level unless a module names another.
     pub session_cwd: &'a mut Option<String>,
     /// Set by a module that sends follow-up prompts of its own (the goal loop): the harness's bounded nudge is off for the run, so two
@@ -290,6 +296,8 @@ impl<'a> StartupCtx<'a> {
             engine_env,
             cargo_config,
             runtime_pids: Vec::new(),
+            found_head: None,
+            earlier_records_commit: None,
             session_cwd,
             nudge_off: false,
             argv,

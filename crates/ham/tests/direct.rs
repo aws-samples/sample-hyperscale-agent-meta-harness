@@ -357,6 +357,7 @@ async fn the_servers_refusal_of_a_model_is_shown_verbatim_and_not_retried() {
         snapshot_every_s: None,
         delivery_note: None,
         recover_after_stop: None,
+        remove_earlier_records: None,
     };
     let e = api
         .start_direct_run(&request, "key-refused")
@@ -410,13 +411,13 @@ async fn b823_an_older_stage_is_answered_with_the_key_the_config_sets_for_the_co
         (
             "seconds",
             "copy_every_seconds = 120",
-            "run.copy_every_seconds = 120; run `ham config unset run.copy_every_seconds` or update the stage",
+            "run.copy_every_seconds = 120; run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)",
             "run.copy_every_minutes",
         ),
         (
             "minutes",
             "copy_every_minutes = 2",
-            "run.copy_every_minutes = 2; run `ham config unset run.copy_every_minutes` or update the stage",
+            "run.copy_every_minutes = 2; run `ham config unset run.copy_every_minutes` or update the stage (run ham update; ask the person who runs the stage if that is not you)",
             "run.copy_every_seconds",
         ),
     ] {

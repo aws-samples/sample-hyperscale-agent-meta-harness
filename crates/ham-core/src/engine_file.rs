@@ -625,7 +625,7 @@ pub fn read_text(text: &str, engine: &str) -> Reading {
                                 line,
                                 None,
                                 format!(
-                                    "the file is written for schema {n}, which a newer ham reads; this ham reads schema {ENGINE_CONFIG_SCHEMA}: update ham, or change the file"
+                                    "the file is written for schema {n}, which a newer ham reads; this ham reads schema {ENGINE_CONFIG_SCHEMA}: update ham (run ham update), or change the file"
                                 ),
                             ),
                         );

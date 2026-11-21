@@ -55,7 +55,7 @@ fn entry(
 
 #[test]
 fn the_protocol_is_1_38_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.63.0");
+    assert_eq!(PROTOCOL_VERSION, "1.64.0");
 }
 
 #[test]

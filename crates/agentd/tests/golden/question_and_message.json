@@ -7,6 +7,7 @@
     "direct turn containers not started: no engine user",
     "direct turn rules placed: 1 file(s)",
     "direct turn config directory protected: given_to_root=false owner_uid=<n>",
+    "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn answer window on: wait <n>s, 3 question(s) at most",
     "direct turn needs input: request <ulid> n=1 reason=no_changes window=<n>s",
@@ -354,7 +355,7 @@
     },
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.63.0"
+      "protocol": "1.64.0"
     }
   },
   "wire": [

@@ -18,6 +18,7 @@
 
 use crate::error::RunSessionError;
 use crate::events;
+use crate::finalize::join_parts;
 use crate::ops::{Deps, SessionState, StatesFailure};
 use crate::pinned::{self, Read, Trust};
 use crate::ports::{Blobs, PackageTokens, Res, Sessions, Store, Tokens};
@@ -351,10 +352,16 @@ fn outcome_without_summary(
         None => (
             DirectOutcome::StoppedSessionLost,
             Some(match turn {
-                Some(t) => cut(&format!(
-                    "the session wrote no summary ({})",
-                    t.error.as_deref().unwrap_or(&t.finish_reason)
-                )),
+                Some(t) => {
+                    // Agentd joins the parts of the turn's error with "; " (the stop's detail, the summary that was not
+                    // uploaded, what the end of the session could not do), and a part may end a sentence. The parts are joined
+                    // again by the rule of every detail, so no sentence end is followed by a semicolon.
+                    let error = t.error.as_deref().map(|e| join_parts(e.split("; ")));
+                    cut(&format!(
+                        "the session wrote no summary ({})",
+                        error.as_deref().unwrap_or(&t.finish_reason)
+                    ))
+                }
                 None => "the session ended without a result".into(),
             }),
         ),
@@ -529,7 +536,8 @@ async fn test_report_summary<B: Blobs>(
         return (None, None);
     }
     let mut report = report.bounded();
-    // A report agentd skipped for lack of time before the run's deadline is said in the run's detail, word for word.
+    // A report agentd skipped for lack of time before the run's deadline is said in the run's detail in agentd's own words. `finalize`
+    // begins them with a capital letter when a sentence stands before them in the detail.
     let skipped = (report.status == TestReportStatus::NotRun
         && report.reason.as_deref() == Some(REPORT_SKIPPED_NO_TIME))
     .then(|| REPORT_SKIPPED_NO_TIME.to_string());

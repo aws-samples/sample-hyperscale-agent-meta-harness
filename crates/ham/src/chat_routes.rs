@@ -13,6 +13,12 @@
 //!   commit and the size the route named, and written under the run's id. Nothing is checked out or merged: the file is a worker snapshot,
 //!   not verified by the harness (`ham_core::snapshot::SNAPSHOT_TRUST_NOTE`).
 //!
+//!   A copy may hold what the run changed and need the repository the run started from. The request says that this client takes
+//!   such a copy in two parts (`?parts=1`); the answer then names the base too, and both files are kept: the copy under its usual name
+//!   and the base as `<runId>-base.bundle`. The client runs no git and builds nothing: the text names both files and the line that
+//!   puts them together. A base that cannot be downloaded leaves the copy on disk and says so. A copy that needs a base which the
+//!   stage did not send (a route older than its worker) is kept as well, and the text says what it needs.
+//!
 //! A presigned URL is a bearer capability: no error here names one, and `SnapshotDownload` hides it from `Debug`.
 
 use crate::api::{Api, ApiError, json_headers};
@@ -23,9 +29,10 @@ use ham_core::head::{DeliveredHead, path as head_path};
 use ham_core::run_index::{BackfillReport, RunFilter, RunRow, RunRowsPage, percent_encode};
 use ham_core::runsearch::{SearchQuery, SearchResponse};
 use ham_core::snapshot::{
-    HEADER_BYTES, SnapshotDownload, SnapshotError, bundle_head, verify_object,
+    HEADER_BYTES, SnapshotBase, SnapshotDownload, SnapshotError, bundle_head, verify_object,
 };
 use ham_core::transcript::{TranscriptPage, TranscriptQuery};
+use harness_protocol::bundle_header::{HEADER_BYTES_MAX, heads, needs};
 use harness_protocol::envelope::{Envelope, EventType};
 use serde::Deserialize;
 use std::io::Write as _;
@@ -260,7 +267,9 @@ impl<P: ControlPlane> Api<P> {
             Some(session) => {
                 format!("/v1/runs/{run_id}/snapshot/download-url?readBack={session}")
             }
-            None => format!("/v1/runs/{run_id}/snapshot/download-url"),
+            // This client takes a copy that needs the repository the run started from in two parts. A stage that predates the
+            // member ignores it. The files read back are whole and are asked for as before.
+            None => format!("/v1/runs/{run_id}/snapshot/download-url?parts=1"),
         };
         self.once(
             "SnapshotDownload",
@@ -292,6 +301,12 @@ pub enum SnapshotFetchError {
     Io(String),
     #[error("the downloaded snapshot is not what the route described: {0}")]
     Verify(#[from] SnapshotError),
+    /// The copy is on disk, and the repository the run started from, which it needs, is not: its download or its check failed.
+    /// Nothing is removed; the same command downloads both again.
+    #[error(
+        "the copy is at {copy}; the repository the run started from could not be downloaded ({reason}); run the command again"
+    )]
+    Base { copy: String, reason: String },
 }
 
 /// A snapshot written to disk.
@@ -315,6 +330,12 @@ pub struct SnapshotFetched {
     /// The command asked for the files read back from one session (`--read-back <n>`), which the run may not have gone on
     /// from; `false` when it asked for the run's newest copy.
     pub asked_read_back: bool,
+    /// The copy holds what the run changed and needs the repository the run started from, which was downloaded beside it:
+    /// where that file is and its size in bytes. `None` for a copy that clones alone.
+    pub base: Option<(PathBuf, u64)>,
+    /// The copy needs the repository the run started from and the stage did not send it (a route older than its worker). The
+    /// copy is on disk; it does not clone alone.
+    pub needs_base: bool,
 }
 
 fn io(e: std::io::Error) -> SnapshotFetchError {
@@ -356,19 +377,26 @@ enum Got {
     Expired,
 }
 
+/// One object a download reads in ranges: where it is, the ETag it must still have, and its size.
+struct Part<'a> {
+    url: &'a str,
+    etag: &'a str,
+    size_bytes: u64,
+}
+
 async fn get_range<P: ControlPlane>(
     api: &Api<P>,
-    d: &SnapshotDownload,
+    d: &Part<'_>,
     (start, end): (u64, u64),
 ) -> Result<Got, SnapshotFetchError> {
     let retry = api.retry();
     let mut wait = retry.base;
     let mut attempt = 1;
-    let what = format!("GET {} bytes={start}-{end}", redact_url(&d.url));
+    let what = format!("GET {} bytes={start}-{end}", redact_url(d.url));
     loop {
         let outcome = api
             .plane()
-            .fetch(&d.url, Some((start, end)), Some(&d.etag))
+            .fetch(d.url, Some((start, end)), Some(d.etag))
             .await;
         let transient = match &outcome {
             Ok(r) => r.status >= 500,
@@ -426,14 +454,20 @@ fn sane(d: &SnapshotDownload) -> Result<(), SnapshotFetchError> {
     if !ham_core::snapshot::is_object_id(&d.head_sha) {
         return Err(bad("headSha is not a full object id"));
     }
-    if d.size_bytes > MAX_SNAPSHOT_BYTES {
+    sane_object(d.size_bytes, &d.etag, &d.url)
+}
+
+/// [`sane`] for one object of the answer: its size, its ETag and where it is.
+fn sane_object(size_bytes: u64, etag: &str, url: &str) -> Result<(), SnapshotFetchError> {
+    let bad = |m: &str| SnapshotFetchError::Verify(SnapshotError::Record(m.to_string()));
+    if size_bytes > MAX_SNAPSHOT_BYTES {
         return Err(bad("sizeBytes is larger than this client downloads"));
     }
-    if d.etag.is_empty() || d.etag.chars().any(char::is_control) {
+    if etag.is_empty() || etag.chars().any(char::is_control) {
         return Err(bad("etag is not a plain tag"));
     }
     // The bytes come from S3 through the URL the route signed: any other host is not what the route is documented to answer.
-    let host_ok = d.url.parse::<http::Uri>().is_ok_and(|u| {
+    let host_ok = url.parse::<http::Uri>().is_ok_and(|u| {
         let host = u.host().unwrap_or_default();
         match u.scheme_str() {
             Some("https") => {
@@ -548,7 +582,12 @@ async fn fetch_copy_with<P: ControlPlane>(
     let mut header: Vec<u8> = Vec::new();
     let header_room = usize::try_from(HEADER_BYTES).unwrap_or(usize::MAX);
     while let Some(range) = ranges.pop() {
-        match get_range(api, &d, range).await? {
+        let part_of_copy = Part {
+            url: &d.url,
+            etag: &d.etag,
+            size_bytes: d.size_bytes,
+        };
+        match get_range(api, &part_of_copy, range).await? {
             Got::Bytes(b) => {
                 if header.len() < header_room {
                     let room = header_room - header.len();
@@ -589,6 +628,22 @@ async fn fetch_copy_with<P: ControlPlane>(
     verify_object(&header, written, &d)?;
     std::fs::rename(&part.path, &dest).map_err(io)?;
     part.keep = true;
+    // The copy is on disk and checked. A copy that holds what the run changed needs the repository the run started from:
+    // the stage sent where it is, and it is downloaded beside the copy. When that fails the copy stays where it is and the error
+    // says so. A stage that sent none for such a copy (a route older than its worker) leaves the copy alone, and the text says what
+    // it needs.
+    let (base, needs_base) = match d.base.clone() {
+        Some(base) => match fetch_base(api, run_id, read_back, dir, chunk, base).await {
+            Ok(got) => (Some(got), false),
+            Err(e) => {
+                return Err(SnapshotFetchError::Base {
+                    copy: dest.display().to_string(),
+                    reason: e.to_string(),
+                });
+            }
+        },
+        None => (None, needs(&header).is_ok_and(|n| !n.is_empty())),
+    };
     Ok(SnapshotFetched {
         path: dest,
         head_sha: d.head_sha.clone(),
@@ -602,7 +657,106 @@ async fn fetch_copy_with<P: ControlPlane>(
         engine: d.engine.clone(),
         read_back_from,
         asked_read_back: read_back.is_some(),
+        base,
+        needs_base,
     })
+}
+
+/// The name of the file the repository a run started from is kept under, beside the copies of the run.
+pub fn base_file_name(run_id: &str) -> String {
+    format!("{run_id}-base.bundle")
+}
+
+/// Downloads the repository the run started from, as the route's answer names it, into `dir` as `<runId>-base.bundle` and
+/// returns where it is and its size. It is read in ranges into a part file, only while it is the object the route read (`If-Match`),
+/// checked (its size, and that it is a bundle whose header names no commit it needs), and then renamed; a file of that name is
+/// replaced, because one run has one base. A URL that expired is replaced once, by asking the route again; an answer that then names
+/// another object, or no base at all, ends the download with the reason that is true. Nothing is run and nothing is unpacked.
+async fn fetch_base<P: ControlPlane>(
+    api: &Api<P>,
+    run_id: &str,
+    read_back: Option<u32>,
+    dir: &Path,
+    chunk: u64,
+    mut base: SnapshotBase,
+) -> Result<(PathBuf, u64), SnapshotFetchError> {
+    sane_object(base.size_bytes, &base.etag, &base.url)?;
+    let name = base_file_name(run_id);
+    let dest = dir.join(&name);
+    let mut part = PartFile::new(dir.join(format!("{name}.{}.part", crate::start::new_nonce())));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part.path)
+        .map_err(io)?;
+    let mut refreshed = false;
+    let mut ranges = plan_ranges(base.size_bytes, chunk, 0);
+    ranges.reverse();
+    let mut written = 0u64;
+    let mut header: Vec<u8> = Vec::new();
+    let header_room = usize::try_from(HEADER_BYTES_MAX).unwrap_or(usize::MAX);
+    while let Some(range) = ranges.pop() {
+        let part_of_base = Part {
+            url: &base.url,
+            etag: &base.etag,
+            size_bytes: base.size_bytes,
+        };
+        match get_range(api, &part_of_base, range).await? {
+            Got::Bytes(b) => {
+                if header.len() < header_room {
+                    let room = header_room - header.len();
+                    header.extend_from_slice(&b[..b.len().min(room)]);
+                }
+                file.write_all(&b).map_err(io)?;
+                written += b.len() as u64;
+            }
+            Got::Expired if !refreshed => {
+                refreshed = true;
+                ranges.push(range);
+                // The route is asked again, and its answer is about the run's newest copy now. That copy can be a whole one by then
+                // (the engine removed `.git`, or the files read back were chosen), and such an answer names no base: nothing changed
+                // about the base, the stage only sends none any more. An answer that names another object is a base that changed.
+                let renewed = match download_when_settled(api, run_id, read_back).await?.base {
+                    Some(r) if r.etag == base.etag && r.size_bytes == base.size_bytes => r,
+                    Some(_) => {
+                        return Err(SnapshotFetchError::Fetch(
+                            "the repository the run started from changed while it was downloading"
+                                .into(),
+                        ));
+                    }
+                    None => {
+                        return Err(SnapshotFetchError::Fetch(
+                            "the stage no longer sends the repository the run started from with the newest copy"
+                                .into(),
+                        ));
+                    }
+                };
+                sane_object(renewed.size_bytes, &renewed.etag, &renewed.url)?;
+                base.url = renewed.url;
+            }
+            Got::Expired => {
+                return Err(SnapshotFetchError::Fetch(format!(
+                    "GET {}: HTTP 403 with a fresh URL",
+                    redact_url(&base.url)
+                )));
+            }
+        }
+    }
+    file.flush().map_err(io)?;
+    drop(file);
+    if written != base.size_bytes {
+        return Err(SnapshotFetchError::Fetch(format!(
+            "the file is {written} bytes; the route said {}",
+            base.size_bytes
+        )));
+    }
+    // A bundle that clones alone: its header ends inside the bytes read and names no commit it needs.
+    heads(&header).map_err(|e| {
+        SnapshotFetchError::Fetch(format!("the file is not a bundle that clones alone: {e}"))
+    })?;
+    std::fs::rename(&part.path, &dest).map_err(io)?;
+    part.keep = true;
+    Ok((dest, written))
 }
 
 /// Whether `path` is a file that is not the bundle of the commit `head`: a bundle of another commit, or a file that is no

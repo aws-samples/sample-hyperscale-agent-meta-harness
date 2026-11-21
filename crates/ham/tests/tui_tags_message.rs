@@ -166,10 +166,13 @@ fn a_stage_without_the_route_says_so() {
     let mut app = on_screen();
     app.update(Msg::TagsEdited {
         origin: word(),
-        results: vec![Err("this service cannot edit tags yet".into())],
+        results: vec![Err(ham::api::TAGS_UNSUPPORTED.into())],
     });
     let text = screen(&app);
-    assert!(text.contains("this service cannot edit tags yet"), "{text}");
+    assert!(
+        text.contains("this stage cannot edit tags yet: it needs a newer backend (run ham update"),
+        "{text}"
+    );
     assert_eq!(
         text.lines().nth(1).unwrap(),
         format!("{NAME}  project:billing-export tech:s3")

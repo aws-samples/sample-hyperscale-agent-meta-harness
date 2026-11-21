@@ -8,6 +8,8 @@
 /// The `accounts.json` selection rule the build script applies.
 pub mod accounts;
 pub mod api;
+/// The header of a git bundle: the commit of a ref, what the bundle needs and the heads it names.
+pub mod bundle_header;
 pub mod catalog;
 pub mod common;
 pub mod direct;

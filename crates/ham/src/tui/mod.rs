@@ -318,6 +318,40 @@ pub async fn perform_with_env<P: ControlPlane>(
                 .unwrap_or_else(|e| Err(e.to_string())),
             )
         }
+        // The look for a newer release. Whether a look is allowed is read from `config.toml` here, each time one starts, and
+        // starts no process. A config that cannot be read at this moment is a look that failed, not a look that is switched off: the
+        // app keeps what the last look found and looks again in an hour. The git call is the only part that can take time: it runs
+        // on a blocking thread, so no key and no draw waits for it.
+        Effect::LookForUpdate {
+            generation,
+            program,
+        } => {
+            use crate::update::LookOutcome;
+            let (outcome, source) = match crate::update::look_source(env) {
+                Err(_) => (LookOutcome::Failed, None),
+                Ok(None) => (LookOutcome::Off, None),
+                Ok(Some(url)) => {
+                    let read = url.clone();
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        crate::update::Git::with_program(program)
+                            .look(&url, crate::update::LOOK_LIMIT)
+                    })
+                    .await
+                    .unwrap_or(LookOutcome::Failed);
+                    (outcome, Some(read))
+                }
+            };
+            Msg::UpdateLook {
+                generation,
+                outcome,
+                source,
+            }
+        }
+        // A click on the update notice: the page of the update source goes to the opener as every link does.
+        Effect::OpenUpdatePage { program, url } => {
+            let result = crate::open::open_url(&program, &url).await;
+            Msg::UpdatePage { url, result }
+        }
         // The event loop runs the editor itself: it needs the terminal.
         Effect::EditDraft { .. } | Effect::RunTerminal { .. } => return None,
         Effect::Quit => return None,

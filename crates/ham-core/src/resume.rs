@@ -98,7 +98,7 @@ pub fn explain(status: u16, code: &str, message: &str) -> String {
     let code_word = sanitize_line(code);
     match (status, code) {
         (404, "not-found") if m.contains("no such route") => {
-            "this stage does not offer resume yet: it needs a newer backend. Use ham continue instead".to_string()
+            "this stage does not offer resume yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you). Use ham continue instead".to_string()
         }
         (404, _)
         | (409, "run-active" | "run-not-resumable")

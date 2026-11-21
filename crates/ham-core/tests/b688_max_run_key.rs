@@ -41,7 +41,7 @@ fn request(cfg: &Config, extra: &[&str]) -> Value {
 
 #[test]
 fn b688_the_row_is_the_last_key_and_rides_in_the_max_run_member() {
-    assert_eq!(Key::ALL.len(), 50);
+    assert_eq!(Key::ALL.len(), 52);
     assert_eq!(Key::ALL[32], Key::RunMaxRunHours);
     let r = Key::RunMaxRunHours.row();
     assert_eq!(r.name, "run.max_run_hours");
@@ -55,7 +55,7 @@ fn b688_the_row_is_the_last_key_and_rides_in_the_max_run_member() {
     assert!(r.env.is_empty(), "no variable: the flag and the file only");
     assert_eq!(Key::lookup("run.max_run_hours"), Some(Key::RunMaxRunHours));
     assert!(KEYS.contains(&("run.max_run_hours", "run.max_run_hours")));
-    assert_eq!(KEYS.len(), 50);
+    assert_eq!(KEYS.len(), 52);
 }
 
 #[test]

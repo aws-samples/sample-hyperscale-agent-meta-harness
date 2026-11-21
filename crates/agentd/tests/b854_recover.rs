@@ -20,7 +20,10 @@ use b854_support::{
     process_machine, recover_on, stopped_session,
 };
 use common::{git, python_calc, scratch};
-use direct_support::{BUCKET, Direct, Opts, PutFailure, RUN, http, no_secrets, sha256_b64};
+use direct_support::{
+    BUCKET, Direct, Opts, PutFailure, RUN, checkout_of_copy, http, needs_the_base, no_secrets,
+    sha256_b64,
+};
 use harness_protocol::direct::{DirectSlice, s3 as keys, validate_direct_invocation};
 use harness_protocol::runtime::{PingStatus, RepoSource, TurnOutcome};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -59,23 +62,11 @@ fn listing(root: &Path) -> Vec<(PathBuf, bool, u64, i64, i64)> {
 async fn b854_recover_copies_a_file_written_after_the_last_stored_copy() {
     let s = stopped_session().await;
     // The trigger: the last stored copy does not hold the file, and the storage does.
-    let saved = s.d.dir.join("saved.bundle");
-    std::fs::write(
-        &saved,
-        s.d.aws.get(&keys::snapshot_bundle_key_t(RUN, 1)).unwrap(),
-    )
-    .unwrap();
-    let saved_clone = s.d.dir.join("saved-clone");
-    git(
+    let saved_clone = checkout_of_copy(
+        &s.d.aws,
         &s.d.dir,
-        &[
-            "clone",
-            "-q",
-            "-b",
-            "snapshot",
-            saved.to_str().unwrap(),
-            saved_clone.to_str().unwrap(),
-        ],
+        &keys::snapshot_bundle_key_t(RUN, 1),
+        "saved-clone",
     );
     assert!(
         !saved_clone.join(LATE_FILE).exists(),
@@ -325,6 +316,144 @@ async fn b854_a_tree_without_history_is_stored_and_not_used() {
         tree.join("src").is_dir(),
         "with the files of the repository"
     );
+}
+
+/// Whether the repository at `repo` can read the commit `commit`.
+fn holds_commit(repo: &Path, commit: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+        .current_dir(repo)
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+/// The saved copy of a stopped session leaves out what the bundle the run started from holds. The read fetches it into a
+/// repository that reads the stopped session's own objects, which hold the base, and the comparison is made with no read of the
+/// base. When those objects no longer hold what the copy needs (the engine removed `.git`, or the objects of the base, before the
+/// stop), the read takes the base first, as every reader of such a copy does: it downloads the bundle the run started from, fetches
+/// it into its private repository and the copy after it, and the comparison is made as it was when a saved copy held the whole
+/// history. A base that cannot be read leaves the comparison unknown, with the reason, and the copy read back stays stored.
+#[tokio::test(flavor = "multi_thread")]
+async fn b860_a_read_compares_with_a_saved_copy_that_needs_the_base_and_says_when_it_cannot() {
+    let base_key = keys::repo_bundle_key(RUN);
+    let saved_key = keys::snapshot_bundle_key_t(RUN, 1);
+
+    // 1. The storage holds the base: nothing of it is asked of the bucket.
+    let s = stopped_session().await;
+    assert!(
+        needs_the_base(&s.d.aws.get(&saved_key).unwrap()),
+        "TRIGGER PRESENT: the saved copy of the stopped session names a commit it needs"
+    );
+    let before = s.d.aws.gets_of(&base_key);
+    let m = new_machine(&s, "recover").await;
+    let answer = m.recover(&s.request(ATTEMPT)).await;
+    assert!(answer.recovered, "{answer:?}");
+    let cmp = answer.comparison.clone().expect("the comparison");
+    assert!(cmp.done(), "{cmp:?}");
+    assert!(answer.copy.clone().unwrap().parent_sha.is_some());
+    assert_eq!(
+        s.d.aws.gets_of(&base_key),
+        before,
+        "the storage holds the base, so the read asks the bucket for nothing of it"
+    );
+
+    // 2. The engine removed its repository's history before the session was stopped: the base is not on the storage any more.
+    let s = stopped_session().await;
+    assert!(needs_the_base(&s.d.aws.get(&saved_key).unwrap()));
+    std::fs::rename(
+        s.d.worktree().join(".git"),
+        s.d.dir.join("history-moved-away"),
+    )
+    .unwrap();
+    let before = s.d.aws.gets_of(&base_key).len();
+    let m = new_machine(&s, "recover-without-history").await;
+    let answer = m.recover(&s.request(ATTEMPT)).await;
+    assert!(answer.recovered, "the tree is the work: {answer:?}");
+    assert_eq!(
+        answer.copy.clone().unwrap().parent_sha,
+        None,
+        "a copy without history has no parent, and the service starts no session from it"
+    );
+    let cmp = answer.comparison.clone().expect("the comparison");
+    assert!(
+        cmp.done(),
+        "the read took the base first and compared: {cmp:?}"
+    );
+    assert!(
+        !cmp.same_as_baseline,
+        "the storage holds a file that was written after the saved copy: {cmp:?}"
+    );
+    let reads = s.d.aws.gets_of(&base_key);
+    assert_eq!(
+        reads.len(),
+        before + 1,
+        "one download of the bundle the run started from: {reads:?}"
+    );
+    assert_eq!(reads.last().unwrap(), &None, "the whole object");
+
+    // 3. The engine kept `.git` and removed the objects of the base from it: a new root commit, every other ref gone, and
+    // everything that no ref reaches pruned.
+    let s = stopped_session().await;
+    let saved = s.d.aws.get(&saved_key).unwrap();
+    let needed = harness_protocol::bundle_header::needs(&saved[..saved.len().min(65_536)]).unwrap();
+    assert!(
+        !needed.is_empty(),
+        "TRIGGER PRESENT: the saved copy names commits it needs"
+    );
+    let wt = s.d.worktree();
+    git(&wt, &["checkout", "-q", "--orphan", "fresh"]);
+    git(&wt, &["commit", "-q", "-m", "a new root"]);
+    git(&wt, &["remote", "remove", "origin"]);
+    for name in git(&wt, &["for-each-ref", "--format=%(refname)"]).lines() {
+        if name != "refs/heads/fresh" {
+            git(&wt, &["update-ref", "--no-deref", "-d", name]);
+        }
+    }
+    git(&wt, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&wt, &["gc", "-q", "--prune=now"]);
+    for commit in &needed {
+        assert!(
+            !holds_commit(&wt, commit),
+            "TRIGGER PRESENT: the storage no longer holds the commit {commit} that the saved copy needs"
+        );
+    }
+    assert!(wt.join(".git").is_dir(), "TRIGGER PRESENT: .git is kept");
+    let before = s.d.aws.gets_of(&base_key).len();
+    let m = new_machine(&s, "recover-pruned").await;
+    let answer = m.recover(&s.request(ATTEMPT)).await;
+    assert!(answer.recovered, "{answer:?}");
+    let cmp = answer.comparison.clone().expect("the comparison");
+    assert!(
+        cmp.done(),
+        "the read took the base first and compared: {cmp:?}"
+    );
+    assert_eq!(
+        s.d.aws.gets_of(&base_key).len(),
+        before + 1,
+        "one download of the bundle the run started from"
+    );
+
+    // 4. The storage lacks the base and the bucket cannot give it: the comparison is unknown and says why, and the copy read back
+    // is stored all the same.
+    let s = stopped_session().await;
+    std::fs::rename(
+        s.d.worktree().join(".git"),
+        s.d.dir.join("history-moved-away"),
+    )
+    .unwrap();
+    s.d.aws.remove(&base_key);
+    let m = new_machine(&s, "recover-without-base").await;
+    let answer = m.recover(&s.request(ATTEMPT)).await;
+    assert!(answer.recovered, "the tree is the work: {answer:?}");
+    assert!(
+        s.d.aws.get(&s.key()).is_some(),
+        "the copy was stored before anything was compared"
+    );
+    let cmp = answer.comparison.clone().expect("the comparison says why");
+    assert!(!cmp.done(), "{cmp:?}");
+    assert_eq!(cmp.reason.as_deref(), Some("baseline-unreadable"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

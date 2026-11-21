@@ -3,8 +3,14 @@
 //! `ham continue RUN` sends the normal start request with one more member, `continueFrom`. control-api checks that the source run exists, belongs
 //! to the caller and delivered a head, and stores the request with the head it resolved (`headSha` is then always present, so agentd can check the
 //! seed). run-session passes `fromRun` to the repo-gateway, which stages the source run's verified bundle as the new run's `input/repo.bundle`, with
-//! the delivered head as the checked-out commit. The member is accepted only with the `s3-only` target and no `baseRef`; a repository run keeps
-//! `--base harness/<runId>`. The prompt Cline receives is the user's own text; nothing about the earlier run is injected.
+//! the delivered head as the checked-out commit. The member is accepted with the `s3-only` target and no `baseRef`, and with the CodeCommit
+//! repository the source run used (no `baseRef`, or the source's own branch `harness/<runId>`). The prompt the engine receives is the user's own
+//! text; nothing about the earlier run is injected.
+//!
+//! Before the first prompt of a follow-up the worker takes the lifecycle records that runs of the product wrote out of
+//! the work tree in a commit of its own, when the stored request says `removeEarlierRecords: true` ([`removes_earlier_records`]). control-api is
+//! the only writer of `true`: it stores it for the start of a follow-up of a run that reported done. `ham` sends `false` for
+//! `run.remove_earlier_records = false`. Every other stored request holds no member, and the worker keeps the records as the releases before did.
 //!
 //! Everything here is re-exported from [`crate::direct`].
 
@@ -61,6 +67,14 @@ pub fn check_continue_from(c: &ContinueFrom) -> Result<(), ContinueFromError> {
         return Err(ContinueFromError::BadHeadSha);
     }
     Ok(())
+}
+
+/// Whether the worker takes the earlier run's lifecycle records out of the work tree before the first prompt: the
+/// request is a follow-up (`continue_from` is present) and its `removeEarlierRecords` member is `true`. It is the one rule agentd reads.
+/// An absent member keeps the records, as the releases before the member did, and so does `false`. Without `continueFrom` the member
+/// means nothing. control-api is the only writer of `true`.
+pub fn removes_earlier_records(continue_from: Option<&ContinueFrom>, member: Option<bool>) -> bool {
+    continue_from.is_some() && member == Some(true)
 }
 
 /// The length of a run id (a ULID).

@@ -2,12 +2,77 @@
 //! virtual-hosted (`https://<bucket>.s3.<region>.amazonaws.com/<key>`, routed through the S3
 //! gateway endpoint); a configured endpoint uses path style (tests).
 
-use crate::http::{HttpError, SignedHttp, SignedRequest};
+use crate::http::{FilePut, HttpError, HttpResponse, Limits, SignedHttp, SignedRequest};
 use harness_protocol::api::internal::ProcessCredentials;
-use harness_protocol::output_pins::{OutputPin, sha256_hex};
+use harness_protocol::output_pins::OutputPin;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// A request of an object is given up when nothing of it moved for this long (`http::Limits::no_progress`): no byte of an
+/// upload left for the connection, the answer did not come after the body had ended, or no byte of the body of a download arrived
+/// once the head of its answer had come. The whole-time limit of a request stays beside it ([`S3Objects::with_request_timeout`]): a
+/// transfer that moves a little every 29 s still ends; the body of a download has `http::body_time` when that is longer.
+pub const NO_PROGRESS: Duration = Duration::from_secs(30);
+
+/// A file is hashed in pieces of this size ([`digest_file`]).
+const DIGEST_PIECE_BYTES: usize = 1024 * 1024;
+
+/// The SHA-256 of a file in the two forms a request needs, and its size, from one pass over the file ([`digest_file`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDigest {
+    /// Lower-case hexadecimal: the payload hash of the signature, and the `sha256` of the record of the write.
+    pub sha256_hex: String,
+    /// Base64: the value of `x-amz-checksum-sha256`.
+    pub sha256_base64: String,
+    /// The size of the file in bytes.
+    pub bytes: u64,
+}
+
+/// How many files [`digest_file`] has hashed in this process.
+static DIGESTS_MADE: AtomicU64 = AtomicU64::new(0);
+
+/// How many files this process has hashed with [`digest_file`] (tests: a store hashes its file once).
+pub fn digests_made() -> u64 {
+    DIGESTS_MADE.load(Ordering::Relaxed)
+}
+
+/// Hashes the file at `path` once, on a thread of the blocking pool, [`DIGEST_PIECE_BYTES`] at a time: no runtime thread reads
+/// or hashes it, and it is never whole in memory. Before, an upload read the whole file on the thread that called it and hashed it
+/// twice there (once for the record, once for the signature), which held agentd's other work for as long as that took.
+pub async fn digest_file(path: &Path) -> Result<FileDigest, String> {
+    let file = path.to_path_buf();
+    let made = tokio::task::spawn_blocking(move || -> std::io::Result<FileDigest> {
+        use std::io::Read;
+        let mut src = std::fs::File::open(&file)?;
+        let mut hasher = Sha256::new();
+        let mut piece = vec![0_u8; DIGEST_PIECE_BYTES];
+        let mut bytes: u64 = 0;
+        loop {
+            match src.read(&mut piece) {
+                Ok(0) => break,
+                Ok(n) => {
+                    hasher.update(&piece[..n]);
+                    bytes += n as u64;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        let digest = hasher.finalize();
+        Ok(FileDigest {
+            sha256_hex: digest.iter().map(|b| format!("{b:02x}")).collect(),
+            sha256_base64: base64_encode(&digest),
+            bytes,
+        })
+    })
+    .await
+    .map_err(|e| format!("{}: {e}", path.display()))?
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    DIGESTS_MADE.fetch_add(1, Ordering::Relaxed);
+    Ok(made)
+}
 
 /// Standard base64 with padding (RFC 4648 section 4). It exists for one header, `x-amz-checksum-sha256`, so the crate takes no
 /// dependency for it.
@@ -86,6 +151,8 @@ pub struct S3Objects {
     http: SignedHttp,
     region: String,
     endpoint: Option<String>,
+    /// [`NO_PROGRESS`], or what a test set ([`Self::with_no_progress`]).
+    no_progress: Duration,
 }
 
 /// What a HEAD of an object told (`x-amz-checksum-mode: ENABLED`).
@@ -117,6 +184,7 @@ impl S3Objects {
             http: SignedHttp::new(),
             region,
             endpoint,
+            no_progress: NO_PROGRESS,
         }
     }
 
@@ -128,6 +196,24 @@ impl S3Objects {
         self
     }
 
+    /// The same client with another no-progress limit for a streamed request ([`NO_PROGRESS`]); tests.
+    #[must_use]
+    pub fn with_no_progress(mut self, no_progress: Duration) -> Self {
+        self.no_progress = no_progress;
+        self
+    }
+
+    /// The limits of one streamed request of this client: its whole-time limit and its no-progress limit.
+    fn limits(&self) -> Limits {
+        Limits {
+            total: self.http.timeout(),
+            no_progress: self.no_progress,
+        }
+    }
+
+    /// GETs `uri` into the file `dest`. The body is written as it arrives (`SignedHttp::get_to_file`: to `<dest>.part`, renamed
+    /// after the last byte), so an object of any size costs agentd no memory and a download that fails leaves no file. An answer
+    /// other than 200 is an error ([`s3_error`]).
     pub async fn get_to_file(
         &self,
         uri: &str,
@@ -137,24 +223,61 @@ impl S3Objects {
         let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
         let resp = self
             .http
-            .send(SignedRequest {
-                method: "GET",
-                url: &url,
-                service: "s3",
-                region: &self.region,
-                creds,
-                content_type: None,
-                body: vec![],
-            })
+            .get_to_file(
+                SignedRequest {
+                    method: "GET",
+                    url: &url,
+                    service: "s3",
+                    region: &self.region,
+                    creds,
+                    content_type: None,
+                    body: vec![],
+                },
+                dest,
+                self.limits(),
+            )
             .await
             .map_err(|e| e.to_string())?;
         if resp.status != 200 {
             return Err(s3_error("GET", uri, resp.status, &resp.body));
         }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The first bytes of the object at `uri`, at most `max_bytes` of them: one GET with `range: bytes=0-<max_bytes - 1>`
+    /// (signed). S3 answers 206 with the range, or with the whole object when it is shorter; a store that ignores the header answers
+    /// 200 with the whole object, of which the first `max_bytes` are kept. Any other status is an error ([`s3_error`]). The answer
+    /// is read into memory: it is what a caller asks for the header of a bundle, a few kilobytes.
+    pub async fn get_prefix(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, String> {
+        let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
+        let range = format!("bytes=0-{}", max_bytes.max(1) - 1);
+        let resp = self
+            .http
+            .send_with_headers(
+                SignedRequest {
+                    method: "GET",
+                    url: &url,
+                    service: "s3",
+                    region: &self.region,
+                    creds,
+                    content_type: None,
+                    body: vec![],
+                },
+                &[("range", &range)],
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if resp.status != 200 && resp.status != 206 {
+            return Err(s3_error("GET", uri, resp.status, &resp.body));
         }
-        std::fs::write(dest, resp.body).map_err(|e| format!("{}: {e}", dest.display()))
+        let mut body = resp.body;
+        body.truncate(usize::try_from(max_bytes).unwrap_or(usize::MAX));
+        Ok(body)
     }
 
     pub async fn put_file(
@@ -167,34 +290,62 @@ impl S3Objects {
     }
 
     /// PUTs `src` to `uri` (an overwrite is allowed) and returns what agentd knows of the object it stored: the SHA-256 of the bytes it sent
-    /// and the version id S3 answered with. The version id is `None` when the answer carried none.
+    /// and the version id S3 answered with. The version id is `None` when the answer carried none. The file is hashed once
+    /// off the runtime's threads ([`digest_file`]) and sent as a stream.
     pub async fn put_file_receipt(
         &self,
         uri: &str,
         creds: &ProcessCredentials,
         src: &Path,
     ) -> Result<OutputPin, String> {
+        let digest = digest_file(src).await?;
+        self.put_digested(uri, creds, src, &digest).await
+    }
+
+    /// One streamed PUT of `src`, whose hash and size are `digest`, with the `extra` headers signed and sent.
+    async fn put_stream(
+        &self,
+        url: &str,
+        creds: &ProcessCredentials,
+        src: &Path,
+        digest: &FileDigest,
+        extra: &[(&str, &str)],
+    ) -> Result<HttpResponse, HttpError> {
+        self.http
+            .put_file(
+                FilePut {
+                    url,
+                    service: "s3",
+                    region: &self.region,
+                    creds,
+                    content_type: Some("application/octet-stream"),
+                    path: src,
+                    digest,
+                    extra,
+                },
+                self.limits(),
+            )
+            .await
+    }
+
+    /// One PUT of `src` to `uri` (an overwrite is allowed) for a caller that has hashed the file: the record of the write.
+    async fn put_digested(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        src: &Path,
+        digest: &FileDigest,
+    ) -> Result<OutputPin, String> {
         let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
-        let body = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
-        let digest = sha256_hex(&body);
         let resp = self
-            .http
-            .send(SignedRequest {
-                method: "PUT",
-                url: &url,
-                service: "s3",
-                region: &self.region,
-                creds,
-                content_type: Some("application/octet-stream"),
-                body,
-            })
+            .put_stream(&url, creds, src, digest, &[])
             .await
             .map_err(|e| e.to_string())?;
         if resp.status != 200 {
             return Err(s3_error("PUT", uri, resp.status, &resp.body));
         }
         Ok(OutputPin {
-            sha256: digest,
+            sha256: digest.sha256_hex.clone(),
             version_id: resp.header("x-amz-version-id").map(str::to_string),
         })
     }
@@ -215,8 +366,36 @@ impl S3Objects {
             .map(|_| ())
     }
 
+    /// [`put_file_retrying`](Self::put_file_retrying) for a caller that has hashed the file already: `digest` is the hash and
+    /// the size of `src`. The look of the copy task hashes its bundle as the last part of its own work, where the spacing of the looks
+    /// counts that time, and hands the hash over, so the bundle is hashed once: nothing here reads the file but the stream of each try.
+    pub async fn put_file_retrying_with(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        src: &Path,
+        digest: &FileDigest,
+        retries: u32,
+        pause: Duration,
+    ) -> Result<(), String> {
+        let mut wait = pause;
+        let mut last = String::new();
+        for attempt in 0..=retries {
+            if attempt > 0 {
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+            }
+            match self.put_digested(uri, creds, src, digest).await {
+                Ok(_) => return Ok(()),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
     /// [`put_file_retrying`](Self::put_file_retrying) that returns the record of the write that stored the object: its digest and
-    /// the version id of that write's answer, never of an earlier try.
+    /// the version id of that write's answer, never of an earlier try. The file is hashed once for all the tries (the callers do
+    /// not change it while it is stored); a try that could not read it is tried again, as before.
     pub async fn put_file_retrying_receipt(
         &self,
         uri: &str,
@@ -227,12 +406,23 @@ impl S3Objects {
     ) -> Result<OutputPin, String> {
         let mut wait = pause;
         let mut last = String::new();
+        let mut digest: Option<FileDigest> = None;
         for attempt in 0..=retries {
             if attempt > 0 {
                 tokio::time::sleep(wait).await;
                 wait *= 2;
             }
-            match self.put_file_receipt(uri, creds, src).await {
+            let hashed = match &digest {
+                Some(hashed) => hashed,
+                None => match digest_file(src).await {
+                    Ok(hashed) => digest.insert(hashed),
+                    Err(e) => {
+                        last = e;
+                        continue;
+                    }
+                },
+            };
+            match self.put_digested(uri, creds, src, hashed).await {
                 Ok(pin) => return Ok(pin),
                 Err(e) => last = e,
             }
@@ -274,17 +464,17 @@ impl S3Objects {
         })
     }
 
-    /// One create-only attempt: PUTs `body` to `uri` only when the key holds no object. The request carries `If-None-Match: *` and
-    /// `x-amz-checksum-sha256` for the body, both signed (S3 needs SigV4 for a conditional write and refuses an `x-amz-*` header that the
-    /// signature does not cover). S3 checks the checksum
+    /// One create-only attempt: PUTs the file `src` to `uri` only when the key holds no object. The request carries `If-None-Match: *`
+    /// and `x-amz-checksum-sha256` for the body, both signed (S3 needs SigV4 for a conditional write and refuses an `x-amz-*` header that
+    /// the signature does not cover). S3 checks the checksum
     /// against the bytes it received, so an object stored with this value holds exactly these bytes; it answers 412 `PreconditionFailed`
-    /// when the key is taken.
+    /// when the key is taken. The body is streamed from the file, whose hash and size are `digest`.
     async fn put_new_once(
         &self,
         uri: &str,
         creds: &ProcessCredentials,
-        body: Vec<u8>,
-        checksum: &str,
+        src: &Path,
+        digest: &FileDigest,
     ) -> Attempt {
         let local = |error: String| Attempt::Failed { error, sent: false };
         let url = match object_url(uri, &self.region, self.endpoint.as_deref()) {
@@ -292,18 +482,15 @@ impl S3Objects {
             Err(e) => return local(e),
         };
         let resp = self
-            .http
-            .send_with_headers(
-                SignedRequest {
-                    method: "PUT",
-                    url: &url,
-                    service: "s3",
-                    region: &self.region,
-                    creds,
-                    content_type: Some("application/octet-stream"),
-                    body,
-                },
-                &[("if-none-match", "*"), ("x-amz-checksum-sha256", checksum)],
+            .put_stream(
+                &url,
+                creds,
+                src,
+                digest,
+                &[
+                    ("if-none-match", "*"),
+                    ("x-amz-checksum-sha256", &digest.sha256_base64),
+                ],
             )
             .await;
         match resp {
@@ -333,9 +520,8 @@ impl S3Objects {
         creds: &ProcessCredentials,
         src: &Path,
     ) -> Result<PutNew, String> {
-        let body = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
-        let checksum = sha256_base64(&body);
-        match self.put_new_once(uri, creds, body, &checksum).await {
+        let digest = digest_file(src).await?;
+        match self.put_new_once(uri, creds, src, &digest).await {
             Attempt::Stored(_) => Ok(PutNew::Stored),
             Attempt::Exists => Ok(PutNew::Exists),
             Attempt::Failed { error, .. } => Err(error),
@@ -377,48 +563,50 @@ impl S3Objects {
     ) -> Result<(PutNew, Option<OutputPin>), String> {
         let mut wait = pause;
         let mut last = String::new();
-        // The checksums (base64 and hex) of the tries that left agentd: the object a lost answer committed carries one of them.
-        let mut sent: Vec<(String, String)> = Vec::new();
+        // The file is hashed once for all the tries (it does not change while it is stored); a try that could not read it is
+        // tried again, as before.
+        let mut digest: Option<FileDigest> = None;
+        // A try left agentd: the object a lost answer committed carries the checksum of the file.
+        let mut sent = false;
         for attempt in 0..=retries {
             if attempt > 0 {
                 tokio::time::sleep(wait).await;
                 wait *= 2;
             }
-            let body = match std::fs::read(src) {
-                Ok(b) => b,
-                Err(e) => {
-                    last = format!("{}: {e}", src.display());
-                    continue;
-                }
+            let hashed = match &digest {
+                Some(hashed) => hashed,
+                None => match digest_file(src).await {
+                    Ok(hashed) => digest.insert(hashed),
+                    Err(e) => {
+                        last = e;
+                        continue;
+                    }
+                },
             };
-            let checksum = sha256_base64(&body);
-            let digest = sha256_hex(&body);
-            match self.put_new_once(uri, creds, body, &checksum).await {
+            match self.put_new_once(uri, creds, src, hashed).await {
                 Attempt::Stored(version_id) => {
                     return Ok((
                         PutNew::Stored,
                         Some(OutputPin {
-                            sha256: digest,
+                            sha256: hashed.sha256_hex.clone(),
                             version_id,
                         }),
                     ));
                 }
-                Attempt::Exists if sent.is_empty() => return Ok((PutNew::Exists, None)),
+                Attempt::Exists if !sent => return Ok((PutNew::Exists, None)),
                 Attempt::Exists => match self.head_checksum(uri, creds).await {
                     Ok(head) => {
-                        let own = head
-                            .sha256
-                            .as_ref()
-                            .and_then(|s| sent.iter().find(|(b64, _)| b64 == s));
-                        return Ok(match own {
-                            Some((_, hex)) => (
+                        let own = head.sha256.as_deref() == Some(hashed.sha256_base64.as_str());
+                        return Ok(if own {
+                            (
                                 PutNew::Stored,
                                 Some(OutputPin {
-                                    sha256: hex.clone(),
+                                    sha256: hashed.sha256_hex.clone(),
                                     version_id: head.version_id,
                                 }),
-                            ),
-                            None => (PutNew::Exists, None),
+                            )
+                        } else {
+                            (PutNew::Exists, None)
                         });
                     }
                     Err(e) => {
@@ -429,9 +617,7 @@ impl S3Objects {
                 },
                 Attempt::Failed { error, sent: left } => {
                     last = error;
-                    if left {
-                        sent.push((checksum, digest));
-                    }
+                    sent |= left;
                 }
             }
         }

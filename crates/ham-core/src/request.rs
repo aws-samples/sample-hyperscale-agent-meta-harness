@@ -94,6 +94,8 @@ pub fn direct_run_request(
         delivery_note: None,
         // Left out here too: `ResolvedRun::request` lays the user's switch of reading a stopped session's storage back in.
         recover_after_stop: None,
+        // Left out here too: `ResolvedRun::request` lays the user's switch of the earlier run's records in.
+        remove_earlier_records: None,
     })
 }
 
@@ -283,6 +285,10 @@ pub struct ResolvedRun {
     /// no stopped session's storage back and does not act on the worker's notice of an end. Unset and on send no member, so the request
     /// is the one an older client sends and a stage of an older release starts it.
     pub recover_after_stop: Option<bool>,
+    /// `run.remove_earlier_records` of the file: only `false` reaches the request, as `removeEarlierRecords` and only in a
+    /// follow-up, and the worker then leaves the lifecycle records of the run the follow-up continues in the work tree. Unset and on
+    /// send no member, so the request is the one an older client sends, and the service decides from how the earlier run ended.
+    pub remove_earlier_records: Option<bool>,
     /// Provider data sharing for this run: `--provider-sharing` over `run.provider_sharing` of the file, off when neither is set. Only `true` reaches the
     /// request, as `providerSharing`, so the request of a user who never turns it on is the one an older client sends.
     pub provider_sharing: bool,
@@ -343,6 +349,7 @@ impl ResolvedRun {
             .map(|r| with_copy_interval_setting(r, self.snapshot_every_s))
             .map(|r| with_delivery_note_setting(r, self.delivery_note))
             .map(|r| with_recover_after_stop_setting(r, self.recover_after_stop))
+            .map(|r| with_remove_earlier_records_setting(r, self.remove_earlier_records))
             .map(|r| with_provider_sharing_setting(r, self.provider_sharing))
             .map(|r| with_build_settings(r, &self.build))
             .map(|r| with_limits_setting(r, &self.limits))
@@ -554,6 +561,10 @@ pub fn resolve_run_settings_in(
         Key::RunRecoverAfterStop,
         layer(false, run.recover_after_stop.is_some()),
     ));
+    origins.push((
+        Key::RunRemoveEarlierRecords,
+        layer(false, run.remove_earlier_records.is_some()),
+    ));
     origins.sort_by_key(|(k, _)| *k);
     Ok(ResolvedRun {
         args: out,
@@ -577,6 +588,8 @@ pub fn resolve_run_settings_in(
         delivery_note: run.delivery_note.filter(|on| !on),
         // The same: only off is carried.
         recover_after_stop: run.recover_after_stop.filter(|on| !on),
+        // The same: only off is carried.
+        remove_earlier_records: run.remove_earlier_records.filter(|on| !on),
         provider_sharing,
         build: BuildOptions {
             cargo_no_debug_info: run.cargo_no_debug_info.filter(|on| !on),
@@ -753,6 +766,20 @@ pub fn with_recover_after_stop_setting(
 ) -> StartDirectRunRequest {
     let mut request = request;
     request.recover_after_stop = (recover_after_stop == Some(false)).then_some(false);
+    request
+}
+
+/// `request` with the user's `run.remove_earlier_records` setting: a follow-up of a run that reported done starts without that
+/// run's lifecycle records by default, so only `false` is sent (`removeEarlierRecords: false`); on, or no setting, leaves the member out
+/// and the request as it was. The member rides only in a request that carries `continueFrom`. It means nothing in a first request, and
+/// a stage that predates it refuses a request that holds it, so a first request is the one an older client sends whatever the key says.
+pub fn with_remove_earlier_records_setting(
+    request: StartDirectRunRequest,
+    remove_earlier_records: Option<bool>,
+) -> StartDirectRunRequest {
+    let mut request = request;
+    request.remove_earlier_records =
+        (request.continue_from.is_some() && remove_earlier_records == Some(false)).then_some(false);
     request
 }
 

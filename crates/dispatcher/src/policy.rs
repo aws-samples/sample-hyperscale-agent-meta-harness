@@ -238,15 +238,20 @@ fn object_key_ok(s: &str) -> bool {
 /// the intersection with `harness-worker-session`'s own policy, which is why the data-key actions are named here (as [`ROLE_GRANTS`]
 /// names them for a working session) and why they stay bound to S3 by the role's own condition. A bucket or a key that could name more
 /// than one object is refused.
+///
+/// A saved copy may hold what the run changed and need what the bundle the run started from holds. A read whose storage no
+/// longer holds that takes the base first, so `base_key` adds a GET of that one object (`runs/<run>/input/repo.bundle`, which every
+/// working session of the run may read); the caller names it only when there is a saved copy to fetch.
 pub fn recovery_policy(
     bucket: &str,
     key: &str,
     baseline_key: Option<&str>,
+    base_key: Option<&str>,
 ) -> Result<String, PolicyError> {
     if !bucket_ok(bucket) {
         return Err(PolicyError::BadObject(bucket.to_string()));
     }
-    for k in std::iter::once(key).chain(baseline_key) {
+    for k in std::iter::once(key).chain(baseline_key).chain(base_key) {
         if !object_key_ok(k) {
             return Err(PolicyError::BadObject(k.to_string()));
         }
@@ -259,6 +264,12 @@ pub fn recovery_policy(
         statements.push(json!({
             "Sid": "GetBaseline", "Effect": "Allow", "Action": "s3:GetObject",
             "Resource": format!("arn:aws:s3:::{bucket}/{baseline}"),
+        }));
+    }
+    if let Some(base) = base_key {
+        statements.push(json!({
+            "Sid": "GetBase", "Effect": "Allow", "Action": "s3:GetObject",
+            "Resource": format!("arn:aws:s3:::{bucket}/{base}"),
         }));
     }
     statements.push(json!({

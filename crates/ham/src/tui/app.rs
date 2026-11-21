@@ -19,6 +19,11 @@
 //! `d` downloads the zip again through the same code path as `ham pull` ([`Effect::Download`]). The presigned URL itself is never drawn,
 //! logged or put in a notice.
 //!
+//! The update notice: the app looks at the update source for a newer release ([`Effect::LookForUpdate`], one
+//! git call on a blocking thread, by a schedule that lives in memory) and shows `v5.25 available` beside the version tag on every screen
+//! when `ham update` has something to install. A click on it opens the page of the update source through the opener of every link
+//! ([`Effect::OpenUpdatePage`]) and the app stays open; the notice has no key, and the update itself is `ham update` typed in a shell.
+//!
 //! The user correction path: while the focused run has an open blocking question (a `needs-input` event,
 //! `RunView.input.open`), the dashboard shows the card "Cline needs you" and rings the bell once (`Effect::Bell`); `p` opens the typing
 //! screen ([`Screen::Reply`]) for a message in the same Cline session, `s` for a fresh session on the same files, `m` first lists the
@@ -99,6 +104,8 @@ mod run_name;
 mod send;
 #[path = "tags.rs"]
 mod tags;
+#[path = "update_notice.rs"]
+mod update_notice;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -258,6 +265,19 @@ pub enum Effect {
         content: String,
         blocks: usize,
     },
+    /// The look for a newer release: one git call that lists the names of the update source, run as
+    /// `program` on a blocking thread and answered by [`Msg::UpdateLook`]. `generation` is the schedule's, so the answer of a look of
+    /// earlier settings is dropped.
+    LookForUpdate {
+        generation: u64,
+        program: std::path::PathBuf,
+    },
+    /// A click on the update notice: `program url` with no shell, as for every link, then [`Msg::UpdatePage`]. `url` is the web
+    /// page of the update source. The app stays open.
+    OpenUpdatePage {
+        program: String,
+        url: String,
+    },
     Quit,
 }
 
@@ -329,6 +349,18 @@ pub enum Msg {
     Exported(Result<String, String>),
     /// The answer to [`Effect::EditDraft`]: what the editor came to and how long it ran, or why it could not run.
     Edited(Result<ham_core::editor::Report, String>),
+    /// The answer to [`Effect::LookForUpdate`]: what the look of `generation` found, and the update source it read (`None` when no look
+    /// was made).
+    UpdateLook {
+        generation: u64,
+        outcome: crate::update::LookOutcome,
+        source: Option<String>,
+    },
+    /// The answer to [`Effect::OpenUpdatePage`]: the page that was handed to the opener, and why it could not be opened if so.
+    UpdatePage {
+        url: String,
+        result: Result<(), String>,
+    },
 }
 
 /// What asked for a tag edit, so the answer goes where the question came from.
@@ -748,6 +780,8 @@ pub struct App {
     pub(crate) find: openbox::OpenBox,
     /// The tag explorer and the `/tag` preview.
     pub(crate) tags: tags::TagExplorer,
+    /// The update notice: the look for a newer release and what it found.
+    pub(crate) update: update_notice::UpdateState,
     /// The capability record of the focused run's engine (`engine_ui.rs`).
     pub(crate) caps: ham_core::engines::Capabilities,
     /// `default_engine` of the config file as the process read it at the start; `None` when the file sets none.
@@ -993,6 +1027,7 @@ impl App {
             copy_prefix: None,
             find: openbox::OpenBox::default(),
             tags: tags::TagExplorer::default(),
+            update: update_notice::UpdateState::default(),
             caps: ham_core::engines::Capabilities::unknown(),
             file_engine: None,
             session_engine: None,
@@ -1437,6 +1472,13 @@ impl App {
     /// The 1 s timer: the focused run is polled when its plan says a poll is due. While events flow that is every tick; a
     /// quiet run backs off to every fifth tick, and reads only the shards that matter (`ham_core::poll`).
     pub fn tick(&mut self) -> Vec<Effect> {
+        // On every screen: the look for a newer release when the schedule says one is due. It costs a comparison of two numbers.
+        let mut effects = self.look_if_due();
+        effects.extend(self.tick_screen());
+        effects
+    }
+
+    fn tick_screen(&mut self) -> Vec<Effect> {
         self.clock += TICK;
         self.mascot_tick();
         if self.screen == Screen::Runs {
@@ -1475,6 +1517,10 @@ impl App {
     /// its key does. Text selection and copy are the next step; their actions change nothing here.
     pub fn handle_mouse_at(&mut self, event: MouseEvent, at: Instant) -> Vec<Effect> {
         self.mouse_hint = None;
+        // A press of a button takes the sentence of the last click on the update notice away; a move of the mouse does not.
+        if matches!(event.kind, crossterm::event::MouseEventKind::Down(_)) {
+            self.update_said_ends();
+        }
         let actions = {
             let map = self.hits.borrow();
             self.pointer.handle(&map, event, at)
@@ -1557,6 +1603,8 @@ impl App {
                 self.chat.get_mut().clear_selection();
                 vec![]
             }
+            // The update notice was clicked.
+            MouseAction::Update => self.update_click(),
             _ => vec![],
         }
     }
@@ -1974,8 +2022,9 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
             self.request_repaint();
         }
-        // The first key takes the hint on selecting text away.
+        // The first key takes the hint on selecting text away, and the sentence of the last click on the update notice.
         self.mouse_hint = None;
+        self.update_said_ends();
         // A quit warning holds for the next key only.
         self.was_armed = std::mem::take(&mut self.quit_armed);
         self.calm = at.is_none_or(|t| self.burst.key(t));
@@ -2022,6 +2071,8 @@ impl App {
     pub fn handle_paste(&mut self, text: String) -> Vec<Effect> {
         let text = clean_paste(&text);
         self.quit_armed = false;
+        // A paste takes the sentence of the last click on the update notice away, as a key does.
+        self.update_said_ends();
         // A preview that waits for an argument takes the paste into its slot (a URL is pasted more often than typed).
         if self.screen == Screen::Dashboard
             && self.mode == Mode::Typing
@@ -4813,7 +4864,7 @@ impl App {
                         self.copy_text(&fallback.unwrap_or_default())
                     }
                     Err(e) => {
-                        self.notice = Some(format!("could not open the link: {e}"));
+                        self.notice = Some(open_failed_words(&e));
                         vec![]
                     }
                 }
@@ -4908,6 +4959,12 @@ impl App {
             }
             Msg::Ext(done) => self.ext_done(done),
             Msg::Settings(done) => self.settings_done(done),
+            Msg::UpdateLook {
+                generation,
+                outcome,
+                source,
+            } => self.update_looked(generation, outcome, source),
+            Msg::UpdatePage { url, result } => self.update_page_opened(&url, result),
             Msg::Edited(result) => self.edited(result),
             Msg::Copied(result) => {
                 let lead = self.copy_prefix.take();
@@ -5179,6 +5236,11 @@ pub(crate) struct Refusal {
 pub(crate) const NOTICE_COLUMNS: usize = 80;
 
 /// The first eight characters of a run id, made safe to print.
+/// What the app says when the opener could not open a link: the opener's own sentence, which never holds the link.
+fn open_failed_words(e: &str) -> String {
+    format!("could not open the link: {e}")
+}
+
 fn short_id(id: &str) -> String {
     sanitize_line(id).chars().take(8).collect()
 }
@@ -5367,8 +5429,14 @@ impl App {
         let Some(key) = self.settings.done(done) else {
             return vec![];
         };
+        // A write of the source or of the switch of the update notice: the notice goes at once and the app looks again.
+        let effects = if matches!(key, SettingKey::UpdateSource | SettingKey::UiUpdateNotice) {
+            self.update_settings_changed()
+        } else {
+            vec![]
+        };
         let Some(snap) = self.settings.snapshot() else {
-            return vec![];
+            return effects;
         };
         let (notify, bell, mascot) = (snap.notify, snap.bell, snap.mascot);
         let snap_motion = snap.mascot_motion;
@@ -5398,7 +5466,7 @@ impl App {
             }
             _ => {}
         }
-        vec![]
+        effects
     }
 
     fn open_models(&mut self) -> Vec<Effect> {

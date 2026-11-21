@@ -52,10 +52,11 @@ fn says_to_unset_one(e: &str) {
 
 #[test]
 fn b823_seconds_the_row_follows_the_minutes_key_and_rides_in_the_snapshot_member() {
-    assert_eq!(Key::ALL.len(), 50);
-    // Added `run.delivery_note` after it, and `run.recover_after_stop` after that.
+    assert_eq!(Key::ALL.len(), 52);
+    // Added `run.delivery_note` after it `run.recover_after_stop` after that `ui.update_notice` after that and
+    // `run.remove_earlier_records` last.
     assert_eq!(
-        Key::ALL[Key::ALL.len() - 3],
+        Key::ALL[Key::ALL.len() - 5],
         key(SECONDS),
         "the key after run.copy_every_minutes and before run.delivery_note"
     );
@@ -72,7 +73,7 @@ fn b823_seconds_the_row_follows_the_minutes_key_and_rides_in_the_snapshot_member
         "the file only: no flag and no variable"
     );
     assert!(KEYS.contains(&(SECONDS, SECONDS)));
-    assert_eq!(KEYS.len(), 50);
+    assert_eq!(KEYS.len(), 52);
 }
 
 #[test]

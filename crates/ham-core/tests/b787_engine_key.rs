@@ -49,7 +49,7 @@ fn body(cfg: &Config, extra: &[&str]) -> Value {
 
 #[test]
 fn b787_the_default_engine_row_is_the_last_key_with_a_flag_and_a_cline_default() {
-    assert_eq!(Key::ALL.len(), 50);
+    assert_eq!(Key::ALL.len(), 52);
     assert_eq!(Key::ALL[44], Key::DefaultEngine);
     let r = Key::DefaultEngine.row();
     assert_eq!(r.name, "default_engine");
@@ -68,7 +68,7 @@ fn b787_the_default_engine_row_is_the_last_key_with_a_flag_and_a_cline_default()
     assert_eq!(Key::lookup("default_engine"), Some(Key::DefaultEngine));
     assert_eq!(Key::lookup("defaultEngine"), Some(Key::DefaultEngine));
     assert!(KEYS.contains(&("defaultEngine", "default_engine")));
-    assert_eq!(KEYS.len(), 50);
+    assert_eq!(KEYS.len(), 52);
     assert_eq!(Kind::Engine.type_text(), "an engine id");
 }
 

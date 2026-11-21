@@ -156,7 +156,8 @@ NETWORK_ATTEMPT_EVERY = 10
 # A resource of the stage's network: the EC2 resources of the VPC and the network stack that made them.
 NETWORK_ARN = re.compile(r"arn:aws[a-z-]*:ec2:[^:]*:[0-9]*:(vpc|subnet|security-group|security-group-rule|route-table|internet-gateway|egress-only-internet-gateway|natgateway|network-interface|"
                          r"vpc-endpoint|elastic-ip|network-acl|dhcp-options|vpc-flow-log|prefix-list)/")
-# Tie-break for the destroy order (the reverse of scripts/lib/deploy.py's DEPLOY_PRIORITY).
+# Tie-break for the destroy order, taken in reverse. It is this script's own list: scripts/lib/deploy.py's DEPLOY_PRIORITY puts the delivery stack before the
+# runtimes stack so that a reader of saved copies is live before their writer, which a destroy has no use for.
 PRIORITY = ("network", "security", "data", "packages", "control", "runtimes", "orchestration", "delivery", "observability")
 
 

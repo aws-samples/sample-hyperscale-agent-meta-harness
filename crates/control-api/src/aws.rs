@@ -3,7 +3,7 @@
 
 use crate::handler::{
     Blobs, CancelWrite, DeployLock, DeployedAs, Execution, ObjectError, ObjectInfo, ObjectPage,
-    ObjectPrefix, RunUsage, Store, StoreError, TagRead,
+    ObjectPrefix, ReadOrRefused, RunUsage, Store, StoreError, TagRead,
 };
 use crate::ids::rfc3339;
 use aws_sdk_dynamodb::error::DisplayErrorContext;
@@ -94,6 +94,44 @@ fn may_pass(e: &aws_sdk_ssm::error::SdkError<GetParameterError>) -> bool {
         SdkError::ConstructionFailure(_) => false,
         _ => true,
     }
+}
+
+/// The codes with which S3 answers a request it may take on the next attempt, beside its throttles and faults (HTTP 5xx): the request
+/// was not read in time, and a clock that was off for a moment.
+const S3_LATER_CODES: [&str; 3] = ["SlowDown", "RequestTimeout", "RequestTimeTooSkewed"];
+
+/// Whether a failed S3 read may pass on a retry: a fault of the store (HTTP 5xx), a throttle, a
+/// credential or clock failure of the moment, or a call that got no answer (timeout, connection, a reply that could not be read). Every
+/// other answer of the store is a refusal of the request itself and comes back the same every time: no such key, a read the role is not
+/// allowed (S3 answers 403 for an absent key to a role that may not list the bucket), an object in an archive class. So does a request
+/// that could not be built.
+fn s3_may_pass(
+    e: &aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
+) -> bool {
+    use aws_sdk_s3::error::{ProvideErrorMetadata as _, SdkError};
+    match e {
+        SdkError::ServiceError(se) => {
+            let status = se.raw().status().as_u16();
+            status >= 500
+                || status == 429
+                || se.err().code().is_some_and(|c| {
+                    THROTTLE_CODES.contains(&c)
+                        || CREDENTIAL_CODES.contains(&c)
+                        || S3_LATER_CODES.contains(&c)
+                })
+        }
+        SdkError::ConstructionFailure(_) => false,
+        _ => true,
+    }
+}
+
+/// What one ranged GET gave ([`S3Blobs::fetch_prefix`]).
+enum Fetched {
+    Object(ObjectPrefix),
+    /// The store says that the key does not exist (`NoSuchKey`).
+    Absent,
+    /// The store refused the read in a way no retry changes; the text is its reason.
+    Refused(String),
 }
 
 fn s(v: impl Into<String>) -> AttributeValue {
@@ -1486,6 +1524,74 @@ pub struct S3Blobs {
     pub credentials: Option<SharedCredentialsProvider>,
 }
 
+impl S3Blobs {
+    /// One ranged GET of the first `max_bytes` of `key`, with the failure classified where the answer of the store is still at hand:
+    /// `Err` only for a failure that may pass on a retry ([`s3_may_pass`]).
+    async fn fetch_prefix(&self, key: &str, max_bytes: u64) -> Result<Fetched, StoreError> {
+        let res = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .range(format!("bytes=0-{}", max_bytes.saturating_sub(1)))
+            .send()
+            .await;
+        let out = match res {
+            Ok(o) => o,
+            Err(e) => {
+                // A missing key is no object; a ranged GET of an empty object is S3's 416 `InvalidRange`: an object of 0 bytes.
+                let code = e
+                    .as_service_error()
+                    .and_then(aws_sdk_s3::error::ProvideErrorMetadata::code);
+                return match code {
+                    Some("NoSuchKey") => Ok(Fetched::Absent),
+                    Some("InvalidRange") => Ok(Fetched::Object(ObjectPrefix {
+                        bytes: Vec::new(),
+                        size: 0,
+                        etag: None,
+                        version_id: None,
+                        last_modified: None,
+                    })),
+                    _ if s3_may_pass(&e) => Err(unavailable(e)),
+                    _ => Ok(Fetched::Refused(DisplayErrorContext(e).to_string())),
+                };
+            }
+        };
+        let etag = out.e_tag().map(str::to_string);
+        let version_id = out.version_id().map(str::to_string);
+        let last_modified = out
+            .last_modified()
+            .map(|t| rfc3339(u64::try_from(t.secs()).unwrap_or(0)));
+        // `Content-Range: bytes 0-15/123456` carries the whole size; a store that ignored the range sends the whole object.
+        let total = out
+            .content_range()
+            .and_then(|r| r.rsplit('/').next())
+            .and_then(|n| n.parse::<u64>().ok());
+        let content_length = out.content_length();
+        // A store that ignored the range would send the whole object: only the first `max_bytes` are read, and the rest is dropped unread.
+        let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        let mut body = out.body;
+        let mut bytes: Vec<u8> = Vec::new();
+        while bytes.len() < cap {
+            match body.try_next().await.map_err(unavailable)? {
+                Some(chunk) => bytes.extend_from_slice(&chunk),
+                None => break,
+            }
+        }
+        bytes.truncate(cap);
+        let size = total
+            .or_else(|| content_length.and_then(|n| u64::try_from(n).ok()))
+            .unwrap_or(bytes.len() as u64);
+        Ok(Fetched::Object(ObjectPrefix {
+            bytes,
+            size,
+            etag,
+            version_id,
+            last_modified,
+        }))
+    }
+}
+
 impl Blobs for S3Blobs {
     async fn put(&self, key: &str, body: &[u8]) -> Result<String, StoreError> {
         self.client
@@ -1524,66 +1630,26 @@ impl Blobs for S3Blobs {
         key: &str,
         max_bytes: u64,
     ) -> Result<Option<ObjectPrefix>, StoreError> {
-        let res = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .range(format!("bytes=0-{}", max_bytes.saturating_sub(1)))
-            .send()
-            .await;
-        let out = match res {
-            Ok(o) => o,
-            Err(e) => {
-                // A missing key is no object; a ranged GET of an empty object is S3's 416 `InvalidRange`: an object of 0 bytes.
-                let code = e
-                    .as_service_error()
-                    .and_then(aws_sdk_s3::error::ProvideErrorMetadata::code);
-                return match code {
-                    Some("NoSuchKey") => Ok(None),
-                    Some("InvalidRange") => Ok(Some(ObjectPrefix {
-                        bytes: Vec::new(),
-                        size: 0,
-                        etag: None,
-                        version_id: None,
-                        last_modified: None,
-                    })),
-                    _ => Err(unavailable(e)),
-                };
-            }
-        };
-        let etag = out.e_tag().map(str::to_string);
-        let version_id = out.version_id().map(str::to_string);
-        let last_modified = out
-            .last_modified()
-            .map(|t| rfc3339(u64::try_from(t.secs()).unwrap_or(0)));
-        // `Content-Range: bytes 0-15/123456` carries the whole size; a store that ignored the range sends the whole object.
-        let total = out
-            .content_range()
-            .and_then(|r| r.rsplit('/').next())
-            .and_then(|n| n.parse::<u64>().ok());
-        let content_length = out.content_length();
-        // A store that ignored the range would send the whole object: only the first `max_bytes` are read, and the rest is dropped unread.
-        let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-        let mut body = out.body;
-        let mut bytes: Vec<u8> = Vec::new();
-        while bytes.len() < cap {
-            match body.try_next().await.map_err(unavailable)? {
-                Some(chunk) => bytes.extend_from_slice(&chunk),
-                None => break,
-            }
+        // Every caller of this read treats a refusal as an outage, as: the store's reason is the error.
+        match self.fetch_prefix(key, max_bytes).await? {
+            Fetched::Object(object) => Ok(Some(object)),
+            Fetched::Absent => Ok(None),
+            Fetched::Refused(why) => Err(StoreError::Unavailable(why)),
         }
-        bytes.truncate(cap);
-        let size = total
-            .or_else(|| content_length.and_then(|n| u64::try_from(n).ok()))
-            .unwrap_or(bytes.len() as u64);
-        Ok(Some(ObjectPrefix {
-            bytes,
-            size,
-            etag,
-            version_id,
-            last_modified,
-        }))
+    }
+
+    async fn read_or_refused(
+        &self,
+        key: &str,
+        max_bytes: u64,
+    ) -> Result<ReadOrRefused, StoreError> {
+        Ok(match self.fetch_prefix(key, max_bytes).await? {
+            Fetched::Object(object) => ReadOrRefused::Object(object),
+            Fetched::Absent => {
+                ReadOrRefused::Refused("the store has no such key (NoSuchKey)".to_string())
+            }
+            Fetched::Refused(why) => ReadOrRefused::Refused(why),
+        })
     }
 
     /// Signed now for `ttl`. A URL signed with session credentials stops working when they

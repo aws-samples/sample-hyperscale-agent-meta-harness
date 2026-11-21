@@ -259,6 +259,11 @@ pub struct RunTable {
     /// send no member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recover_after_stop: Option<bool>,
+    /// `false` leaves the lifecycle records of the run a follow-up continues in the work tree; the request carries it as
+    /// `removeEarlierRecords: false`. Unset and `true` send no member: the service then decides from how the earlier run ended, and the
+    /// worker takes the records of a run that reported done out before the first prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_earlier_records: Option<bool>,
 }
 
 /// The keys of `[research]`.
@@ -303,6 +308,10 @@ pub struct UiTable {
     /// The most KiB one copy to the clipboard carries; 64 unless this says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_limit_kib: Option<u32>,
+    /// The terminal app's look for a newer release and its update notice; on unless this says `false`; `HAMH_NO_UPDATE_NOTICE=1`
+    /// turns both off whatever the file says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_notice: Option<bool>,
 }
 
 /// One `[[backend]]` table: a stage in another AWS account that the client reads and starts runs on. The three top-level keys
@@ -411,13 +420,13 @@ pub enum ConfigError {
     Invalid { key: String, reason: String },
     /// The file was written by a newer `ham`; this build changes nothing in it.
     #[error(
-        "config.toml was written by a newer ham (configVersion {version}); update ham to change it. Nothing was written"
+        "config.toml was written by a newer ham (configVersion {version}); update ham (run ham update) to change it. Nothing was written"
     )]
     Newer { version: u32 },
 }
 
 /// The settable keys as `(file name, name `ham config` prints)`. A key of a table is dotted in both columns.
-pub const KEYS: [(&str, &str); 50] = [
+pub const KEYS: [(&str, &str); 52] = [
     ("apiEndpoint", "api_endpoint"),
     ("region", "region"),
     ("awsProfile", "aws_profile"),
@@ -468,6 +477,8 @@ pub const KEYS: [(&str, &str); 50] = [
     ("run.copy_every_seconds", "run.copy_every_seconds"),
     ("run.delivery_note", "run.delivery_note"),
     ("run.recover_after_stop", "run.recover_after_stop"),
+    ("ui.update_notice", "ui.update_notice"),
+    ("run.remove_earlier_records", "run.remove_earlier_records"),
 ];
 
 /// What `ham` says of a config that sets both keys of the copy interval, when it reads the file and when `ham config set` would
@@ -803,6 +814,35 @@ pub fn deprecation_notices_on(env: &dyn Fn(&str) -> Option<String>, cfg: &Config
         .unwrap_or(true)
 }
 
+/// The variable that turns the terminal app's look for a newer release and its update notice off. It never had an earlier name.
+pub const NO_UPDATE_NOTICE: &str = "HAMH_NO_UPDATE_NOTICE";
+
+/// Whether the terminal app may look for a newer release and show the update notice: `ui.update_notice` of the file, on unless it says
+/// `false`, and never when [`NO_UPDATE_NOTICE`] is `1`, `true`, `yes` or `on` in any case (the variable can only switch the look off).
+/// This is the one place that holds the default.
+pub fn update_notice_on(env: &dyn Fn(&str) -> Option<String>, cfg: &Config) -> bool {
+    if update_notice_forced_off(env) {
+        return false;
+    }
+    cfg.ui
+        .as_ref()
+        .and_then(|u| u.update_notice)
+        .unwrap_or(UPDATE_NOTICE_DEFAULT)
+}
+
+/// What `ui.update_notice` is when the file does not set it.
+pub const UPDATE_NOTICE_DEFAULT: bool = true;
+
+/// Whether [`NO_UPDATE_NOTICE`] is on in `env`: the layer `ham config` names when the variable, not the file, switches the look off.
+pub fn update_notice_forced_off(env: &dyn Fn(&str) -> Option<String>) -> bool {
+    env(NO_UPDATE_NOTICE).is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 // ---- the reader ------------------------------------------------------------------------------------------------------------------
 
 /// What reading `config.toml` found: the keys it could read, the findings with their lines, and whether the file came from a newer `ham`.
@@ -852,7 +892,7 @@ impl ConfigRead {
             .map(Finding::render)
             .collect();
         format!(
-            "this file was written by a newer ham (configVersion {version}) and holds keys this ham does not know that may steer a run:\n{}\nUpdate ham, or remove those keys",
+            "this file was written by a newer ham (configVersion {version}) and holds keys this ham does not know that may steer a run:\n{}\nUpdate ham (run ham update), or remove those keys",
             lines.join("\n")
         )
     }
@@ -1591,7 +1631,7 @@ pub fn read_config(text: &str) -> ConfigRead {
                         .find(|(k, _)| name_of(k) == "configVersion")
                         .map_or(0, |(k, _)| k.span().start);
                     let message = format!(
-                        "written by a newer ham (configVersion {version}); this ham reads the keys it knows and changes nothing in the file"
+                        "written by a newer ham (configVersion {version}); this ham reads the keys it knows and changes nothing in the file; update ham (run ham update) to change it"
                     );
                     r.add(
                         Severity::Warning,

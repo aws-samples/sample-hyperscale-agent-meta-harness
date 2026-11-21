@@ -4,16 +4,21 @@
 //! The start request carries `continueFrom { runId, headSha }`; control-api stores the head it resolved.
 //!
 //! What agentd adds is one tripwire in `on_startup`, before the engine starts and before any prompt (an `Err` ends the run `stopped_setup_failed`,
-//! "did not start"): the restored HEAD equals the stored `headSha` and the history is whole (a shallow history breaks the merge base, the diff and
-//! the review of the follow-up). A restored repository that is at another commit than the one the user was shown must never be worked on.
+//! "did not start"): the restored HEAD equals the stored `headSha`, or is exactly the commit the harness makes on it before the first prompt,
+//! and the history is whole (a shallow history
+//! breaks the merge base, the diff and the review of the follow-up). A restored repository that is at another commit than the one the user
+//! was shown, or than that one commit of the harness on it, must never be worked on. The harness commit is made in the repository step,
+//! long before this hook runs, so the hook is told the head that step found and the commit it computes for the seed; a second invocation
+//! that finds the checkout at that commit before the file below was written starts as well.
 //! A second invocation of the same run on the same VM finds the work tree where the first attempt left it: after the first passage a file in the
 //! configuration directory says so, and then HEAD may also be a commit with the seed in its history (`resumed_check`).
 //! One `turn.progress` event, kind `continue-from`, records the source run and the seed commit. The review target of the run is its own base
-//! (`summary.json` git.baseSha is the seed, because the work tree is created from the seed), so the seed stays a separate fact from what the
+//! (`summary.json` git.baseSha is the seed, or the commit `earlier_records` made on it), so the seed stays a separate fact from what the
 //! run changes.
 //!
 //! Not checked here, on purpose: a clean work tree. The driver sets repository hook paths aside before the module runs, which makes a clean
 //! tree look dirty. And the prompt: the engine receives the user's text as typed (invariant 1); nothing about the earlier run is added to it.
+//! The subject and body of the `earlier_records` commit are the one text about the earlier run that the engine can read in the history.
 //!
 //! The module has no setting: it acts only on a request that carries `continueFrom`.
 
@@ -65,6 +70,28 @@ fn not_the_seed(head: &str, head_sha: &str) -> String {
 pub async fn seed_check(repo: &Path, head_sha: &str) -> Result<(), String> {
     let head = head_of(repo).await?;
     if head != head_sha {
+        return Err(not_the_seed(&head, head_sha));
+    }
+    whole_history(repo).await
+}
+
+/// The check of a fresh restore. `found` is the head the repository step of the session found (`None` when the caller did not
+/// say) and `made` is the commit the harness computes for the seed (`None` when it computes none). The head that step found, and HEAD now,
+/// are each the seed or exactly `made`; the history is whole. Any other commit is a restore that went wrong.
+pub async fn fresh_check(
+    repo: &Path,
+    head_sha: &str,
+    found: Option<&str>,
+    made: Option<&str>,
+) -> Result<(), String> {
+    let accepted = |sha: &str| sha == head_sha || made == Some(sha);
+    if let Some(found) = found
+        && !accepted(found)
+    {
+        return Err(not_the_seed(found, head_sha));
+    }
+    let head = head_of(repo).await?;
+    if !accepted(&head) {
         return Err(not_the_seed(&head, head_sha));
     }
     whole_history(repo).await
@@ -124,7 +151,15 @@ impl ContinueFromHook {
         if ctx.env.turn > 1 || std::fs::read_to_string(&seeded).is_ok_and(|t| t == wanted) {
             resumed_check(ctx.repo, head).await?;
         } else {
-            seed_check(ctx.repo, head).await?;
+            // A fresh restore is at the seed, or at exactly the commit the harness computes for the seed: the one this invocation made
+            // in the repository step, or the one an invocation before it made when it ended before the file below was written.
+            fresh_check(
+                ctx.repo,
+                head,
+                ctx.found_head.as_deref(),
+                ctx.earlier_records_commit.as_deref(),
+            )
+            .await?;
             let _ = std::fs::remove_file(&seeded);
             if std::fs::write(&seeded, &wanted).is_ok() {
                 let _ = std::fs::set_permissions(&seeded, std::fs::Permissions::from_mode(0o444));

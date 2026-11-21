@@ -23,6 +23,10 @@
 //! The row `run.recover_after_stop` is the switch of reading a stopped session's storage back before the next session starts, and of acting on the worker's notice
 //! that its session is being ended. It is on unless the file says `false`, which is the only value that reaches a request (the `recoverAfterStop` member).
 //!
+//! The row `run.remove_earlier_records` is the switch of taking the lifecycle records of the run a follow-up continues out of the work tree before the first
+//! prompt. It is on unless the file says `false`, which is the only value that reaches a request (the `removeEarlierRecords` member), and only the request of a
+//! follow-up. The key can only keep the records: whether they go is the service's decision, from how the earlier run ended.
+//!
 //! The first nine rows are the keys of v4.02, with the names, types, ranges, environment variables and spellings they always had. The
 //! six after them (`run.goal`, `run.rules`, `run.skills`, `research.enabled`, `ui.notify`, `ui.bell`) and the ones added later (`ui.mascot`,
 //! `run.report_command_minutes`) live in the tables `[run]`,
@@ -110,11 +114,13 @@ pub enum Key {
     RunCopyEverySeconds,
     RunDeliveryNote,
     RunRecoverAfterStop,
+    UiUpdateNotice,
+    RunRemoveEarlierRecords,
 }
 
 impl Key {
     /// Every key, in registry order.
-    pub const ALL: [Key; 50] = [
+    pub const ALL: [Key; 52] = [
         Key::ApiEndpoint,
         Key::Region,
         Key::AwsProfile,
@@ -165,6 +171,8 @@ impl Key {
         Key::RunCopyEverySeconds,
         Key::RunDeliveryNote,
         Key::RunRecoverAfterStop,
+        Key::UiUpdateNotice,
+        Key::RunRemoveEarlierRecords,
     ];
 
     /// The row of this key.
@@ -348,12 +356,21 @@ impl Key {
                     .get_or_insert_with(RunTable::default)
                     .recover_after_stop,
             ),
+            Key::RunRemoveEarlierRecords => Slot::Bool(
+                &mut cfg
+                    .run
+                    .get_or_insert_with(RunTable::default)
+                    .remove_earlier_records,
+            ),
             Key::RunProviderSharing => Slot::Bool(
                 &mut cfg
                     .run
                     .get_or_insert_with(RunTable::default)
                     .provider_sharing,
             ),
+            Key::UiUpdateNotice => {
+                Slot::Bool(&mut cfg.ui.get_or_insert_with(UiTable::default).update_notice)
+            }
         }
     }
 }
@@ -668,7 +685,7 @@ const fn row(
 }
 
 /// The registry, in the order of [`Key`].
-pub static ROWS: [Row; 50] = [
+pub static ROWS: [Row; 52] = [
     Row {
         applies: Applies::Restart,
         security: true,
@@ -1424,7 +1441,7 @@ pub static ROWS: [Row; 50] = [
             "update_source",
             Kind::Text,
             "Update source",
-            "The git repository ham update reads the newest version from: the head of its main branch, its VERSION file and its CHANGELOG.md. An https:// URL, or a file:/// path to a local mirror. The word off turns ham update off; it then makes no network call.",
+            "The git repository ham update reads the newest version from: the head of its main branch, its VERSION file and its CHANGELOG.md. An https:// URL, or a file:/// path to a local mirror. The word off turns ham update off; it then makes no network call. The terminal app looks at the same repository for a newer release (ui.update_notice).",
         )
     },
     Row {
@@ -1495,6 +1512,38 @@ pub static ROWS: [Row; 50] = [
             Kind::Bool,
             "Read back on stop",
             "On, when a session of a run is stopped from outside or stops answering, the service reads that session's own storage back before the next session starts. It uses those files only when the lineage and content checks pass; when it does not, ham pull <runId> --read-back <n> downloads them. A stop the worker hears of ends the wait early. A session on Instances compute keeps no storage of that kind: it gets no read, and its notice does not end the wait. Off, the service makes no read and does not act on that notice. It calls a stopped session lost after 600 seconds and starts the next session from the last saved copy, as in releases before this one. The saved copies are kept either way. A stage that predates the switch refuses a start with it off, and ham names the key. A run that ham resume or /retry starts keeps the setting of the run it comes from.",
+        )
+    },
+    Row {
+        default: DefaultValue::Bool(crate::config::UPDATE_NOTICE_DEFAULT),
+        default_text: "on",
+        env: crate::config::NO_UPDATE_NOTICE,
+        order: Order::EnvForcesOff,
+        applies: Applies::Now,
+        since: 1,
+        group: Group::Interface,
+        ..row(
+            Key::UiUpdateNotice,
+            ("ui", "update_notice"),
+            "ui.update_notice",
+            Kind::Bool,
+            "Update notice",
+            "Look for a newer release when the terminal app starts and once a day while it stays open (again after an hour when a look failed), and show a notice beside the version tag when ham update has something to install. The look is one git call that asks update_source for the names of its branches and tags. ham writes no file for it and sends nothing of its own; a source that asks for a login gets the login that ~/.netrc holds for it, as with ham update. HAMH_NO_UPDATE_NOTICE=1 turns it off, and so does update_source = off. A change made on the Settings screen applies at once; a change made any other way applies with the next look or the next start of the terminal app.",
+        )
+    },
+    Row {
+        default: DefaultValue::Bool(true),
+        default_text: "on",
+        wire: Some("removeEarlierRecords"),
+        since: 1,
+        group: Group::Limits,
+        ..row(
+            Key::RunRemoveEarlierRecords,
+            ("run", "remove_earlier_records"),
+            "run.remove_earlier_records",
+            Kind::Bool,
+            "Earlier records",
+            "On, a follow-up of a run that reported done (ham continue, or a follow-up typed on a finished run) starts without the lifecycle records of that run: before the first prompt the harness takes the goal card, the run log, the red records and the research notes that runs wrote under .ham out of the work tree in a commit of its own. They stay in the history of the code and in the earlier run's zip. Off, they stay where they are and the engine may take them for its own. A follow-up of a run that did not report done, ham resume, a records folder that .ham/records names and a file you committed yourself always keep them.",
         )
     },
 ];

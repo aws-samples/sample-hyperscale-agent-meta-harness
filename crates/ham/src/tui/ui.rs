@@ -49,6 +49,10 @@ const RUNS_ERROR_ROWS: usize = 4;
 /// The rows the Runs table keeps under the panel of a notice: its borders, its header and two runs.
 const RUNS_PANEL_TABLE: usize = 5;
 
+/// The most rows the sentence of a click on the update notice takes under the screen, and never more than a third of the
+/// frame's rows. The sentence for the default source is two rows at 80 columns, and three when the link opener fails.
+const UPDATE_SAID_ROWS: usize = 4;
+
 fn s(text: &str) -> String {
     sanitize_line(text)
 }
@@ -231,7 +235,20 @@ impl App {
         // Every draw makes the hit map again; the draw functions push a region for each box, row, fold, chip and pane they put on screen.
         self.hits.borrow_mut().begin(frame);
         // On a tall, wide terminal the screens lay themselves out below the title band (`head.rs`); otherwise in the whole frame.
-        let split = head::split(frame, self.head);
+        let mut split = head::split(frame, self.head);
+        // The sentence of a click on the update notice has rows of its own under the screen, wrapped to the width. The band is
+        // the one of the whole frame, and the screens and the overlays lay themselves out in the rows above the sentence, as on a
+        // terminal that many rows shorter: the sentence is whole on every screen and hides nothing.
+        let said = self.update_said().map_or_else(Vec::new, |text| {
+            update_said_lines(
+                &s(text),
+                usize::from(frame.width),
+                UPDATE_SAID_ROWS.min(usize::from(frame.height / 3)),
+            )
+        });
+        let said_rows = u16::try_from(said.len()).unwrap_or(0);
+        split.area.height = split.area.height.saturating_sub(said_rows);
+        split.rest.height = split.rest.height.saturating_sub(said_rows);
         match self.screen() {
             Screen::Runs => self.draw_runs(f, &split),
             Screen::Composer => {
@@ -250,16 +267,41 @@ impl App {
         // The mascot's head stands at the left of the band, over whatever the screen and the explorer left there, under the box below. Its smoke
         // is in the frame the app counted, the one of the picture in the empty table.
         head::draw_band(f, frame, &split, self.head, self.mascot_frame());
-        // The open-anything box is drawn over whatever screen it was opened on.
-        self.draw_openbox(f);
-        // The version tag is drawn last, over row 0 of whatever is up.
-        super::version_tag::overlay_at(
+        // The open-anything box is drawn over whatever screen it was opened on, in the rows above the sentence of a click on the
+        // update notice, so the box keeps its frame.
+        self.draw_openbox(
+            f,
+            Rect::new(
+                frame.x,
+                frame.y,
+                frame.width,
+                frame.height.saturating_sub(said_rows),
+            ),
+        );
+        if said_rows > 0 {
+            let rows = Rect::new(
+                frame.x,
+                frame.bottom().saturating_sub(said_rows),
+                frame.width,
+                said_rows,
+            );
+            f.render_widget(Clear, rows);
+            f.render_widget(Paragraph::new(said), rows);
+        }
+        // The version tag is drawn last, over row 0 of whatever is up, with the update notice left of it when one is due. The
+        // notice is a region of the mouse, pushed last, so it takes the click whatever lies under it. It names no key: its click opens
+        // a web page, and the update itself is `ham update` typed in a shell.
+        let words = self.update_notice_words();
+        if let Some(rect) = super::version_tag::overlay_with(
             f.buffer_mut(),
             frame,
             split.left,
             crate::version::CLIENT,
             crate::version::backend().as_deref(),
-        );
+            words.as_ref(),
+        ) {
+            self.hits.borrow_mut().push(rect, Target::Update, "");
+        }
     }
 
     /// The words of the Runs note for a failed read: `cannot list runs: <error>`. `None` while a notice or the mouse hint holds the note, or
@@ -933,7 +975,12 @@ impl App {
             footer: &footer,
             box_title: &title,
             focused: typing && !answering,
-            header_reserve: super::version_tag::reserve_at(area.width, split.left),
+            // The header gives up its tail for the update notice as it does for the tag.
+            header_reserve: super::version_tag::reserve_with(
+                area.width,
+                split.left,
+                self.update_notice_words().as_ref(),
+            ),
             name: name.as_ref().map(|(text, ai)| (text.as_str(), *ai)),
             tags: &shown_tags,
         };
@@ -2082,6 +2129,28 @@ fn clipped(lines: Vec<String>, n: usize, width: usize) -> Vec<Line<'static>> {
         *last = cut(&format!("{last}…"), width);
     }
     out.into_iter().map(Line::from).collect()
+}
+
+/// The rows of the sentence of a click on the update notice: `text` wrapped at word boundaries to `width` columns, on at most
+/// `rows` rows. A sentence that needs more rows keeps how to update whole on its last rows (every sentence of a click ends with
+/// `ham_core::update::TO_UPDATE`), and what stands before it is cut and ends in an ellipsis: a long address of the update source
+/// never pushes the command off the screen.
+fn update_said_lines(text: &str, width: usize, rows: usize) -> Vec<Line<'static>> {
+    let whole = wrap(text, width);
+    if whole.len() <= rows {
+        return whole.into_iter().map(Line::from).collect();
+    }
+    let how = ham_core::update::TO_UPDATE;
+    let Some(before) = text.strip_suffix(how) else {
+        return clipped(whole, rows, width);
+    };
+    let how_rows = wrap(how, width);
+    if how_rows.len() >= rows {
+        return clipped(how_rows, rows, width);
+    }
+    let mut out = clipped(wrap(before.trim_end(), width), rows - how_rows.len(), width);
+    out.extend(how_rows.into_iter().map(Line::from));
+    out
 }
 
 /// `Files: a b c (+N more)`: as many of the question's paths as fit, and how many more the run changed.

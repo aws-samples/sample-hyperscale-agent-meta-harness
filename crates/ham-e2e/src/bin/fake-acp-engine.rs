@@ -50,6 +50,9 @@
 //!   answer: a usage figure, a last word) are written `n` milliseconds apart, the first `n` ms after the response. Off by default (the whole
 //!   reply is written at once). A loaded host spreads such lines out; the knob does it on purpose, so a test can prove an ordering that does
 //!   not depend on the speed of the machine. `tests/fake_acp_late_gap.rs` pins it.
+//! - `FAKE_ACP_STEP_FILE=<path>`: the messages of the replies to prompts are written one step at a time. The engine writes its n-th such
+//!   message (n counts from 1 over the process) only once the file holds a number of at least n; a file that is missing or holds no
+//!   number allows none. A test writes the number and so decides how far a reply has come when something else happens. Off by default.
 //!
 //! The goal loop: a scenario directory with a `goal.json` makes the engine behave like the real one with the goal
 //! plugin and the harness's observer placed in its configuration directory: the first prompt claims the goal agentd wrote, and the engine then
@@ -219,6 +222,21 @@ fn outcome_of(resp: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string()
+}
+
+/// `FAKE_ACP_STEP_FILE`: returns once the file at `file` holds a number of at least `n`. A file that is missing or holds no number
+/// allows no step.
+fn wait_for_step(file: &Path, n: u64) {
+    loop {
+        let allowed = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if allowed >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn apply_edits(workspace: &Path, msg: &Value, log: &mut Log) {
@@ -878,6 +896,9 @@ fn main() -> ExitCode {
     let late_gap: Option<Duration> = env_nonempty("FAKE_ACP_LATE_GAP_MS")
         .and_then(|v| v.parse().ok())
         .map(Duration::from_millis);
+    // `FAKE_ACP_STEP_FILE`: the messages of the replies to prompts written so far.
+    let step_file: Option<PathBuf> = env_nonempty("FAKE_ACP_STEP_FILE").map(PathBuf::from);
+    let mut steps_written: u64 = 0;
     // The id the current script's handshake names, the id the client was told for the current session, the id of the latest prompt of
     // that session, and what the session before still says (sent with the next prompt).
     let mut script_sid = String::new();
@@ -1236,6 +1257,11 @@ fn main() -> ExitCode {
         // With FAKE_ACP_LATE_GAP_MS the messages that follow the prompt's response come one gap apart.
         let mut after_response = false;
         for msg in out {
+            if is_prompt && let Some(file) = &step_file {
+                steps_written += 1;
+                let _ = stdout.flush();
+                wait_for_step(file, steps_written);
+            }
             if let Some(gap) = late_gap.filter(|_| after_response) {
                 let _ = stdout.flush();
                 std::thread::sleep(gap);

@@ -443,12 +443,28 @@ async fn a_source_run_with_no_bundle_is_409_though_a_get_of_the_absent_key_is_40
 #[tokio::test]
 async fn a_present_bundle_is_listed_then_read_once() {
     let w = world_with_source("complete");
+    // The start of a follow-up asks once for the evidence of the source run. The role may not list that key, so the store answers
+    // 403 for an object that is not there. The follow-up starts all the same, and its stored request holds no member.
+    let evidence = harness_protocol::direct::s3::evidence_key(SOURCE);
     w.no_list_permission
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let (status, v) = start(&w, "k-1", ME, &with_continue(json!({"runId": SOURCE}))).await;
     assert_eq!(status, 201, "{v}");
     assert_eq!(w.count("exists "), 1);
-    assert_eq!(w.count("read_prefix"), 1);
+    let bundle = s3::verified_bundle_key(SOURCE);
+    assert_eq!(w.count(&format!("read_prefix {bundle}")), 1);
+    assert_eq!(
+        w.count("read_prefix"),
+        1,
+        "the bundle's header, nothing else"
+    );
+    assert_eq!(w.count(&format!("read_or_refused {evidence}")), 1);
+    assert_eq!(w.count("read_or_refused"), 1);
+    let stored: Value = serde_json::from_slice(
+        &w.objects.lock().unwrap()[&s3::request_key(v["runId"].as_str().unwrap())],
+    )
+    .unwrap();
+    assert!(stored.get("removeEarlierRecords").is_none(), "{stored}");
 }
 
 #[tokio::test]

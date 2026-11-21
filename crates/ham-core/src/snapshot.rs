@@ -10,6 +10,10 @@
 //! once by the worker of the read): as the run's newest copy when the service chose them and no later session has saved one, and for
 //! one named session with `?readBack=<n>`, used or not. The answer then says `recovered` and names the `session`.
 //!
+//! A saved copy may hold what the run changed and leave out what the bundle the run started from holds; its header then names
+//! the commits it needs. The route answers such a copy with a second object, [`SnapshotBase`] (the member `base`), for a client that
+//! asked for the copy in parts, and tells a client that takes one file to update.
+//!
 //! `control-api` runs [`bundle_head`] on the stored bundle's first [`HEADER_BYTES`] bytes; `ham` runs [`verify_download`] on what it
 //! downloaded. A presigned URL is a bearer capability: [`SnapshotDownload`] hides it from `Debug`, and nothing logs it.
 
@@ -17,10 +21,12 @@ use harness_protocol::common::is_utc_timestamp;
 use harness_protocol::goal::GoalStatus;
 use serde::{Deserialize, Serialize};
 
-/// The ref agentd bundles.
-pub const SNAPSHOT_REF: &str = "refs/heads/snapshot";
-/// The bytes of the bundle read to find its header; a header that does not end inside them is refused.
-pub const HEADER_BYTES: u64 = 8192;
+// The header functions live in `harness_protocol::bundle_header`, so that the worker and the delivery read a header with the
+// same code as the service and the client; they are re-exported here, where the service and the client have always imported them.
+pub use harness_protocol::bundle_header::{
+    BundleError, HEADER_BYTES, SNAPSHOT_REF, bundle_head, bundle_head_of, is_object_id,
+};
+
 /// The most bytes of `snapshot.json` read; agentd writes about 150.
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 /// A bundle written less than this long ago that disagrees with its record is a pair being saved; an older one is a record that lags.
@@ -40,34 +46,6 @@ pub enum SnapshotError {
     Size { expected: u64, actual: u64 },
     #[error("the bundle holds commit {actual}; the route said {expected}")]
     Head { expected: String, actual: String },
-}
-
-/// Why a bundle header cannot be trusted.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum BundleError {
-    #[error("not a git bundle (v2 or v3)")]
-    NotABundle,
-    #[error("the header does not end within the bytes read")]
-    Truncated,
-    #[error("the bundle has no {SNAPSHOT_REF}")]
-    NoSnapshotRef,
-    /// [`bundle_head_of`]: no line names the ref that was asked for.
-    #[error("the bundle does not name the ref asked for")]
-    MissingRef,
-    #[error("the bundle names {SNAPSHOT_REF} more than once")]
-    Ambiguous,
-    /// [`bundle_head_of`]: more than one line names the ref that was asked for (named here, so the words are about the right ref).
-    #[error("the bundle names {0} more than once")]
-    AmbiguousRef(String),
-    /// A header line that does not start with a full object id. It holds the length of the offending text only: the bytes are the
-    /// worker's, and an error is logged.
-    #[error("a header line does not start with a full object id")]
-    BadObjectId(usize),
-}
-
-/// A full git object id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits. An abbreviation cannot be compared with a header's ids.
-pub fn is_object_id(s: &str) -> bool {
-    matches!(s.len(), 40 | 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `snapshot.json` as agentd writes it.
@@ -132,59 +110,6 @@ impl SnapshotRecord {
     }
 }
 
-/// The commit a bundle's header names for [`SNAPSHOT_REF`]. `prefix` is the first bytes of the bundle (at least up to the blank line that
-/// ends the header; the pack may be cut anywhere). A v3 header's `@capability` lines and the `-<id> subject` prerequisite lines are
-/// skipped; exactly one `<id> refs/heads/snapshot` line must remain.
-pub fn bundle_head(prefix: &[u8]) -> Result<String, BundleError> {
-    bundle_head_of(prefix, SNAPSHOT_REF).map_err(|e| match e {
-        BundleError::MissingRef => BundleError::NoSnapshotRef,
-        BundleError::AmbiguousRef(_) => BundleError::Ambiguous,
-        other => other,
-    })
-}
-
-/// The commit a bundle's header names for `wanted` (a full ref name such as `refs/heads/harness/<runId>`); everything else is as for
-/// [`bundle_head`]: the prefix must hold the whole header, and exactly one line must name the ref.
-pub fn bundle_head_of(prefix: &[u8], wanted: &str) -> Result<String, BundleError> {
-    let mut lines: Vec<&[u8]> = prefix.split(|b| *b == b'\n').collect();
-    // The last piece has no newline after it: the empty rest, or a line the prefix cut in two. Neither is read.
-    lines.pop();
-    let mut it = lines.into_iter();
-    match it.next() {
-        Some(b"# v2 git bundle") | Some(b"# v3 git bundle") => {}
-        None if prefix.starts_with(b"# v") => return Err(BundleError::Truncated),
-        _ => return Err(BundleError::NotABundle),
-    }
-    let mut found: Option<String> = None;
-    let mut ended = false;
-    for line in it {
-        if line.is_empty() {
-            ended = true;
-            break;
-        }
-        if line[0] == b'@' || line[0] == b'-' {
-            continue;
-        }
-        let text = String::from_utf8_lossy(line);
-        let Some((oid, name)) = text.split_once(' ') else {
-            return Err(BundleError::BadObjectId(text.len()));
-        };
-        if !is_object_id(oid) {
-            return Err(BundleError::BadObjectId(oid.len()));
-        }
-        if name == wanted {
-            if found.is_some() {
-                return Err(BundleError::AmbiguousRef(wanted.to_string()));
-            }
-            found = Some(oid.to_string());
-        }
-    }
-    if !ended {
-        return Err(BundleError::Truncated);
-    }
-    found.ok_or(BundleError::MissingRef)
-}
-
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -229,6 +154,32 @@ pub struct SnapshotDownload {
     /// The session whose storage the copy was read back from; present with `recovered`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<u32>,
+    /// The copy holds what the run changed and needs the bundle the run started from, which is this object: download both,
+    /// the base first for whoever puts them together. Present only for such a copy and only when the request said `parts=1`; absent
+    /// for a copy that clones alone and from a service older than the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<SnapshotBase>,
+}
+
+/// The bundle a run started from, as the download route names it beside a copy that needs it. `url` is a bearer capability and
+/// `Debug` hides it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotBase {
+    pub url: String,
+    pub size_bytes: u64,
+    /// The ETag of the object that was read: send it as `If-Match` on every ranged GET.
+    pub etag: String,
+}
+
+impl std::fmt::Debug for SnapshotBase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotBase")
+            .field("url", &"<hidden>")
+            .field("size_bytes", &self.size_bytes)
+            .field("etag", &self.etag)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for SnapshotDownload {
@@ -248,6 +199,7 @@ impl std::fmt::Debug for SnapshotDownload {
             .field("engine", &self.engine)
             .field("recovered", &self.recovered)
             .field("session", &self.session)
+            .field("base", &self.base)
             .finish()
     }
 }

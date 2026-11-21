@@ -776,7 +776,7 @@ async fn b853_a_cancel_before_the_first_invoke_starts_nothing() {
 
 #[tokio::test]
 async fn b853_the_label_of_a_harness_ended_run_is_the_same_everywhere() {
-    // A delivered run whose detail begins with the harness's own words, and a note about the test report in front of it in the card.
+    // A delivered run whose detail begins with the harness's own words, and a note about the test report beside it in the card.
     for (detail, label) in [
         (
             format!(
@@ -807,12 +807,18 @@ async fn b853_the_label_of_a_harness_ended_run_is_the_same_everywhere() {
         .unwrap();
         let card = completed(&mem);
         assert_eq!(card["label"], json!(label), "{card}");
-        assert!(
-            card["detail"]
-                .as_str()
-                .unwrap()
-                .starts_with("the test report could not be saved"),
-            "TRIGGER PRESENT: the note stands in front of the plan's detail: {card}"
+        // The stop leads the detail of the card as it leads the plan's, and the note follows it as a sentence. A reader that
+        // checks the label against the card's own detail gets the label the card carries.
+        let said = card["detail"].as_str().unwrap();
+        assert_eq!(
+            said,
+            format!("{detail} The test report could not be saved to the run's evidence"),
+            "TRIGGER PRESENT: the card's detail holds the note beside the plan's detail: {card}"
+        );
+        assert_eq!(
+            DirectOutcome::StoppedOther.label_for(Some(said)),
+            label,
+            "{card}"
         );
     }
 

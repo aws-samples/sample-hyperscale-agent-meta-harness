@@ -185,7 +185,7 @@ async fn b823_seconds_a_stage_whose_interval_starts_at_one_minute_is_named_with_
         "run.copy_every_seconds = 30",
         "set it to 60 or more",
         "`ham config unset run.copy_every_seconds`",
-        "or update the stage",
+        "or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }
@@ -233,7 +233,7 @@ async fn b823_seconds_a_stage_that_predates_the_member_is_named_with_the_seconds
         "this stage predates the copy interval of a run",
         "run.copy_every_seconds = 45",
         "`ham config unset run.copy_every_seconds`",
-        "or update the stage",
+        "or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }
@@ -262,7 +262,7 @@ async fn b841_copy_a_stage_that_predates_the_member_is_named_with_the_key_and_th
         "this stage predates the copy interval of a run",
         "run.copy_every_minutes = 10",
         "`ham config unset run.copy_every_minutes`",
-        "or update the stage",
+        "or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }
@@ -400,7 +400,7 @@ async fn b823_seconds_whole_minutes_set_through_the_seconds_key_name_the_seconds
     let shown = e.to_string();
     for words in [
         "this stage predates the copy interval of a run",
-        "run.copy_every_seconds = 120; run `ham config unset run.copy_every_seconds` or update the stage",
+        "run.copy_every_seconds = 120; run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }
@@ -424,7 +424,7 @@ async fn b823_seconds_an_interval_set_through_the_minutes_key_names_the_minutes_
     let shown = e.to_string();
     for words in [
         "this stage predates the copy interval of a run",
-        "run.copy_every_minutes = 2; run `ham config unset run.copy_every_minutes` or update the stage",
+        "run.copy_every_minutes = 2; run `ham config unset run.copy_every_minutes` or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }
@@ -453,8 +453,8 @@ async fn b823_seconds_a_start_that_names_no_key_keeps_both_names_for_whole_minut
 #[test]
 fn b823_seconds_the_words_for_a_stage_that_predates_the_member_follow_the_key() {
     use ham::api::predates_copy_interval_words as words;
-    let seconds = "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = 600; run `ham config unset run.copy_every_seconds` or update the stage";
-    let minutes = "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = 10; run `ham config unset run.copy_every_minutes` or update the stage";
+    let seconds = "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = 600; run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)";
+    let minutes = "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = 10; run `ham config unset run.copy_every_minutes` or update the stage (run ham update; ask the person who runs the stage if that is not you)";
     assert_eq!(words(600, Some(Key::RunCopyEverySeconds)), seconds);
     assert_eq!(words(600, Some(Key::RunCopyEveryMinutes)), minutes);
     // Seconds that are no whole minutes can only come from the seconds key, whoever asks.

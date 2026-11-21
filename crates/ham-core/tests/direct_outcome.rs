@@ -351,6 +351,45 @@ fn a_run_completed_with_a_harness_stop_detail_and_no_label_gets_the_harness_stop
     assert_eq!(v.result.unwrap().label, DirectOutcome::StoppedOther.label());
 }
 
+/// The detail the service joins reads as sentences. A client that gets no label builds it from the detail, and the reason is
+/// the rule alone; the card shows the pull request fragment as the service wrote it, with a small or a capital first letter.
+#[test]
+fn b875_a_joined_detail_gives_the_label_of_the_rule_alone_and_the_card_shows_both_forms() {
+    for detail in [
+        "The harness ended the run: 5 rounds in a row changed no file. No pull request: Cline left the repository unchanged",
+        "The harness ended the run: 5 rounds in a row changed no file. The run used 3 sessions. Pull request not opened: push refused",
+    ] {
+        let v =
+            direct_run(json!({"status": "complete", "outcome": "stopped_other", "detail": detail}))
+                .view();
+        let r = v.result.unwrap();
+        assert_eq!(
+            r.label,
+            "Cline stopped: the harness ended the run (5 rounds in a row changed no file)"
+        );
+        assert_eq!(r.detail.as_deref(), Some(detail));
+    }
+    // TRIGGER PRESENT: the detail of release 5.24 put a semicolon after the period, and the reason took the whole text.
+    let v = direct_run(json!({"status": "complete", "outcome": "stopped_other",
+        "detail": "The harness ended the run: 5 rounds in a row changed no file.; no pull request: Cline left the repository unchanged"}))
+    .view();
+    assert!(
+        v.result.unwrap().label.contains("no pull request"),
+        "the label rule ends the reason at a period followed by a space"
+    );
+    for detail in [
+        "no output for 900 s; no pull request: Cline left the repository unchanged",
+        "no output for 900 s; The run used 3 sessions. No pull request: Cline left the repository unchanged",
+        "no output for 900 s; The run used 3 sessions. Pull request not opened: push refused",
+    ] {
+        let text = final_card(&view(DirectOutcome::StoppedSilence, Some(detail)), &card());
+        assert!(
+            text.lines().any(|l| l == format!("Detail    {detail}")),
+            "{text}"
+        );
+    }
+}
+
 #[test]
 fn label_and_detail_are_cleaned_of_terminal_escapes_but_not_reworded() {
     let v = direct_run(json!({"status": "complete", "outcome": "stopped_other",

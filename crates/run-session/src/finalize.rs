@@ -15,7 +15,7 @@ use crate::slices::EndReason;
 use dispatcher::endpoints::session_qualifier;
 use harness_protocol::common::Engine;
 use harness_protocol::direct::{
-    DIRECT_AGENT_ID, DirectOutcome, MAX_DIRECT_DETAIL_CHARS, head_chars,
+    DIRECT_AGENT_ID, DirectOutcome, HARNESS_STOP_PREFIX, MAX_DIRECT_DETAIL_CHARS, head_chars,
 };
 use harness_protocol::goal::{GoalStatus, ResumeMode};
 use harness_protocol::orchestration::DeliveryReadyPayload;
@@ -206,31 +206,114 @@ fn zip_notice(validated: &Value) -> Option<String> {
     harness_protocol::direct::zip_holds(&paths("workflow-file"), &paths("buildspec"))
 }
 
-/// The detail of `run.completed`: a fault of the test report's storage, Cline's specifics, then why no pull request was opened, then what
-/// the zip holds that a repository would have refused.
+/// Adds `part` to the `lead` of a detail so that the text reads as sentences. After a part that ends a sentence (a period, an
+/// exclamation mark or a question mark) the next one follows after one space, and a fragment of the harness's own (`own`: the note
+/// about the test report, the sentence about the sessions, why there is no pull request) begins with a capital letter. After any other
+/// part the joiner is "; " and the part stays as it is. A sentence end is never followed by a semicolon.
+fn push_part(lead: &mut String, part: &str, own: bool) {
+    if lead.is_empty() {
+        lead.push_str(part);
+        return;
+    }
+    if !lead.ends_with(['.', '!', '?']) {
+        lead.push_str("; ");
+        lead.push_str(part);
+        return;
+    }
+    lead.push(' ');
+    let mut rest = part.chars();
+    match rest.next() {
+        Some(first) if own => {
+            lead.extend(first.to_uppercase());
+            lead.push_str(rest.as_str());
+        }
+        _ => lead.push_str(part),
+    }
+}
+
+/// `parts` joined by the rule of [`push_part`], none of them a fragment of the harness's own: one space after a part that
+/// ends a sentence, "; " after any other. For a text that was joined with "; " throughout (the error of a turn, which agentd joins
+/// that way), `join_parts(text.split("; "))` is the same text with no sentence end followed by a semicolon.
+pub(crate) fn join_parts<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
+    let mut joined = String::new();
+    for part in parts {
+        push_part(&mut joined, part, false);
+    }
+    joined
+}
+
+/// Whether the label rule (`DirectOutcome::label_for`) finds the end of the first sentence of `stop`, a detail that begins with
+/// [`HARNESS_STOP_PREFIX`], when more text follows it: the rule ends the reason at a period followed by a space.
+fn first_sentence_ends(stop: &str) -> bool {
+    stop.ends_with('.') || stop.contains(". ")
+}
+
+/// The detail of `run.completed`: a fault of the test report's storage, Cline's specifics, how many sessions the run used, then why no
+/// pull request was opened, then what the zip holds that a repository would have refused. The parts are joined as sentences.
+///
+/// The label of the event is the plan's, and a reader checks it against this detail (`label == outcome.label_for(detail)`). So a
+/// stop by the harness leads the detail, as it leads the plan's, and its first sentence is closed with a period when more text follows:
+/// the label rule then reads the same reason from this detail as from the plan's.
 fn completed_detail(input: &FinalizeInput<'_>) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    // A fault of the test report's storage comes first: a harness fault must not be cut off by a long detail of Cline's.
-    if let Some(n) = &input.plan.report_note {
-        parts.push(n.clone());
-    }
-    if let Some(d) = &input.plan.detail {
-        parts.push(d.clone());
-    }
+    let text = |t: &'_ Option<String>| -> Option<String> {
+        t.as_deref()
+            .map(str::trim_end)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
+    let note = text(&input.plan.report_note);
+    let detail = text(&input.plan.detail);
     // A run that renewed its session says how many sessions it used. The sessions that were invoked; a plan made before
     // that count existed counts its slices.
     let sessions = input.plan.sessions.unwrap_or(input.plan.slice);
-    if sessions > 1 {
-        parts.push(format!("The run used {sessions} sessions."));
+    let sessions = (sessions > 1).then(|| format!("The run used {sessions} sessions."));
+    let pull_request = match (input.pr_failure, &input.plan.no_pr_reason) {
+        (Some(f), _) => Some(format!("pull request not opened: {}", failure_reason(f))),
+        (None, Some(r)) => Some(format!("no pull request: {r}")),
+        (None, None) => None,
+    };
+    let notice = zip_notice(input.validated);
+    let mut lead = String::new();
+    match &detail {
+        Some(stop) if stop.starts_with(HARNESS_STOP_PREFIX) => {
+            // The note about the test report and the notice are the harness's own words about a fault and about the delivery: both are
+            // kept whole, and a long detail gives way to them.
+            let kept: usize = [&note, &notice]
+                .into_iter()
+                .flatten()
+                .map(|t| t.chars().count() + 2)
+                .sum();
+            let stop = head_chars(stop, MAX_DIRECT_DETAIL_CHARS.saturating_sub(kept)).trim_end();
+            lead.push_str(stop);
+            let more =
+                note.is_some() || sessions.is_some() || pull_request.is_some() || notice.is_some();
+            if more && !first_sentence_ends(stop) {
+                lead.push('.');
+            }
+            if let Some(n) = &note {
+                push_part(&mut lead, n, true);
+            }
+        }
+        _ => {
+            // A fault of the test report's storage comes first: a harness fault must not be cut off by a long detail of Cline's.
+            if let Some(n) = &note {
+                push_part(&mut lead, n, true);
+            }
+            if let Some(d) = &detail {
+                push_part(&mut lead, d, false);
+            }
+        }
     }
-    if let Some(f) = input.pr_failure {
-        parts.push(format!("pull request not opened: {}", failure_reason(f)));
-    } else if let Some(r) = &input.plan.no_pr_reason {
-        parts.push(format!("no pull request: {r}"));
+    for part in [&sessions, &pull_request].into_iter().flatten() {
+        push_part(&mut lead, part, true);
     }
-    let lead = (!parts.is_empty()).then(|| parts.join("; "));
-    let Some(notice) = zip_notice(input.validated) else {
-        return lead.map(|l| head_chars(&l, MAX_DIRECT_DETAIL_CHARS).to_string());
+    let lead = (!lead.is_empty()).then_some(lead);
+    let Some(notice) = notice else {
+        return lead.map(|l| {
+            head_chars(&l, MAX_DIRECT_DETAIL_CHARS)
+                .trim_end()
+                .to_string()
+        });
     };
     // The notice is the harness's own sentence about the delivery and is kept whole: the text before it gives way. It comes last, because
     // the label reads the start of the detail.
@@ -330,8 +413,8 @@ where
         }
     }
     deps.store
-        // The label is the plan's. The detail of this event may begin with a note about the test report, and a label built from
-        // it would not name the reason of a run that the harness ended.
+        // The label is the plan's. It is also the label of this event's own detail, because `completed_detail` puts a
+        // stop by the harness first, in front of a note about the test report, so the label rule reads the same reason from both.
         .put_event(&events::run_completed_as(
             run_id,
             ms,
@@ -548,7 +631,12 @@ fn blocked_reason_raw(state: &Value) -> String {
                 }
             })
             .collect();
-        return format!("bundle validation failed: {}", parts.join("; "));
+        // The violations are joined as the parts of a detail are: the words of a violation that end a sentence (a delivered
+        // copy of third-party text) are followed by one space, any other by "; ".
+        return format!(
+            "bundle validation failed: {}",
+            join_parts(parts.iter().map(String::as_str))
+        );
     }
     let session_failure = state.get("session").and_then(|s| s.get("failure"));
     let session = failure(session_failure);

@@ -828,6 +828,7 @@ impl Mem {
             snapshot_every_s: None,
             delivery_note: None,
             recover_after_stop: None,
+            remove_earlier_records: None,
         };
         let body = serde_json::to_vec(&request).unwrap();
         self.0

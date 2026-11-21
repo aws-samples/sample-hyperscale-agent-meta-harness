@@ -236,15 +236,11 @@ pub(crate) async fn git_bytes_with_env(
     cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
         .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
         .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
-        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
-        .kill_on_drop(true);
+        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| WsError::Git(format!("git {}: {e}", args.first().unwrap_or(&""))))?;
+    let out = output_in_own_group(cmd, args).await?;
     if !out.status.success() {
         return Err(WsError::Git(format!(
             "git {}: {}",
@@ -255,6 +251,69 @@ pub(crate) async fn git_bytes_with_env(
     Ok(out.stdout)
 }
 
+/// Ends the process group of a git call when the call is dropped before git has ended. `kill_on_drop` ends the one process agentd
+/// started; a git that started a helper of its own (`git bundle create` starts `git pack-objects`) left that helper running when the
+/// copy task was aborted or the copy of the end was given up, and on a large repository it packed on for seconds beside the end of the
+/// session. [`Self::disarm`] is called once git has ended, so a group id that the system gives out again is never signalled.
+struct KillGroup(Option<rustix::process::Pid>);
+
+impl KillGroup {
+    /// Guards the group of `child`, which was started in a process group of its own (`process_group(0)`).
+    fn of(child: &tokio::process::Child) -> Self {
+        Self(
+            child
+                .id()
+                .and_then(|pid| i32::try_from(pid).ok())
+                .and_then(rustix::process::Pid::from_raw),
+        )
+    }
+
+    /// The group, while the guard is armed.
+    fn group(&self) -> Option<rustix::process::Pid> {
+        self.0
+    }
+
+    /// git has ended: nothing is left to end.
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        if let Some(group) = self.0.take() {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Runs `cmd`, a git call, in a process group of its own and returns its whole output. When the call is dropped before git has ended
+/// (the copy task was aborted, the copy of the end was given up), git and every helper it started are ended ([`KillGroup`]).
+async fn output_in_own_group(
+    mut cmd: Command,
+    args: &[&str],
+) -> Result<std::process::Output, WsError> {
+    let what = args.first().copied().unwrap_or("");
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        // An aborted snapshot must not leave its git behind.
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
+    let mut guard = KillGroup::of(&child);
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| WsError::Git(format!("git {what}: {e}")));
+    if out.is_ok() {
+        guard.disarm();
+    }
+    out
+}
+
 async fn harness_git(
     mut cmd: Command,
     args: &[&str],
@@ -263,16 +322,11 @@ async fn harness_git(
     cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
         .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
         .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
-        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
-        // An aborted snapshot must not leave its git behind.
-        .kill_on_drop(true);
+        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| WsError::Git(format!("git {}: {e}", args.first().unwrap_or(&""))))?;
+    let out = output_in_own_group(cmd, args).await?;
     if !out.status.success() {
         return Err(WsError::Git(format!(
             "git {}: {}",
@@ -315,10 +369,8 @@ pub(crate) async fn git_with_env_until(
     let mut child = cmd
         .spawn()
         .map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
-    let group = child
-        .id()
-        .and_then(|pid| i32::try_from(pid).ok())
-        .and_then(rustix::process::Pid::from_raw);
+    // Armed from here on, so a look whose future is dropped (the copy task was aborted) ends the whole group too.
+    let mut guard = KillGroup::of(&child);
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let ended = {
@@ -342,13 +394,17 @@ pub(crate) async fn git_with_env_until(
     };
     let Some((status, out, err)) = ended else {
         // The whole group: git starts helpers of its own.
-        if let Some(group) = group {
+        if let Some(group) = guard.group() {
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
         let _ = child.start_kill();
         let gone = tokio::time::timeout(GIT_END_LIMIT, child.wait())
             .await
             .is_ok();
+        if gone {
+            // git was waited for: its group id may be given out again.
+            guard.disarm();
+        }
         return Err(WsError::Git(format!(
             "git {what}: given up before it had ended{}",
             if gone {
@@ -359,6 +415,8 @@ pub(crate) async fn git_with_env_until(
         )));
     };
     let status = status.map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
+    // git has ended and was waited for.
+    guard.disarm();
     if !status.success() {
         return Err(WsError::Git(format!(
             "git {what}: {}",
@@ -392,6 +450,32 @@ pub(crate) async fn git_plumbing(
     cmd.output()
         .await
         .map_err(|e| WsError::Git(format!("git {}: {e}", args.first().unwrap_or(&""))))
+}
+
+/// [`git_plumbing`] with the file `input` as the standard input of the call. The
+/// file is opened by agentd and handed to git as an open file: no shell and no pipe that could fill.
+pub(crate) async fn git_plumbing_fed(
+    dir: &Path,
+    args: &[&str],
+    vars: &[(&str, &str)],
+    input: &Path,
+) -> Result<std::process::Output, WsError> {
+    let what = args.first().copied().unwrap_or("");
+    let file = std::fs::File::open(input)
+        .map_err(|e| WsError::Git(format!("git {what}: the input cannot be read: {e}")))?;
+    let mut cmd = git_command(dir, args);
+    cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
+        .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
+        .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
+        .stdin(std::process::Stdio::from(file))
+        .kill_on_drop(true);
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
+    cmd.output()
+        .await
+        .map_err(|e| WsError::Git(format!("git {what}: {e}")))
 }
 
 /// Names that make git read its configuration, objects or refs from another directory when they sit inside `.git`. A linked worktree has them
@@ -504,21 +588,85 @@ pub async fn prepare_from_bundle(
     agent: &str,
     bundle: &Path,
 ) -> Result<Worktree, WsError> {
-    prepare_from_bundle_state(workspace_root, run, agent, bundle)
+    prepare_from_bundle_state(workspace_root, run, agent, bundle, None)
         .await
         .map(|(wt, _)| wt)
 }
 
+/// Whether an earlier invocation of the run left its checkout on this machine. [`prepare_from_bundle_state`] then returns that
+/// checkout as it is and restores nothing, whatever bundle it is given.
+pub fn checkout_left(workspace_root: &Path, run: &str, agent: &str) -> bool {
+    layout(workspace_root, run, agent)
+        .repo
+        .join(".git")
+        .exists()
+}
+
+/// The folder a restore that takes the base first is made in, beside the place of the checkout. It holds a repository only
+/// while such a restore is being made, or after one failed or was cut.
+const RESTORE_STAGE: &str = "repo.restoring";
+
+/// The three steps of a restore that takes the base first, in `stage`: the clone of `base` without a checkout, the fetch of every
+/// ref of `bundle` under `refs/restore/`, and the checkout of the bundle's first ref on `branch`.
+async fn restore_above_base(
+    root: &Path,
+    stage: &Path,
+    branch: &str,
+    bundle: &Path,
+    base: &Path,
+) -> Result<(), WsError> {
+    let (base_arg, bundle_arg, stage_arg) = (
+        base.display().to_string(),
+        bundle.display().to_string(),
+        stage.display().to_string(),
+    );
+    git(
+        root,
+        &["clone", "-q", "--no-checkout", &base_arg, &stage_arg],
+    )
+    .await?;
+    git(
+        stage,
+        &[
+            "fetch",
+            "-q",
+            "--no-tags",
+            &bundle_arg,
+            "+refs/*:refs/restore/*",
+        ],
+    )
+    .await?;
+    let heads = git(stage, &["bundle", "list-heads", &bundle_arg]).await?;
+    let head = heads
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| WsError::Git("bundle has no refs".into()))?
+        .to_string();
+    git(stage, &["checkout", "-q", "-B", branch, &head]).await?;
+    Ok(())
+}
+
 /// [`prepare_from_bundle`], and whether this call made the checkout: `false` is a checkout an earlier invocation of the run left, which the engine
 /// has worked in since.
+///
+/// With `base`, `bundle` is a copy of the work that holds what the run changed and needs what the bundle the run started from
+/// holds. The base is cloned first, without a checkout; the copy is fetched into it, every ref it names under `refs/restore/` (so the
+/// commit to check out is there whatever the copy calls it; nothing reads those refs afterwards); and the first ref of the copy is
+/// checked out on the harness branch, so the tree is written once. git itself checks that the base holds what the copy needs.
+///
+/// That restore is all or nothing. Its three steps are made in a folder beside the place of the checkout ([`RESTORE_STAGE`]), which
+/// is renamed into place after the checkout. A step that fails, and a machine that is ended between two steps, leaves no repository
+/// where the next invocation looks for the checkout of an earlier one: a clone of the base alone stands at the base's head and has
+/// no file in its tree, and it would be returned as the work. The next invocation removes what was left and restores again.
 pub async fn prepare_from_bundle_state(
     workspace_root: &Path,
     run: &str,
     agent: &str,
     bundle: &Path,
+    base: Option<&Path>,
 ) -> Result<(Worktree, bool), WsError> {
     let wt = layout(workspace_root, run, agent);
-    if wt.repo.join(".git").exists() {
+    if checkout_left(workspace_root, run, agent) {
         // A checkout of an earlier invocation of the run: the engine has had it since, and it must still be the repository's own directory.
         check_git_dir(&wt.repo)?;
         return Ok((wt, false));
@@ -526,6 +674,24 @@ pub async fn prepare_from_bundle_state(
     std::fs::create_dir_all(&wt.root).map_err(io)?;
     let bundle_arg = bundle.display().to_string();
     let repo_arg = wt.repo.display().to_string();
+    if let Some(base) = base {
+        let stage = wt.root.join(RESTORE_STAGE);
+        // What a restore that failed or was cut left there. No engine has run in it: an engine starts only after the rename below.
+        remove(&stage).map_err(io)?;
+        if let Err(e) = restore_above_base(&wt.root, &stage, &wt.branch, bundle, base).await {
+            // The space is given back at once; when that fails the next invocation removes it before it clones.
+            let _ = remove(&stage);
+            return Err(e);
+        }
+        if let Err(e) = std::fs::rename(&stage, &wt.repo) {
+            let _ = remove(&stage);
+            return Err(WsError::Io(format!(
+                "the restored repository could not be moved to {}: {e}",
+                wt.repo.display()
+            )));
+        }
+        return Ok((wt, true));
+    }
     git(&wt.root, &["clone", "-q", &bundle_arg, &repo_arg]).await?;
     // A bundle without HEAD clones to an unborn HEAD; start from its first ref instead.
     let base = match git(&wt.repo, &["rev-parse", "--verify", "-q", "HEAD^{commit}"]).await {

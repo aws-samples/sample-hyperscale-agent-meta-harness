@@ -6,6 +6,7 @@
     "direct turn containers not started: no engine user",
     "direct turn rules placed: 0 file(s)",
     "direct turn config directory protected: given_to_root=false owner_uid=<n>",
+    "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn automatic recovery on, no answer window",
     "direct turn ended: run=01M4XTESTRUNDIRECT00000001 outcome=stopped_setup_failed label=\"Cline did not start\"",
@@ -144,7 +145,7 @@
     "usage": null,
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.63.0"
+      "protocol": "1.64.0"
     }
   },
   "wire": []

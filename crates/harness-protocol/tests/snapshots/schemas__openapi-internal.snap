@@ -2495,7 +2495,7 @@ expression: value
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness internal API",
-    "version": "1.63.0"
+    "version": "1.64.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

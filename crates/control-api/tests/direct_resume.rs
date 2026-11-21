@@ -503,3 +503,71 @@ async fn b772_pressing_resume_again_returns_the_follow_up_the_first_press_starte
         "the paused run and one follow-up"
     );
 }
+
+// ----: a resumed run keeps the lifecycle records, because it is the same request going on -------------------------------------------
+//
+// The stored request of a resume holds no `removeEarlierRecords` member, whatever the stopped run's request held. An absent member means
+// that the worker keeps the records, as release 5.24 did, and a worker image that predates the member still reads the request. The
+// service stores `true` only for the start of a follow-up of a run that reported done, and a resume is never that.
+
+#[tokio::test]
+async fn b866_r2_a_resume_stores_no_member() {
+    // Whatever the stopped run's stored request holds for the member (nothing, `true` or `false`), the new run's request holds none.
+    for (status, held) in [
+        ("paused", None),
+        ("paused", Some(true)),
+        ("paused", Some(false)),
+        ("stalled", None),
+        ("stalled", Some(true)),
+    ] {
+        let w = World::new();
+        let id = stopped_run(&w, "k-1", status, ResumeMode::FollowUp).await;
+        let names_before: Vec<String>;
+        {
+            let mut objects = w.objects.lock().unwrap();
+            let key = s3::request_key(&id);
+            let mut v: Value = serde_json::from_slice(&objects[&key]).unwrap();
+            assert!(v.get("removeEarlierRecords").is_none(), "{v}");
+            names_before = v.as_object().unwrap().keys().cloned().collect();
+            if let Some(h) = held {
+                v["removeEarlierRecords"] = json!(h);
+            }
+            objects.insert(key, serde_json::to_vec(&v).unwrap());
+        }
+        // Evidence that says the stopped run reported done changes nothing: a resume is not the start of a follow-up.
+        w.put_object(
+            &harness_protocol::direct::s3::evidence_key(&id),
+            json!({"schemaVersion": 1, "runId": id, "outcome": "reported_done", "headSha": HEAD})
+                .to_string()
+                .into_bytes(),
+        );
+        let (code, v) = resume(&w, &id).await;
+        assert_eq!(code, 201, "{status} {held:?}: {v}");
+        let new = v["runId"].as_str().unwrap().to_string();
+        let s = stored(&w, &new);
+        assert!(
+            s.get("removeEarlierRecords").is_none(),
+            "{status} {held:?}: {s}"
+        );
+        assert_eq!(s["continueFrom"], json!({"runId": id, "headSha": HEAD}));
+        // The members are the ones release 5.24 stored for a resume: the stopped run's own and `continueFrom`.
+        let mut want = names_before.clone();
+        want.push("continueFrom".to_string());
+        want.sort();
+        let mut got: Vec<String> = s.as_object().unwrap().keys().cloned().collect();
+        got.sort();
+        assert_eq!(got, want, "{status} {held:?}");
+        assert_eq!(
+            w.count("read_or_refused"),
+            0,
+            "{status} {held:?}: the evidence is not read for a resume"
+        );
+        // A second press returns the run the first one started.
+        let (code, again) = resume(&w, &id).await;
+        assert_eq!(
+            (code, again["runId"].as_str()),
+            (201, Some(new.as_str())),
+            "{status} {held:?}: {again}"
+        );
+    }
+}

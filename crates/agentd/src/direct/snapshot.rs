@@ -21,9 +21,11 @@
 //! neither its commits nor the base can be read through the alternate: the copy is then a commit with no parent of the tree hashed into a
 //! new index ([`ScratchRepo::whole_tree`]), which holds the whole tree itself.
 //!
-//! The repository keeps what its last copy needs and no more ([`Snapshotter::drop_old_versions`]): before the look that follows one that
+//! The repository keeps what its last copy needs and a bounded rest ([`ScratchRepo::tidy`]): before the look that follows one that
 //! hashed a changed tree, and before the copy of the end, `git prune` removes the commits of earlier copies and the versions of files that
-//! changed again, and no reflog keeps them. Without it a file rewritten before every copy left one version per copy on the worker's disk.
+//! changed again, once they amount to a mark,
+//! and no reflog keeps them. Without it a file rewritten before
+//! every copy left one version per copy on the worker's disk.
 //!
 //! agentd reads engine-controlled files here as root: the repository's `info/exclude` is opened without following a link and
 //! without blocking, and only when it is a regular file of at most 1 MiB.
@@ -31,6 +33,8 @@
 use crate::BoxFuture;
 use crate::direct::classify::scrub_detail;
 use crate::direct::input::{ChangedFiles, DigestSources, TreeSource};
+use crate::logging::LogSink;
+use crate::s3::FileDigest;
 use crate::time::now_unix;
 use crate::workspace::{
     WsError, git_bytes_with_env, git_dir_problem, git_with_env, git_with_env_outside,
@@ -49,6 +53,133 @@ const MAX_CONTROLLED_FILE: u64 = 1 << 20;
 /// The index of a copy that holds the whole tree ([`ScratchRepo::whole_tree`]), made new for each such copy.
 const WHOLE_INDEX: &str = "index-whole";
 
+/// The line that leads the settings of a private repository in its own `config` ([`ScratchRepo::tune`]): a repository that
+/// holds it has its settings.
+const TUNE_MARK: &str = "# agentd: the settings of a private repository of a working session";
+/// The settings of a private repository of a working session ([`ScratchRepo::tune`]).
+const TUNE_BLOCK: &str =
+    "[pack]\n\tthreads = 1\n\twindow = 0\n[gc]\n\tauto = 0\n[core]\n\tuntrackedCache = false\n";
+
+/// The first reading of the tree in a session, made before the engine starts ([`Snapshotter::new_primed`]), is given up after
+/// this long. The session starts later by the time the reading takes, so a tree that cannot be read in a minute is read by the first
+/// look instead, as before.
+pub const PRIME_LIMIT: Duration = Duration::from_secs(60);
+
+/// The clean-up of a private repository runs once the repository has grown by this many KiB of loose objects, or of packs,
+/// since the last clean-up: 64 MiB ([`tidy_needed`]).
+pub const TIDY_AFTER_KIB: u64 = 65_536;
+/// The clean-up of a private repository runs once the repository has grown by this many loose objects since the last clean-up
+/// (git's own mark for a `gc` is 6,700 loose objects).
+pub const TIDY_AFTER_OBJECTS: u64 = 6_700;
+/// The clean-up of a private repository runs whatever the repository holds while its disk has fewer free bytes than this: 1 GiB.
+pub const TIDY_FREE_BYTES: u64 = 1 << 30;
+/// The clean-up of `goal.git`, `probe.git` and `facts.git` after a reading is given up after this long, with its git ended
+/// ([`ScratchRepo::tidy_logged`]): the reading it follows is made already, and what waits for that reading must not wait for a
+/// clean-up without a limit. It is the least the git work of a look of the copy task has ([`COPY_GIT_FLOOR`]), which is what bounds
+/// the clean-up of `snapshot.git`. A clean-up that was given up is tried again after the next reading.
+pub const TIDY_LIMIT: Duration = COPY_GIT_FLOOR;
+
+/// What a private repository holds of its own, as `git count-objects -v` says it ([`ScratchRepo::loose`]): the engine's store
+/// behind the alternate is not counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Loose {
+    /// The loose objects (`count`).
+    pub count: u64,
+    /// The KiB the loose objects take (`size`).
+    pub size_kib: u64,
+    /// The KiB the packs take (`size-pack`).
+    pub pack_kib: u64,
+}
+
+impl Loose {
+    /// The three numbers out of the lines of `git count-objects -v`; a number that is not there is 0.
+    pub fn parse(text: &str) -> Self {
+        let number = |name: &str| {
+            text.lines()
+                .find_map(|l| {
+                    l.strip_prefix(name)?
+                        .strip_prefix(": ")?
+                        .trim()
+                        .parse()
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        Self {
+            count: number("count"),
+            size_kib: number("size"),
+            pack_kib: number("size-pack"),
+        }
+    }
+}
+
+/// What the clean-up of a private repository does when it is asked ([`tidy_needed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tidy {
+    /// Nothing: the repository has not grown by a mark since the last clean-up.
+    No,
+    /// `git prune --expire=now`.
+    Prune,
+    /// `git prune --expire=now`, and `git repack -a -d -l -q --window=0` while the repository holds a pack.
+    PruneRepack,
+}
+
+/// The marks of the clean-up of a private repository: how much the repository grows before the next clean-up runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TidyMarks {
+    /// KiB of loose objects, and KiB of packs.
+    pub kib: u64,
+    /// Loose objects.
+    pub objects: u64,
+    /// Free bytes of the repository's disk below which the clean-up runs whatever the growth.
+    pub free_bytes: u64,
+}
+
+impl TidyMarks {
+    /// The marks of a run: [`TIDY_AFTER_KIB`], [`TIDY_AFTER_OBJECTS`], [`TIDY_FREE_BYTES`].
+    pub const RUN: Self = Self {
+        kib: TIDY_AFTER_KIB,
+        objects: TIDY_AFTER_OBJECTS,
+        free_bytes: TIDY_FREE_BYTES,
+    };
+    /// Every clean-up that is asked for runs, as each did (tests of what a clean-up keeps).
+    pub const AT_ONCE: Self = Self {
+        kib: 0,
+        objects: 0,
+        free_bytes: 0,
+    };
+
+    /// What the clean-up does for a repository that holds `now`, held `after_last` after its last clean-up (nothing before the
+    /// first), and whose disk has `free_bytes` free. Packs that grew by the mark ask for the prune and the repack; loose objects that
+    /// grew by a mark, in bytes or in number, or a disk that is nearly full, ask for the prune.
+    pub fn needed(&self, now: Loose, after_last: Loose, free_bytes: u64) -> Tidy {
+        if now.pack_kib > 0 && now.pack_kib >= after_last.pack_kib.saturating_add(self.kib) {
+            Tidy::PruneRepack
+        } else if now.size_kib >= after_last.size_kib.saturating_add(self.kib)
+            || now.count >= after_last.count.saturating_add(self.objects)
+            || free_bytes < self.free_bytes
+        {
+            Tidy::Prune
+        } else {
+            Tidy::No
+        }
+    }
+}
+
+/// Whether the clean-up of a private repository runs now, by the marks of a run ([`TidyMarks::RUN`]). Before, `git prune`
+/// ran at the start of every look after one that hashed a changed tree and walked what the repository can reach each time: on a
+/// history of 20,000 small commits that was 0.32 s of processor time where the rest of the look cost 0.03 s. `git prune` stays git's
+/// own; it runs when the repository has grown by 64 MiB of loose objects, by 6,700 loose objects or by 64 MiB of packs since the
+/// last clean-up, or when its disk has less than 1 GiB free.
+pub fn tidy_needed(now: Loose, after_last: Loose, free_bytes: u64) -> Tidy {
+    TidyMarks::RUN.needed(now, after_last, free_bytes)
+}
+
+/// The free bytes of the disk that holds `dir`; `u64::MAX` when it cannot be asked (a disk that cannot be asked forces no clean-up).
+fn free_bytes(dir: &Path) -> u64 {
+    rustix::fs::statvfs(dir).map_or(u64::MAX, |s| s.f_bavail.saturating_mul(s.f_frsize))
+}
+
 /// One snapshot, ready to upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotMade {
@@ -64,6 +195,25 @@ pub struct SnapshotMade {
     /// The wall-clock second in which the look began to read the tree. The time the copy names is the second before it
     /// ([`cut_unix`]).
     pub read_unix: i64,
+    /// The hash and the size of the bundle, once the look has made them ([`hash_bundle`]); the upload then sends the bundle under
+    /// this hash and does not hash it again. `None` as git leaves the copy, and for the copy of the end, whose store hashes it.
+    pub digest: Option<FileDigest>,
+}
+
+/// Hashes the bundle of the copy `made` as the last part of the look's work, within the look's limit `give_up`, and keeps the
+/// hash in `made.digest`. The hash is processor time of the copy (1.96 s for 14 stores of 74.6 MB in the measurement), so the look makes
+/// it before its work ends and the spacing of the looks counts it ([`CopyClock::looked`]); before, the upload hashed the bundle after
+/// that work had ended. The file is read off the runtime's threads (`s3::digest_file`). A hash that the limit gives up is an error: the
+/// look has failed, like a look whose git call the limit gives up.
+pub async fn hash_bundle(made: &mut SnapshotMade, give_up: &GiveUp) -> Result<(), String> {
+    match give_up.run(crate::s3::digest_file(&made.bundle)).await {
+        Some(Ok(digest)) => {
+            made.digest = Some(digest);
+            Ok(())
+        }
+        Some(Err(e)) => Err(format!("snapshot: the bundle was not hashed: {e}")),
+        None => Err("snapshot: hashing the bundle was given up before it had ended".to_string()),
+    }
 }
 
 /// The one copy of a read of a stopped session's storage ([`Snapshotter::read_back`]).
@@ -94,6 +244,39 @@ pub struct Compared {
     pub rewritten: u32,
     pub rewritten_paths: Vec<String>,
 }
+
+/// What the bundle of a copy of the work holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleForm {
+    /// Everything the copy's commit reaches: the whole history. Such a bundle clones alone.
+    Whole,
+    /// What the copy's commit reaches and the bundle the run started from does not ([`Snapshotter::set_floors`]): the run's own commits
+    /// and its uncommitted changes. git names the commits it left out in the bundle's header, and a reader takes the base first.
+    /// Without a floor, and whenever git fails on this path, the bundle is whole.
+    AboveFloor,
+}
+
+impl BundleForm {
+    /// The form of the copies of this release: a copy leaves out what the bundle the run started from holds. It is a constant of
+    /// the release, not a setting of a stage: no path leads from an operator to the worker's environment, and every reader of this
+    /// release takes such a copy (the restore of a session, the delivery, the download route and the client).
+    pub const RELEASE: BundleForm = BundleForm::AboveFloor;
+
+    /// The form the word of `AGENTD_DIRECT_COPY_FORM` names (tests only): `whole`, `base`; unset and any other word is
+    /// [`Self::RELEASE`].
+    pub fn from_word(word: Option<&str>) -> Self {
+        match word.map(str::trim) {
+            Some("whole") => BundleForm::Whole,
+            Some("base") => BundleForm::AboveFloor,
+            _ => Self::RELEASE,
+        }
+    }
+}
+
+/// The longest header a copy above the floor may have, in bytes. The download route reads the first
+/// `harness_protocol::bundle_header::HEADER_BYTES` (8,192) bytes of a copy and refuses a header that does not end inside them; a copy
+/// whose header would be longer than this (a boundary commit with a very long subject) is written whole.
+pub const THIN_HEADER_MAX: usize = 4_096;
 
 /// The files of a tree by path: the blob and its size in bytes.
 type TreeFiles = std::collections::BTreeMap<Vec<u8>, (String, u64)>;
@@ -709,7 +892,7 @@ impl GitSource {
     /// engine's repository for the snapshot and the nudge (hooks, fsmonitor and the global configuration off); nothing else is.
     pub async fn facts(&self) -> GitFacts {
         let _guard = self.lock.lock().await;
-        match git_with_env(&self.scratch.repo, &["rev-parse", "HEAD"], &[]).await {
+        let facts = match git_with_env(&self.scratch.repo, &["rev-parse", "HEAD"], &[]).await {
             Ok(head) => self.scratch.git_facts(&self.base, &head).await,
             Err(e) => {
                 // Without the head there is no log; the rest of the facts do not need it.
@@ -717,7 +900,25 @@ impl GitSource {
                 facts.errors.push(scrub_detail(&format!("head: {}", ws(e))));
                 facts
             }
-        }
+        };
+        // Each reading of a changed tree leaves the new versions of the changed files in `facts.git`, and nothing removed them.
+        // The clean-up runs when the repository has grown by a mark, under the lock of the readings; it fails no reading.
+        self.scratch.tidy_logged().await;
+        facts
+    }
+
+    /// Other marks for the clean-up of the private repository than those of a run ([`TidyMarks::RUN`]); tests.
+    #[must_use]
+    pub fn with_tidy_marks(mut self, marks: TidyMarks) -> Self {
+        self.scratch.set_tidy_marks(marks);
+        self
+    }
+
+    /// Another limit for the clean-up of the private repository than [`TIDY_LIMIT`]; tests.
+    #[must_use]
+    pub fn with_tidy_limit(mut self, limit: Duration) -> Self {
+        self.scratch.set_tidy_limit(limit);
+        self
     }
 }
 
@@ -725,7 +926,10 @@ impl TreeSource for GitSource {
     fn changed_files(&self, limit: usize) -> BoxFuture<'_, Option<ChangedFiles>> {
         Box::pin(async move {
             let _guard = self.lock.lock().await;
-            let (paths, total) = self.scratch.changed_paths(&self.base, limit).await.ok()?;
+            let found = self.scratch.changed_paths(&self.base, limit).await.ok();
+            // The clean-up of `facts.git`, as after [`GitSource::facts`].
+            self.scratch.tidy_logged().await;
+            let (paths, total) = found?;
             Some(ChangedFiles { paths, total })
         })
     }
@@ -742,12 +946,69 @@ pub struct ScratchRepo {
     give_up: Option<GiveUp>,
     /// A file call on the work tree has not returned ([`Self::on_tree`]); the thread that makes the call clears it.
     busy: Arc<AtomicBool>,
+    /// The marks of this repository's clean-up ([`Self::tidy`]): [`TidyMarks::RUN`], or what a test set.
+    marks: TidyMarks,
+    /// What the repository held after its last clean-up; nothing before the first.
+    after_last: std::sync::Mutex<Loose>,
+    /// A clean-up of this repository failed and that was logged ([`Self::tidy_logged`]); it is logged again only after one
+    /// that went through.
+    tidy_said: AtomicBool,
+    /// How long a clean-up of this repository after a reading may take ([`Self::tidy_logged`]): [`TIDY_LIMIT`], or what a
+    /// test set.
+    tidy_limit: Duration,
+    /// The last clean-up found the disk of this repository below its free-space mark, and the log said so ([`Self::say_disk`]).
+    disk_low: AtomicBool,
 }
 
 impl ScratchRepo {
     /// `<parent>/probe.git`, for the nudge's change test.
     pub async fn new(parent: &Path, repo: &Path) -> Result<Self, String> {
-        Self::open(parent.join("probe.git"), repo).await
+        Ok(Self::open(parent.join("probe.git"), repo)
+            .await?
+            .tuned()
+            .await)
+    }
+
+    /// Writes the settings of a private repository of a working session into the repository's own `config`, once: one pack
+    /// thread and no delta search (the pack of a copy is uploaded at once, and git otherwise packs on both processors of a session
+    /// and searches deltas for it), no automatic `gc` and no untracked cache. Nothing else is set: the index preload, the index
+    /// threads and the compression levels stay git's own. agentd's git calls read no system and no global configuration, so this
+    /// file is all a private repository has. The four repositories of a working session call it (`snapshot.git`, `goal.git`,
+    /// `probe.git`, `facts.git`); the repository of a read of a stopped session's storage does not
+    /// ([`Snapshotter::for_read_back`]).
+    pub async fn tune(&self) -> Result<(), String> {
+        let path = self.git_dir.join("config");
+        let config = tokio::fs::read_to_string(&path).await.map_err(io)?;
+        if config.contains(TUNE_MARK) {
+            return Ok(());
+        }
+        let mut tuned = config;
+        if !tuned.is_empty() && !tuned.ends_with('\n') {
+            tuned.push('\n');
+        }
+        tuned.push_str(TUNE_MARK);
+        tuned.push('\n');
+        tuned.push_str(TUNE_BLOCK);
+        // Written beside the file and renamed: a worker that dies here leaves the file as it was or with its settings.
+        let part = self.git_dir.join("config.tuned");
+        tokio::fs::write(&part, tuned).await.map_err(io)?;
+        tokio::fs::rename(&part, &path).await.map_err(io)
+    }
+
+    /// [`Self::tune`] for the makers of a private repository: a repository whose settings cannot be written is used as it is, and
+    /// the failure is logged.
+    pub(crate) async fn tuned(self) -> Self {
+        if let Err(e) = self.tune().await {
+            crate::logging::StderrLog.line(&format!(
+                "direct turn private repository {}: its settings were not written: {}",
+                self.git_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                scrub_detail(&e)
+            ));
+        }
+        self
     }
 
     /// Creates (or reuses) the repository at `git_dir` for the work tree at `repo`.
@@ -784,7 +1045,144 @@ impl ScratchRepo {
             repo: repo.to_path_buf(),
             give_up: None,
             busy: Arc::new(AtomicBool::new(false)),
+            marks: TidyMarks::RUN,
+            after_last: std::sync::Mutex::new(Loose::default()),
+            tidy_said: AtomicBool::new(false),
+            tidy_limit: TIDY_LIMIT,
+            disk_low: AtomicBool::new(false),
         })
+    }
+
+    /// [`Self::tidy`] for the repositories whose readings must never fail for a clean-up (`goal.git`, `probe.git`,
+    /// `facts.git`): what a clean-up could not do is logged once, until one goes through again, and the reading goes on. Called
+    /// after a reading that is made, under the lock that serializes the owner's readings, never inside the time limit of the
+    /// reading itself: the clean-up has a limit of its own ([`TIDY_LIMIT`]). One that takes longer is given up, which ends its git
+    /// and what git started (`workspace::KillGroup`), is logged like one that failed, and is tried again after the next reading.
+    pub async fn tidy_logged(&self) {
+        let e = match tokio::time::timeout(self.tidy_limit, self.tidy()).await {
+            Ok(Ok(())) => {
+                self.tidy_said.store(false, Ordering::SeqCst);
+                return;
+            }
+            Ok(Err(e)) => e,
+            Err(_) => format!(
+                "given up after {} s and its git ended; it is tried again after the next reading",
+                self.tidy_limit.as_secs_f32()
+            ),
+        };
+        if !self.tidy_said.swap(true, Ordering::SeqCst) {
+            crate::logging::StderrLog.line(&format!(
+                "direct turn private repository {}: clean-up failed: {}",
+                self.git_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                scrub_detail(&e)
+            ));
+        }
+    }
+
+    /// Other marks for this repository's clean-up than those of a run ([`TidyMarks::RUN`]); tests.
+    pub fn set_tidy_marks(&mut self, marks: TidyMarks) {
+        self.marks = marks;
+    }
+
+    /// Another limit for a clean-up of this repository after a reading than [`TIDY_LIMIT`]; tests.
+    pub fn set_tidy_limit(&mut self, limit: Duration) {
+        self.tidy_limit = limit;
+    }
+
+    /// What this repository holds of its own (`git count-objects -v`): its loose objects and its packs, never the engine's store.
+    pub async fn loose(&self) -> Result<Loose, String> {
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        self.git(cwd, &["count-objects", "-v"], &[("GIT_DIR", &self.git_dir)])
+            .await
+            .map(|text| Loose::parse(&text))
+            .map_err(ws)
+    }
+
+    /// The clean-up of this repository, when its marks ask for one ([`TidyMarks::needed`]): `git prune --expire=now` removes
+    /// what nothing in the repository names any more (for the copies: the commits of earlier copies and the versions of files that
+    /// changed again), and only the repository's own loose objects, never the engine's store behind the alternate. `git add` streams a
+    /// file above git's big-file threshold (512 MiB) into a pack of its own, which prune does not shrink: when the packs grew by the
+    /// mark, `git repack -a -d -l` puts what is still needed into one pack and removes the others (`-l`: none of the engine's objects;
+    /// `--window=0`: no new deltas, the old pack's data is reused). What the repository holds afterwards is what the next clean-up
+    /// counts from. A clean-up that only a nearly full disk asks for is left out while the repository holds what it held after the
+    /// last one, and the log says when the free-space mark starts and stops forcing clean-ups ([`Self::say_disk`]).
+    /// One caller at a time: a prune beside a `git add` in flight can remove an object that add has just written, so each
+    /// owner calls it under the lock that serializes its readings of the tree. The error names what could not be done; the owner
+    /// logs it and goes on.
+    pub async fn tidy(&self) -> Result<(), String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        let now = self.loose().await?;
+        let after_last = *self.after_last.lock().unwrap_or_else(|p| p.into_inner());
+        let free = free_bytes(gd);
+        self.say_disk(free);
+        let need = self.marks.needed(now, after_last, free);
+        // A nearly full disk asks for the clean-up whatever the repository has grown by. When the repository holds exactly what it
+        // held after its last clean-up, nothing was added since, and one more clean-up would walk what the repository can reach to
+        // free nothing: it is left out. So a session on a nearly full disk pays for a clean-up only after a look or a reading that
+        // added to the repository.
+        let only_the_disk = self.marks.needed(now, after_last, u64::MAX) == Tidy::No;
+        if need == Tidy::No || (only_the_disk && now == after_last) {
+            return Ok(());
+        }
+        let mut failed = Vec::new();
+        if let Err(e) = self
+            .git(cwd, &["prune", "--expire=now"], &[("GIT_DIR", gd)])
+            .await
+        {
+            failed.push(ws(e));
+        }
+        if need == Tidy::PruneRepack
+            && has_pack(&self.git_dir.join("objects/pack"))
+            && let Err(e) = self
+                .git(
+                    cwd,
+                    &["repack", "-a", "-d", "-l", "-q", "--window=0"],
+                    &[("GIT_DIR", gd)],
+                )
+                .await
+        {
+            failed.push(ws(e));
+        }
+        match self.loose().await {
+            Ok(left) => *self.after_last.lock().unwrap_or_else(|p| p.into_inner()) = left,
+            Err(e) => failed.push(e),
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
+    }
+
+    /// Says in the worker's log, once, that the disk of this repository has fewer free bytes than its mark, so that the
+    /// clean-up runs whatever the repository has grown by, and once more when the disk has room again. Before, nothing in the log
+    /// said why a session on a nearly full disk started `git prune` again and again.
+    fn say_disk(&self, free: u64) {
+        let low = free < self.marks.free_bytes;
+        if self.disk_low.swap(low, Ordering::SeqCst) == low {
+            return;
+        }
+        let name = self
+            .git_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        crate::logging::StderrLog.line(&if low {
+            format!(
+                "direct turn private repository {name}: its disk has less than {} bytes free ({free} free): the clean-up runs \
+                 after every reading that added to it",
+                self.marks.free_bytes
+            )
+        } else {
+            format!(
+                "direct turn private repository {name}: its disk has room again ({free} bytes free): the clean-up waits for its \
+                 marks again"
+            )
+        });
     }
 
     /// A git call of this repository: one that ends when the look in progress is given up ([`git_with_env_until`]), or the plain call
@@ -861,7 +1259,10 @@ impl ScratchRepo {
     /// index and object store) so that reading the facts never moves the nudge's `probe.git` fingerprint, and the seed keeps a file
     /// that is tracked at `base` tracked whatever an ignore rule says now (without it such a file would read as deleted).
     pub async fn facts(agent_data: &Path, repo: &Path, base: &str) -> Result<Self, String> {
-        let scratch = Self::open(agent_data.join("facts.git"), repo).await?;
+        let scratch = Self::open(agent_data.join("facts.git"), repo)
+            .await?
+            .tuned()
+            .await;
         scratch.seed(base).await?;
         Ok(scratch)
     }
@@ -1114,15 +1515,36 @@ impl ScratchRepo {
     /// The tree hash of the work tree as it is now (`add -A`, then `write-tree`). It is content-aware: a modified file edited
     /// again hashes differently, which `git status` does not show.
     pub async fn tree(&self) -> Result<String, String> {
+        self.stage().await?;
+        self.write_kept_tree().await
+    }
+
+    /// The first half of [`Self::tree`]: the work tree as it is now, staged in the index this repository keeps (`add -A`).
+    async fn stage(&self) -> Result<(), String> {
         let index = self.git_dir.join("index");
         self.copy_exclude().await?;
-        let envs = self.envs(&index);
-        self.git(&self.repo, &["add", "-A"], &envs)
+        self.git(&self.repo, &["add", "-A"], &self.envs(&index))
             .await
-            .map_err(ws)?;
-        self.git(&self.repo, &["write-tree"], &envs)
+            .map(|_| ())
+            .map_err(ws)
+    }
+
+    /// The second half of [`Self::tree`]: the tree of the index this repository keeps (`write-tree`).
+    async fn write_kept_tree(&self) -> Result<String, String> {
+        let index = self.git_dir.join("index");
+        self.git(&self.repo, &["write-tree"], &self.envs(&index))
             .await
             .map_err(ws)
+    }
+
+    /// Whether the look that uses this repository now has been given up (its time has come); never outside a look of the copy task.
+    async fn given_up(&self) -> bool {
+        match &self.give_up {
+            Some(give_up) => tokio::time::timeout(Duration::ZERO, give_up.reached())
+                .await
+                .is_ok(),
+            None => false,
+        }
     }
 }
 
@@ -1136,13 +1558,23 @@ pub struct Snapshotter {
     /// The engine's `HEAD` as the last periodic copy read it: the parent of a final copy that may read nothing in the engine's repository.
     last_parent: Option<String>,
     count: u32,
-    /// What the last [`Self::drop_old_versions`] could not do, for the caller's log ([`Self::take_tidy_error`]).
+    /// What the last clean-up ([`ScratchRepo::tidy`]) could not do, for the caller's log ([`Self::take_tidy_error`]).
     tidy_error: Option<String>,
     /// A look hashed a changed tree since the last clean-up: the next look, or the copy of the end, starts with one.
     tidy_due: bool,
     /// The last look of the copy task ended in an error, so a git of it may have been ended in the middle: the next one clears the
     /// lock files first ([`Self::snapshot_until`]).
     gave_up: bool,
+    /// What came of the first reading of the tree ([`Self::new_primed`]), for the caller's log ([`Self::take_prime_note`]).
+    prime_note: Option<Result<Duration, String>>,
+    /// The copy just made holds the whole tree because the tree could not be staged in the index this repository keeps,
+    /// twice ([`Self::current_tree`]): the reason, for the caller's log ([`Self::take_whole_note`]).
+    whole_note: std::sync::Mutex<Option<String>>,
+    /// What the bundles of this session's copies hold ([`Self::set_form`]); [`BundleForm::Whole`] until it is set.
+    form: BundleForm,
+    /// The commits a copy above the floor leaves out with everything they reach ([`Self::set_floors`]): heads of the bundle the
+    /// run started from that this repository can read. Empty: every bundle is whole.
+    floors: Vec<String>,
 }
 
 /// The lock files a git that was killed in the middle can leave in the private repository: the index's, the ref's, the bundle's
@@ -1157,11 +1589,35 @@ const STALE_LOCKS: [&str; 6] = [
 ];
 
 impl Snapshotter {
-    /// Creates the snapshot repository for the worktree at `repo`, whose branch starts at `base`.
+    /// Creates the snapshot repository for the worktree at `repo`, whose branch starts at `base`, and reads the tree once
+    /// ([`Self::new_primed`] with [`PRIME_LIMIT`]).
     pub async fn new(agent_data: &Path, repo: &Path, base: &str) -> Result<Self, String> {
+        Self::new_primed(agent_data, repo, base, Some(PRIME_LIMIT)).await
+    }
+
+    /// [`Self::new`] with the limit of the first reading of the tree given: `prime`. `None` makes no first reading, as
+    /// (tests: the reading changes no decision of the first look).
+    ///
+    /// The index of the repository is seeded with `git read-tree`, so it names every file of the base and knows the state of
+    /// none. The first look of the copy task therefore read and hashed every file (3.65 s of git on the large repository of the
+    /// measurement), and with no look made yet the first tool call that ended started it at once, in front of the engine's next tool
+    /// call. So the tree is read once here (`git add -A` and `git write-tree` in the private repository), before the engine starts,
+    /// where it competes with nothing: the index then knows the state of the files and the first look costs what a look at an
+    /// unchanged tree costs. The result is dropped: the tree the first look compares with stays the tree of the commit the session
+    /// starts on, so that look decides as it did. A reading that fails or runs longer than `prime` is given up, with its git ended,
+    /// and is no failure: the first look then reads every file, as before ([`Self::take_prime_note`] says what came of it).
+    pub async fn new_primed(
+        agent_data: &Path,
+        repo: &Path,
+        base: &str,
+        prime: Option<Duration>,
+    ) -> Result<Self, String> {
         let git_dir = agent_data.join("snapshot.git");
-        let scratch = ScratchRepo::open(git_dir.clone(), repo).await?;
-        // No reflog keeps the commit of an earlier copy, and so its files, from `git prune` ([`Self::drop_old_versions`]); a
+        let scratch = ScratchRepo::open(git_dir.clone(), repo)
+            .await?
+            .tuned()
+            .await;
+        // No reflog keeps the commit of an earlier copy, and so its files, from `git prune` ([`ScratchRepo::tidy`]); a
         // repository an earlier session made keeps none either.
         let gd: &Path = &git_dir;
         let cwd = agent_data;
@@ -1188,7 +1644,7 @@ impl Snapshotter {
         let start_tree = git_with_env(repo, &["rev-parse", "HEAD^{tree}"], &[])
             .await
             .unwrap_or(base_tree);
-        Ok(Self {
+        let mut made = Self {
             scratch,
             git_dir,
             repo: repo.to_path_buf(),
@@ -1199,59 +1655,93 @@ impl Snapshotter {
             tidy_error: None,
             tidy_due: false,
             gave_up: false,
-        })
+            prime_note: None,
+            whole_note: std::sync::Mutex::new(None),
+            form: BundleForm::Whole,
+            floors: Vec::new(),
+        };
+        if let Some(limit) = prime {
+            made.prime(limit).await;
+        }
+        Ok(made)
     }
 
-    /// Removes what no copy needs any more: the commits of earlier copies and the versions of files that changed again since.
-    /// `git prune` keeps what `refs/heads/snapshot` and the private index name, and removes only this repository's own loose objects, never
-    /// the engine's store behind the alternate. `git add` streams a file above git's big-file threshold (512 MiB) into a pack of its own,
-    /// which prune does not shrink: while a pack is there, `git repack -a -d -l` puts what is still needed into one pack and removes the
-    /// others (`-l`: none of the engine's objects; `--window=0`: no new deltas, the old pack's data is reused). It runs under the copy lock
-    /// at the start of the look after one that hashed a changed tree, and of the copy of the end ([`Self::tidy_if_due`]), never between a
-    /// copy and its upload: the time from reading the tree to storing its copy is what it was without it, and the first copy of a session
-    /// waits for nothing. The time it takes counts as git time for the spacing. What it could not do does not fail the copy: the caller logs it ([`Self::take_tidy_error`]).
-    async fn drop_old_versions(&mut self) {
-        let gd: &Path = &self.git_dir;
-        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
-        let mut failed = Vec::new();
-        if let Err(e) = self
-            .scratch
-            .git(cwd, &["prune", "--expire=now"], &[("GIT_DIR", gd)])
-            .await
-        {
-            failed.push(ws(e));
-        }
-        if has_pack(&self.git_dir.join("objects/pack"))
-            && let Err(e) = self
-                .scratch
-                .git(
-                    cwd,
-                    &["repack", "-a", "-d", "-l", "-q", "--window=0"],
-                    &[("GIT_DIR", gd)],
-                )
-                .await
-        {
-            failed.push(ws(e));
-        }
-        self.tidy_error = (!failed.is_empty()).then(|| failed.join("; "));
+    /// The first reading of the tree ([`Self::new_primed`]), given up after `limit`. Its git calls and its file calls on the
+    /// work tree end when it is given up, as those of a look do, and the lock files an ended git left are removed, so the first look
+    /// finds the repository as a look finds it.
+    async fn prime(&mut self, limit: Duration) {
+        let started = Instant::now();
+        self.scratch.give_up = Some(GiveUp::at(Some(tokio::time::Instant::now() + limit)));
+        let read = self.scratch.tree().await;
+        self.scratch.give_up = None;
+        self.prime_note = Some(match read {
+            Ok(_) => Ok(started.elapsed()),
+            Err(e) => {
+                self.clear_stale_locks();
+                Err(e)
+            }
+        });
     }
 
-    /// [`Self::drop_old_versions`] when a look hashed a changed tree since the last one.
+    /// What came of the first reading of the tree, once: how long it took, or why it was given up. `None` when none was made.
+    pub fn take_prime_note(&mut self) -> Option<Result<Duration, String>> {
+        self.prime_note.take()
+    }
+
+    /// Why the copy just made holds the whole tree, once, when it does because the tree could not be staged in the index
+    /// this repository keeps ([`Self::current_tree`]). Such a copy has no parent and lacks the files that only the base tracks and
+    /// an ignore rule now matches; the run is told that a copy was stored, so the worker's log is where the difference is said.
+    pub fn take_whole_note(&mut self) -> Option<String> {
+        self.whole_note
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
+    /// Removes what no copy needs any more (the commits of earlier copies and the versions of files that changed again
+    /// since), when a look hashed a changed tree since the last time and the marks of the repository ask for a clean-up
+    /// ([`ScratchRepo::tidy`]: 64 MiB of loose objects, 6,700 loose objects or 64 MiB of packs more than after the last clean-up, or
+    /// less than 1 GiB free on the disk). `git prune` keeps what `refs/heads/snapshot` and the private index name. It runs under the
+    /// copy lock at the start of the look after one that hashed a changed tree, and of the copy of the end, never between a copy and
+    /// its upload: the time from reading the tree to storing its copy is what it was without it, and the first copy of a session waits
+    /// for nothing. The time it takes counts as git time for the spacing. What it could not do does not fail the copy: the caller logs
+    /// it ([`Self::take_tidy_error`]). The repository of a read of a stopped session's storage never runs it.
     async fn tidy_if_due(&mut self) {
         if std::mem::take(&mut self.tidy_due) {
-            self.drop_old_versions().await;
+            self.tidy_error = self.scratch.tidy().await.err();
         }
     }
 
-    /// What the last clean-up of the repository could not do ([`Self::drop_old_versions`]), once.
+    /// What the last clean-up of the repository could not do ([`ScratchRepo::tidy`]), once.
     pub fn take_tidy_error(&mut self) -> Option<String> {
         self.tidy_error.take()
+    }
+
+    /// Other marks for the clean-up of this repository than those of a run ([`TidyMarks::RUN`]); tests.
+    pub fn set_tidy_marks(&mut self, marks: TidyMarks) {
+        self.scratch.set_tidy_marks(marks);
     }
 
     /// The copies of this session go on counting after `before`, the number of the newest copy the run saved before the session.
     /// Called once, before the first copy.
     pub fn count_from(&mut self, before: u32) {
         self.count = before;
+    }
+
+    /// What the bundles of this session's copies hold. Called once, before the first copy.
+    pub fn set_form(&mut self, form: BundleForm) {
+        self.form = form;
+    }
+
+    /// The commits a copy above the floor leaves out with everything they reach: heads of the bundle the run started from,
+    /// read from that bundle's own header, each of which this repository can read ([`Self::has_commit`]). Every reader of a copy has
+    /// everything those heads reach once it has taken the base, so any of them is a sound floor and no ancestor check is needed. Called
+    /// once, before the first copy; an id that is no full object id is left out.
+    pub fn set_floors(&mut self, floors: Vec<String>) {
+        self.floors = floors
+            .into_iter()
+            .filter(|f| object_id(f).is_ok())
+            .collect();
     }
 
     /// The copy just made could not be stored: the next look copies the tree again, whether it changed or not, so a tree whose
@@ -1270,10 +1760,54 @@ impl Snapshotter {
 
     /// [`ScratchRepo::tree`], or [`ScratchRepo::whole_tree`] when the index this repository keeps cannot be written as a tree any more (its
     /// entries name objects of the engine's store, and the engine removed it).
+    ///
+    /// A `git add` that failed is no such index. A git that died in the middle of it (a bus error on a file that was rewritten in
+    /// place while git read it) leaves `index.lock`, and so does a git that was ended. The copy of the whole tree was then made in its
+    /// place: it left out the files that only the kept index tracks, the look said that its copy was stored, the lock stayed, and the
+    /// next look could not stage at all. So the lock files are removed as soon as a staging has failed (the git that held them has
+    /// ended: only agentd uses this repository, one caller at a time) and the tree is staged once more in the kept index. Only when
+    /// that fails too is the copy the whole tree, as before: a look that can make a copy never makes none. A look that was given up
+    /// stages nothing a second time. No lock file is left behind by a staging that failed, whatever the look then says.
+    ///
+    /// A copy of the whole tree that is made because the staging failed twice lacks the files that only the base tracks and an
+    /// ignore rule now matches, and the run is told that a copy was stored. The reason is kept for the worker's log
+    /// ([`Self::take_whole_note`]), so that whoever reads why such a copy has no parent finds it.
     async fn current_tree(&self) -> Result<String, String> {
-        match self.scratch.tree().await {
-            Ok(tree) => Ok(tree),
-            Err(e) => self.scratch.whole_tree().await.map_err(|_| e),
+        let staged = match self.scratch.stage().await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.clear_stale_locks();
+                if self.scratch.given_up().await {
+                    Err(e)
+                } else {
+                    self.scratch.stage().await.map_err(|_| {
+                        self.clear_stale_locks();
+                        e
+                    })
+                }
+            }
+        };
+        let (e, staging_failed) = match staged {
+            Ok(()) => match self.scratch.write_kept_tree().await {
+                Ok(tree) => return Ok(tree),
+                Err(e) => (e, false),
+            },
+            Err(e) => (e, true),
+        };
+        match self.scratch.whole_tree().await {
+            Ok(whole) => {
+                if staging_failed {
+                    *self.whole_note.lock().unwrap_or_else(|p| p.into_inner()) = Some(format!(
+                        "the tree could not be staged in the index the worker keeps, at two tries ({e}); the copy holds the whole \
+                         tree as it is now, without a parent and without the files that only the base tracks"
+                    ));
+                }
+                Ok(whole)
+            }
+            Err(_) => {
+                self.clear_stale_locks();
+                Err(e)
+            }
         }
     }
 
@@ -1349,10 +1883,20 @@ impl Snapshotter {
     }
 
     /// Writes the bundle of `refs/heads/snapshot` and returns where it is and its size. Run from agentd's own directory.
-    async fn write_bundle(&self) -> Result<(PathBuf, u64), String> {
+    ///
+    /// With [`BundleForm::AboveFloor`] and a floor the bundle leaves out what the floors reach ([`Self::write_bundle_above`]).
+    /// In every other case, and whenever that path fails or says that this copy must be whole, the bundle holds everything the copy's
+    /// commit reaches, as it always did: a copy is never lost to the form it was to have.
+    async fn write_bundle(&self, form: BundleForm) -> Result<(PathBuf, u64), String> {
+        let bundle = self.git_dir.join("snapshot.bundle");
+        if form == BundleForm::AboveFloor
+            && !self.floors.is_empty()
+            && let Ok(Some(bytes)) = self.write_bundle_above(&bundle).await
+        {
+            return Ok((bundle, bytes));
+        }
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
-        let bundle = self.git_dir.join("snapshot.bundle");
         let _ = std::fs::remove_file(&bundle);
         self.scratch
             .git(
@@ -1372,6 +1916,86 @@ impl Snapshotter {
         Ok((bundle, bytes))
     }
 
+    /// Writes the bundle of `refs/heads/snapshot` without what the floors reach, and returns its size; `None` when this copy
+    /// must be whole. An error is a git call that failed, and the caller then writes the bundle whole too.
+    ///
+    /// What is left out: when the copy's commit is above the floors (`git rev-list --count refs/heads/snapshot ^<floor>...` answers 1
+    /// or more), the floors. When it answers 0 the ref names a commit the base holds, which only the copy of the end does (a session
+    /// that changed no file and made no commit, a continued run, a reset to an earlier commit): git refuses a bundle with nothing in
+    /// it, so the head's own parents are left out instead (`refs/heads/snapshot^@`). The ref still names the session's final head, the
+    /// bundle holds that one commit, and what it needs are the head's parents, which the base holds. A root commit has no parent: its
+    /// copy is whole. A count that fails is no zero.
+    ///
+    /// git writes the commits it left out as prerequisite lines of the bundle's header (bundle version 2). The header is read back:
+    /// one that cannot be read, or that is longer than [`THIN_HEADER_MAX`], makes the copy whole.
+    async fn write_bundle_above(&self, bundle: &Path) -> Result<Option<u64>, String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        let below_floors: Vec<String> = self.floors.iter().map(|f| format!("^{f}")).collect();
+        let mut count_args = vec!["rev-list", "--count", "refs/heads/snapshot"];
+        count_args.extend(below_floors.iter().map(String::as_str));
+        let above: u64 = self
+            .scratch
+            .git(cwd, &count_args, &[("GIT_DIR", gd)])
+            .await
+            .map_err(ws)?
+            .trim()
+            .parse()
+            .map_err(|_| "snapshot: git rev-list --count answered no number".to_string())?;
+        let left_out: Vec<String> = if above >= 1 {
+            below_floors
+        } else {
+            let parents = self
+                .scratch
+                .git(
+                    cwd,
+                    &["rev-parse", "refs/heads/snapshot^@"],
+                    &[("GIT_DIR", gd)],
+                )
+                .await
+                .map_err(ws)?;
+            let parents: Vec<String> = parents
+                .split_whitespace()
+                .filter(|p| object_id(p).is_ok())
+                .map(|p| format!("^{p}"))
+                .collect();
+            if parents.is_empty() {
+                return Ok(None);
+            }
+            parents
+        };
+        let _ = std::fs::remove_file(bundle);
+        let mut args = vec![
+            "bundle",
+            "create",
+            "-q",
+            "--version=2",
+            bundle.to_str().unwrap_or_default(),
+            "refs/heads/snapshot",
+        ];
+        args.extend(left_out.iter().map(String::as_str));
+        self.scratch
+            .git(cwd, &args, &[("GIT_DIR", gd)])
+            .await
+            .map_err(ws)?;
+        // The header as a reader will see it: it must end inside the bytes every reader takes, and say what the bundle needs.
+        let mut prefix = Vec::new();
+        std::fs::File::open(bundle)
+            .map_err(io)?
+            .take(harness_protocol::bundle_header::HEADER_BYTES_MAX)
+            .read_to_end(&mut prefix)
+            .map_err(io)?;
+        let header_len = prefix
+            .windows(2)
+            .position(|w| w == b"\n\n")
+            .map(|at| at + 2);
+        match (harness_protocol::bundle_header::needs(&prefix), header_len) {
+            (Ok(_), Some(len)) if len <= THIN_HEADER_MAX => {}
+            _ => return Ok(None),
+        }
+        Ok(Some(std::fs::metadata(bundle).map_err(io)?.len()))
+    }
+
     /// The private repository of a read of a stopped session's storage, `<dir>/snapshot.git`, for the work tree at `repo`. Unlike
     /// [`Self::new`] it is made whether or not the history can be read: the engine may have removed or replaced `.git` before its session
     /// was stopped, and the tree is still the work. Nothing is run in the engine's repository here and nothing is written to it, ever.
@@ -1389,6 +2013,10 @@ impl Snapshotter {
             tidy_error: None,
             tidy_due: false,
             gave_up: false,
+            prime_note: None,
+            whole_note: std::sync::Mutex::new(None),
+            form: BundleForm::Whole,
+            floors: Vec::new(),
         })
     }
 
@@ -1461,7 +2089,8 @@ impl Snapshotter {
             )
             .await
             .map_err(ws)?;
-        let (bundle, bundle_bytes) = self.write_bundle().await?;
+        // The read-back bundle holds the whole history, whatever the form of a session's copies is.
+        let (bundle, bundle_bytes) = self.write_bundle(BundleForm::Whole).await?;
         Ok(ReadBack {
             commit,
             tree,
@@ -1517,6 +2146,29 @@ impl Snapshotter {
         self.scratch
             .read(&["rev-parse", "--verify", "refs/baseline/snapshot^{commit}"])
             .await
+    }
+
+    /// Brings what the bundle the run started from holds into this repository (every ref of `bundle` under `refs/base/`),
+    /// so that a saved copy that needs it can be fetched ([`Self::fetch_copy`]) when the stopped session's own store no longer
+    /// holds it. Nothing reads those refs afterwards.
+    pub async fn fetch_base(&self, bundle: &Path) -> Result<(), String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        self.scratch
+            .git(
+                cwd,
+                &[
+                    "fetch",
+                    "-q",
+                    "--no-tags",
+                    bundle.to_str().unwrap_or_default(),
+                    "+refs/*:refs/base/*",
+                ],
+                &[("GIT_DIR", gd)],
+            )
+            .await
+            .map(|_| ())
+            .map_err(ws)
     }
 
     /// Compares the tree `copy_tree` of a copy read back with the saved copy `baseline` (a commit this repository can read).
@@ -1624,7 +2276,7 @@ impl Snapshotter {
     /// be read any more (the engine removed or replaced `.git`) the copy holds the whole tree and has no parent ([`Self::commit_copy`]).
     /// A copy is made whether or not the tree changed, so the newest record always says what the end state is.
     ///
-    /// It starts with the clean-up a look left due ([`Self::drop_old_versions`]), after the lock files are cleared.
+    /// It starts with the clean-up a look left due ([`Self::tidy_if_due`]), after the lock files are cleared.
     pub async fn final_copy(&mut self, head: Option<&str>) -> Result<SnapshotMade, String> {
         // The copy of the end has its caller's budget; a look that was aborted in the middle must not leave its own limit behind.
         self.scratch.give_up = None;
@@ -1662,7 +2314,7 @@ impl Snapshotter {
             )
             .await
             .map_err(ws)?;
-        let (bundle, bundle_bytes) = self.write_bundle().await?;
+        let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
         self.last_tree = tree;
         self.count = n;
         Ok(SnapshotMade {
@@ -1673,6 +2325,7 @@ impl Snapshotter {
             final_copy: true,
             bundle_bytes,
             read_unix,
+            digest: None,
         })
     }
 
@@ -1680,7 +2333,7 @@ impl Snapshotter {
     /// ([`Self::engine_head`]); without one, the last head a copy read (the base when there was none), as for the copy of the end; a parent
     /// this repository cannot read makes the copy hold the whole tree ([`Self::commit_copy`]).
     ///
-    /// It starts with [`Self::drop_old_versions`] when the look before it hashed a changed tree, also when a later step of that look failed,
+    /// It starts with [`Self::tidy_if_due`] when the look before it hashed a changed tree, also when a later step of that look failed,
     /// so the objects of earlier copies never pile up; after a look at an unchanged tree, which wrote nothing, there is none.
     pub async fn snapshot(&mut self) -> Result<Option<SnapshotMade>, String> {
         self.scratch.give_up = None;
@@ -1737,7 +2390,7 @@ impl Snapshotter {
             )
             .await
             .map_err(ws)?;
-        let (bundle, bundle_bytes) = self.write_bundle().await?;
+        let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
         self.last_tree = tree;
         if head.is_some() {
             self.last_parent = head;
@@ -1751,6 +2404,7 @@ impl Snapshotter {
             final_copy: false,
             bundle_bytes,
             read_unix,
+            digest: None,
         }))
     }
 }

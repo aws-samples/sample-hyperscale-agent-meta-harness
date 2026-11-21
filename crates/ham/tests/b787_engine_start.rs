@@ -124,7 +124,7 @@ async fn b787_a_stage_that_predates_the_engine_member_is_named_and_the_request_i
         .unwrap_err();
     let shown = e.to_string();
     assert!(
-        shown.contains("this stage predates the choice of an engine, so it cannot run on opencode"),
+        shown.contains("this stage predates the choice of an engine, so it cannot run on opencode; run without --engine (or set default_engine to the default) or update the stage (run ham update; ask the person who runs the stage if that is not you)"),
         "{shown}"
     );
     assert!(

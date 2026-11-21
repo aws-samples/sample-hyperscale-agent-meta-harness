@@ -747,7 +747,7 @@ async fn remove_reports_a_partial_failure_and_a_missing_route() {
     assert!(
         bottom_two(&text)
             .0
-            .contains("this service cannot edit tags yet"),
+            .contains("this stage cannot edit tags yet: it needs a newer backend (run ham update"),
         "{text}"
     );
     assert!(table(&text).contains(&pair("topic:old", 3)), "{text}");

@@ -501,6 +501,23 @@ pub trait Blobs: Send + Sync {
     fn exists(&self, key: &str) -> impl Future<Output = Result<bool, StoreError>> + Send {
         async move { Ok(self.read_prefix(key, 1).await?.is_some()) }
     }
+    /// [`Blobs::read_prefix`] for a caller that goes on without the object. A
+    /// refusal is every answer of the store that a retry cannot change: no such key (HTTP 404), a read the role is not allowed (HTTP 403,
+    /// which is also what S3 answers for an absent key to a role that may not list the bucket), and any other refusal of the request
+    /// itself. `Err` is only a failure that may pass on a retry: a fault of the store (HTTP 5xx), a throttle, a timeout, a connection
+    /// that failed. The default asks `read_prefix`, for a store that tells an absent key apart and refuses nothing else.
+    fn read_or_refused(
+        &self,
+        key: &str,
+        max_bytes: u64,
+    ) -> impl Future<Output = Result<ReadOrRefused, StoreError>> + Send {
+        async move {
+            Ok(match self.read_prefix(key, max_bytes).await? {
+                Some(object) => ReadOrRefused::Object(object),
+                None => ReadOrRefused::Refused("no such key".to_string()),
+            })
+        }
+    }
     /// The first `max_bytes` (at least 1) of one object with its whole size, ETag, version and write time (a ranged GET); `None` when the
     /// key does not exist.
     fn read_prefix(
@@ -514,6 +531,16 @@ pub trait Blobs: Send + Sync {
             ))
         }
     }
+}
+
+/// What [`Blobs::read_or_refused`] gives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadOrRefused {
+    /// The object, as [`Blobs::read_prefix`] gives it.
+    Object(ObjectPrefix),
+    /// The store says that the object is absent or may not be read, and a retry cannot change that answer. The text is the store's own
+    /// reason, for the log.
+    Refused(String),
 }
 
 /// One object of a listing.

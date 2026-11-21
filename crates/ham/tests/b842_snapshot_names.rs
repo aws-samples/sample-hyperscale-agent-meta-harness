@@ -19,9 +19,10 @@ const FIRST: &str = "9d2f1a7c4b8e03d56a1f7c9e2b4d6a8c0e1f3a5b";
 const SECOND: &str = "c8611bc0ffee03d56a1f7c9e2b4d6a8c0e1f3a5b";
 const BASE: &str = "1111111111111111111111111111111111111111";
 
+/// A copy that holds the whole history. A copy whose header names a commit it needs comes with the repository the run started
+/// from.
 fn bundle(head: &str, filler: usize) -> Vec<u8> {
-    let mut b = format!("# v2 git bundle\n-{BASE} base subject\n{head} {SNAPSHOT_REF}\n\nPACK")
-        .into_bytes();
+    let mut b = format!("# v2 git bundle\n{head} {SNAPSHOT_REF}\n\nPACK").into_bytes();
     b.extend((0..filler).map(|i| (i % 251) as u8));
     b
 }

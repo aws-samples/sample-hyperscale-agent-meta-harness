@@ -478,7 +478,7 @@ fn error_messages_name_the_rule_and_never_a_value() {
 
 #[test]
 fn the_body_limit_and_the_constants_are_the_contract_values() {
-    assert_eq!(PROTOCOL_VERSION, "1.63.0");
+    assert_eq!(PROTOCOL_VERSION, "1.64.0");
     assert_eq!(DIRECT_AGENT_ID, "direct");
     assert_eq!(DIRECT_TURN, 1);
     assert_eq!(DIRECT_TASK_ID, "root");

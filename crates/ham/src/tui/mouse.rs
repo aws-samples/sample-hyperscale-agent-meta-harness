@@ -8,13 +8,18 @@
 //!   does the same, for every box, run row, fold, key chip, link and text pane drawn. A region drawn later wins where two overlap, so a
 //!   popup drawn over a list takes the click ([`Target::Block`] shields what lies under it). Regions are clipped to the frame.
 //!   [`HitMap::resized`] makes the map stale until the next `begin`: a click between a resize and the next draw hits nothing.
-//!   Every click has a key: `push` takes the key's name and [`HitMap::unkeyed`] lists the regions that name none, for a test.
+//!   Every click has a key: `push` takes the key's name and [`HitMap::unkeyed`] lists the regions that name none, for a test. The one
+//!   region without a key is the update notice: its click opens a web page, and the update itself is
+//!   `ham update` typed in a shell.
 //! * **Pointer.** A left press on a box focuses it, on a run row selects it (a second click on the same run within [`DOUBLE_CLICK`]
 //!   opens it), on a key chip presses that key, on a link opens it. A fold sits on top of the selectable text, so a press there waits
 //!   for the button to come up: on the same cell it toggles the fold (if that fold is still under the pointer), after a move it is a
 //!   text selection. While text is selected the next press only clears the selection, except that a press on selectable text clears
 //!   it and may start a new one (dragging is not a click). The wheel scrolls the pane under the pointer by a step, faster for a fast
-//!   run of notches. Other buttons, motion, sideways wheels and modifiers change nothing.
+//!   run of notches. Other buttons, motion, sideways wheels and modifiers change nothing. A press on the update notice
+//!   waits for the button too: when it comes up anywhere on the notice, the screen opens the page of the
+//!   update source ([`Action::Update`]); when it comes up elsewhere, nothing happens. The notice has no pane, so a move over it selects
+//!   nothing and the same-cell rule of a fold is not needed.
 //! * **What cancels.** A key press ([`Pointer::note_key`]), another target, a wheel and a resize break a double click; a resize or a map
 //!   that changes epoch drops a drag and a selection. A focus-lost event is the screen's to turn into [`Pointer::reset`].
 
@@ -69,6 +74,8 @@ pub enum Target {
     Scroll(PaneId),
     /// Takes the click and the wheel and does nothing with them: a popup or a confirm line over what lies under it.
     Block,
+    /// The update notice on the first row: a click, button down and up on it, opens the page of the update source.
+    Update,
 }
 
 /// One rectangle of a draw.
@@ -144,7 +151,8 @@ impl HitMap {
         self.regions.is_empty()
     }
 
-    /// The regions that name no key. Every click has a key, so a test asserts this is empty.
+    /// The regions that name no key. Every click but the update notice's has a key, so a test asserts this is empty for a screen
+    /// without the notice and holds the notice alone with it.
     pub fn unkeyed(&self) -> Vec<&Region> {
         self.regions.iter().filter(|r| r.key.is_empty()).collect()
     }
@@ -267,6 +275,8 @@ pub enum Action {
     },
     /// Drop the selection (or the half-made one).
     ClearSelection,
+    /// The update notice was clicked: open the page of the update source. The app stays open.
+    Update,
 }
 
 /// How far a wheel notch goes.
@@ -334,6 +344,8 @@ impl WheelState {
 enum Kind {
     Fold(String),
     Text,
+    /// A press on the update notice: it acts when the button comes up on the notice.
+    Update,
 }
 
 /// A left press that waits for the button to come up.
@@ -591,6 +603,18 @@ impl Pointer {
                 self.chain = None;
                 self.gesture = Some(Gesture::text(*pane, region.rect, x, y));
             }
+            Target::Update => {
+                self.chain = None;
+                self.gesture = Some(Gesture {
+                    kind: Kind::Update,
+                    origin: (x, y),
+                    pane: None,
+                    moved: false,
+                    last: (x, y),
+                    last_autoscroll: None,
+                    repeat: true,
+                });
+            }
             Target::Scroll(_) | Target::Block => self.chain = None,
         }
     }
@@ -635,6 +659,14 @@ impl Pointer {
         if map.is_stale() {
             if g.moved {
                 out.push(Action::ClearSelection);
+            }
+            return;
+        }
+        // A press on the update notice acts when the button comes up anywhere on the notice, and nowhere else. It has no pane, so
+        // no selection was started.
+        if matches!(g.kind, Kind::Update) {
+            if matches!(map.target_at(x, y).map(|r| &r.target), Some(Target::Update)) {
+                out.push(Action::Update);
             }
             return;
         }

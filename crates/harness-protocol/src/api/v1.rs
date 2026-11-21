@@ -68,8 +68,8 @@ pub struct StartDirectRunRequest {
     /// left out of the stored request, so a request that keeps the defaults is byte for byte the request of protocol 1.38.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_config: Option<crate::direct::EngineConfig>,
-    /// Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted only with the `s3-only` target and no
-    /// `baseRef`; control-api stores the delivered head it resolved in `headSha`.
+    /// Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted with the `s3-only` target and no
+    /// `baseRef`, or with the CodeCommit repository the source run used; control-api stores the delivered head it resolved in `headSha`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continue_from: Option<crate::direct::ContinueFrom>,
     /// Protocol 1.38.0: the user's research switch. Absent means the stage default, which is on; `ham run --no-research` sends
@@ -166,6 +166,19 @@ pub struct StartDirectRunRequest {
     /// byte for byte the request of protocol 1.62.0. A stage that predates the member refuses a request that holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recover_after_stop: Option<bool>,
+    /// Protocol 1.64.0: whether the worker takes the lifecycle records of the run a follow-up continues out of the work tree
+    /// before the first prompt. Absent (the default), the worker keeps them, as the releases before did, so a request without the member
+    /// is byte for byte the request of protocol 1.63.0. `true`, in a request that holds `continueFrom`, takes the records that runs of
+    /// the product wrote under `.ham` (the goal card, the run log, the red records and the research notes) out of the work tree in a
+    /// commit of its own; they stay in the history of the code and in the earlier run's zip. `false` keeps them: a client sends it for
+    /// the user's `run.remove_earlier_records = false`. Without `continueFrom` the member means nothing
+    /// ([`crate::direct::removes_earlier_records`] is the one rule the worker reads). Two values are ever stored. control-api is the
+    /// only writer of `true`: it stores it for the start of a follow-up of a run that reported done, by its own rule, and never copies a
+    /// client's `true`. The user's `false` is stored as sent. Every other request is stored without the member: a resume, a follow-up of
+    /// a run that did not report done, a request without `continueFrom`. A worker image that predates the member refuses a stored
+    /// request that holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_earlier_records: Option<bool>,
 }
 
 /// `GET /v1/direct/models` (protocol 1.31.0; served only by the `direct` stage) and `ham models --json`: every

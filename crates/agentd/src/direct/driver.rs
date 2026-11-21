@@ -152,6 +152,9 @@ pub struct GitProbe {
     repo: std::path::PathBuf,
     scratch: Option<ScratchRepo>,
     errors: std::sync::atomic::AtomicU64,
+    /// One reading at a time. The readings share the private repository's index, and the clean-up that follows a reading must
+    /// not run beside the `git add` of another: a prune can remove an object that add has just written.
+    flight: tokio::sync::Mutex<()>,
 }
 
 impl GitProbe {
@@ -161,14 +164,38 @@ impl GitProbe {
             repo: repo.to_path_buf(),
             scratch: ScratchRepo::new(agent_data, repo).await.ok(),
             errors: std::sync::atomic::AtomicU64::new(0),
+            flight: tokio::sync::Mutex::new(()),
         }
     }
 
+    /// Other marks for the clean-up of the private repository than those of a run (`snapshot::TidyMarks::RUN`); tests.
+    #[must_use]
+    pub fn with_tidy_marks(mut self, marks: crate::direct::snapshot::TidyMarks) -> Self {
+        if let Some(scratch) = self.scratch.as_mut() {
+            scratch.set_tidy_marks(marks);
+        }
+        self
+    }
+
+    /// Another limit for the clean-up of the private repository than `snapshot::TIDY_LIMIT`; tests.
+    #[must_use]
+    pub fn with_tidy_limit(mut self, limit: std::time::Duration) -> Self {
+        if let Some(scratch) = self.scratch.as_mut() {
+            scratch.set_tidy_limit(limit);
+        }
+        self
+    }
+
     async fn tree(&self) -> Option<String> {
+        let _one_at_a_time = self.flight.lock().await;
         let head = crate::workspace::git_with_env(&self.repo, &["rev-parse", "HEAD"], &[])
             .await
             .ok()?;
-        let tree = self.scratch.as_ref()?.tree().await.ok()?;
+        let scratch = self.scratch.as_ref()?;
+        let tree = scratch.tree().await.ok()?;
+        // Each reading of a changed tree leaves the new versions of the changed files in `probe.git`, and nothing removed them.
+        // The clean-up runs when the repository has grown by a mark; one that fails is logged once and fails no reading.
+        scratch.tidy_logged().await;
         Some(format!("{head}\n{tree}"))
     }
 }

@@ -1591,7 +1591,7 @@ impl SettingsState {
         } else {
             if snap.newer {
                 lines.push(Line::styled(
-                    " config.toml was written by a newer ham: it is read, and changes are refused (update ham)".to_string(),
+                    " config.toml was written by a newer ham: it is read, and changes are refused (update ham: run ham update)".to_string(),
                     bold(),
                 ));
             }

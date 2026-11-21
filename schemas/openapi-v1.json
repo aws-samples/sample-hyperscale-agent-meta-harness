@@ -2206,7 +2206,7 @@
                 "type": "null"
               }
             ],
-            "description": "Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted only with the `s3-only` target and no\n`baseRef`; control-api stores the delivered head it resolved in `headSha`."
+            "description": "Protocol 1.38.0: start from the head an earlier run delivered (`ham continue`). Accepted with the `s3-only` target and no\n`baseRef`, or with the CodeCommit repository the source run used; control-api stores the delivered head it resolved in `headSha`."
           },
           "deliveryNote": {
             "description": "Protocol 1.62.0: `false` switches off the harness's block on how the run delivers, from the user's `run.delivery_note`. The\nworker otherwise writes the block before the first prompt of every session and of a fresh chat inside a session. With `false` the engine\nis told nothing about the delivery and the first words it reads are the ones of protocol 1.60.0. Absent (the default) and `true` leave\nthe block on; only `false` is ever sent or stored, so a request that keeps the default is byte for byte the request of protocol 1.61.0.\nThe worker reads the member of the stored request ([`crate::direct::delivery_to_say`]); a worker image that predates the member refuses\na stored request that holds it, and tells the engine nothing about the delivery of a request that does not.",
@@ -2305,6 +2305,13 @@
           },
           "recoverAfterStop": {
             "description": "Protocol 1.63.0: `false` switches off reading a stopped session's storage back, from the user's `run.recover_after_stop`.\nOtherwise, when a session of the run is stopped from outside or stops answering, the service reads that session's own storage\nback before the next session starts and uses those files when the checks leave no doubt, and a stop the worker hears of ends the\nwait for the session early. With `false` the service makes no read and does not act on the worker's notice: the session is called\nlost after [`crate::direct::SESSION_LOST_AFTER_S`] seconds and the next one starts from the last saved copy, as in the releases\nbefore. Absent (the default) and `true` leave it on; only `false` is ever sent or stored, so a request that keeps the default is\nbyte for byte the request of protocol 1.62.0. A stage that predates the member refuses a request that holds it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "removeEarlierRecords": {
+            "description": "Protocol 1.64.0: whether the worker takes the lifecycle records of the run a follow-up continues out of the work tree\nbefore the first prompt. Absent (the default), the worker keeps them, as the releases before did, so a request without the member\nis byte for byte the request of protocol 1.63.0. `true`, in a request that holds `continueFrom`, takes the records that runs of\nthe product wrote under `.ham` (the goal card, the run log, the red records and the research notes) out of the work tree in a\ncommit of its own; they stay in the history of the code and in the earlier run's zip. `false` keeps them: a client sends it for\nthe user's `run.remove_earlier_records = false`. Without `continueFrom` the member means nothing\n([`crate::direct::removes_earlier_records`] is the one rule the worker reads). Two values are ever stored. control-api is the\nonly writer of `true`: it stores it for the start of a follow-up of a run that reported done, by its own rule, and never copies a\nclient's `true`. The user's `false` is stored as sent. Every other request is stored without the member: a resume, a follow-up of\na run that did not report done, a request without `continueFrom`. A worker image that predates the member refuses a stored\nrequest that holds it.",
             "type": [
               "boolean",
               "null"
@@ -2546,7 +2553,7 @@
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness public API",
-    "version": "1.63.0"
+    "version": "1.64.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

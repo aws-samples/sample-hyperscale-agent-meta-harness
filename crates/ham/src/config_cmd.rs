@@ -370,6 +370,13 @@ pub fn effective(cfg: &Config, env: Env<'_>, key: Key) -> Effective {
                     Origin::Env("HAMH_NO_DEPRECATION_NOTICES"),
                 )
             }),
+            // `HAMH_NO_UPDATE_NOTICE` can only switch the look off: it is a layer only while it does.
+            Key::UiUpdateNotice => ham_core::config::update_notice_forced_off(env).then(|| {
+                (
+                    "false".to_string(),
+                    Origin::Env(ham_core::config::NO_UPDATE_NOTICE),
+                )
+            }),
             Key::UiNotify => var.is_some().then(|| {
                 (
                     notify_on(env, cfg).to_string(),
@@ -467,7 +474,7 @@ pub(crate) fn blocks_runs(loaded: &Loaded) -> Option<String> {
     (!loaded.read.has_errors() && loaded.read.run_blocked()).then(|| {
         let version = loaded.read.config.config_version.unwrap_or(0);
         format!(
-            "the file was written by a newer ham (configVersion {version}) and holds keys this ham does not know that may steer a run, so run starts are refused; update ham or remove those keys"
+            "the file was written by a newer ham (configVersion {version}) and holds keys this ham does not know that may steer a run, so run starts are refused; update ham (run ham update) or remove those keys"
         )
     })
 }
@@ -832,7 +839,7 @@ pub fn default_drift(server: &ModelList) -> Option<String> {
     let local = builtin().default_model()?;
     (server.default != local.id).then(|| {
         format!(
-            "note: the server's default model is {} and this ham's is {}; the lists differ, so update ham or the stage",
+            "note: the server's default model is {} and this ham's is {}; the lists differ, so update ham or the stage (run ham update; ask the person who runs the stage if that is not you)",
             server.default, local.id
         )
     })

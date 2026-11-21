@@ -19,8 +19,7 @@ use agentd::direct::snapshot::{
     cut_unix, late_after, store_limit,
 };
 use agentd::server::{Ending, ends_after_the_copy};
-use common::git;
-use direct_support::{Direct, Opts, RUN, first_process_possible};
+use direct_support::{Direct, Opts, RUN, checkout_of_copy, first_process_possible};
 use harness_protocol::direct::s3 as keys;
 use harness_protocol::envelope::EventType;
 use harness_protocol::runtime::TurnOutcome;
@@ -70,29 +69,10 @@ fn copy_notices(d: &Direct) -> Vec<String> {
         .collect()
 }
 
-/// A clone of the snapshot bundle the bucket holds now, on its `snapshot` branch.
+/// A checkout of the snapshot bundle the bucket holds now, on its `snapshot` branch: the copy alone when it holds the whole history (the
+/// command the client prints), and on the bundle the run started from when the copy needs it, as every reader does.
 fn clone_of_snapshot(d: &Direct, name: &str) -> PathBuf {
-    let bundle = d.dir.join(format!("{name}.bundle"));
-    std::fs::write(
-        &bundle,
-        d.aws
-            .get(&keys::snapshot_bundle_key(RUN))
-            .expect("snapshot.bundle"),
-    )
-    .unwrap();
-    let clone = d.dir.join(name);
-    git(
-        &d.dir,
-        &[
-            "clone",
-            "-q",
-            "-b",
-            "snapshot",
-            bundle.to_str().unwrap(),
-            clone.to_str().unwrap(),
-        ],
-    );
-    clone
+    checkout_of_copy(&d.aws, &d.dir, &keys::snapshot_bundle_key(RUN), name)
 }
 
 /// Waits until `seen` holds, at most `limit`; `false` when it never did.

@@ -460,7 +460,7 @@ async fn a_missed_heartbeat_named_states_timeout_delivers_the_snapshot_as_a_lost
     assert_eq!(completed["label"], "Cline stopped: the session was lost");
     assert_eq!(
         completed["detail"],
-        "no heartbeat for 600 s. The work is the last saved snapshot, taken at 2026-10-13 18:50 UTC.; The run used 3 sessions."
+        "no heartbeat for 600 s. The work is the last saved snapshot, taken at 2026-10-13 18:50 UTC. The run used 3 sessions."
     );
     let pkg: PackageRequest = serde_json::from_value(w.called("packager")[0].clone()).unwrap();
     // The zip and the pull request carry the stop's own detail; the event adds the sessions note after it.

@@ -9,7 +9,8 @@
 //! In this mode agentd does one thing. It starts no engine, installs no session credentials, opens no credential socket and no package
 //! proxy, calls no internal API, and writes nothing under the storage's root. The copy is made in a private repository on the machine's
 //! own disk (`<data_root>/<run>/recover/<attempt>/`), with the engine's objects as an alternate and the tree as the work tree
-//! (`Snapshotter::for_read_back`). The request's credentials are used for the one PUT and the one GET, and never reach a log line.
+//! (`Snapshotter::for_read_back`). The request's credentials are used for the one PUT and at most two GETs,
+//! and never reach a log line.
 //! One thing does move on the storage: git renews the time stamp of an object file of the engine's store when the copy uses that
 //! object again through the alternate, as it does for every copy of a working session. No file, no content and no name changes.
 //!
@@ -22,10 +23,11 @@ use crate::direct::marker;
 use crate::direct::snapshot::{GiveUp, Snapshotter};
 use crate::s3::{PutNew, S3Objects, sha256_base64};
 use crate::server::App;
+use harness_protocol::bundle_header::{self, HEADER_BYTES_MAX};
 use harness_protocol::direct::{
     COMPARISON_DONE, COMPARISON_UNKNOWN, DIRECT_AGENT_ID, MAX_COMPARE_PATHS_SHOWN,
     MAX_PREFIX_CHECK_BYTES, RecoveredCopy, RecoveryAnswer, RecoveryComparison,
-    RecoveryInvocationRequest,
+    RecoveryInvocationRequest, s3 as keys,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -146,6 +148,38 @@ pub async fn handle(app: &Arc<App>, req: &RecoveryInvocationRequest) -> Recovery
         took_ms,
         agentd_version: env!("CARGO_PKG_VERSION").to_string(),
     }
+}
+
+/// The second try of the fetch of a saved copy, after the storage's own objects could not complete it (`first` is what git
+/// said). A saved copy may hold what the run changed and need what the bundle the run started from holds. The stopped session's
+/// store holds that while its `.git` is whole, and no longer when the engine removed `.git` or the objects of the base. The read
+/// then takes the base first, as every reader of such a copy does: `runs/<run>/input/repo.bundle` of the bucket the request names
+/// is downloaded to the private folder and fetched into the private repository, and the copy after it. A copy whose header names
+/// no commit it needs is not tried again, and a base that cannot be read or fetched leaves `first` the reason, with what the base
+/// said.
+async fn fetch_after_the_base(
+    objects: &S3Objects,
+    req: &RecoveryInvocationRequest,
+    dir: &Path,
+    copy: &Path,
+    snapshotter: &Snapshotter,
+    first: String,
+) -> Result<String, String> {
+    let header = super::file_prefix(copy, HEADER_BYTES_MAX);
+    let needs_base = bundle_header::needs(&header).is_ok_and(|commits| !commits.is_empty());
+    let Some((bucket, _)) = keys::split_uri(&req.object).filter(|_| needs_base) else {
+        return Err(first);
+    };
+    let base_uri = keys::uri(bucket, &keys::repo_bundle_key(&req.run_id));
+    let base = dir.join("base.bundle");
+    objects
+        .get_to_file(&base_uri, &req.credentials, &base)
+        .await
+        .map_err(|e| format!("{first}; the bundle the run started from could not be read: {e}"))?;
+    snapshotter.fetch_base(&base).await.map_err(|e| {
+        format!("{first}; the bundle the run started from could not be fetched: {e}")
+    })?;
+    snapshotter.fetch_copy(copy).await
 }
 
 /// A file call off the runtime's threads: a storage that stops answering, or a large file, holds one thread and never the read, so the
@@ -287,7 +321,12 @@ async fn read(
         Some(uri) => {
             let file = dir.join("baseline.bundle");
             match objects.get_to_file(uri, &req.credentials, &file).await {
-                Ok(()) => snapshotter.fetch_copy(&file).await,
+                Ok(()) => match snapshotter.fetch_copy(&file).await {
+                    Ok(commit) => Ok(commit),
+                    Err(first) => {
+                        fetch_after_the_base(&objects, req, &dir, &file, &snapshotter, first).await
+                    }
+                },
                 Err(e) => Err(e),
             }
         }

@@ -54,6 +54,8 @@ fn fetched(
         engine: engine.map(str::to_string),
         read_back_from: None,
         asked_read_back: false,
+        base: None,
+        needs_base: false,
     }
 }
 

@@ -31,7 +31,7 @@ use harness_protocol::store::s3;
 
 /// The most bytes of `evidence/direct.json` read: the whole `summary.json` it holds (at most 1 MiB, the engine's message of at most 200,000
 /// characters among it) and the rest of the envelope fit inside. The route reads the object into a Lambda function with 256 MB.
-const MAX_EVIDENCE_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_EVIDENCE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(crate) async fn get_head<S: Store, B: Blobs, E: Execution>(
     run_id: &str,

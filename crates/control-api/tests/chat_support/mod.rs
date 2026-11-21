@@ -191,9 +191,14 @@ pub struct World {
     pub control_read_down: AtomicBool,
     pub objects_down: AtomicBool,
     pub presign_down: AtomicBool,
+    /// The listing and the read of the one key named here fail like a store that does not answer; every other key works.
+    pub key_down: Mutex<Option<String>>,
     /// The role may not list the bucket (no `s3:ListBucket`): S3 answers a GET of an absent key 403 AccessDenied, not 404, and the S3 adapter
     /// maps that to `Unavailable`. A listing by `exists` (granted for one key pattern) still answers.
     pub no_list_permission: AtomicBool,
+    /// Reads of the keys named here fail in a way that may pass on a retry (a fault of the store, a timeout, a throttle); the text is
+    /// what the store said. Every other key answers as usual.
+    pub read_faults: Mutex<BTreeMap<String, String>>,
     /// Writers that land between a tag edit's read and its write: each `put_run_tags` takes the oldest first, applies it to the
     /// item (its own condition must hold, or the fake panics: a hook that lost its own race is a test mistake) and only then judges the
     /// edit's write.
@@ -884,10 +889,19 @@ impl Blobs for &World {
     }
     async fn exists(&self, key: &str) -> Result<bool, StoreError> {
         self.log(format!("exists {key}"));
-        if self.objects_down.load(Ordering::SeqCst) {
+        if self.objects_down.load(Ordering::SeqCst)
+            || self.key_down.lock().unwrap().as_deref() == Some(key)
+        {
             return Err(unavailable("object list"));
         }
         Ok(self.objects.lock().unwrap().contains_key(key))
+    }
+    async fn read_or_refused(
+        &self,
+        key: &str,
+        max_bytes: u64,
+    ) -> Result<control_api::handler::ReadOrRefused, StoreError> {
+        self.read_classified(key, max_bytes).await
     }
     async fn read_prefix(
         &self,
@@ -895,8 +909,13 @@ impl Blobs for &World {
         max_bytes: u64,
     ) -> Result<Option<ObjectPrefix>, StoreError> {
         self.log(format!("read_prefix {key} {max_bytes}"));
-        if self.objects_down.load(Ordering::SeqCst) {
+        if self.objects_down.load(Ordering::SeqCst)
+            || self.key_down.lock().unwrap().as_deref() == Some(key)
+        {
             return Err(unavailable("object read"));
+        }
+        if let Some(fault) = self.read_faults.lock().unwrap().get(key) {
+            return Err(StoreError::Unavailable(fault.clone()));
         }
         // S3 answers a ranged GET with a first byte past the end by 416, and a range of zero bytes is not a range.
         assert!(max_bytes >= 1, "a ranged GET needs at least one byte");
@@ -923,6 +942,46 @@ impl Blobs for &World {
                     .cloned()
                     .unwrap_or_else(|| "2020-01-01T00:00:00Z".to_string()),
             ),
+        }))
+    }
+}
+
+impl World {
+    /// The read of one object as the S3 adapter classifies it: the object; a refusal that no retry
+    /// changes (no such key, or 403 for an absent key when the role may not list the bucket); or a failure that may pass on a retry.
+    async fn read_classified(
+        &self,
+        key: &str,
+        max_bytes: u64,
+    ) -> Result<control_api::handler::ReadOrRefused, StoreError> {
+        use control_api::handler::ReadOrRefused;
+        self.log(format!("read_or_refused {key} {max_bytes}"));
+        if self.objects_down.load(Ordering::SeqCst) {
+            return Err(unavailable("object read"));
+        }
+        if let Some(fault) = self.read_faults.lock().unwrap().get(key) {
+            return Err(StoreError::Unavailable(fault.clone()));
+        }
+        assert!(max_bytes >= 1, "a ranged GET needs at least one byte");
+        let g = self.objects.lock().unwrap();
+        let Some(bytes) = g.get(key) else {
+            return Ok(ReadOrRefused::Refused(
+                if self.no_list_permission.load(Ordering::SeqCst) {
+                    "s3 GET returned 403 AccessDenied".to_string()
+                } else {
+                    "s3 GET returned 404 NoSuchKey".to_string()
+                },
+            ));
+        };
+        let take = usize::try_from(max_bytes)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        Ok(ReadOrRefused::Object(ObjectPrefix {
+            bytes: bytes[..take].to_vec(),
+            size: bytes.len() as u64,
+            etag: Some(etag_of(bytes)),
+            version_id: Some(version_of(bytes)),
+            last_modified: None,
         }))
     }
 }

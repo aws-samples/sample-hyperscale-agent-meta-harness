@@ -7,7 +7,7 @@
 //! the engine's repository, as the nudge's change test and the snapshot do.
 
 use crate::direct::records::{EARLIER_BASE, Records};
-use crate::direct::snapshot::{ScratchRepo, read_regular_nofollow};
+use crate::direct::snapshot::{ScratchRepo, TidyMarks, read_regular_nofollow};
 use crate::workspace::git_with_env;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,6 +25,8 @@ pub struct TreeFp {
     repo: PathBuf,
     excludes: Vec<String>,
     lock: tokio::sync::Mutex<()>,
+    /// The private repository itself, for its clean-up ([`ScratchRepo::tidy_logged`]).
+    scratch: ScratchRepo,
 }
 
 /// The pathspec of a hidden path (`dir/**` is the directory), or `None` for one with pattern characters.
@@ -40,7 +42,11 @@ impl TreeFp {
     /// Makes the private repository for the work tree at `repo`; `hidden` are the paths agentd moves aside.
     pub async fn open(agent_data: &Path, repo: &Path, hidden: &[String]) -> Result<Self, String> {
         let git_dir = agent_data.join("goal.git");
-        ScratchRepo::open(git_dir.clone(), repo).await?;
+        // The settings of a private repository of a working session (`ScratchRepo::tune`).
+        let scratch = ScratchRepo::open(git_dir.clone(), repo)
+            .await?
+            .tuned()
+            .await;
         // The records of the earlier folder do not count either (COMPAT-CAH-DATA): a repository that keeps them there is worked in that folder.
         let earlier = format!("{EARLIER_BASE}/lifecycle");
         let excludes = [LIFECYCLE_DIR, earlier.as_str(), LEGACY_LIFECYCLE_DIR]
@@ -53,16 +59,39 @@ impl TreeFp {
             repo: repo.to_path_buf(),
             excludes,
             lock: tokio::sync::Mutex::new(()),
+            scratch,
         })
+    }
+
+    /// Other marks for the clean-up of the private repository than those of a run (`snapshot::TidyMarks::RUN`); tests.
+    #[must_use]
+    pub fn with_tidy_marks(mut self, marks: TidyMarks) -> Self {
+        self.scratch.set_tidy_marks(marks);
+        self
+    }
+
+    /// Another limit for the clean-up of the private repository than `snapshot::TIDY_LIMIT`; tests.
+    #[must_use]
+    pub fn with_tidy_limit(mut self, limit: Duration) -> Self {
+        self.scratch.set_tidy_limit(limit);
+        self
     }
 
     /// The tree id of the work tree as it is now, less the excluded paths; `None` when it could not be made.
     pub async fn fingerprint(&self) -> Option<String> {
         let _one_at_a_time = self.lock.lock().await;
-        tokio::time::timeout(FINGERPRINT_TIMEOUT, self.make())
+        let made = tokio::time::timeout(FINGERPRINT_TIMEOUT, self.make())
             .await
             .ok()?
-            .ok()
+            .ok()?;
+        // Each fingerprint of a changed tree leaves the new versions of the changed files in this repository, and nothing removed
+        // them: a run that rewrites a large file between its rounds filled the worker's disk that way. The clean-up runs when the
+        // repository has grown by a mark, under the lock that serializes the fingerprints, so no prune runs beside a `git add`. It
+        // runs here, once the fingerprint is made and outside the time a fingerprint has: inside it, a clean-up that ran long turned
+        // a fingerprint that was made into none and was ended in the middle. It has a limit of its own (`snapshot::TIDY_LIMIT`),
+        // changes no fingerprint, and one that fails or is given up is logged once and fails nothing.
+        self.scratch.tidy_logged().await;
+        Some(made)
     }
 
     async fn make(&self) -> Result<String, String> {

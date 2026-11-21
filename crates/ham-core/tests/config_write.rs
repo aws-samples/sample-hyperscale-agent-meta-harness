@@ -118,7 +118,7 @@ fn the_first_new_key_opens_the_door_once_and_unset_returns_the_original_bytes() 
 
 #[test]
 fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
-    let values: [(&str, &str); 49] = [
+    let values: [(&str, &str); 51] = [
         (
             "api_endpoint",
             "https://x.execute-api.us-east-1.amazonaws.com/direct",
@@ -171,6 +171,8 @@ fn every_key_sets_and_unsets_back_to_the_bytes_before_it() {
         ("run.copy_every_minutes", "10"),
         ("run.delivery_note", "off"),
         ("run.recover_after_stop", "off"),
+        ("ui.update_notice", "off"),
+        ("run.remove_earlier_records", "off"),
     ];
     // `run.copy_every_seconds` is not in the list: it cannot be set beside `run.copy_every_minutes` (tests/b823_copy_seconds_key.rs).
     assert_eq!(values.len() + 1, KEYS.len());
@@ -347,7 +349,7 @@ fn a_bad_key_a_bad_value_and_a_hostile_value_change_nothing() {
         panic!("an unknown key");
     };
     assert_eq!(key, "nokey");
-    assert!(known.contains(&"run.goal".to_string()) && known.len() == 50);
+    assert!(known.contains(&"run.goal".to_string()) && known.len() == 52);
     assert!(matches!(
         plan_unset(OWNER, "nokey"),
         Err(PlanError::Config(ConfigError::UnknownKey { .. }))

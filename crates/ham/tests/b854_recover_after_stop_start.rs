@@ -146,7 +146,7 @@ async fn b854_a_stage_that_predates_the_switch_is_named_with_the_key_and_the_two
         "this stage predates the switch of reading a stopped session's storage back",
         "run.recover_after_stop = false",
         "`ham config unset run.recover_after_stop`",
-        "or update the stage",
+        "or update the stage (run ham update; ask the person who runs the stage if that is not you)",
     ] {
         assert!(shown.contains(words), "{words:?} is not in: {shown}");
     }

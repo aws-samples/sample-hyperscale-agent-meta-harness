@@ -21,9 +21,10 @@ fn path() -> String {
     format!("/v1/runs/{RUN}/snapshot/download-url")
 }
 
+/// A copy that holds the whole history, as the route has always served it. A copy whose header names a commit it needs is answered
+/// in parts or with a word to update.
 fn bundle(head: &str, filler: usize) -> Vec<u8> {
-    let mut b = format!("# v2 git bundle\n-{BASE} base subject\n{head} {SNAPSHOT_REF}\n\nPACK")
-        .into_bytes();
+    let mut b = format!("# v2 git bundle\n{head} {SNAPSHOT_REF}\n\nPACK").into_bytes();
     b.extend(std::iter::repeat_n(7u8, filler));
     b
 }

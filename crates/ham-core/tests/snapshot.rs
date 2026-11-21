@@ -46,6 +46,7 @@ fn download(size: u64) -> SnapshotDownload {
         engine: None,
         recovered: false,
         session: None,
+        base: None,
     }
 }
 
@@ -274,4 +275,35 @@ fn a_repeated_ref_that_was_asked_for_is_named_by_its_own_name() {
     let snap = format!("# v2 git bundle\n{id1} {SNAPSHOT_REF}\n{id2} {SNAPSHOT_REF}\n\nPACK");
     assert_eq!(bundle_head(snap.as_bytes()), Err(BundleError::Ambiguous));
     assert!(BundleError::Ambiguous.to_string().contains(SNAPSHOT_REF));
+}
+
+/// The member `base` of the route's answer. An answer without one is the text it always was, so a client that predates the
+/// member reads it unchanged; an answer with one names where the base is, its size and its ETag; and `Debug` hides both URLs.
+#[test]
+fn b860_the_base_member_is_left_out_when_absent_and_its_url_is_hidden() {
+    let plain = download(100);
+    let text = serde_json::to_string(&plain).unwrap();
+    assert!(!text.contains("\"base\""), "{text}");
+    assert_eq!(
+        serde_json::from_str::<SnapshotDownload>(&text).unwrap(),
+        plain
+    );
+    let mut with = download(100);
+    with.base = Some(ham_core::snapshot::SnapshotBase {
+        url: "https://bucket.s3.us-east-1.amazonaws.com/runs/x/input/repo.bundle?X-Amz-Signature=cafe"
+            .into(),
+        size_bytes: 4_096,
+        etag: "\"92eb5ffee6ae2fec3ad71c777531578f\"".into(),
+    });
+    let v: serde_json::Value = serde_json::to_value(&with).unwrap();
+    assert_eq!(v["base"]["sizeBytes"], 4_096);
+    assert_eq!(v["base"]["etag"], "\"92eb5ffee6ae2fec3ad71c777531578f\"");
+    assert!(v["base"]["url"].as_str().unwrap().contains("repo.bundle"));
+    assert_eq!(serde_json::from_value::<SnapshotDownload>(v).unwrap(), with);
+    let shown = format!("{with:?}");
+    assert!(
+        !shown.contains("X-Amz-Signature") && !shown.contains("amazonaws.com"),
+        "{shown}"
+    );
+    assert!(shown.contains("size_bytes: 4096"), "{shown}");
 }

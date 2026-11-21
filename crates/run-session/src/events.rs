@@ -271,8 +271,9 @@ pub fn run_completed(
 }
 
 /// Row 13 with the status the run ends in: `complete`, or `paused` and `stalled` for a run that stopped delivered. The label is
-/// the caller's: `finalize` passes the label of the delivery plan, because the detail of this event may begin with a note that
-/// stands in front of the plan's own detail, and a label built from that text would lose the reason of a run the harness ended.
+/// the caller's: `finalize` passes the label of the delivery plan. The detail it passes holds more than the plan's own (a note
+/// about the test report, the sessions, the pull request, what the zip holds) and is built so that the label rule gives that same label
+/// for it: a stop by the harness leads the detail.
 pub fn run_completed_as(
     run_id: &str,
     planned_at_ms: u64,

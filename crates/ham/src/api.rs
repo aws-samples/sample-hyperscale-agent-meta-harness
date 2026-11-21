@@ -177,18 +177,30 @@ fn names_member(error: &WireError, body: &[u8], member: &str) -> bool {
         .is_some_and(|sent| sent.ends_with(quoted.as_bytes()))
 }
 
+// The texts below say that the stage is older than this `ham`. Each keeps its direction, "update the stage", and names the command and
+// who can run it: `(run ham update; ask the person who runs the stage if that is not you)`. `ham update` updates a stage with the caller's own
+// AWS identity, so a person who uses a stage that someone else runs cannot update it. Each sentence stays one string literal: the documents
+// quote it whole, and a test of the documents reads two of them from this file.
+
 /// What `ham` says when the stage predates the switch of the delivery note: the key that put the member into the request, with
 /// its value, and the two ways out. Such a stage either writes the block on how the run delivers in every run or knows no block at all,
 /// and cannot be told to leave it out.
 pub fn predates_delivery_note_words() -> String {
-    "this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage".to_string()
+    "this stage predates the switch of the delivery note, so it cannot start a run with run.delivery_note = false; run `ham config unset run.delivery_note` or update the stage (run ham update; ask the person who runs the stage if that is not you)".to_string()
 }
 
 /// What `ham` says when the stage predates the switch of reading a stopped session's storage back: the key that put the member
 /// into the request, with its value, and the two ways out. Such a stage reads no storage back at all, so the run would behave as the key
 /// asks; the request is still not sent again without the member, because the stage that refused it is not the one the key was written for.
 pub fn predates_recover_after_stop_words() -> String {
-    "this stage predates the switch of reading a stopped session's storage back, so it cannot start a run with run.recover_after_stop = false; run `ham config unset run.recover_after_stop` or update the stage".to_string()
+    "this stage predates the switch of reading a stopped session's storage back, so it cannot start a run with run.recover_after_stop = false; run `ham config unset run.recover_after_stop` or update the stage (run ham update; ask the person who runs the stage if that is not you)".to_string()
+}
+
+/// What `ham` says when the stage predates the switch for the earlier run's records: such a stage takes no records out of a
+/// follow-up's work tree at all, so the run would behave as the key asks, and the words say so with the two ways out. The request is
+/// still not sent again without the member, because the stage that refused it is not the one the key was written for.
+pub fn predates_remove_earlier_records_words() -> String {
+    "this stage predates the switch for the earlier run's records, so it leaves them in place anyway; run `ham config unset run.remove_earlier_records` or update the stage (run ham update; ask the person who runs the stage if that is not you)".to_string()
 }
 
 /// What `ham` says when the stage predates the copy interval of a run: the key that put the member into the request, with its value, and
@@ -201,17 +213,17 @@ pub fn predates_recover_after_stop_words() -> String {
 pub fn predates_copy_interval_words(snapshot_every_s: u32, set_by: Option<Key>) -> String {
     let seconds = || {
         format!(
-            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; run `ham config unset run.copy_every_seconds` or update the stage"
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)"
         )
     };
     match set_by {
         Some(Key::RunCopyEveryMinutes) => format!(
-            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {}; run `ham config unset run.copy_every_minutes` or update the stage",
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {}; run `ham config unset run.copy_every_minutes` or update the stage (run ham update; ask the person who runs the stage if that is not you)",
             snapshot_every_s / 60
         ),
         Some(_) => seconds(),
         None if snapshot_every_s.is_multiple_of(60) => format!(
-            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {} (or run.copy_every_seconds = {snapshot_every_s}, whichever your config sets); run `ham config unset run.copy_every_minutes` (or `ham config unset run.copy_every_seconds`) or update the stage",
+            "this stage predates the copy interval of a run, so it cannot start a run with run.copy_every_minutes = {} (or run.copy_every_seconds = {snapshot_every_s}, whichever your config sets); run `ham config unset run.copy_every_minutes` (or `ham config unset run.copy_every_seconds`) or update the stage (run ham update; ask the person who runs the stage if that is not you)",
             snapshot_every_s / 60
         ),
         None => seconds(),
@@ -232,14 +244,14 @@ fn refuses_short_copy_interval(error: &WireError, snapshot_every_s: u32) -> bool
 /// What `ham` says when the stage takes no copy interval under one minute: the key with its value, and the ways out.
 pub fn predates_short_copy_interval_words(snapshot_every_s: u32) -> String {
     format!(
-        "this stage predates copy intervals under one minute, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; set it to 60 or more, run `ham config unset run.copy_every_seconds` or update the stage"
+        "this stage predates copy intervals under one minute, so it cannot start a run with run.copy_every_seconds = {snapshot_every_s}; set it to 60 or more, run `ham config unset run.copy_every_seconds` or update the stage (run ham update; ask the person who runs the stage if that is not you)"
     )
 }
 
 /// What `ham` says when the stage predates the choice of an engine.
 pub fn predates_engine_choice_words(engine: &str) -> String {
     format!(
-        "this stage predates the choice of an engine, so it cannot run on {engine}; run without --engine (or set default_engine to the default) or update the stage"
+        "this stage predates the choice of an engine, so it cannot run on {engine}; run without --engine (or set default_engine to the default) or update the stage (run ham update; ask the person who runs the stage if that is not you)"
     )
 }
 
@@ -253,7 +265,7 @@ pub fn predates_words(cfg: &harness_protocol::direct::EngineConfig) -> String {
         .map(|row| row.path)
         .collect();
     format!(
-        "this stage predates engine settings; run `ham engine {} unset <key>` or update the stage (keys set: {})",
+        "this stage predates engine settings; run `ham engine {} unset <key>` or update the stage (run ham update; ask the person who runs the stage if that is not you) (keys set: {})",
         cfg.engine,
         if keys.is_empty() {
             "none".to_string()
@@ -379,8 +391,9 @@ pub fn start_failure_for(e: &ApiError, req: &StartDirectRunRequest) -> String {
     }
 }
 
-/// What the screen says when the service has no tag edit route (an older backend answers 404): the edits cannot be made, nothing is broken.
-pub const TAGS_UNSUPPORTED: &str = "this service cannot edit tags yet";
+/// What the screen says when the stage has no tag edit route (an older backend answers 404): the edits cannot be made, nothing is broken, and
+/// a newer backend is the way out.
+pub const TAGS_UNSUPPORTED: &str = "this stage cannot edit tags yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you)";
 
 /// The words for a failed tag edit: [`TAGS_UNSUPPORTED`] for a 404, else the error as the client words every API failure.
 pub fn tags_failure(e: &ApiError) -> String {
@@ -620,6 +633,23 @@ impl<P: ControlPlane> Api<P> {
                     error: WireError {
                         code: "stage-predates-recover-after-stop".into(),
                         message: predates_recover_after_stop_words(),
+                        request_id: error.request_id,
+                    },
+                });
+            }
+            (other, _) => other,
+        };
+        // The switch for the earlier run's records, the `removeEarlierRecords` member of `run.remove_earlier_records = false`. Only
+        // a follow-up carries it, so a first request never meets this refusal.
+        let result = match (result, req.remove_earlier_records) {
+            (Err(ApiError::Http { status: 400, error }), Some(false))
+                if names_member(&error, &body, "removeEarlierRecords") =>
+            {
+                return Err(ApiError::Http {
+                    status: 400,
+                    error: WireError {
+                        code: "stage-predates-remove-earlier-records".into(),
+                        message: predates_remove_earlier_records_words(),
                         request_id: error.request_id,
                     },
                 });

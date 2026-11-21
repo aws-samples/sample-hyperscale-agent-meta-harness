@@ -38,8 +38,8 @@ fn request_json(cfg: &Config, extra: &[&str]) -> Value {
 #[test]
 fn b632_the_registry_has_the_row_as_its_last_key_with_the_default_list_and_the_compute_member() {
     // The default_engine row, the update_source row, the two copy interval rows and the row of the delivery
-    // note follow it now, and the row of reading a stopped session's storage back.
-    let last = Key::ALL.len() - 7;
+    // note follow it now, the row of reading a stopped session's storage back, the row of the update notice and the row of the earlier run's records.
+    let last = Key::ALL.len() - 9;
     assert_eq!(Key::ALL[last], Key::RunContainerSignals);
     assert_eq!(ROWS.len(), Key::ALL.len());
     assert_eq!(KEYS.len(), Key::ALL.len());

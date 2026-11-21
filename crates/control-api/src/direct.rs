@@ -11,18 +11,20 @@
 use crate::body::parse_body;
 use crate::direct_models;
 use crate::handler::{
-    Blobs, Deps, Execution, OBJECTIVE_ITEM_MAX_BYTES, Reply, Store, StoreError, V1Request,
-    compute_not_set_up, error, head_bytes, json, not_found, owned, unavailable,
+    Blobs, Deps, Execution, OBJECTIVE_ITEM_MAX_BYTES, ReadOrRefused, Reply, Store, StoreError,
+    V1Request, compute_not_set_up, error, head_bytes, json, not_found, owned, unavailable,
     valid_idempotency_key,
 };
+use crate::head::MAX_EVIDENCE_BYTES;
 use crate::ids::{new_ulid, now_rfc3339, sha256_hex};
 use harness_protocol::api::v1::{StartDirectRunRequest, StartRunResponse};
 use harness_protocol::common::Engine;
 use harness_protocol::direct::{
-    ComputeMode, ContinueFrom, DEFAULT_MAX_RUN_S, DEFAULT_SNAPSHOT_EVERY_S, EngineConfigProblem,
-    MAX_INPUT_WAIT_S, MAX_MAX_RUN_S, MAX_REPORT_STEP_S, MAX_SNAPSHOT_EVERY_S, MIN_MAX_RUN_S,
-    MIN_SNAPSHOT_EVERY_S, check_attachments, check_continue_from, check_engine_config, check_goal,
-    check_limits, check_review, check_skills, max_run_s_ok, report_step_s_ok, snapshot_every_s_ok,
+    ComputeMode, ContinueFrom, DEFAULT_MAX_RUN_S, DEFAULT_SNAPSHOT_EVERY_S, DirectOutcome,
+    EngineConfigProblem, MAX_INPUT_WAIT_S, MAX_MAX_RUN_S, MAX_REPORT_STEP_S, MAX_SNAPSHOT_EVERY_S,
+    MIN_MAX_RUN_S, MIN_SNAPSHOT_EVERY_S, check_attachments, check_continue_from,
+    check_engine_config, check_goal, check_limits, check_review, check_skills, max_run_s_ok,
+    report_step_s_ok, s3 as direct_s3, snapshot_every_s_ok,
 };
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload, SCHEMA_VERSION};
 use harness_protocol::goal::{GoalPhase, GoalStatus};
@@ -343,14 +345,14 @@ fn continue_target_refusal(r: &StartDirectRunRequest, source: &str) -> Option<St
 
 /// The source of a follow-up run. The run must be the caller's (any other case answers like a missing run, so a run id never
 /// reveals another principal's run), finished, and its verified bundle must name a head on `refs/heads/harness/<runId>`; a head the client
-/// named must be that one. Returns the `continueFrom` to store, with the head control-api resolved, or the reply that refuses the start.
-/// Nothing is written here.
+/// named must be that one. Returns the `continueFrom` to store, with the head control-api resolved, and the status of the source run, or
+/// the reply that refuses the start. Nothing is written here.
 async fn resolve_continue<S: Store, B: Blobs, E: Execution>(
     c: &ContinueFrom,
     target: &RunTarget,
     caller: &str,
     deps: &Deps<S, B, E>,
-) -> Result<ContinueFrom, Reply> {
+) -> Result<ResolvedContinue, Reply> {
     let source = match owned(&deps.store, &c.run_id, caller).await {
         Ok(Some(run)) => run,
         Ok(None) => return Err(not_found(&format!("no run {} for this caller", c.run_id))),
@@ -440,9 +442,91 @@ async fn resolve_continue<S: Store, B: Blobs, E: Execution>(
             ),
         ));
     }
-    Ok(ContinueFrom {
-        run_id: c.run_id.clone(),
-        head_sha: Some(head),
+    Ok(ResolvedContinue {
+        from: ContinueFrom {
+            run_id: c.run_id.clone(),
+            head_sha: Some(head),
+        },
+        status: source.status,
+    })
+}
+
+/// The source of a follow-up as [`resolve_continue`] found it.
+struct ResolvedContinue {
+    /// The `continueFrom` to store, with the head control-api resolved.
+    from: ContinueFrom,
+    /// The status of the source run.
+    status: GoalStatus,
+}
+
+/// Why a follow-up keeps the lifecycle records of the run it continues in the work tree, or `None` when the worker takes them
+/// out before the first prompt (the service then stores `removeEarlierRecords: true`, and it is the only writer of that value). The
+/// records go only when the source run ended `complete` and its evidence (`runs/<run>/evidence/direct.json`,
+/// written once by run-session's `plan-delivery`) says that the engine reported done, for that run and for the head its delivered bundle
+/// names. It is an allow-list of one outcome word: every other word, and any word a later release adds, keeps the records, and so does
+/// evidence that is absent or cannot be read as that statement. A run that did not report done is an open task and its goal card is that
+/// task's own: the engine decides when the work is done, so the service treats a request as over only when the engine reported it. The
+/// reason is for the log and names no byte of the evidence.
+pub(crate) fn keeps_earlier_records(
+    status: GoalStatus,
+    source: &str,
+    head: &str,
+    evidence: Option<&[u8]>,
+) -> Option<&'static str> {
+    if status != GoalStatus::Complete {
+        return Some("the source run did not end complete");
+    }
+    let Some(bytes) = evidence else {
+        return Some("the source run has no evidence the service can read");
+    };
+    let Ok(serde_json::Value::Object(file)) = serde_json::from_slice::<serde_json::Value>(bytes)
+    else {
+        return Some("the evidence of the source run is no JSON object");
+    };
+    if file.get("runId").and_then(serde_json::Value::as_str) != Some(source) {
+        return Some("the evidence names another run");
+    }
+    // The enum's own wire word, never a literal: a renamed outcome cannot pass by accident.
+    let done = serde_json::to_value(DirectOutcome::ReportedDone).ok();
+    if done.is_none() || file.get("outcome") != done.as_ref() {
+        return Some("the source run did not report done");
+    }
+    if file.get("headSha").and_then(serde_json::Value::as_str) != Some(head) {
+        return Some("the evidence names another head than the delivered one");
+    }
+    None
+}
+
+/// [`keeps_earlier_records`] for the source run of a follow-up, as the words for the log. The evidence is read only for a source
+/// run that ended `complete` (any other status keeps the records without a read). A follow-up never fails to start because the evidence
+/// is not there: an object the store does not have or refuses to give (HTTP 404, and HTTP 403, which is what the store answers for an
+/// absent key to a role that may not list the bucket) and an object larger than the route reads are no evidence, the records stay as on
+/// the releases before, and the store's own reason goes to the log. Only a read that may pass on a retry (a fault of the store, a
+/// timeout, a throttle) refuses the start, with the retry answer of the reads beside it: how the source run ended is never guessed from
+/// an outage.
+async fn earlier_records_kept<S: Store, B: Blobs, E: Execution>(
+    source: &str,
+    status: GoalStatus,
+    head: &str,
+    deps: &Deps<S, B, E>,
+) -> Result<Option<String>, Reply> {
+    if status != GoalStatus::Complete {
+        return Ok(keeps_earlier_records(status, source, head, None).map(str::to_string));
+    }
+    let key = direct_s3::evidence_key(source);
+    let (evidence, refused) = match deps.blobs.read_or_refused(&key, MAX_EVIDENCE_BYTES).await {
+        // A cut read is never parsed.
+        Ok(ReadOrRefused::Object(object)) if object.size <= MAX_EVIDENCE_BYTES => {
+            (Some(object.bytes), None)
+        }
+        Ok(ReadOrRefused::Object(_)) => (None, None),
+        Ok(ReadOrRefused::Refused(why)) => (None, Some(why)),
+        Err(e) => return Err(unavailable(&e, RETRY)),
+    };
+    let kept = keeps_earlier_records(status, source, head, evidence.as_deref());
+    Ok(match (kept, refused) {
+        (Some(why), Some(store)) => Some(format!("{why} (the store answered: {store})")),
+        (kept, _) => kept.map(str::to_string),
     })
 }
 
@@ -476,11 +560,11 @@ pub(crate) async fn start_direct_run<S: Store, B: Blobs, E: Execution>(
         Ok(r) => r,
         Err(reply) => return reply,
     };
-    let prepared = match prepare(request, caller, deps).await {
+    let prepared = match prepare(request, Route::Start, caller, deps).await {
         Ok(p) => p,
         Err(reply) => return reply,
     };
-    let claim_sha256 = sha256_hex(&prepared.canonical);
+    let claim_sha256 = sha256_hex(&prepared.claim);
     let linked_to = prepared
         .request
         .continue_from
@@ -497,18 +581,36 @@ pub(crate) async fn start_direct_run<S: Store, B: Blobs, E: Execution>(
     .await
 }
 
+/// Which route asks for the checks of a start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// `POST /v1/direct/runs`, and the retry of a blocked run, which is held to what a fresh start is held to.
+    Start,
+    /// The resume of a stopped run: the same request going on, never the start of a follow-up.
+    Resume,
+}
+
 /// A request that passed every check of a start, with the bytes that are stored for it.
 pub(crate) struct Prepared {
     pub(crate) request: StartDirectRunRequest,
     /// The canonical bytes of `request`: what `runs/<id>/input/request.json` holds and what agentd reads.
     pub(crate) canonical: Vec<u8>,
+    /// The bytes the claim of an Idempotency-Key is compared over: `canonical` without the `removeEarlierRecords` member. The
+    /// service decides that member afresh at every call, from evidence that may not have been readable at the first one and with a rule
+    /// that release 5.24 did not have, so a repeat of a key is the same request whatever the member is now, and returns the run the first
+    /// call started. For a request without the member these are the canonical bytes, as before the member existed.
+    pub(crate) claim: Vec<u8>,
+    /// What the checks leave for the log, never for a reply.
+    pub(crate) notes: Vec<String>,
 }
 
-/// Every check of a start that needs no write: the request's own limits ([`refusal`]) and, for a follow-up, the source run and its delivered
-/// head ([`resolve_continue`]). `POST /v1/direct/runs` and the retry of a blocked run (`crate::retry`) both end here, so a retry is held to
-/// what a fresh start is held to.
+/// Every check of a start that needs no write: the request's own limits ([`refusal`]) and, for a follow-up, the source run, its delivered
+/// head ([`resolve_continue`]) and whether the worker takes that run's lifecycle records out of the work tree ([`keeps_earlier_records`]).
+/// `POST /v1/direct/runs`, the retry of a blocked run (`crate::retry`) and the resume of a stopped one (`crate::resume`) all end here, so
+/// a retry is held to what a fresh start is held to.
 pub(crate) async fn prepare<S: Store, B: Blobs, E: Execution>(
     mut request: StartDirectRunRequest,
+    route: Route,
     caller: &str,
     deps: &Deps<S, B, E>,
 ) -> Result<Prepared, Reply> {
@@ -537,23 +639,69 @@ pub(crate) async fn prepare<S: Store, B: Blobs, E: Execution>(
     if request.recover_after_stop == Some(true) {
         request.recover_after_stop = None;
     }
+    // The worker takes the earlier run's lifecycle records out of the work tree of a follow-up only when the stored request holds
+    // `removeEarlierRecords: true`, and this service is the only writer of that value. An absent member keeps the records, as release 5.24
+    // did, and a worker image that predates the member still reads such a request. So nothing a client or an earlier stored request says
+    // is copied but the user's own `false` (`run.remove_earlier_records = false`), which is kept for a follow-up so that the choice
+    // survives a retry of the run. A `true` that came in is dropped here: the rule below decides afresh, also at a retry. A resume holds
+    // no member, whatever the stopped run's request held, and neither does a request without `continueFrom`, where the member means
+    // nothing.
+    let users_false = route == Route::Start
+        && request.continue_from.is_some()
+        && request.remove_earlier_records == Some(false);
+    request.remove_earlier_records = users_false.then_some(false);
+    let mut notes: Vec<String> = Vec::new();
     // The follow-up's source is read before anything is written; the stored request carries the head resolved here.
     if let Some(c) = request.continue_from.clone() {
-        request.continue_from = Some(resolve_continue(&c, &request.target, caller, deps).await?);
+        let source = resolve_continue(&c, &request.target, caller, deps).await?;
+        // `true` is stored only for the start of a follow-up of a run that reported done, by the evidence of that run. A resume is
+        // the same request going on and is never asked. In every other case the stored request holds no member, and the reason goes to
+        // the log with the source run's id.
+        if route == Route::Start && !users_false {
+            let head = source.from.head_sha.as_deref().unwrap_or_default();
+            match earlier_records_kept(&c.run_id, source.status, head, deps).await? {
+                None => request.remove_earlier_records = Some(true),
+                Some(why) => notes.push(format!(
+                    "continueFrom {}: the earlier records stay in the work tree: {why}",
+                    c.run_id
+                )),
+            }
+        }
+        request.continue_from = Some(source.from);
     }
-    match serde_json::to_vec(&request) {
-        Ok(canonical) => Ok(Prepared { request, canonical }),
-        Err(e) => Err(error(
+    let canonical = serde_json::to_vec(&request);
+    // The bytes the claim is compared over: the request without the member this service decides (see `Prepared::claim`).
+    let claim = match request.remove_earlier_records {
+        None => canonical.as_ref().ok().cloned().ok_or(()),
+        Some(_) => {
+            let mut without = request.clone();
+            without.remove_earlier_records = None;
+            serde_json::to_vec(&without).map_err(|_| ())
+        }
+    };
+    match (canonical, claim) {
+        (Ok(canonical), Ok(claim)) => Ok(Prepared {
+            request,
+            canonical,
+            claim,
+            notes,
+        }),
+        (Err(e), _) => Err(error(
             400,
             "bad-request",
             &format!("StartDirectRunRequest: {e}"),
+        )),
+        (Ok(_), Err(())) => Err(error(
+            400,
+            "bad-request",
+            "StartDirectRunRequest: the request cannot be written",
         )),
     }
 }
 
 /// The write side of a start, after [`prepare`]: the idempotency claim, the request in S3, the Run item, the root Goal and `run.created`,
 /// one execution named after the run, and the run's search item. `claim_sha256` is what the claim compares for `key` (a fresh start hashes
-/// the request; a retry hashes the blocked run's id with it, so a key cannot return the run of another start). `linked_to` is the run the new
+/// the request, [`Prepared::claim`]; a retry hashes the blocked run's id with it, so a key cannot return the run of another start). `linked_to` is the run the new
 /// Run item names in `continueFrom`: the source of a follow-up, or the blocked run a retry starts again.
 pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
     prepared: &Prepared,
@@ -563,7 +711,12 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
     caller: &str,
     deps: &Deps<S, B, E>,
 ) -> Reply {
-    let Prepared { request, canonical } = prepared;
+    let Prepared {
+        request,
+        canonical,
+        claim: _,
+        notes: prepared_notes,
+    } = prepared;
     let fresh = IdempotencyItem {
         principal_arn: caller.to_string(),
         idempotency_key: key.to_string(),
@@ -608,8 +761,8 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
         );
     }
     let run_id = claim.run_id;
-    // What the look at the stage's deploy lock leaves for the log.
-    let mut notes: Vec<String> = Vec::new();
+    // What the checks of the start left for the log, then what the look at the stage's deploy lock leaves.
+    let mut notes: Vec<String> = prepared_notes.clone();
     let run = match deps.store.get_run(&run_id).await {
         // A repeat of a start that was admitted and launched (its first session pinned the worker runtime on the Run item): it returns its
         // run whatever the stage is doing, and the StartExecution below repeats a start that happened.
@@ -619,7 +772,7 @@ pub(crate) async fn start_prepared<S: Store, B: Blobs, E: Execution>(
             // right before the write that creates the run, and a deploy that holds the stage refuses the start (`crate::admission`). Only
             // the claim above is written by then, and a repeat of the key after the update creates the run.
             match crate::admission::admit(&deps.execution, RETRY).await {
-                Ok(lines) => notes = lines,
+                Ok(lines) => notes.extend(lines),
                 Err(reply) => return reply,
             }
             match found {
@@ -879,5 +1032,110 @@ mod b803_tests {
         let list = models.default_list();
         assert!(provider_sharing_refusal(list, &request(FABLE, None)).is_some());
         assert!(provider_sharing_refusal(list, &request(FABLE, Some(true))).is_none());
+    }
+}
+
+#[cfg(test)]
+mod b866_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    const RUN: &str = "01K5ZQ4T8M3N6P7R9S0V1W2X3Y";
+    const OTHER_RUN: &str = "01K5ZQ4T8M3N6P7R9S0V1W2X3Z";
+    const HEAD: &str = "9d2f1a7c4b8e03d56a1f7c9e2b4d6a8c0e1f3a5b";
+    const OTHER_HEAD: &str = "1111111111111111111111111111111111111111";
+
+    fn evidence(run: &str, outcome: &str, head: &str) -> Vec<u8> {
+        serde_json::to_vec(
+            &json!({"schemaVersion": 1, "runId": run, "outcome": outcome, "headSha": head}),
+        )
+        .unwrap()
+    }
+
+    fn word(outcome: DirectOutcome) -> String {
+        serde_json::to_value(outcome)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn b866_keeps_earlier_records_names_each_reason() {
+        let done = evidence(RUN, &word(DirectOutcome::ReportedDone), HEAD);
+        // The one case in which the records may be taken out.
+        assert_eq!(
+            keeps_earlier_records(GoalStatus::Complete, RUN, HEAD, Some(&done)),
+            None
+        );
+        // A run that did not end complete keeps them, whatever its evidence says.
+        let mut reasons = BTreeSet::new();
+        for status in [
+            GoalStatus::Paused,
+            GoalStatus::Stalled,
+            GoalStatus::Blocked,
+            GoalStatus::Active,
+        ] {
+            let why = keeps_earlier_records(status, RUN, HEAD, Some(&done)).unwrap();
+            assert!(why.contains("complete"), "{status:?}: {why}");
+            reasons.insert(why);
+        }
+        // Every way the evidence cannot be used, each with a reason of its own.
+        let stopped = evidence(RUN, &word(DirectOutcome::StoppedByUser), HEAD);
+        let cases: [(&str, Option<Vec<u8>>, &str); 9] = [
+            ("no evidence", None, "no evidence"),
+            ("no JSON", Some(b"done".to_vec()), "JSON object"),
+            ("a JSON array", Some(b"[1]".to_vec()), "JSON object"),
+            (
+                "another run",
+                Some(evidence(OTHER_RUN, "reported_done", HEAD)),
+                "another run",
+            ),
+            (
+                "no run",
+                Some(b"{\"outcome\":\"reported_done\"}".to_vec()),
+                "another run",
+            ),
+            ("stopped by the user", Some(stopped), "did not report done"),
+            (
+                "a word this build does not know",
+                Some(evidence(RUN, "reported_done_twice", HEAD)),
+                "did not report done",
+            ),
+            (
+                "another head",
+                Some(evidence(RUN, "reported_done", OTHER_HEAD)),
+                "another head",
+            ),
+            (
+                "no head",
+                Some(format!("{{\"runId\":\"{RUN}\",\"outcome\":\"reported_done\"}}").into_bytes()),
+                "another head",
+            ),
+        ];
+        for (name, bytes, want) in cases {
+            let why = keeps_earlier_records(GoalStatus::Complete, RUN, HEAD, bytes.as_deref())
+                .unwrap_or_else(|| panic!("{name}: the records must stay"));
+            assert!(why.contains(want), "{name}: {why}");
+            reasons.insert(why);
+        }
+        assert_eq!(reasons.len(), 6, "one reason per rule: {reasons:?}");
+        // The allow-list is the enum's own word.
+        for outcome in DirectOutcome::ALL {
+            let kept = keeps_earlier_records(
+                GoalStatus::Complete,
+                RUN,
+                HEAD,
+                Some(&evidence(RUN, &word(outcome), HEAD)),
+            );
+            assert_eq!(
+                kept.is_none(),
+                outcome == DirectOutcome::ReportedDone,
+                "{outcome:?}"
+            );
+        }
     }
 }

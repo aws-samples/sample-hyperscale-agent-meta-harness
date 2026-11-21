@@ -16,6 +16,11 @@
 //! An update that deploys nothing on the stage waits for no run. Whether it deploys is setup's decision, so when a run of the caller
 //! is active ham asks the setup of the fetched commit for its plan (`--dry-run`: the AWS account is read, nothing is written) and reads the
 //! answer with `ham_core::update::plan_deploys_nothing`. Every other answer keeps the wait, and setup decides again when it runs.
+//!
+//! The look of the terminal app lives here too: [`Git::look`], one listing call of git that asks the update source for the names
+//! of its branches and tags, which the rules of `ham_core::update` read for a newer release. Nobody typed a command for it, so it has a
+//! command of its own that is closed against the person's settings ([`Git::look_command`]) and a runner of its own with a cap on the output
+//! and a bounded wait ([`run_look`]). It writes nothing and makes no call to the stage; `ham update` uses neither.
 
 use crate::api::{Api, ApiError};
 use crate::http::ControlPlane;
@@ -42,6 +47,11 @@ pub const GIT_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// How long setup may take to print its plan before `ham update` goes on without it and waits for the caller's runs as before. The
 /// plan reads the AWS account; about 20 seconds were measured.
 pub const PLAN_LIMIT: Duration = Duration::from_secs(180);
+/// How long the look of the terminal app waits for git before it ends it. A look that takes this long is a look that failed.
+pub const LOOK_LIMIT: Duration = Duration::from_secs(20);
+/// The most bytes the look reads of each output of git; more is a look that failed. A listing of the branch and the version tags of
+/// a repository with a thousand releases is about 100 KiB.
+pub const LOOK_OUTPUT_CAP: usize = 1_048_576;
 
 /// The exit codes of `ham update` that are its own; any other code of setup is passed through. After setup's 3 or 8 ([`SETUP_DONE_CODES`]) the
 /// versions are checked first, and a failed check gives `CHECK_FAILED`.
@@ -124,6 +134,110 @@ fn run_bounded(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
     })
 }
 
+/// What the look of the terminal app found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LookOutcome {
+    /// No look was made: the notice is switched off, `update_source` is off or no source, or `ham update` could not take this config.
+    Off,
+    /// The version of the newest release the source names.
+    Newest(String),
+    /// The source answered and names no release: no main branch or no version tag.
+    NoRelease,
+    /// The source could not be read, did not answer in time, or answered with something that is no listing; or the config could not be
+    /// read when the look started, so nothing says whether a look is wanted.
+    Failed,
+}
+
+/// Reads `pipe` to its end and gives at most `cap` bytes of it. When more arrives it sets `over` and stops reading.
+fn read_capped(
+    pipe: Option<impl Read>,
+    cap: usize,
+    over: &std::sync::atomic::AtomicBool,
+) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let Some(mut pipe) = pipe else {
+        return bytes;
+    };
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) if bytes.len() + n > cap => {
+                over.store(true, std::sync::atomic::Ordering::SeqCst);
+                break;
+            }
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    bytes
+}
+
+/// The runner of the look: `cmd` with no standard input, each output read up to `cap` bytes, ended after `limit`. It gives the exit
+/// code (`None` for a child ended by a signal) and the standard output; the error output is read, so the child never blocks on it, and
+/// dropped.
+///
+/// It differs from [`run_bounded`] in what a look that runs by itself must not do: keep output without a limit, or wait without a limit for
+/// the outputs of a child that has ended. More than `cap` bytes on either output ends the child and is an error. After the child ended by
+/// itself, its standard output is waited for only until `limit` has passed since the start, so a helper that keeps the pipe open cannot hold
+/// the look; the reader's thread is then left to end when the pipe closes.
+#[doc(hidden)]
+pub fn run_look(
+    mut cmd: Command,
+    limit: Duration,
+    cap: usize,
+) -> Result<(Option<i32>, String), String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let over = Arc::new(AtomicBool::new(false));
+    let (send, answer) = std::sync::mpsc::channel::<Vec<u8>>();
+    let out = child.stdout.take();
+    let over_out = Arc::clone(&over);
+    std::thread::spawn(move || {
+        let _ = send.send(read_capped(out, cap, &over_out));
+    });
+    let err = child.stderr.take();
+    let over_err = Arc::clone(&over);
+    std::thread::spawn(move || {
+        let _ = read_capped(err, cap, &over_err);
+    });
+    let too_much = || format!("more than {cap} bytes of output");
+    let started = Instant::now();
+    let status = loop {
+        if over.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(too_much());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= limit => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("no answer within {} seconds", limit.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let left = limit.saturating_sub(started.elapsed());
+    let Ok(bytes) = answer.recv_timeout(left) else {
+        return Err(format!(
+            "the output stayed open for {} seconds",
+            limit.as_secs()
+        ));
+    };
+    if over.load(Ordering::SeqCst) {
+        return Err(too_much());
+    }
+    Ok((status.code(), String::from_utf8_lossy(&bytes).into_owned()))
+}
+
 fn first_line(text: &str) -> &str {
     text.lines()
         .map(str::trim)
@@ -202,6 +316,48 @@ impl Git {
                 "http.lowSpeedTime=60",
             ]);
         c
+    }
+
+    /// The command of the look: [`Git::command`] closed further, because the terminal app starts it by itself. `ham update` does
+    /// not use it. On top of that command:
+    /// - the working directory is `/` and `GIT_DIR` is the null device, so git finds no repository, whatever folder the app was started
+    ///   in, and reads no repository's own configuration (an address rewrite, a proxy, an extra header, a cookie file, a program to ask
+    ///   for logins);
+    /// - `GIT_ASKPASS` is set and empty, so git starts no program to ask for a login, also not the one `SSH_ASKPASS` names, and no dialog
+    ///   can open; `SSH_ASKPASS` is removed as well;
+    /// - `SSLKEYLOGFILE`, a debugging variable that makes the TLS library write a file, is removed;
+    /// - `--heads --tags` stand before the two patterns, so git (protocol 2) asks the source for branch and tag names only.
+    ///
+    /// This is hardening, not a sandbox: git starts its own helper for the transport, and its libraries read the person's proxy and
+    /// certificate settings and `~/.netrc`, as for every git call.
+    #[doc(hidden)]
+    pub fn look_command(&self, url: &str) -> Command {
+        let mut c = self.command(url);
+        c.current_dir("/")
+            .env("GIT_DIR", NULL_DEVICE)
+            .env("GIT_ASKPASS", "")
+            .env_remove("SSH_ASKPASS")
+            .env_remove("SSLKEYLOGFILE")
+            .args(["ls-remote", "--exit-code", "--heads", "--tags", "--"])
+            .arg(url)
+            .args(["refs/heads/main", "refs/tags/v*"]);
+        c
+    }
+
+    /// The look of the terminal app: the newest release `url` names, from one listing call that is ended after `limit`. Exit 0 is
+    /// read by `ham_core::update::newest_of`; exit 2 (nothing matched) is no release; any other end, an output over [`LOOK_OUTPUT_CAP`] and
+    /// a listing that is none are a look that failed. It writes nothing, and it never returns [`LookOutcome::Off`].
+    pub fn look(&self, url: &str, limit: Duration) -> LookOutcome {
+        use ham_core::update::Heads;
+        match run_look(self.look_command(url), limit, LOOK_OUTPUT_CAP) {
+            Ok((Some(0), listing)) => match ham_core::update::newest_of(&listing) {
+                Heads::Newest(version) => LookOutcome::Newest(version),
+                Heads::NoRelease => LookOutcome::NoRelease,
+                Heads::Garbled => LookOutcome::Failed,
+            },
+            Ok((Some(2), _)) => LookOutcome::NoRelease,
+            Ok(_) | Err(_) => LookOutcome::Failed,
+        }
     }
 
     fn run(&self, url: &str, dir: Option<&Path>, args: &[&str]) -> Result<Ran, UpdateError> {
@@ -1443,6 +1599,70 @@ pub fn backend_refusal(cfg: &ham_core::config::Config, check: bool) -> Option<St
         ),
         _ => None,
     }
+}
+
+/// What `config.toml` and the environment say about a look of the terminal app. It reads the file and starts no process and
+/// makes no call.
+/// - `Ok(Some(source))`: a look may read this source.
+/// - `Ok(None)`: there is to be no look. The notice is switched off (`HAMH_NO_UPDATE_NOTICE`, whatever the file holds, or
+///   `ui.update_notice`), `update_source` is `off` or a value that is no source, or the config is one `ham update` would refuse (more than
+///   one backend, or its backend in a `[[backend]]` table), because the notice would promise what the update cannot do.
+/// - `Err(why)`: the config could not be read at this moment: no config location, a file that cannot be read, or a file with an error,
+///   as an editor leaves it for a moment. That says nothing about what the person chose, so it is no switch: the terminal app takes it
+///   as a look that failed, keeps what the last look found and looks again in an hour.
+pub fn look_source(env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>, String> {
+    if ham_core::config::update_notice_forced_off(env) {
+        return Ok(None);
+    }
+    let (cfg, _) = crate::config_cmd::load(env)?;
+    if !ham_core::config::update_notice_on(env, &cfg) {
+        return Ok(None);
+    }
+    let Ok(ham_core::update::Source::Url(url)) = source_of(&cfg) else {
+        return Ok(None);
+    };
+    if backend_refusal(&cfg, false).is_some() {
+        return Ok(None);
+    }
+    Ok(Some(url))
+}
+
+/// The two places of the developer tools' git on a Mac. Where neither exists, `/usr/bin/git` is only Apple's launcher, which shows the
+/// system's dialog that offers to install the tools.
+const MAC_TOOLS_GIT: [&str; 2] = [
+    "/Library/Developer/CommandLineTools/usr/bin/git",
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+];
+
+/// The git a look of the terminal app may start, read once when the app starts, or `None` for no look. It starts no process:
+/// `is_file` answers for a path.
+/// 1. `exe` is the running client. Without it, or when the folder that holds it is not named `bin`, there is no look: `ham update` could
+///    not install there, so a notice would promise what cannot be done.
+/// 2. The program is the file `git` of the first folder of `path` (split as `PATH`) that holds one. A folder that is not an absolute path
+///    is passed over, so the look never starts a program from the folder the app stands in. No git: no look.
+/// 3. With `mac`, when that program is `/usr/bin/git` and neither path of the developer tools exists: no look, because starting the
+///    launcher would open the system's install dialog at every start of the app.
+pub fn look_program(
+    exe: Option<&Path>,
+    path: Option<&OsStr>,
+    is_file: &dyn Fn(&Path) -> bool,
+    mac: bool,
+) -> Option<PathBuf> {
+    let bin = exe?.parent()?;
+    if bin.file_name() != Some(OsStr::new("bin")) {
+        return None;
+    }
+    let git = std::env::split_paths(path?)
+        .filter(|folder| folder.is_absolute())
+        .map(|folder| folder.join("git"))
+        .find(|candidate| is_file(candidate))?;
+    if mac
+        && git == Path::new("/usr/bin/git")
+        && !MAC_TOOLS_GIT.iter().any(|tools| is_file(Path::new(tools)))
+    {
+        return None;
+    }
+    Some(git)
 }
 
 /// The running ham, links resolved: the client the update replaces. The path names the install folder setup is given and the file whose SHA-256 a

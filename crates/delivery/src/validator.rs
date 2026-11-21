@@ -6,7 +6,9 @@
 //!    `headSha`), the validator first writes the verified bundle itself: a full-history bundle of
 //!    `refs/heads/harness/<runId>` at `headSha` at `runs/<runId>/deliverable/verified.bundle`, with
 //!    its SHA-256 metadata. A source that is missing, does not verify or lacks the head is a
-//!    `bundle` violation and nothing is written.
+//!    `bundle` violation and nothing is written. A source whose header names commits it needs (a saved copy of the work that
+//!    leaves out what the run's base holds) is read after the bundle the run started from, `runs/<runId>/input/repo.bundle`; a base
+//!    that is not there or does not verify is a `bundle` violation too.
 //! 1. `bundle`, `branch`: the bundle verifies and holds `refs/heads/harness/<runId>` at `headSha`.
 //! 2. `history`: `baseSha` is in the bundle and an ancestor of the head (absent base: empty tree).
 //! 3. Per changed path of `base..head` (renames as delete plus add), in git's path order:
@@ -42,7 +44,7 @@ use crate::ports::{Blobs, PutMeta};
 use crate::third_party;
 use harness_protocol::common::is_ulid;
 use harness_protocol::direct::REPOSITORY_REFUSES;
-use harness_protocol::store::s3::verified_bundle_key;
+use harness_protocol::store::s3::{repo_bundle_key, verified_bundle_key};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -543,8 +545,23 @@ fn check_request(r: &ValidateRequest) -> Result<(), DeliveryError> {
     Ok(())
 }
 
+/// Whether the bundle at `source` names a commit it needs and does not hold: the first bytes of the file are read and its
+/// header is asked ([`harness_protocol::bundle_header::needs`]). A file whose header cannot be read needs nothing here; `git bundle
+/// verify` says what is wrong with it.
+fn source_needs_base(source: &Path) -> Result<bool, DeliveryError> {
+    use std::io::Read as _;
+    let mut prefix = Vec::new();
+    std::fs::File::open(source)?
+        .take(harness_protocol::bundle_header::HEADER_BYTES_MAX)
+        .read_to_end(&mut prefix)?;
+    Ok(harness_protocol::bundle_header::needs(&prefix).is_ok_and(|commits| !commits.is_empty()))
+}
+
 impl<B: Blobs, S: SecretScanner> Validator<B, S> {
     /// Writes the verified bundle from the source bundle; the inner error is the violation text.
+    ///
+    /// A source that names commits it needs (a saved copy that leaves out what the run's base holds) is fetched after the
+    /// bundle the run started from, `runs/<run>/input/repo.bundle`; the verified bundle holds the whole history either way.
     async fn build_verified(
         &self,
         work: &Path,
@@ -579,6 +596,30 @@ impl<B: Blobs, S: SecretScanner> Validator<B, S> {
             return Ok(Err(format!(
                 "the source bundle {uri} is not the object the harness recorded (its SHA-256 differs)"
             )));
+        }
+        // A source may hold what the run changed and leave out what the bundle the run started from holds (a saved copy of the
+        // work); git names the commits it left out in the source's header. The base is then taken first, so that the source verifies
+        // against a repository that holds what it needs. A source that names no such commit reads no base.
+        if source_needs_base(&source)? {
+            let base_key = repo_bundle_key(&r.run_id);
+            let base = dir.join("base.bundle");
+            let unreadable = |why: String| {
+                format!(
+                    "the source bundle {uri} needs the run's base bundle, which could not be read: {why}"
+                )
+            };
+            if self.blobs.get_to_file(&base_key, &base).await?.is_none() {
+                return Ok(Err(unreadable(format!(
+                    "no object at s3://{}/{base_key}",
+                    self.bucket
+                ))));
+            }
+            if let Err(e) = self.git.bundle_verify(&repo, &base).await {
+                return Ok(Err(unreadable(format!("it does not verify: {e}"))));
+            }
+            self.git
+                .fetch(&repo, &Remote::local(&base), &["+refs/*:refs/base/*"])
+                .await?;
         }
         if let Err(e) = self.git.bundle_verify(&repo, &source).await {
             return Ok(Err(format!("the source bundle {uri} does not verify: {e}")));

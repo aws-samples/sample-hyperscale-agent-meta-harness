@@ -708,6 +708,15 @@ const FROZEN: &[(&str, &str)] = &[
         "1.63.0",
         "6f30a5dd912f9ea0d936ad98b602457debefb2519b31462961fbf0798067f0c8",
     ),
+    // 1.64.0, a follow-up without the earlier run's lifecycle records. The start request gains the optional
+    // `removeEarlierRecords` (only `false` is stored: the worker then leaves the lifecycle records of the run a follow-up continues in
+    // the work tree; absent, it takes the records that runs wrote out of the tree in a commit of its own before the first prompt). The
+    // description of the start request's `continueFrom` says which targets take it. Both OpenAPI documents change their info.version.
+    // The wire format of every other member is unchanged, so a request of 1.63.0 reads and writes unchanged.
+    (
+        "1.64.0",
+        "a67b00291436d38c1b0c46fe3701f28301943b0937472dbd15b8404e114a2b66",
+    ),
 ];
 
 /// 1.26.0 adds one optional turn member after 1.25.0 shipped: the released line keeps its hash and
@@ -1411,7 +1420,7 @@ fn b850_frozen_1_62_0_is_a_new_line_and_the_1_61_0_line_did_not_move() {
 }
 
 /// 1.63.0
-/// follows the 1.62.0 line: that line keeps its hash, the new line differs from it, and it is the newest.
+/// follows the 1.62.0 line: that line keeps its hash and the new line differs from it.
 #[test]
 fn b854_b853_frozen_1_63_0_is_a_new_line_and_the_1_62_0_line_did_not_move() {
     let v162: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.62.0").collect();
@@ -1426,7 +1435,25 @@ fn b854_b853_frozen_1_63_0_is_a_new_line_and_the_1_62_0_line_did_not_move() {
         "f46e0f1d779f055ca2e3800894b380b31051769bb29a663e6cc50c85f732c575"
     );
     assert_ne!(v162[0].1, v163[0].1);
-    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.63.0"));
+}
+
+/// 1.64.0 follows the 1.63.0 line: that line keeps its hash, the new line
+/// differs from it, and it is the newest.
+#[test]
+fn b866_frozen_1_64_0_is_a_new_line_and_the_1_63_0_line_did_not_move() {
+    let v163: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.63.0").collect();
+    let v164: Vec<&(&str, &str)> = FROZEN.iter().filter(|(v, _)| *v == "1.64.0").collect();
+    assert_eq!(
+        (v163.len(), v164.len()),
+        (1, 1),
+        "one pinned line per version"
+    );
+    assert_eq!(
+        v163[0].1,
+        "6f30a5dd912f9ea0d936ad98b602457debefb2519b31462961fbf0798067f0c8"
+    );
+    assert_ne!(v163[0].1, v164[0].1);
+    assert_eq!(FROZEN.last().map(|(v, _)| *v), Some("1.64.0"));
 }
 
 /// The ninth file is appended after the eight: the order of `SCHEMA_FILES` is part of the hash, so the file joins at the end and no existing file moves.

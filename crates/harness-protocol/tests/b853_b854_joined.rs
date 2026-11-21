@@ -43,10 +43,10 @@ fn has(doc: &Value, name: &str, member: &str) -> bool {
 /// One version carries the members of every change, each where its reader finds it.
 #[test]
 fn b853_b854_one_protocol_version_carries_the_read_the_cancel_and_the_session_facts() {
-    assert_eq!(PROTOCOL_VERSION, "1.63.0");
+    assert_eq!(PROTOCOL_VERSION, "1.64.0");
     let docs = docs();
     for file in ["openapi-v1.json", "openapi-internal.json"] {
-        assert_eq!(docs[file]["info"]["version"], "1.63.0", "{file}");
+        assert_eq!(docs[file]["info"]["version"], "1.64.0", "{file}");
     }
     for (file, name, member) in [
         // reading a stopped session's storage back

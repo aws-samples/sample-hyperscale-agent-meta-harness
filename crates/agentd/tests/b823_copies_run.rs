@@ -7,7 +7,7 @@ mod common;
 mod direct_support;
 
 use common::git;
-use direct_support::{Direct, Opts, RUN};
+use direct_support::{Direct, Opts, RUN, checkout_of_copy};
 use harness_protocol::direct::{DirectOutcome, s3 as keys};
 use harness_protocol::envelope::EventType;
 use harness_protocol::runtime::TurnOutcome;
@@ -21,29 +21,10 @@ fn record(d: &Direct) -> Option<serde_json::Value> {
         .map(|b| serde_json::from_slice(&b).unwrap())
 }
 
-/// A clone of the snapshot bundle in the bucket, on its `snapshot` branch (the command the client prints).
+/// A checkout of the snapshot bundle in the bucket, on its `snapshot` branch: the copy alone when it holds the whole history (the
+/// command the client prints), and on the bundle the run started from when the copy needs it, as every reader does.
 fn clone_of_snapshot(d: &Direct, name: &str) -> PathBuf {
-    let bundle = d.dir.join(format!("{name}.bundle"));
-    std::fs::write(
-        &bundle,
-        d.aws
-            .get(&keys::snapshot_bundle_key(RUN))
-            .expect("snapshot.bundle"),
-    )
-    .unwrap();
-    let clone = d.dir.join(name);
-    git(
-        &d.dir,
-        &[
-            "clone",
-            "-q",
-            "-b",
-            "snapshot",
-            bundle.to_str().unwrap(),
-            clone.to_str().unwrap(),
-        ],
-    );
-    clone
+    checkout_of_copy(&d.aws, &d.dir, &keys::snapshot_bundle_key(RUN), name)
 }
 
 /// The `savedCopy` members of the run's progress events, in order.

@@ -79,6 +79,7 @@ fn each_new_table_parses_into_typed_fields() {
             mascot: None,
             mascot_motion: None,
             copy_limit_kib: None,
+            update_notice: None,
             deprecation_notices: None
         })
     );

@@ -207,9 +207,10 @@ fn the_table_agrees_with_the_manifest_of_names_when_the_manifest_is_present() {
     };
     let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
     let names = doc["names"].as_array().unwrap();
+    // A name marked `"earlier": false` never had an earlier spelling: it has no pair, so it is not compared.
     let tier1: Vec<(&str, &str)> = names
         .iter()
-        .filter(|n| n["tier"] == 1)
+        .filter(|n| n["tier"] == 1 && n["earlier"] != false)
         .map(|n| {
             (
                 n["suffix"].as_str().unwrap(),

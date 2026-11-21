@@ -278,6 +278,7 @@ fn snapshot_json_names_the_head_the_base_the_time_and_the_count() {
         final_copy: false,
         bundle_bytes: 0,
         read_unix: 0,
+        digest: None,
     };
     let v: serde_json::Value =
         serde_json::from_str(&snapshot_json(&made, "2026-10-13T18:50:00Z")).unwrap();

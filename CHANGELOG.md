@@ -6,6 +6,40 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.25] - 2026-11-20
+
+### Added
+
+- The terminal app shows a notice beside the version tag when a newer release is available. A click opens the repository's page in the browser, and the app stays open.
+- `ui.update_notice`, on by default, sets whether the terminal app looks for a newer release. `ham config set ui.update_notice off` switches the look off.
+- A follow-up of a run that reported done starts without that run's lifecycle records. Before the first prompt the harness takes the goal card, the run log, the red records and the research notes that runs wrote under `.ham` out of the work tree in a commit of its own. They stay in the history and in the earlier run's zip.
+- `run.remove_earlier_records`, on by default, sets whether such a follow-up starts without the earlier records. `ham config set run.remove_earlier_records off` leaves them in place. The setting is sent with a follow-up only.
+- The start request has the optional member `removeEarlierRecords`. The service writes `true` for a follow-up of a run that reported done, and a request without the member behaves as before. The protocol version is 1.64.0.
+
+### Changed
+
+- A saved copy of a run's work holds what the run changed since it started, not the repository's history. A later session of a run, a delivery from a saved copy and a download read the repository the run started from first.
+- `ham pull <runId> --snapshot` keeps such a copy as two files, the copy and the repository the run started from, and prints the git command that puts them together. The command puts the copy on a branch of its own, `ham-snapshot`.
+- A `ham` of an earlier release is told to run `ham update` when it asks for such a copy. The work stays saved.
+- A stage that has saved such copies cannot go back to an earlier release and still restore or deliver from them.
+- A deploy changes the delivery stack before the runtimes stack.
+- The worker sends a copy to the store as a stream and hashes it once, so storing a copy no longer holds up the worker's other work.
+- A request that stores or fetches a copy is given up when nothing moved for 30 seconds and is sent again. The last copy of a session keeps its two minutes: a request that still moves is no longer cut off after 30 seconds.
+- Making copies takes less processor time. The worker's private git repositories pack with one thread and clean up only after they have grown.
+- The worker reads the work tree once before the engine starts. The first copy of a session no longer reads every file in front of a tool call.
+- A follow-up of a run that did not report done, and `ham resume`, keep the earlier records. So does a follow-up when the service cannot read how the earlier run ended.
+- A file under `.ham/lifecycle` or `.ham/research` that you committed yourself stays, also when the engine changed, renamed or moved it. So do the records in a folder that `.ham/records` names.
+- A follow-up of a run that reported done no longer takes its test command for the clean-checkout report from the earlier run's log. `.ham/test-command` names a command for every run.
+- Messages that ask for an update name `ham update`.
+- The publish tool refuses a public release that does not carry the tag `v` and the version of the tree.
+
+### Fixed
+
+- The detail of a finished run reads as sentences. A period is no longer followed by a semicolon. After a sentence, the words about the pull request and the test report begin with a capital letter, for example `No pull request: Cline left the repository unchanged`. The reason of a blocked run joins its findings the same way.
+- A copy no longer fails on a lock file that an earlier copy left behind.
+- A run that rewrites a large file between tool calls no longer fills the worker's disk with old versions of it.
+- Stopping a copy also stops the helper processes that git started for it.
+
 ## [5.24] - 2026-11-17
 
 ### Added

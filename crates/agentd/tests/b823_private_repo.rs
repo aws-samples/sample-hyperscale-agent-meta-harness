@@ -5,7 +5,7 @@
 
 mod common;
 
-use agentd::direct::snapshot::Snapshotter;
+use agentd::direct::snapshot::{Snapshotter, TidyMarks};
 use common::{git, python_calc, scratch};
 use std::path::{Path, PathBuf};
 
@@ -58,7 +58,10 @@ async fn setup(label: &str) -> (PathBuf, PathBuf, PathBuf, Snapshotter) {
     let base = git(&repo, &["rev-parse", "HEAD"]);
     let data = dir.join("agent-data");
     std::fs::create_dir_all(&data).unwrap();
-    let snap = Snapshotter::new(&data, &repo, &base).await.unwrap();
+    let mut snap = Snapshotter::new(&data, &repo, &base).await.unwrap();
+    // In a run the clean-up waits until the repository has grown by a mark (`tests/b860_tidy.rs`). These tests hold what a
+    // clean-up keeps and removes, so here each one that is asked for runs, as each did when they were written.
+    snap.set_tidy_marks(TidyMarks::AT_ONCE);
     std::fs::create_dir_all(repo.join("out")).unwrap();
     (dir, repo, data, snap)
 }

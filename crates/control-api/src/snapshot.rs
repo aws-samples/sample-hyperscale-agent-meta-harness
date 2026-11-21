@@ -28,6 +28,20 @@
 //!
 //! Either way the first bytes of the object must name a commit (and, for the chosen copy, the commit the service chose), and the
 //! version that was checked is the one that is signed. `infra` grants the read and the listing of these keys beside the two above.
+//!
+//! A saved copy may leave out what the bundle the run started from holds (`runs/<run>/input/repo.bundle`, the base). The header
+//! of such a copy names the commits it needs (`harness_protocol::bundle_header::needs`), and the route has read that header already.
+//! A copy that names none is answered as before, with the reads it always made. For a copy that names one:
+//!
+//! * a request with `?parts=1` (a client that knows the member) gets the copy as before and a member `base`: the base object, read
+//!   by one byte for its size, ETag and version, and signed for that version. Whether it is there is asked by a listing of its
+//!   exact key first, like every key of this route. `infra` grants the read of that key (statement `SnapshotDownload`) and the
+//!   listing of it (`ListSnapshot`). A base that is not there (no rule removes it; a hand did) is no refusal: the copy is intact
+//!   and is the latest work, so it is served alone, with no member `base`, and the client keeps it and says what it needs.
+//! * a request without it (a client that predates the member, which would download one file that does not clone alone) is told to
+//!   update: 409 [`NEEDS_UPDATE_CODE`] with [`NEEDS_UPDATE`]. Nothing is signed, and the copy and the base stay in the bucket.
+//!
+//! The files read back from a stopped session are whole and are served as before either way.
 
 use crate::handler::{
     Blobs, DOWNLOAD_URL_TTL, Deps, Execution, ObjectPrefix, Reply, Store, V1Request, error, json,
@@ -35,9 +49,10 @@ use crate::handler::{
 };
 use crate::ids::now_rfc3339;
 use ham_core::snapshot::{
-    HEADER_BYTES, MAX_RECORD_BYTES, STALE_RECORD_AFTER_S, SnapshotDownload, SnapshotError,
-    SnapshotRecord, bundle_head,
+    HEADER_BYTES, MAX_RECORD_BYTES, STALE_RECORD_AFTER_S, SnapshotBase, SnapshotDownload,
+    SnapshotError, SnapshotRecord, bundle_head,
 };
+use harness_protocol::bundle_header::needs;
 use harness_protocol::common::{Engine, parse_utc_unix};
 use harness_protocol::direct::{MAX_SLICES, s3};
 use harness_protocol::goal::GoalStatus;
@@ -48,6 +63,14 @@ pub const NO_COPY_YET: &str =
     "no copy of this run's work is saved yet; ask again when the run has changed a file";
 /// What a run that ended is told when it has no copy.
 pub const NO_COPY: &str = "no copy of this run's work was saved";
+
+/// The query member of a client that takes a copy in two parts, the copy and the bundle the run started from: `?parts=1`.
+/// Any other value, and no member, is a client that takes one file.
+pub const PARTS_QUERY: &str = "parts";
+/// The code of the answer for a copy that needs the run's base, asked for by a client that takes one file.
+pub const NEEDS_UPDATE_CODE: &str = "snapshot-needs-update";
+/// What such a client is told. The copy and the base stay in the bucket, and the same command works once `ham` is updated.
+pub const NEEDS_UPDATE: &str = "this copy of the work needs a newer ham to download; the work is saved; run ham update and ask again";
 
 /// The query member that asks for the files read back from one session: `?readBack=<n>`.
 pub const READ_BACK_QUERY: &str = "readBack";
@@ -155,6 +178,8 @@ async fn read_back<S: Store, B: Blobs, E: Execution>(
             engine: Some(Engine::or_default(run.engine).as_str().to_string()),
             recovered: true,
             session: Some(session),
+            // The files read back are whole and are never served in parts.
+            base: None,
         },
     ))
 }
@@ -298,6 +323,17 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
         Ok(h) => h,
         Err(e) => return unreadable(run_id, &SnapshotError::Bundle(e)),
     };
+    // What the copy needs and does not hold, from the header bytes read above. A copy that names no commit is answered as it
+    // always was. A copy that names one needs the bundle the run started from: a client that takes one file is told to update, before
+    // anything else is read or signed.
+    let needs_base = match needs(&bundle.bytes) {
+        Ok(commits) => !commits.is_empty(),
+        Err(e) => return unreadable(run_id, &SnapshotError::Bundle(e)),
+    };
+    let parts = req.query.get(PARTS_QUERY).is_some_and(|v| v == "1");
+    if needs_base && !parts {
+        return error(409, NEEDS_UPDATE_CODE, NEEDS_UPDATE);
+    }
     let Some(etag) = bundle.etag.clone().filter(|t| !t.is_empty()) else {
         return unavailable(
             &crate::handler::StoreError::Unavailable("the bundle read returned no ETag".into()),
@@ -331,6 +367,46 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
             true,
         )
     };
+    // The bundle the run started from, for a copy that needs it. Whether it is there is asked by a listing of its exact
+    // key, as for every key of this route: the role may not list the bucket at large, and S3 answers the read of an absent key with
+    // 403 for such a role, which would make "no base" look like an outage for ever. Then one byte is read for its size, its ETag and
+    // its version. Both come before anything is signed, so a store that does not answer signs nothing.
+    // A base that is not there is no refusal (root invariant 9: the latest copy downloads however the run ended). No rule removes
+    // the base of a run; a hand can. The copy is intact, so it is served alone, with no member `base`: the client keeps it and says
+    // that it needs the repository the run started from.
+    let mut notes = Vec::new();
+    let base_object = if needs_base {
+        let base_key = s3::repo_bundle_key(run_id);
+        let object = match deps.blobs.exists(&base_key).await {
+            Ok(true) => match deps.blobs.read_prefix(&base_key, 1).await {
+                Ok(o) => o,
+                Err(e) => return unavailable(&e, "retry"),
+            },
+            Ok(false) => None,
+            Err(e) => return unavailable(&e, "retry"),
+        };
+        match object {
+            Some(object) => {
+                let Some(base_etag) = object.etag.clone().filter(|t| !t.is_empty()) else {
+                    return unavailable(
+                        &crate::handler::StoreError::Unavailable(
+                            "the read of the bundle the run started from returned no ETag".into(),
+                        ),
+                        "retry",
+                    );
+                };
+                Some((base_key, object, base_etag))
+            }
+            None => {
+                notes.push(format!(
+                    "snapshot of run {run_id}: the copy needs the bundle the run started from, and the bucket holds none; the copy is served alone"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
     // The version whose header was checked: an overwrite after this point (agentd saves a new bundle while the run works) cannot change
     // what the URL names. A store that keeps no versions sends none, and the client's If-Match on the ETag covers it.
     let signed = match deps
@@ -341,7 +417,24 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
         Ok(u) => u,
         Err(e) => return unavailable(&e, "retry"),
     };
-    json(
+    let base = match base_object {
+        Some((base_key, object, base_etag)) => {
+            match deps
+                .blobs
+                .presign_get_version(&base_key, object.version_id.as_deref(), DOWNLOAD_URL_TTL)
+                .await
+            {
+                Ok(u) => Some(SnapshotBase {
+                    url: u.url,
+                    size_bytes: object.size,
+                    etag: base_etag,
+                }),
+                Err(e) => return unavailable(&e, "retry"),
+            }
+        }
+        None => None,
+    };
+    let (resp, _) = json(
         200,
         &SnapshotDownload {
             url: signed.url,
@@ -358,6 +451,8 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
             engine: Some(Engine::or_default(run.engine).as_str().to_string()),
             recovered: false,
             session: None,
+            base,
         },
-    )
+    );
+    (resp, notes)
 }

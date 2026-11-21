@@ -34,7 +34,7 @@ fn request(cfg: &Config, extra: &[&str]) -> Value {
 
 #[test]
 fn the_row_follows_the_compute_row_and_rides_in_the_goal_member() {
-    assert_eq!(Key::ALL.len(), 50);
+    assert_eq!(Key::ALL.len(), 52);
     assert_eq!(Key::ALL[24], Key::RunCompute);
     assert_eq!(Key::ALL[25], Key::RunStallNewCalls);
     let r = Key::RunStallNewCalls.row();

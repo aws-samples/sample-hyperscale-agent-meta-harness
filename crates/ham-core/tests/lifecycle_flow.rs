@@ -150,9 +150,9 @@ fn with(word: &str) -> Config {
 
 #[test]
 fn the_registry_has_one_row_for_it_after_the_final_message_row() {
-    assert_eq!(Key::ALL.len(), 50);
-    assert_eq!(ROWS.len(), 50);
-    assert_eq!(KEYS.len(), 50);
+    assert_eq!(Key::ALL.len(), 52);
+    assert_eq!(ROWS.len(), 52);
+    assert_eq!(KEYS.len(), 52);
     assert_eq!(Key::ALL[21], Key::RunFinalMessage);
     assert_eq!(Key::ALL[22], Key::RunLifecycleFlow);
     let row = Key::RunLifecycleFlow.row();

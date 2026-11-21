@@ -580,12 +580,22 @@ where
         .await;
     }
 
-    // 9. Credentials for one PUT and at most one GET, tagged as the recovery agent, for the least time STS gives.
+    // 9. Credentials for one PUT and at most two GETs, tagged as the recovery agent, for the least time STS gives. A saved copy
+    //    may hold what the run changed and need what the bundle the run started from holds; a read whose storage no longer holds
+    //    that takes the base first, so with a saved copy to fetch the credentials may read that one object too.
     let bucket = cfg.bucket.as_str();
     let key = s3::recovery_bundle_key(run_id, n);
+    let base_object = baseline_object
+        .as_ref()
+        .map(|_| s3::repo_bundle_key(run_id));
     let minted = match (
         agent.creds.as_ref(),
-        dispatcher::policy::recovery_policy(bucket, &key, baseline_object.as_deref()),
+        dispatcher::policy::recovery_policy(
+            bucket,
+            &key,
+            baseline_object.as_deref(),
+            base_object.as_deref(),
+        ),
         dispatcher::ids::role_session_name(run_id, RECOVERY_AGENT_ID),
     ) {
         (Some(binding), Ok(session_policy), Ok(role_session_name)) => {

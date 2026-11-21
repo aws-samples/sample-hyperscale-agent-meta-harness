@@ -122,7 +122,7 @@ pub fn explain(status: u16, code: &str, message: &str) -> String {
     match (status, code) {
         // A stage deployed before the route existed answers a path it does not know.
         (404, "not-found") if m.contains("no such route") => {
-            "this stage does not offer retry yet: it needs a newer backend. Start a new run with the same prompt (n) instead".to_string()
+            "this stage does not offer retry yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you). Start a new run with the same prompt (n) instead".to_string()
         }
         (404, _) | (409, "run-active" | "run-not-blocked") | (422, "stored-request-unreadable") => m,
         (409, "no-delivered-head" | "head-mismatch") => {

@@ -505,3 +505,233 @@ async fn a_role_without_the_grant_to_read_the_request_is_a_retry_later_and_claim
     assert_eq!((status, code(&v)), (503, "unavailable"), "{v}");
     unchanged(&w, &before);
 }
+
+// ----: a retry is held to what a fresh start is held to, so the rule for the earlier records is applied again -----------------------
+//
+// The service stores `removeEarlierRecords: true` only when its own rule gives it: the start of a follow-up of a run that reported done.
+// A retry reads the blocked run's stored request and goes through the same checks, so a stored `true` is never copied (the rule decides
+// afresh), the user's own `false` is kept, and a request that held no member gets what the rule gives then.
+
+fn b866_evidence(run: &str, outcome: &str, head: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "schemaVersion": 1, "runId": run, "outcome": outcome, "label": "x", "headSha": head, "baseSha": BASE
+    }))
+    .unwrap()
+}
+
+/// `BASE_RUN` of `ME` in `status`, with a delivered bundle and evidence that says it reported done.
+fn b866_world(status: &str) -> World {
+    let w = World::new();
+    w.add_run(run_item(
+        BASE_RUN,
+        ME,
+        status,
+        "2026-10-15T13:00:00Z",
+        json!({"mode": "s3-only"}),
+    ));
+    w.put_object(&s3::verified_bundle_key(BASE_RUN), bundle(HEAD, BASE_RUN));
+    w.put_object(
+        &harness_protocol::direct::s3::evidence_key(BASE_RUN),
+        b866_evidence(BASE_RUN, "reported_done", HEAD),
+    );
+    w
+}
+
+fn b866_stored(w: &World, run: &str) -> Value {
+    serde_json::from_slice(&stored_bytes(w, run)).unwrap()
+}
+
+fn b866_follow_up() -> Value {
+    let mut follow_up = rich_body();
+    follow_up["continueFrom"] = json!({"runId": BASE_RUN});
+    follow_up
+}
+
+fn b866_evidence_reads(w: &World) -> usize {
+    w.count(&format!(
+        "read_or_refused {}",
+        harness_protocol::direct::s3::evidence_key(BASE_RUN)
+    ))
+}
+
+#[tokio::test]
+async fn b866_a_retry_applies_the_rule_again() {
+    // A blocked follow-up of a run that reported done: its stored request holds the service's `true`, the retry reads the evidence again
+    // and stores `true`, and the bytes are the same.
+    let w = b866_world("complete");
+    let blocked = blocked_run(&w, "k-1", &b866_follow_up()).await;
+    assert_eq!(
+        b866_stored(&w, &blocked)["removeEarlierRecords"],
+        json!(true),
+        "TRIGGER: the blocked run's request holds the service's true"
+    );
+    let reads = b866_evidence_reads(&w);
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    let new = v["runId"].as_str().unwrap();
+    assert_eq!(b866_stored(&w, new)["removeEarlierRecords"], json!(true));
+    assert_eq!(stored_bytes(&w, new), stored_bytes(&w, &blocked));
+    assert_eq!(
+        b866_evidence_reads(&w),
+        reads + 1,
+        "the retry asked for the evidence again"
+    );
+
+    // A stored `true` is never copied. The source run is no longer `complete` when the retry comes: the rule gives no member, and the new
+    // run's request is the blocked run's without it.
+    let w = b866_world("complete");
+    let blocked = blocked_run(&w, "k-1", &b866_follow_up()).await;
+    assert_eq!(
+        b866_stored(&w, &blocked)["removeEarlierRecords"],
+        json!(true)
+    );
+    set_status(&w, BASE_RUN, "paused");
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    let new = v["runId"].as_str().unwrap();
+    let mut expected = b866_stored(&w, &blocked);
+    expected
+        .as_object_mut()
+        .unwrap()
+        .remove("removeEarlierRecords");
+    assert_eq!(b866_stored(&w, new), expected);
+
+    // The same when the evidence no longer says what the rule needs.
+    let w = b866_world("complete");
+    let blocked = blocked_run(&w, "k-1", &b866_follow_up()).await;
+    w.put_object(
+        &harness_protocol::direct::s3::evidence_key(BASE_RUN),
+        b866_evidence(BASE_RUN, "stopped_by_user", HEAD),
+    );
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    assert!(
+        b866_stored(&w, v["runId"].as_str().unwrap())
+            .get("removeEarlierRecords")
+            .is_none()
+    );
+
+    // A blocked run whose stored request holds no member (as release 5.24 stored it) and whose source run reported done: the rule is
+    // applied at the retry, and the new run's request holds `true`. It differs from the blocked run's by that member only.
+    let w = b866_world("complete");
+    let blocked = blocked_run(&w, "k-1", &b866_follow_up()).await;
+    {
+        let mut objects = w.objects.lock().unwrap();
+        let key = s3::request_key(&blocked);
+        let mut v: Value = serde_json::from_slice(&objects[&key]).unwrap();
+        v.as_object_mut().unwrap().remove("removeEarlierRecords");
+        objects.insert(key, serde_json::to_vec(&v).unwrap());
+    }
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    let new = v["runId"].as_str().unwrap();
+    let mut expected = b866_stored(&w, &blocked);
+    assert!(expected.get("removeEarlierRecords").is_none());
+    expected["removeEarlierRecords"] = json!(true);
+    assert_eq!(b866_stored(&w, new), expected);
+}
+
+#[tokio::test]
+async fn b866_r2_the_users_false_survives_a_retry() {
+    let w = b866_world("complete");
+    let mut off = b866_follow_up();
+    off["removeEarlierRecords"] = json!(false);
+    let blocked = blocked_run(&w, "k-1", &off).await;
+    assert_eq!(
+        b866_stored(&w, &blocked)["removeEarlierRecords"],
+        json!(false)
+    );
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    let new = v["runId"].as_str().unwrap();
+    assert_eq!(b866_stored(&w, new)["removeEarlierRecords"], json!(false));
+    assert_eq!(stored_bytes(&w, new), stored_bytes(&w, &blocked));
+    assert_eq!(
+        b866_evidence_reads(&w),
+        0,
+        "the evidence is not read for the user's choice"
+    );
+}
+
+#[tokio::test]
+async fn b866_r2_a_retry_of_a_blocked_resume_stores_no_member() {
+    let w = b866_world("paused");
+    {
+        // The stopped run's own request, as the service stored it when the run started.
+        let mut first = rich_body();
+        first["prompt"] = json!("the first request");
+        w.put_object(
+            &s3::request_key(BASE_RUN),
+            serde_json::to_vec(&first).unwrap(),
+        );
+        w.runs
+            .lock()
+            .unwrap()
+            .get_mut(BASE_RUN)
+            .unwrap()
+            .resume_mode = Some(harness_protocol::goal::ResumeMode::FollowUp);
+    }
+    let mut r = request(
+        ME,
+        "POST",
+        &format!("/v1/runs/{BASE_RUN}/resume"),
+        &[],
+        "{}",
+    );
+    r.headers
+        .insert("idempotency-key".into(), format!("resume-{BASE_RUN}"));
+    let out = control_api::handler::handle(r, &deps(&w)).await;
+    let v: Value = serde_json::from_str(&out.body).unwrap();
+    assert_eq!(out.status, 201, "{v}");
+    let resumed = v["runId"].as_str().unwrap().to_string();
+    assert!(
+        b866_stored(&w, &resumed)
+            .get("removeEarlierRecords")
+            .is_none(),
+        "the resume route stores no member"
+    );
+    block(&w, &resumed);
+    let (status, v) = retry(&w, &resumed).await;
+    assert_eq!(status, 201, "{v}");
+    let new = v["runId"].as_str().unwrap();
+    assert!(b866_stored(&w, new).get("removeEarlierRecords").is_none());
+    assert_eq!(stored_bytes(&w, new), stored_bytes(&w, &resumed));
+}
+
+/// The claim of a retry is compared without the member: a retry whose first call stored no member (a service of release 5.24) and whose
+/// repeat would store `true` is the same retry, and the repeat returns the run the first call started. `ham` derives the key of a retry
+/// from the blocked run, so the user could not send another.
+#[tokio::test]
+async fn b866_r2_a_repeat_of_a_retry_whose_first_call_stored_no_member_returns_the_same_run() {
+    let w = b866_world("complete");
+    let blocked = blocked_run(&w, "k-1", &b866_follow_up()).await;
+    let evidence_key = harness_protocol::direct::s3::evidence_key(BASE_RUN);
+    {
+        // The blocked run and its first retry as release 5.24 left them: no member in the stored request, and no rule that reads the
+        // evidence (the object is put aside for the first call).
+        let mut objects = w.objects.lock().unwrap();
+        let key = s3::request_key(&blocked);
+        let mut v: Value = serde_json::from_slice(&objects[&key]).unwrap();
+        v.as_object_mut().unwrap().remove("removeEarlierRecords");
+        objects.insert(key, serde_json::to_vec(&v).unwrap());
+        objects.remove(&evidence_key);
+    }
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "{v}");
+    let first = v["runId"].as_str().unwrap().to_string();
+    let bytes = stored_bytes(&w, &first);
+    assert!(
+        b866_stored(&w, &first)
+            .get("removeEarlierRecords")
+            .is_none()
+    );
+    // The repeat, after the update: the rule now gives `true` for the same stored request.
+    w.put_object(
+        &evidence_key,
+        b866_evidence(BASE_RUN, "reported_done", HEAD),
+    );
+    let (status, v) = retry(&w, &blocked).await;
+    assert_eq!(status, 201, "the repeat is the same retry: {v}");
+    assert_eq!(v["runId"].as_str(), Some(first.as_str()));
+    assert_eq!(stored_bytes(&w, &first), bytes);
+}

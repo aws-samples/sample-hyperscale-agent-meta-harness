@@ -7,6 +7,7 @@
     "direct turn containers not started: no engine user",
     "direct turn rules placed: 1 file(s)",
     "direct turn config directory protected: given_to_root=false owner_uid=<n>",
+    "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn automatic recovery on, no answer window",
     "direct turn engine stop 1 of 1: loop-guard: the engine stopped the run itself (5 identical tool calls in a row); the model stays us.anthropic.claude-opus-5-5; one more try follows in <n>s",
@@ -420,7 +421,7 @@
     "usage": null,
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.63.0"
+      "protocol": "1.64.0"
     }
   },
   "wire": [

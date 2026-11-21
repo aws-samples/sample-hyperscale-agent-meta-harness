@@ -31,9 +31,10 @@ fn id(n: u32) -> String {
     format!("01M5A2R7K3C9XJ4D8E6F{n:06}")
 }
 
+/// A copy that holds the whole history. A copy whose header names a commit it needs comes with the repository the run started
+/// from.
 fn bundle(head: &str, filler: usize) -> Vec<u8> {
-    let mut b = format!("# v2 git bundle\n-{BASE} base subject\n{head} {SNAPSHOT_REF}\n\nPACK")
-        .into_bytes();
+    let mut b = format!("# v2 git bundle\n{head} {SNAPSHOT_REF}\n\nPACK").into_bytes();
     b.extend((0..filler).map(|i| (i % 251) as u8));
     b
 }
@@ -399,7 +400,11 @@ async fn the_snapshot_is_downloaded_in_ranges_checked_and_named_for_its_run() {
         vec![format!("{RUN}-snapshot-3.bundle")],
         "no .part is left"
     );
-    assert_eq!(plane.calls()[0], ("POST".into(), route()));
+    // The request says that this client takes a copy that needs the run's base in two parts.
+    assert_eq!(
+        plane.calls()[0],
+        ("POST".into(), format!("{}?parts=1", route()))
+    );
 }
 
 #[tokio::test]
@@ -773,6 +778,8 @@ async fn b854_read_back_asked_of_a_stage_that_predates_it_downloads_nothing_and_
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(calls[0].1.starts_with(&route()), "{calls:?}");
     assert!(calls[0].1.contains("readBack=1"), "{calls:?}");
+    // The files read back are whole and are never asked for in parts.
+    assert!(!calls[0].1.contains("parts"), "{calls:?}");
     assert!(
         plane.fetches.lock().unwrap().is_empty(),
         "no byte of the saved copy is fetched"

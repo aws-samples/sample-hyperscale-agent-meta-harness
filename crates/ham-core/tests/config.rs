@@ -81,6 +81,7 @@ fn config_round_trips_and_holds_only_the_documented_keys() {
             mascot: None,
             mascot_motion: None,
             copy_limit_kib: None,
+            update_notice: None,
             deprecation_notices: None,
         }),
     };

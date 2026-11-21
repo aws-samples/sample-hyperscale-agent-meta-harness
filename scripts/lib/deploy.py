@@ -320,7 +320,11 @@ LAMBDAS = ("worker-api", "control-api", "run-session", "research-api", "research
 VERSION_ENDPOINT = re.compile(r"v([1-9][0-9]*)")
 # The result line of scripts/codebuild-run.sh on success: `CODEBUILD PASS id=<project>:<uuid> sha=<sha7> seconds=<n>`.
 CODEBUILD_RESULT = re.compile(r"^CODEBUILD PASS id=(\S+)")
-DEPLOY_PRIORITY = ("network", "security", "data", "packages", "control", "runtimes", "orchestration", "delivery", "observability")
+# The order of one pass where the manifest leaves a choice. The delivery stack comes before the runtimes stack: the worker image writes saved copies
+# of the work that need the bundle the run started from, and the bundle validator reads such a copy as the source of a delivery, so the reader is live before
+# the writer. With the runtimes stack first, a run that started on the new image and was cancelled or lost before the delivery stack changed met the earlier
+# validator, which refuses such a copy (scripts/tests/test_deploy.py, test_b860_the_delivery_stack_deploys_before_the_runtimes_stack).
+DEPLOY_PRIORITY = ("network", "security", "data", "packages", "control", "delivery", "runtimes", "orchestration", "observability")
 # The stacks whose `owner` tag is the owner of a stage that exists, in the order they are read: the network stack first (it holds the DNS query logging configuration,
 # which CloudFormation replaces when its tags change, and the replacement fails), then the control stack. A stack in one of the states below holds nothing: its first create
 # rolled back and the deploy makes it again.

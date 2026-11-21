@@ -10,8 +10,7 @@
 mod common;
 mod direct_support;
 
-use common::git;
-use direct_support::{Direct, Opts, RUN};
+use direct_support::{Direct, Opts, RUN, checkout_of_copy_bytes};
 use harness_protocol::direct::s3 as keys;
 use harness_protocol::runtime::TurnOutcome;
 use std::time::{Duration, Instant};
@@ -41,24 +40,12 @@ fn read_at(d: &Direct, n: usize) -> i64 {
 /// are whole seconds, and two for a tick that a loaded host delivers late.
 const LOOK_WITHIN_S: i64 = harness_protocol::direct::DEFAULT_SNAPSHOT_EVERY_S as i64 + 3;
 
-/// Whether copy `n` holds the file `name`: the bundle of that copy, cloned on its `snapshot` branch as the client does.
+/// Whether copy `n` holds the file `name`: the bundle of that copy, checked out on its `snapshot` branch as a reader does.
 fn holds(d: &Direct, n: usize, name: &str) -> bool {
     let (_, bundle) = &d.aws.versions_of(&keys::snapshot_bundle_key(RUN))[n - 1];
-    let file = d.dir.join(format!("look-{n}.bundle"));
-    std::fs::write(&file, bundle).unwrap();
-    let clone = d.dir.join(format!("look-{n}-{name}"));
-    git(
-        &d.dir,
-        &[
-            "clone",
-            "-q",
-            "-b",
-            "snapshot",
-            file.to_str().unwrap(),
-            clone.to_str().unwrap(),
-        ],
-    );
-    clone.join(name).is_file()
+    checkout_of_copy_bytes(&d.aws, &d.dir, bundle, &format!("look-{n}-{name}"))
+        .join(name)
+        .is_file()
 }
 
 #[tokio::test(flavor = "multi_thread")]

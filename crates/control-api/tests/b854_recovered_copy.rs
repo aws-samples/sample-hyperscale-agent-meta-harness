@@ -105,9 +105,9 @@ fn path() -> String {
     format!("/v1/runs/{RUN}/snapshot/download-url")
 }
 
+/// A bundle that holds the whole history.
 fn bundle(head: &str) -> Vec<u8> {
-    format!("# v2 git bundle\n-{BASE} base subject\n{head} {SNAPSHOT_REF}\n\nPACK-{head}")
-        .into_bytes()
+    format!("# v2 git bundle\n{head} {SNAPSHOT_REF}\n\nPACK-{head}").into_bytes()
 }
 
 fn record(head: &str) -> Vec<u8> {

@@ -632,6 +632,144 @@ async fn a_missing_key_is_none_an_empty_object_is_empty_and_a_failure_is_unavail
     ));
 }
 
+// ---- `read_or_refused`: an answer no retry changes is told from a failure that may pass ---------------------------------
+
+fn xml_err(status: u16, code: &str) -> Answer {
+    (
+        status,
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>{code}</Code><Message>the store's words</Message></Error>"
+        ),
+        vec![("content-type", "application/xml".into())],
+    )
+}
+
+const EVIDENCE: &str = "runs/01K5ZQ4T8M3N6P7R9S0V1W2X3Y/evidence/direct.json";
+
+#[tokio::test]
+async fn b866_r2_a_403_and_a_404_of_the_store_are_a_refusal_and_never_unavailable() {
+    use control_api::handler::ReadOrRefused;
+    // The role may not list the bucket, so S3 answers 403 AccessDenied for an absent key; a role that may list gets 404 NoSuchKey; an
+    // object in an archive class and a request the store will not take are refused the same way every time.
+    for (status, code) in [
+        (403, "AccessDenied"),
+        (404, "NoSuchKey"),
+        (403, "InvalidObjectState"),
+        (400, "InvalidRequest"),
+    ] {
+        let r = replay(vec![xml_err(status, code)]);
+        match s3(&r).read_or_refused(EVIDENCE, 100).await {
+            Ok(ReadOrRefused::Refused(why)) => {
+                assert!(why.contains(code), "{status} {code}: {why}");
+            }
+            other => panic!("{status} {code}: {other:?}"),
+        }
+    }
+    // `read_prefix` is as it was for every other caller: a missing key is no object, and a refused read is unavailable.
+    let r = replay(vec![
+        xml_err(404, "NoSuchKey"),
+        xml_err(403, "AccessDenied"),
+    ]);
+    let b = s3(&r);
+    assert!(b.read_prefix(EVIDENCE, 100).await.unwrap().is_none());
+    assert!(matches!(
+        b.read_prefix(EVIDENCE, 100).await,
+        Err(StoreError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
+async fn b866_r2_a_5xx_answer_and_a_throttle_of_the_store_may_pass_on_a_retry() {
+    // A fault of the store, a throttle, a request the store did not read in time, and a clock or a token that was wrong for a moment.
+    for (status, code) in [
+        (500, "InternalError"),
+        (503, "ServiceUnavailable"),
+        (503, "SlowDown"),
+        (400, "RequestTimeout"),
+        (403, "RequestTimeTooSkewed"),
+        (400, "ExpiredToken"),
+    ] {
+        let r = replay(vec![xml_err(status, code)]);
+        match s3(&r).read_or_refused(EVIDENCE, 100).await {
+            Err(StoreError::Unavailable(why)) => {
+                assert!(why.contains(code), "{status} {code}: {why}");
+            }
+            other => panic!("{status} {code}: {other:?}"),
+        }
+    }
+    // A reply that is no answer at all (the connection gave nothing to replay) may pass as well.
+    let r = replay(vec![]);
+    assert!(matches!(
+        s3(&r).read_or_refused(EVIDENCE, 100).await,
+        Err(StoreError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
+async fn b866_r2_a_read_that_gets_no_answer_in_time_may_pass_on_a_retry() {
+    // The store never answers; the client gives up after its own time limit.
+    let b = S3Blobs {
+        client: aws_sdk_s3::Client::from_conf(
+            aws_sdk_s3::Config::builder()
+                .behavior_version_latest()
+                .region(aws_sdk_s3::config::Region::new("us-east-1"))
+                .credentials_provider(aws_sdk_s3::config::Credentials::for_tests())
+                .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+                .timeout_config(
+                    aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                        .operation_timeout(Duration::from_millis(100))
+                        .build(),
+                )
+                .http_client(aws_smithy_http_client::test_util::NeverClient::new())
+                .force_path_style(true)
+                .build(),
+        ),
+        bucket: s3(&replay(vec![])).bucket,
+        credentials: None,
+    };
+    let got = tokio::time::timeout(Duration::from_secs(20), b.read_or_refused(EVIDENCE, 100))
+        .await
+        .expect("TRIGGER: the client's own time limit ended the read");
+    match got {
+        Err(StoreError::Unavailable(why)) => {
+            assert!(
+                why.to_lowercase().contains("timeout") || why.to_lowercase().contains("timed out"),
+                "{why}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn b866_r2_an_object_and_an_empty_object_are_read_as_before() {
+    use control_api::handler::ReadOrRefused;
+    let empty = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable</Message></Error>";
+    let r = replay(vec![
+        (
+            206,
+            "{\"a\":1}".into(),
+            vec![("content-range", "bytes 0-6/7".into())],
+        ),
+        (
+            416,
+            empty.into(),
+            vec![("content-type", "application/xml".into())],
+        ),
+    ]);
+    let b = s3(&r);
+    match b.read_or_refused(EVIDENCE, 100).await {
+        Ok(ReadOrRefused::Object(o)) => {
+            assert_eq!((o.bytes.as_slice(), o.size), (&b"{\"a\":1}"[..], 7))
+        }
+        other => panic!("{other:?}"),
+    }
+    match b.read_or_refused(EVIDENCE, 100).await {
+        Ok(ReadOrRefused::Object(o)) => assert_eq!((o.bytes.len(), o.size), (0, 0)),
+        other => panic!("{other:?}"),
+    }
+}
+
 // ---- `exists`: a listing whose prefix is the key ----------------------------------------------------------------------
 
 fn xml_ok(body: &str) -> Answer {

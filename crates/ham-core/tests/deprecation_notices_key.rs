@@ -21,9 +21,9 @@ fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> +
 
 #[test]
 fn the_registry_has_one_row_for_it_before_the_last() {
-    assert_eq!(Key::ALL.len(), 50);
-    assert_eq!(ROWS.len(), 50);
-    assert_eq!(KEYS.len(), 50);
+    assert_eq!(Key::ALL.len(), 52);
+    assert_eq!(ROWS.len(), 52);
+    assert_eq!(KEYS.len(), 52);
     assert_eq!(Key::ALL[30], Key::UiDeprecationNotices);
     let row = Key::UiDeprecationNotices.row();
     assert_eq!(row.name, "ui.deprecation_notices");

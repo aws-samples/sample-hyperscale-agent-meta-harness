@@ -95,6 +95,7 @@ When the user requests a durable behavior change, record it here or in the relev
   `config.toml` holds the client's own settings and one file per engine in `engines/` holds that engine's settings. A person edits them with `ham config`, the Settings screen or a text editor. A default user touches nothing, and every key is opt-in.
   `crates/ham-core/src/settings.rs` is the one registry of client keys; a new key adds its row, its reader and the generated table in `docs/user-guide.md` (between the `ham-settings` markers) in the same change.
 - The product stays neutral about the environment of whoever builds it. No route to a private git host, workstation path or contributor-specific network setting appears in the product or in a setting that exists only for this repository's scripts. Before building, classify each gap as a product feature, a defect in this repository's own scripts, or a limit of the build environment.
+- A feature that an older `ham` cannot handle answers that client with HTTP 409, one sentence that names `ham update` and a code that ends in `-needs-update`; no server path is built to keep older clients working unless the maintainers ask for one.
 
 # Hyperscale Agent Meta Harness Engineering Contract
 

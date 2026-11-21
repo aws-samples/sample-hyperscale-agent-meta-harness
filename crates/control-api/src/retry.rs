@@ -4,7 +4,11 @@
 //! and the run rows hold no prompt, rules, switches or attachments for the client to resend. The one full copy of the request is the object
 //! `runs/<id>/input/request.json`, so this route reads it, holds it to what a fresh start is held to ([`crate::direct::prepare`]: the model list,
 //! the rules, the limits, and for a follow-up its base run and head), and starts a new run whose stored request is the same request: the
-//! canonical form of the stored one, which is the very bytes for a request this service stored.
+//! canonical form of the stored one, which is the very bytes for a request this service stored. One member may differ: for a
+//! follow-up, `prepare` decides again whether the worker takes the lifecycle records of the source run out of the work tree. A stored
+//! `true` is never copied (the rule gives it afresh or not at all), the user's own `false` is kept, and a request that held no member
+//! gets what the rule gives then. The claim of the key is compared without that member, so a repeat of a retry returns the run the first
+//! call started whatever the rule says now.
 //!
 //! The new run's Run item names the blocked run in `continueFrom`, which the run rows and the detail return. That is a link between two runs and
 //! nothing more: the stored request keeps its own `continueFrom` (with its resolved head) when the blocked run was itself a follow-up, and
@@ -149,10 +153,10 @@ pub(crate) async fn retry<S: Store, B: Blobs, E: Execution>(
     };
     // Held to what a fresh start is held to: a model the stage no longer lists, a rule that no longer passes, or a base run that lost its
     // delivered head refuses the retry with the words of a fresh start.
-    let prepared = match direct::prepare(stored, caller, deps).await {
+    let prepared = match direct::prepare(stored, direct::Route::Start, caller, deps).await {
         Ok(p) => p,
         Err(reply) => return reply,
     };
-    let claim = claim_hash(run_id, &prepared.canonical);
+    let claim = claim_hash(run_id, &prepared.claim);
     direct::start_prepared(&prepared, key, claim, Some(run_id), caller, deps).await
 }

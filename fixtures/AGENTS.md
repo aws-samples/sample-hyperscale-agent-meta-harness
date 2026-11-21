@@ -37,6 +37,8 @@ Owned by the root contract. `engines/<name>/` is owned with the matching `engine
     session/prompt is answered from the turn whose recorded prompt text equals its text, else from
     the first unused turn in name order (agentd starts a fresh engine per invocation, so a turn
     is reached as the first prompt of a process).
+  - `engines/fake-acp/transcripts/direct/four_edits/`: `writes_files` with two more edits, each a new file under `docs/`, so four tool calls end one after the other. The whole-turn test
+    `crates/agentd/tests/b860_no_wait.rs` steps the engine through them with `FAKE_ACP_STEP_FILE` while a look of the copy task is held.
   - `engines/fake-acp/transcripts/direct/oc_goal_*/`: the scenarios of the goal loop the harness drives. Each is a handshake and one `turn-N.jsonl` per prompt, in the shape
     OpenCode v2.2.6 puts on the wire (tool calls with `name`, shell calls titled by their command, the helper tool `subagent`); the claim lines carry the nonce `TESTNONCE0000000` that the test gives the module.
     `oc_goal_hand_over_2` is the scenario of the restarted process (session `fake-session-0002`).

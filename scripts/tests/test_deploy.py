@@ -560,7 +560,9 @@ else:
     print("CODEBUILD PASS id=%s sha=abcdef0 seconds=1" % bid)
 '''
 
-STACKS = ["network", "security", "data", "packages", "control", "runtimes", "orchestration", "delivery", "observability"]
+# The order one pass deploys the stacks in (scripts/lib/deploy.py DEPLOY_PRIORITY, with the edges of the fake manifest above). The delivery stack
+# comes before the runtimes stack, see `test_b860_the_delivery_stack_deploys_before_the_runtimes_stack`.
+STACKS = ["network", "security", "data", "packages", "control", "delivery", "runtimes", "orchestration", "observability"]
 
 
 def fake_build_id(stage: str, spec: str, tag: str) -> str:
@@ -716,6 +718,18 @@ class DeployCase(unittest.TestCase):
     def digests_written(self) -> dict:
         """The SSM parameters of the stage but its settings record, which a deploy writes with status=deploying before its first stack change."""
         return {k: v for k, v in self.ssm().items() if k != "/hamh/direct/settings"}
+
+    def test_b860_the_delivery_stack_deploys_before_the_runtimes_stack(self) -> None:
+        # The worker image (runtimes stack) writes saved copies of the work that need the bundle the run started from, and the bundle validator
+        # (delivery stack) reads such a copy as the source of a delivery. A reader goes live before the writer: with the runtimes stack first, a run
+        # that started on the new image and was cancelled or lost before the delivery stack changed met the earlier validator, which refuses such
+        # a copy, and ended blocked. The manifest leaves the two stacks unordered, so the priority list decides.
+        proc = self.run_deploy("--stage", "direct")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        names = [c["args"][2] for c in self.deploys()]
+        for one_pass in (names[:len(STACKS)], names[len(STACKS):]):
+            at = [one_pass.index(f"hamh-direct-{n}") for n in ("control", "delivery", "runtimes", "orchestration")]
+            self.assertEqual(at, sorted(at), f"control, then delivery, then runtimes, then orchestration: {one_pass}")
 
     def test_a_fresh_stage_gets_phase_1_then_the_image_build_then_the_image_pass(self) -> None:
         proc = self.run_deploy("--stage", "direct")

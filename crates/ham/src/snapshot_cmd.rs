@@ -18,7 +18,7 @@ use ham_core::sanitize::sanitize_line;
 use ham_core::snapshot::{SNAPSHOT_REF, SNAPSHOT_TRUST_NOTE};
 use harness_protocol::goal::GoalStatus;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The exit code of a command that failed.
 const ERROR: i32 = 1;
@@ -108,15 +108,25 @@ pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
         }
         _ => format!("pulled the snapshot of run {run_id}"),
     };
-    let mut lines = vec![
-        title,
-        format!("File      {path}"),
-        format!("Commit    {} ({which})", f.head_sha),
-    ];
+    let mut lines = vec![title, format!("File      {path}")];
+    // A copy that holds what the run changed comes with the repository the run started from, as a second file.
+    if let Some((base_path, _)) = &f.base {
+        lines.push(format!(
+            "Needs     {} (the repository the run started from)",
+            base_path.display()
+        ));
+    }
+    lines.push(format!("Commit    {} ({which})", f.head_sha));
     if let Some(base) = &f.base_sha {
         lines.push(format!("Base      {base}"));
     }
-    lines.push(format!("Size      {} bytes", f.size_bytes));
+    lines.push(match &f.base {
+        Some((_, base_bytes)) => format!(
+            "Size      {} bytes, and {base_bytes} bytes for the repository the run started from",
+            f.size_bytes
+        ),
+        None => format!("Size      {} bytes", f.size_bytes),
+    });
     lines.push(format!("Run       {}", status_word(f.run_status)));
     lines.extend(saved_line(f));
     if f.record_stale {
@@ -139,9 +149,63 @@ pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
     if let Some(note) = status_note(run_id, f.run_status).filter(|_| !f.asked_read_back) {
         lines.push(format!("Note      {note}"));
     }
-    lines.push(format!("Look      git clone -b {} {path} <dir>", branch()));
+    lines.push(look_line(f));
     lines.push(format!("Warning   {SNAPSHOT_TRUST_NOTE}"));
     lines.join("\n")
+}
+
+/// What a copy that needs the repository the run started from is told when the stage sent no such file with it. The page it
+/// names is the user guide's, which every reader of the product has; it holds the commands that put the two files together.
+pub const NEEDS_BASE_NOTE: &str = "this copy holds what the run changed and needs the repository the run started from, which this stage did not send; see \"Pull the work in progress\" in the user guide";
+
+/// The local branch the look line of a copy in two files puts the copy on. It is not the copy's own name (`snapshot`): a
+/// repository whose own branch has that name is on it after the clone, and git refuses to fetch into the branch that is checked out.
+const LOOK_BRANCH: &str = "ham-snapshot";
+
+/// A path as one word of a command line a person pastes into a shell: as it is when it holds only characters a shell reads as
+/// themselves, else in single quotes, with a single quote inside written as `'\''`.
+fn shell_word(path: &Path) -> String {
+    let text = path.display().to_string();
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%,=".contains(c));
+    if plain {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// The whole path of a file of the download folder, for a command that changes folder before it reads the file. A download folder
+/// that was given as a relative path (`HAMH_DOWNLOAD_DIR=out`, `downloadDir` in `config.toml`) is counted from the folder `ham`
+/// runs in; no file is read for it and no link is followed. A path that cannot be made whole stays as it is.
+fn whole_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The line that says how to look at the copy: one clone for a copy that holds the whole history; for a copy that came with the
+/// repository the run started from, the three git commands that put the two files together; and for a copy that needs that
+/// repository and came without it, a note in place of a command that would fail.
+///
+/// The three commands fetch the copy without naming a local branch and then put it on [`LOOK_BRANCH`], so they work whatever the
+/// branches of the repository the run started from are called. Each path is one word of the line ([`shell_word`]). The second
+/// command changes to `<dir>` before it fetches (`git -C <dir>`), so the three commands name both files by their whole paths
+/// ([`whole_path`]): with a download folder given as a relative path the line still works where it is pasted.
+fn look_line(f: &SnapshotFetched) -> String {
+    let path = shell_word(&f.path);
+    match &f.base {
+        Some((base_path, _)) => {
+            let path = shell_word(&whole_path(&f.path));
+            let base_path = shell_word(&whole_path(base_path));
+            let branch = branch();
+            format!(
+                "Look      git clone {base_path} <dir> && git -C <dir> fetch {path} {branch} && git -C <dir> checkout -B {LOOK_BRANCH} FETCH_HEAD"
+            )
+        }
+        None if f.needs_base => format!("Note      {NEEDS_BASE_NOTE}"),
+        None => format!("Look      git clone -b {} {path} <dir>", branch()),
+    }
 }
 
 /// The `--json` object: `runId` and `snapshot {path, headSha, baseSha?, takenAt, count?, sizeBytes, runStatus, recordStale}`.
@@ -163,6 +227,16 @@ pub fn json_of(run_id: &str, f: &SnapshotFetched) -> serde_json::Value {
     // Present only for files read back: the session whose storage they came from.
     if let Some(n) = f.read_back_from {
         s.insert("readBackSession".into(), json!(n));
+    }
+    // Present only for a copy that needs the repository the run started from: the second file, or that the stage sent none.
+    if let Some((base_path, base_bytes)) = &f.base {
+        s.insert(
+            "base".into(),
+            json!({"path": base_path.display().to_string(), "sizeBytes": base_bytes}),
+        );
+    }
+    if f.needs_base {
+        s.insert("needsBase".into(), json!(true));
     }
     s.insert("note".into(), json!(SNAPSHOT_TRUST_NOTE));
     json!({"runId": run_id, "snapshot": serde_json::Value::Object(s)})

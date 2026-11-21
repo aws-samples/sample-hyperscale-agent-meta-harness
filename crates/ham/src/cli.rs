@@ -929,6 +929,7 @@ async fn tui_dashboard(api: &CliApi, run_id: &str, dir: PathBuf, cfg: &Config) -
     let mut first = app.open_run(run_id);
     // The chat opens without the Runs screen: the list is read once, so that the history has the prompts of earlier runs.
     first.extend(app.load_earlier_runs());
+    first.extend(app.update_look_first());
     let modes = crate::tui::session::Modes::for_session(&env, cfg.mouse);
     match crate::tui::run(api.clone(), dir, app, first, modes).await {
         Ok(view) => view.map_or_else(|| exit_code(None), |v| exit_of(&v)),
@@ -998,6 +999,14 @@ fn tui_app(nonce: String, cfg: &Config) -> App {
     );
     // `C` clones into the directory `ham` was started in, as `ham clone <run>` does.
     app.set_clone_dir(std::env::current_dir().ok());
+    // The git the look for a newer release may start, read once: none for a client outside a folder named `bin`, without git on
+    // `PATH`, or on a Mac whose git is only the system's launcher. These are file checks; no process is started.
+    app.set_update_look(crate::update::look_program(
+        crate::update::running_exe().as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        &|p| p.is_file(),
+        cfg!(target_os = "macos"),
+    ));
     app
 }
 
@@ -1027,7 +1036,9 @@ async fn tui_session(backend: Option<String>) -> i32 {
         api.plane(),
         chosen.or_else(|| cfg.default_backend.clone()),
     );
-    let first = app.start();
+    let mut first = app.start();
+    // The first look for a newer release does not wait for the first tick.
+    first.extend(app.update_look_first());
     let modes = crate::tui::session::Modes::for_session(&env, cfg.mouse);
     match crate::tui::run(api, downloads(&cfg), app, first, modes).await {
         Ok(_) => 0,

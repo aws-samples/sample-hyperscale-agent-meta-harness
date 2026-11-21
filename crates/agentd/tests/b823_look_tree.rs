@@ -95,7 +95,9 @@ async fn b823_look_measure_a_look_on_fifty_thousand_files() {
     std::fs::create_dir_all(&data).unwrap();
     let mut snap = Snapshotter::new(&data, &repo, &base).await.unwrap();
 
-    // The first look of a session: the index was seeded from the base and holds no stat data yet, so git reads every file once.
+    // The first look of a session. Until this was the reading of every file: the index was seeded from the base and held no
+    // stat data. That reading is now made when the repository is made (`Snapshotter::new`, above), so this look is one on the kept
+    // index too; `tests/b860_first_reading.rs` holds that.
     let t = Instant::now();
     assert_eq!(snap.snapshot().await.unwrap(), None);
     let first = t.elapsed();
