@@ -42,6 +42,12 @@
 //!   update: 409 [`NEEDS_UPDATE_CODE`] with [`NEEDS_UPDATE`]. Nothing is signed, and the copy and the base stay in the bucket.
 //!
 //! The files read back from a stopped session are whole and are served as before either way.
+//!
+//! `?beforeRefusal=<notice id>` asks for one earlier copy of the run: the last copy a session had saved before its worker
+//! first saw the session's storage refuse a write. The worker names that copy in its notice, with the version the bucket gave the
+//! copy's bundle, and the notice's event id is the selector. The route reads that one event by its key, builds the key of the bundle
+//! itself, reads the header at the version the notice names, and signs that version and no other ([`before_refusal`]). `infra`
+//! grants nothing new: the role reads a named version of these keys already (statement `SnapshotDownload`).
 
 use crate::handler::{
     Blobs, DOWNLOAD_URL_TTL, Deps, Execution, ObjectPrefix, Reply, Store, V1Request, error, json,
@@ -53,6 +59,7 @@ use ham_core::snapshot::{
     SnapshotError, SnapshotRecord, bundle_head,
 };
 use harness_protocol::bundle_header::needs;
+use harness_protocol::common::is_ulid;
 use harness_protocol::common::{Engine, parse_utc_unix};
 use harness_protocol::direct::{MAX_SLICES, s3};
 use harness_protocol::goal::GoalStatus;
@@ -180,8 +187,312 @@ async fn read_back<S: Store, B: Blobs, E: Execution>(
             session: Some(session),
             // The files read back are whole and are never served in parts.
             base: None,
+            before_refusal: None,
         },
     ))
+}
+
+/// The query member that asks for the copy a notice of a storage refusal names: `?beforeRefusal=<notice id>`.
+pub const BEFORE_REFUSAL_QUERY: &str = "beforeRefusal";
+/// What a request is told whose `beforeRefusal` is no event id.
+pub const BAD_BEFORE_REFUSAL: &str =
+    "beforeRefusal names a notice of the run by its id, as the notice printed it";
+/// What a request is told that sends `beforeRefusal` together with `readBack`.
+pub const BEFORE_REFUSAL_ALONE: &str =
+    "beforeRefusal stands alone, without readBack: each names one copy of the run";
+/// What a request is told when the run has no notice of a storage refusal with the id it names.
+pub const NO_BEFORE_REFUSAL: &str = "this run has no notice of a storage refusal with that id";
+/// The longest version id S3 gives an object ("no more than 1,024 bytes long", How S3 Versioning works).
+pub const MAX_VERSION_ID_BYTES: usize = 1024;
+
+/// What a request is told when the notice it names had no copy to name.
+pub fn no_copy_before_refusal(run_id: &str) -> String {
+    format!("that notice names no copy; ham pull {run_id} --snapshot downloads the newest copy")
+}
+
+/// What a request is told when the store does not give the version the notice names: it is gone or cannot be read.
+pub fn before_refusal_unavailable(run_id: &str) -> String {
+    format!(
+        "that copy cannot be read; a replaced copy is kept for {} days; ham pull {run_id} --snapshot downloads the newest copy",
+        ham_core::storage_notice::REPLACED_COPY_DAYS
+    )
+}
+
+/// The copy a notice of a storage refusal names, as the worker wrote it into the notice's `storage.copyBefore`.
+struct CopyBefore {
+    session: u32,
+    count: u32,
+    at: String,
+    head_sha: String,
+    version_id: String,
+}
+
+/// The `storage` member of `e` when `e` is a notice of a storage refusal of the direct agent of `run_id`; `None` for any
+/// other event. The worker records such a notice with the run's completion key, which the engine does not hold.
+fn storage_notice<'a>(
+    e: &'a harness_protocol::envelope::Envelope,
+    run_id: &str,
+) -> Option<&'a serde_json::Value> {
+    use harness_protocol::envelope::{Authority, EventType, Payload};
+    if e.run_id != run_id
+        || e.event_type != EventType::TurnProgress
+        || e.authority != Authority::Agent
+        || e.agent_id.as_deref() != Some(harness_protocol::direct::DIRECT_AGENT_ID)
+    {
+        return None;
+    }
+    let Payload::Inline { value } = &e.payload else {
+        return None;
+    };
+    if value.get("kind").and_then(serde_json::Value::as_str) != Some("notify")
+        || value.get("reason").and_then(serde_json::Value::as_str) != Some("storage_refused")
+    {
+        return None;
+    }
+    value.get("storage").filter(|s| s.is_object())
+}
+
+/// The copy the notice's `storage` member names, when it names one in the worker's form: a session of the run, the copy's
+/// number and time, a commit id and a version id of the bucket. Anything else is no copy.
+fn copy_before(storage: &serde_json::Value) -> Option<CopyBefore> {
+    let c = storage.get("copyBefore")?;
+    let number = |name: &str| c.get(name)?.as_u64().and_then(|n| u32::try_from(n).ok());
+    let text = |name: &str| c.get(name)?.as_str().map(str::to_string);
+    let session = number("session").filter(|n| (1..=MAX_SLICES).contains(n))?;
+    let count = number("count").filter(|n| *n >= 1)?;
+    let at = text("at").filter(|t| parse_utc_unix(t).is_some())?;
+    let head_sha = text("headSha").filter(|h| ham_core::snapshot::is_object_id(h))?;
+    let version_id = text("versionId").filter(|v| {
+        !v.is_empty() && v.len() <= MAX_VERSION_ID_BYTES && !v.chars().any(char::is_control)
+    })?;
+    Some(CopyBefore {
+        session,
+        count,
+        at,
+        head_sha,
+        version_id,
+    })
+}
+
+/// A version the notice names that is not what the notice says it is. Nothing is signed, and nothing else is served.
+fn before_refusal_unreadable(run_id: &str, id: &str, why: &str) -> Reply {
+    let (resp, _) = error(
+        422,
+        "snapshot-unreadable",
+        "the saved snapshot cannot be read: its files are not what agentd writes",
+    );
+    (
+        resp,
+        vec![format!(
+            "copy before the storage refusal {id} of run {run_id}: {why}"
+        )],
+    )
+}
+
+/// The bundle the run started from, for a copy that needs it. Whether it is there is asked by a listing of its exact key, as
+/// for every key of this route: the role may not list the bucket at large, and S3 answers the read of an absent key with 403 for such
+/// a role, which would make "no base" look like an outage for ever. Then one byte is read for its size, its ETag and its version. Both
+/// come before anything is signed, so a store that does not answer signs nothing: `Err` is the reply that ends the request.
+///
+/// A base that is not there is no refusal (root invariant 9: a copy downloads however the run ended). No rule removes the base of a
+/// run; a hand can. The copy is intact, so it is served alone, with no member `base` (`Ok(None)`, and `notes` says so): the client
+/// keeps it and says that it needs the repository the run started from. The copy from before a storage refusal follows the
+/// same rule, because the base does not change during a run.
+async fn read_base<S: Store, B: Blobs, E: Execution>(
+    run_id: &str,
+    deps: &Deps<S, B, E>,
+    notes: &mut Vec<String>,
+) -> Result<Option<(String, ObjectPrefix, String)>, Reply> {
+    let base_key = s3::repo_bundle_key(run_id);
+    let object = match deps.blobs.exists(&base_key).await {
+        Ok(true) => match deps.blobs.read_prefix(&base_key, 1).await {
+            Ok(o) => o,
+            Err(e) => return Err(unavailable(&e, "retry")),
+        },
+        Ok(false) => None,
+        Err(e) => return Err(unavailable(&e, "retry")),
+    };
+    match object {
+        Some(object) => {
+            let Some(base_etag) = object.etag.clone().filter(|t| !t.is_empty()) else {
+                return Err(unavailable(
+                    &crate::handler::StoreError::Unavailable(
+                        "the read of the bundle the run started from returned no ETag".into(),
+                    ),
+                    "retry",
+                ));
+            };
+            Ok(Some((base_key, object, base_etag)))
+        }
+        None => {
+            notes.push(format!(
+                "snapshot of run {run_id}: the copy needs the bundle the run started from, and the bucket holds none; the copy is served alone"
+            ));
+            Ok(None)
+        }
+    }
+}
+
+/// The base that [`read_base`] read, signed for the version that was read.
+async fn sign_base<S: Store, B: Blobs, E: Execution>(
+    (base_key, object, base_etag): (String, ObjectPrefix, String),
+    deps: &Deps<S, B, E>,
+) -> Result<SnapshotBase, Reply> {
+    match deps
+        .blobs
+        .presign_get_version(&base_key, object.version_id.as_deref(), DOWNLOAD_URL_TTL)
+        .await
+    {
+        Ok(u) => Ok(SnapshotBase {
+            url: u.url,
+            size_bytes: object.size,
+            etag: base_etag,
+        }),
+        Err(e) => Err(unavailable(&e, "retry")),
+    }
+}
+
+/// The answer for `?beforeRefusal=<id>`: the copy that the notice `id` of the run names, the last copy the session had saved
+/// before the worker first saw its storage refuse a write.
+///
+/// One event is read, by its exact key. It is taken only as a notice of a storage refusal of the direct agent that names a copy
+/// ([`storage_notice`], [`copy_before`]). The key of the bundle is built here from the run and the session the notice names; nothing
+/// of the event is used as a key. The header of the bundle is read at the version the notice names and must name the notice's commit,
+/// and that version is the one that is signed: a newer object at the key changes nothing, and no other version is ever served in its
+/// place. A version the store does not give has its own sentence.
+///
+/// The pointer is in an event and not in the bucket: events are written with a key the engine does not hold, and the engine can
+/// neither change nor delete a stored version, so the answer rests on nothing the engine can write.
+///
+/// A copy that needs the bundle the run started from is answered as the newest copy is: in two parts for a request that
+/// said `parts=1`, and with 409 [`NEEDS_UPDATE_CODE`] for one that did not. The base does not change during a run, so the base of
+/// today is the base of that copy.
+async fn before_refusal<S: Store, B: Blobs, E: Execution>(
+    req: &V1Request,
+    run: &RunItem,
+    id: &str,
+    deps: &Deps<S, B, E>,
+) -> Reply {
+    let run_id = run.run_id.as_str();
+    let event = match deps
+        .store
+        .get_event(run_id, crate::input::direct_shard(), id)
+        .await
+    {
+        Ok(e) => e,
+        Err(e) => return unavailable(&e, "retry"),
+    };
+    let Some(storage) = event.as_ref().and_then(|e| storage_notice(e, run_id)) else {
+        return error(404, "no-before-refusal", NO_BEFORE_REFUSAL);
+    };
+    let Some(copy) = copy_before(storage) else {
+        return error(
+            404,
+            "no-copy-before-refusal",
+            &no_copy_before_refusal(run_id),
+        );
+    };
+    let key = s3::snapshot_bundle_key_t(run_id, copy.session);
+    let bundle = match deps
+        .blobs
+        .read_prefix_version(&key, &copy.version_id, HEADER_BYTES)
+        .await
+    {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            return error(
+                404,
+                "before-refusal-unavailable",
+                &before_refusal_unavailable(run_id),
+            );
+        }
+        Err(e) => return unavailable(&e, "retry"),
+    };
+    // The store answered for the version that was asked for, and its bytes are a bundle of the commit the notice names.
+    if bundle
+        .version_id
+        .as_deref()
+        .is_some_and(|read| read != copy.version_id)
+    {
+        return before_refusal_unreadable(
+            run_id,
+            id,
+            "the store answered with another version than the one the notice names",
+        );
+    }
+    let head = match bundle_head(&bundle.bytes) {
+        Ok(h) => h,
+        Err(e) => return before_refusal_unreadable(run_id, id, &e.to_string()),
+    };
+    if head != copy.head_sha {
+        return before_refusal_unreadable(
+            run_id,
+            id,
+            "the version names another commit than the notice",
+        );
+    }
+    let needs_base = match needs(&bundle.bytes) {
+        Ok(commits) => !commits.is_empty(),
+        Err(e) => return before_refusal_unreadable(run_id, id, &e.to_string()),
+    };
+    let parts = req.query.get(PARTS_QUERY).is_some_and(|v| v == "1");
+    if needs_base && !parts {
+        return error(409, NEEDS_UPDATE_CODE, NEEDS_UPDATE);
+    }
+    let Some(etag) = bundle.etag.clone().filter(|t| !t.is_empty()) else {
+        return unavailable(
+            &crate::handler::StoreError::Unavailable("the bundle read returned no ETag".into()),
+            "retry",
+        );
+    };
+    let mut notes = Vec::new();
+    let base_object = if needs_base {
+        match read_base(run_id, deps, &mut notes).await {
+            Ok(base) => base,
+            Err(reply) => return reply,
+        }
+    } else {
+        None
+    };
+    let signed = match deps
+        .blobs
+        .presign_get_version(&key, Some(&copy.version_id), DOWNLOAD_URL_TTL)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => return unavailable(&e, "retry"),
+    };
+    let base = match base_object {
+        Some(read) => match sign_base(read, deps).await {
+            Ok(base) => Some(base),
+            Err(reply) => return reply,
+        },
+        None => None,
+    };
+    let (resp, _) = json(
+        200,
+        &SnapshotDownload {
+            url: signed.url,
+            expires_at: signed.expires_at,
+            head_sha: head,
+            base_sha: None,
+            // The time the copy names: from before its tree was read, as the notice and the copy's own record say it.
+            taken_at: copy.at,
+            count: Some(copy.count),
+            size_bytes: bundle.size,
+            etag,
+            record_stale: false,
+            run_status: run.status,
+            // The copy was made while the run worked: a refusal was seen after it.
+            final_copy: false,
+            engine: Some(Engine::or_default(run.engine).as_str().to_string()),
+            recovered: false,
+            session: None,
+            base,
+            before_refusal: Some(id.to_string()),
+        },
+    );
+    (resp, notes)
 }
 
 fn unreadable(run_id: &str, why: &SnapshotError) -> Reply {
@@ -216,11 +527,25 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
             _ => return error(400, "bad-read-back", &bad_read_back()),
         },
     };
+    // `?beforeRefusal=<notice id>` asks for the copy a notice of a storage refusal names. The value must be an event id (26
+    // characters of the id alphabet) and stand alone, before anything is read.
+    let before = match req.query.get(BEFORE_REFUSAL_QUERY) {
+        None => None,
+        Some(id) if !is_ulid(id) => return error(400, "bad-before-refusal", BAD_BEFORE_REFUSAL),
+        Some(_) if asked.is_some() => {
+            return error(400, "bad-before-refusal", BEFORE_REFUSAL_ALONE);
+        }
+        Some(id) => Some(id.as_str()),
+    };
     let run = match owned(&deps.store, run_id, caller).await {
         Ok(Some(run)) => run,
         Ok(None) => return not_found(&format!("no run {run_id} for this caller")),
         Err(e) => return unavailable(&e, "retry"),
     };
+    // The copy the notice names, and nothing else in its place.
+    if let Some(id) = before {
+        return before_refusal(req, &run, id, deps).await;
+    }
     // The files read back from one session, whether the service used them or not.
     if let Some(session) = asked {
         return match read_back(&run, session, None, None, deps).await {
@@ -376,33 +701,9 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
     // that it needs the repository the run started from.
     let mut notes = Vec::new();
     let base_object = if needs_base {
-        let base_key = s3::repo_bundle_key(run_id);
-        let object = match deps.blobs.exists(&base_key).await {
-            Ok(true) => match deps.blobs.read_prefix(&base_key, 1).await {
-                Ok(o) => o,
-                Err(e) => return unavailable(&e, "retry"),
-            },
-            Ok(false) => None,
-            Err(e) => return unavailable(&e, "retry"),
-        };
-        match object {
-            Some(object) => {
-                let Some(base_etag) = object.etag.clone().filter(|t| !t.is_empty()) else {
-                    return unavailable(
-                        &crate::handler::StoreError::Unavailable(
-                            "the read of the bundle the run started from returned no ETag".into(),
-                        ),
-                        "retry",
-                    );
-                };
-                Some((base_key, object, base_etag))
-            }
-            None => {
-                notes.push(format!(
-                    "snapshot of run {run_id}: the copy needs the bundle the run started from, and the bucket holds none; the copy is served alone"
-                ));
-                None
-            }
+        match read_base(run_id, deps, &mut notes).await {
+            Ok(base) => base,
+            Err(reply) => return reply,
         }
     } else {
         None
@@ -418,20 +719,10 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
         Err(e) => return unavailable(&e, "retry"),
     };
     let base = match base_object {
-        Some((base_key, object, base_etag)) => {
-            match deps
-                .blobs
-                .presign_get_version(&base_key, object.version_id.as_deref(), DOWNLOAD_URL_TTL)
-                .await
-            {
-                Ok(u) => Some(SnapshotBase {
-                    url: u.url,
-                    size_bytes: object.size,
-                    etag: base_etag,
-                }),
-                Err(e) => return unavailable(&e, "retry"),
-            }
-        }
+        Some(read) => match sign_base(read, deps).await {
+            Ok(base) => Some(base),
+            Err(reply) => return reply,
+        },
         None => None,
     };
     let (resp, _) = json(
@@ -452,6 +743,7 @@ pub(crate) async fn download_url<S: Store, B: Blobs, E: Execution>(
             recovered: false,
             session: None,
             base,
+            before_refusal: None,
         },
     );
     (resp, notes)

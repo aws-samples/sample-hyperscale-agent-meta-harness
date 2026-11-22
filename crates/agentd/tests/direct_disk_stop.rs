@@ -27,7 +27,11 @@ use agentd::direct::input::{
     assess, reason_word,
 };
 use agentd::direct::retry::RetryPolicy;
+use agentd::direct::storage_watch::{
+    StorageWatch, StorageWrites, WatchSetup, WatchTask, WriteError,
+};
 use agentd::events::{EventRecorder, Instruct};
+use agentd::logging::MemoryLog;
 use harness_protocol::direct::{DirectOutcome, InstructAction, InstructOrigin};
 use harness_protocol::envelope::{Envelope, Payload};
 use harness_protocol::runtime::TurnOutcome;
@@ -108,6 +112,14 @@ impl DiskProbe for Scripted {
                 *last = next;
             }
             *last
+        })
+    }
+
+    /// The size of the files for the notice of a refusal: what the newest reading said.
+    fn storage_used(&self) -> BoxFuture<'_, (Option<u64>, bool)> {
+        Box::pin(async move {
+            let last = self.last.lock().unwrap();
+            (last.workspace_used_mb, last.workspace_partial)
         })
     }
 }
@@ -323,6 +335,11 @@ struct Setup {
     failover: Option<FailoverPlan>,
     policy: InputPolicy,
     hooks: Vec<Arc<dyn DirectHook>>,
+    /// The writes and the size of a watch of the session's storage; `None` runs without one.
+    storage: Option<(Arc<dyn StorageWrites>, Arc<dyn DiskProbe>)>,
+    /// `finish` waits until the watch made every test write it was asked for, as the session's end does. A test whose storage
+    /// never answers switches the wait off.
+    storage_wait: bool,
 }
 
 impl Setup {
@@ -333,11 +350,16 @@ impl Setup {
             failover: None,
             policy: policy(0),
             hooks: Vec::new(),
+            storage: None,
+            storage_wait: true,
         }
     }
 }
 
 struct Live {
+    /// The task of the storage watch, when the run has one, and the watch itself when `finish` waits for it.
+    _storage: Option<WatchTask>,
+    storage_watch: Option<StorageWatch>,
     tx: Option<mpsc::Sender<Instruct>>,
     _cancel: watch::Sender<bool>,
     rec: Arc<EventRecorder>,
@@ -355,6 +377,31 @@ fn start(s: Setup) -> Live {
     let client = AcpClient::new(p0.r, p0.w)
         .with_activity(activity.clone())
         .with_cancel(cancel_rx.clone(), Duration::from_secs(10));
+    let mut retry = s.retry;
+    let mut storage_task = None;
+    let mut storage_watch = None;
+    // The collector gets the watch as a session's collector does: a tool result that names no space wakes it.
+    let mut collector_watch = None;
+    let storage_wait = s.storage_wait;
+    if let Some((writes, probe)) = s.storage {
+        let watch = StorageWatch::new(WatchSetup {
+            writes,
+            probe,
+            rec: rec.clone(),
+            log: MemoryLog::new(),
+            run_id: "run1".to_string(),
+            session: 1,
+            run_dir: common::scratch("disk-stop-run"),
+            limits: Limits::default(),
+            test_refusal: false,
+        });
+        storage_task = Some(watch.start());
+        if storage_wait {
+            storage_watch = Some(watch.clone());
+        }
+        collector_watch = Some(watch.clone());
+        retry = retry.with_storage(watch);
+    }
     let plan = PromptPlan {
         cwd: TOP.into(),
         engine: "cline".into(),
@@ -364,7 +411,7 @@ fn start(s: Setup) -> Live {
         cancel: Some(cancel_rx.clone()),
         timeout: Duration::from_secs(30_000),
         silence: Duration::from_secs(900),
-        retry: s.retry,
+        retry,
         failover: s.failover,
         engine_stop_resumes: 0,
     };
@@ -394,6 +441,9 @@ fn start(s: Setup) -> Live {
         if !hooks.is_empty() {
             collector = collector.with_hooks(Hooks::new(hooks));
         }
+        if let Some(watch) = collector_watch {
+            collector = collector.with_storage_watch(watch);
+        }
         run_direct_stages(
             &mut client,
             &mut collector,
@@ -406,6 +456,8 @@ fn start(s: Setup) -> Live {
         .await
     });
     Live {
+        _storage: storage_task,
+        storage_watch,
         tx: Some(tx),
         _cancel: cancel_tx,
         rec,
@@ -469,6 +521,10 @@ impl Live {
 
     async fn finish(mut self) -> (DriverEnd, Vec<Value>, Received) {
         let end = (&mut self.handle).await.unwrap();
+        // The session's end waits for the test write a last prompt boundary or tool result asked for.
+        if let Some(watch) = &self.storage_watch {
+            watch.idle().await;
+        }
         self.pull();
         let all: Vec<Value> = self
             .seen
@@ -1127,13 +1183,23 @@ async fn the_text_stops_the_call(
     let named = with_disk(classify(&end.raw), end.disk_full.as_ref());
     assert_eq!(named.outcome, DirectOutcome::StoppedOther);
     let label = DirectOutcome::StoppedOther.label_for(named.detail.as_deref());
-    assert!(
-        label.starts_with(&format!(
-            "Cline stopped: the harness ended the run ({cause}, workspace 40 MiB"
-        )),
-        "{label}"
-    );
-    // One notice names the cause (read-only or full) and what the person can do.
+    // A text that says no space while both numbers show room is not called a full disk: the label says what the engine
+    // reported and how much the files add up to against the storage's own size.
+    let with_room = signal == Signal::NoSpace;
+    if with_room {
+        assert_eq!(
+            label,
+            "Cline stopped: the harness ended the run (the engine reported no space left on device, but the files add up to 40 MiB of 1024 MiB, root 5700 MiB free)"
+        );
+    } else {
+        assert!(
+            label.starts_with(&format!(
+                "Cline stopped: the harness ended the run ({cause}, workspace 40 MiB"
+            )),
+            "{label}"
+        );
+    }
+    // One notice names the cause and what the person can do.
     let notes = notices(&events, "disk_full");
     assert_eq!(notes.len(), 1, "{events:?}");
     let detail = notes[0]["detail"].as_str().unwrap();
@@ -1142,15 +1208,25 @@ async fn the_text_stops_the_call(
         detail.contains("ham say") && detail.contains("ham finish"),
         "{detail}"
     );
-    assert!(
-        detail.contains(&format!("The engine's error says: {}.", signal.word())),
-        "{detail}"
-    );
+    if with_room {
+        assert!(!detail.contains("The engine's error says"), "{detail}");
+        assert!(!detail.contains("disk is full"), "{detail}");
+        assert!(
+            detail.contains("Prompts can fail while the storage refuses writes."),
+            "{detail}"
+        );
+    } else {
+        assert!(
+            detail.contains(&format!("The engine's error says: {}.", signal.word())),
+            "{detail}"
+        );
+    }
 }
 
-const FULL_TITLE: &str = "The session disk is full";
+/// The title and the cause of a text that says no space while the numbers show room.
+const NO_SPACE_TITLE: &str = "The engine reported no space left on device";
 const READ_ONLY_TITLE: &str = "The session disk is read-only or full";
-const FULL: &str = "the session disk is full";
+const NO_SPACE: &str = "the engine reported no space left on device";
 const READ_ONLY: &str = "the session disk is read-only or full";
 
 #[tokio::test(start_paused = true)]
@@ -1190,13 +1266,13 @@ async fn the_text_erofs_stops_the_call() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_text_no_space_left_on_device_stops_the_call_and_names_a_full_disk() {
+async fn the_text_no_space_left_on_device_stops_the_call_and_names_what_the_engine_reported() {
     the_text_stops_the_call(
         "Internal error: No space left on device (os error 28)",
         Value::Null,
         Signal::NoSpace,
-        FULL,
-        FULL_TITLE,
+        NO_SPACE,
+        NO_SPACE_TITLE,
     )
     .await;
 }
@@ -1207,8 +1283,8 @@ async fn the_text_os_error_28_in_the_data_stops_the_call() {
         "Internal error",
         json!({"cause": "write failed: os error 28"}),
         Signal::NoSpace,
-        FULL,
-        FULL_TITLE,
+        NO_SPACE,
+        NO_SPACE_TITLE,
     )
     .await;
 }
@@ -1219,8 +1295,8 @@ async fn the_text_enospc_stops_the_call() {
         "Internal error: ENOSPC: no space left, write",
         Value::Null,
         Signal::NoSpace,
-        FULL,
-        FULL_TITLE,
+        NO_SPACE,
+        NO_SPACE_TITLE,
     )
     .await;
 }
@@ -1405,4 +1481,883 @@ async fn an_error_that_names_the_disk_does_not_need_the_machines_report() {
     let (end, _, _) = start(s).finish().await;
     assert!(end.disk_full.is_some());
     assert_eq!(probe.reports.load(Ordering::SeqCst), 0);
+}
+
+// ----: the session's storage refuses writes while its files leave room -------------------------------------------------------
+//
+// The storage was seen to answer "No space left on device" with files of 16 percent of its size. The worker makes a test write of its
+// own at each prompt boundary and beside the fresh measurement after a -32603: a refused write is announced once per stretch, and a
+// stop whose numbers show room names the refusal and not a full disk.
+
+/// A gate a held write waits at until the test opens it.
+type Gate = Arc<(Mutex<bool>, std::sync::Condvar)>;
+
+/// Writes that answer from a list (then are taken) and count the test writes.
+#[derive(Debug, Default)]
+struct StorageScript {
+    answers: Mutex<VecDeque<Option<i32>>>,
+    held: Mutex<Option<Gate>>,
+    tests: AtomicU32,
+}
+
+impl StorageScript {
+    /// `Some(28)` refuses a write with that errno; `None` takes it.
+    fn new(answers: Vec<Option<i32>>) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(answers.into()),
+            ..Self::default()
+        })
+    }
+
+    /// Every test write waits until the gate opens.
+    fn held(gate: Gate) -> Arc<Self> {
+        Arc::new(Self {
+            held: Mutex::new(Some(gate)),
+            ..Self::default()
+        })
+    }
+
+    fn tests(&self) -> u32 {
+        self.tests.load(Ordering::SeqCst)
+    }
+}
+
+impl StorageWrites for StorageScript {
+    fn test(&self, _run_dir: &std::path::Path) -> Result<(), WriteError> {
+        self.tests.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = self.held.lock().unwrap().clone() {
+            let (open, cv) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+        }
+        match self.answers.lock().unwrap().pop_front().flatten() {
+            None => Ok(()),
+            Some(errno) => Err(WriteError {
+                step: "write",
+                errno: Some(errno),
+                text: std::io::Error::from_raw_os_error(errno).to_string(),
+                test_switch: false,
+            }),
+        }
+    }
+
+    fn marker(&self, _run_dir: &std::path::Path, _bytes: &[u8]) -> Result<(), WriteError> {
+        Ok(())
+    }
+}
+
+/// The disk rule's own test write failed too, and both numbers show room.
+fn room_unwritable() -> Reading {
+    Reading {
+        writable: Some(false),
+        ..ample()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn b881_prompt_boundaries_inside_a_refusal_announce_it() {
+    let disk = Scripted::new(vec![ample()]);
+    // Four prompts: three end in a provider fault that is retried, the fourth ends the turn. Each prompt boundary makes one test write,
+    // and so does each fresh measurement after an error. At the boundaries the storage answers refused, refused, taken, refused.
+    let storage = StorageScript::new(vec![
+        Some(28), // boundary 1: stretch 1 opens
+        Some(28), // error 1
+        Some(28), // boundary 2
+        Some(28), // error 2
+        None,     // boundary 3: the stretch closes
+        None,     // error 3
+        Some(28), // boundary 4: stretch 2 opens
+    ]);
+    let mut s = Setup::new(
+        vec![
+            provider_503(),
+            provider_503(),
+            provider_503(),
+            end_turn("done"),
+        ],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+    );
+    s.storage = Some((storage.clone(), disk.clone()));
+    let (end, events, received) = start(s).finish().await;
+    assert_eq!(count(&received, "session/prompt"), 4);
+    assert!(
+        end.disk_full.is_none(),
+        "a provider fault with room is no disk stop"
+    );
+    assert_eq!(storage.tests(), 7);
+    let notes = notices(&events, "storage_refused");
+    assert_eq!(notes.len(), 2, "{events:?}");
+    assert_eq!(notes[0]["storage"]["stretch"], 1);
+    assert_eq!(notes[0]["storage"]["seen"], "prompt");
+    assert_eq!(notes[0]["storage"]["usedMb"], 40);
+    assert!(
+        notes[0]["detail"].as_str().unwrap().starts_with(
+            "The session's storage refused a write while its files add up to 40 MiB of 1024 MiB (no space left on device)."
+        ),
+        "{}",
+        notes[0]["detail"]
+    );
+    assert_eq!(notes[1]["storage"]["stretch"], 2);
+    assert!(
+        notes[1]["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("The session's storage refused a write again (no space left on device); ham has seen this 2 times in this session."),
+        "{}",
+        notes[1]["detail"]
+    );
+    // The engine was told nothing: every prompt after the first is the fixed resume sentence.
+    let prompts: Vec<String> = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m["method"] == "session/prompt")
+        .map(|m| m["params"]["prompt"].to_string())
+        .collect();
+    for p in &prompts {
+        assert!(
+            !p.to_lowercase().contains("storage") && !p.to_lowercase().contains("no space"),
+            "{p}"
+        );
+    }
+    // No disk notice: the numbers show room.
+    assert!(notices(&events, "disk_full").is_empty() && notices(&events, "disk_low").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn b881_a_32603_that_says_no_space_with_room_stops_with_the_new_words() {
+    for own_write_refused in [false, true] {
+        let disk = Scripted::new(vec![ample()]);
+        // The boundary's write is taken; the write beside the fresh measurement is taken or refused.
+        let storage = StorageScript::new(vec![None, own_write_refused.then_some(28)]);
+        let mut s = Setup::new(
+            vec![
+                vec![Step::ErrorWith(
+                    -32603,
+                    "Internal error: No space left on device (os error 28)",
+                    Value::Null,
+                )],
+                end_turn("never sent"),
+            ],
+            RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+        );
+        s.failover = Some(three_routes());
+        s.storage = Some((storage.clone(), disk.clone()));
+        let (end, events, received) = start(s).finish().await;
+        // The stop decision is the one it was: one prompt, no resume, no switch of route.
+        assert_eq!(count(&received, "session/prompt"), 1);
+        assert_eq!(count(&received, "session/set_config_option"), 0);
+        let found = end.disk_full.as_ref().expect("the text stops the call");
+        assert_eq!(found.storage_refused, own_write_refused);
+        let line = "the engine reported no space left on device, but the files add up to 40 MiB of 1024 MiB, root 5700 MiB free";
+        assert_eq!(found.line(), line);
+        let named = with_disk(classify(&end.raw), end.disk_full.as_ref());
+        assert_eq!(named.outcome, DirectOutcome::StoppedOther);
+        assert_eq!(
+            DirectOutcome::StoppedOther.label_for(named.detail.as_deref()),
+            format!("Cline stopped: the harness ended the run ({line})")
+        );
+        let notes = notices(&events, "disk_full");
+        assert_eq!(notes.len(), 1, "{events:?}");
+        let own = if own_write_refused {
+            "ham's own write to the session's storage was refused too. "
+        } else {
+            ""
+        };
+        assert_eq!(
+            notes[0]["detail"],
+            format!(
+                "The engine reported no space left on device, but the files add up to 40 MiB of 1024 MiB, root 5700 MiB free. Prompts can fail while the storage refuses writes. {own}Send a message with `ham say` to go on once the storage takes writes again (Cline may not be able to answer while it refuses them), or end the run with `ham finish` and keep what exists."
+            )
+        );
+        // The storage notice follows the worker's own write, not the engine's text.
+        let storage_notes = notices(&events, "storage_refused");
+        assert_eq!(
+            storage_notes.len(),
+            usize::from(own_write_refused),
+            "{events:?}"
+        );
+        if own_write_refused {
+            assert_eq!(storage_notes[0]["storage"]["seen"], "error");
+        }
+        assert_eq!(storage.tests(), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn b881_a_bare_32603_during_a_refusal_stops_with_the_refusal_words_and_one_storage_notice() {
+    let disk = Scripted::new(vec![room_unwritable()]);
+    // The boundary's write is refused (the notice), and so is the write beside the fresh measurement (nothing new).
+    let storage = StorageScript::new(vec![Some(28), Some(28)]);
+    let mut s = Setup::new(
+        vec![internal_error(), end_turn("never sent")],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+    );
+    s.failover = Some(three_routes());
+    s.storage = Some((storage.clone(), disk.clone()));
+    let (end, events, received) = start(s).finish().await;
+    assert_eq!(count(&received, "session/prompt"), 1);
+    let found = end
+        .disk_full
+        .as_ref()
+        .expect("the failed test write stops the call as it did");
+    assert!(found.storage_refused && found.unwritable);
+    let line = "the session's storage refused a write while its files add up to 40 MiB of 1024 MiB, root 5700 MiB free";
+    assert_eq!(found.line(), line);
+    assert_eq!(found.title(), "The session's storage refused a write");
+    let named = with_disk(classify(&end.raw), end.disk_full.as_ref());
+    let detail = named.detail.clone().unwrap();
+    assert_eq!(
+        DirectOutcome::StoppedOther.label_for(Some(&detail)),
+        format!("Cline stopped: the harness ended the run ({line})")
+    );
+    for wrong in ["read-only or full", "until space is freed", "disk is full"] {
+        assert!(!detail.contains(wrong), "{detail}");
+    }
+    let stop = notices(&events, "disk_full");
+    assert_eq!(stop.len(), 1, "{events:?}");
+    let text = stop[0]["detail"].as_str().unwrap();
+    assert!(
+        text.starts_with("The session's storage refused a write while its files add up to 40 MiB of 1024 MiB, root 5700 MiB free. Prompts can fail while the storage refuses writes. Send a message with `ham say` to go on once the storage takes writes again (Cline may not be able to answer"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("read-only or full") && !text.contains("until space is freed"),
+        "{text}"
+    );
+    // One storage notice for the one stretch, however many writes were refused in it.
+    let storage_notes = notices(&events, "storage_refused");
+    assert_eq!(storage_notes.len(), 1, "{events:?}");
+    assert_eq!(storage_notes[0]["storage"]["seen"], "prompt");
+    assert_eq!(storage.tests(), 2);
+    assert_eq!(
+        found.question(),
+        agentd::engine::direct_words::storage_refused_question("cline")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn b881_a_bare_32603_with_room_and_working_writes_is_a_provider_fault_as_before() {
+    // The worker's own write is taken and the disk rule finds nothing: the error is retried like any provider fault.
+    let disk = Scripted::new(vec![ample()]);
+    let storage = StorageScript::new(Vec::new());
+    let mut s = Setup::new(
+        vec![internal_error(), end_turn("done")],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+    );
+    s.storage = Some((storage.clone(), disk.clone()));
+    let (end, events, received) = start(s).finish().await;
+    assert_eq!(count(&received, "session/prompt"), 2);
+    assert!(end.disk_full.is_none());
+    assert!(notices(&events, "storage_refused").is_empty());
+    assert!(notices(&events, "disk_full").is_empty());
+}
+
+#[tokio::test]
+async fn b881_a_prompt_is_sent_and_answered_while_the_test_write_is_still_out() {
+    // The storage does not answer the boundary's test write. The prompt is sent, answered and the run ends all the same: no prompt
+    // waits for the storage. The clock is the real one: a paused clock does not move while a write is out on its thread, and the
+    // driver's own timers would then stand still, which is the test's doing and not the product's.
+    let gate: Gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let disk = Scripted::new(vec![ample()]);
+    let storage = StorageScript::held(gate.clone());
+    let mut s = Setup::new(
+        vec![end_turn("done")],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+    );
+    s.storage = Some((storage.clone(), disk.clone()));
+    s.storage_wait = false;
+    let done = tokio::time::timeout(Duration::from_secs(60), start(s).finish()).await;
+    let Ok((end, events, received)) = done else {
+        let (open, cv) = &*gate;
+        *open.lock().unwrap() = true;
+        cv.notify_all();
+        panic!("the run did not end while the storage's test write was out");
+    };
+    assert_eq!(count(&received, "session/prompt"), 1);
+    assert!(end.disk_full.is_none());
+    for _ in 0..5000 {
+        if storage.tests() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(storage.tests(), 1, "the write started and is still out");
+    assert!(notices(&events, "storage_refused").is_empty());
+    let (open, cv) = &*gate;
+    *open.lock().unwrap() = true;
+    cv.notify_all();
+}
+
+// ----: what the watch costs the work in front of it (the brief's section 7; measurements, run by hand) ------------------------
+
+/// The real writes, counted.
+#[derive(Debug, Default)]
+struct CountedHost {
+    tests: AtomicU32,
+}
+
+impl StorageWrites for CountedHost {
+    fn test(&self, run_dir: &std::path::Path) -> Result<(), WriteError> {
+        self.tests.fetch_add(1, Ordering::SeqCst);
+        agentd::direct::storage_watch::HostWrites.test(run_dir)
+    }
+
+    fn marker(&self, run_dir: &std::path::Path, bytes: &[u8]) -> Result<(), WriteError> {
+        agentd::direct::storage_watch::HostWrites.marker(run_dir, bytes)
+    }
+}
+
+/// One prompt with `n` tool calls whose results are `text`, then the end of the turn.
+fn tool_results(n: usize, text: &str) -> Vec<Step> {
+    let mut steps = Vec::new();
+    for i in 0..n {
+        let id = format!("call-{i}");
+        steps.push(Step::Update(json!({
+            "sessionUpdate": "tool_call", "toolCallId": id, "title": "run_commands: make", "kind": "execute",
+            "status": "pending", "rawInput": {"commands": ["make"]}
+        })));
+        steps.push(Step::Update(json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed",
+            "rawOutput": Value::String(json!([{"query": "make", "result": text, "success": true}]).to_string())
+        })));
+    }
+    steps.push(chunk("done"));
+    steps.push(Step::Finish("end_turn"));
+    steps
+}
+
+fn median(mut v: Vec<Duration>) -> Duration {
+    v.sort();
+    v[v.len() / 2]
+}
+
+/// Measurement 1 of the brief's section 7, as far as the driver alone shows it: a turn of 300 tool results that each name no space left
+/// against the same turn without the words, ten runs of each in turn, with the real test write in a folder of the build host. Arm A
+/// is run twice so that the noise (A against A) stands beside the difference (B against A). Prints its numbers; asserts only that the
+/// watch never made more test writes than it was asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "a measurement: run with --run-ignored only --no-capture"]
+async fn b881_cost_of_300_tool_results_that_name_no_space() {
+    const N: usize = 300;
+    let quiet = "make: Nothing to be done for 'all'.";
+    let named = "cp: error writing 'out.bin': No space left on device";
+    let mut a1 = Vec::new();
+    let mut a2 = Vec::new();
+    let mut b = Vec::new();
+    let mut writes_b = Vec::new();
+    let mut writes_a = Vec::new();
+    for round in 0..10 {
+        for arm in ["a1", "b", "a2"] {
+            let disk = Scripted::new(vec![ample()]);
+            let host = Arc::new(CountedHost::default());
+            let text = if arm == "b" { named } else { quiet };
+            let mut s = Setup::new(
+                vec![tool_results(N, text)],
+                RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+            );
+            s.storage = Some((host.clone(), disk.clone()));
+            let began = std::time::Instant::now();
+            let (end, events, received) = start(s).finish().await;
+            let took = began.elapsed();
+            assert_eq!(count(&received, "session/prompt"), 1);
+            assert!(end.disk_full.is_none());
+            assert!(
+                notices(&events, "storage_refused").is_empty(),
+                "round {round}"
+            );
+            let n = host.tests.load(Ordering::SeqCst);
+            match arm {
+                "a1" => {
+                    a1.push(took);
+                    writes_a.push(n);
+                }
+                "a2" => a2.push(took),
+                _ => {
+                    b.push(took);
+                    writes_b.push(n);
+                }
+            }
+            // One at the prompt boundary, and at most one for each result that named no space.
+            assert!(
+                n as usize <= 1 + if arm == "b" { N } else { 0 },
+                "{arm}: {n} test writes"
+            );
+        }
+    }
+    let per = |d: Duration| d.as_secs_f64() * 1e6 / N as f64;
+    println!("b881 cost, {N} tool results in one turn, 10 runs of each arm in turn (a1, b, a2):");
+    println!(
+        "  arm A (no words), first:  median turn {:?} ({:.1} us a result), all {:?}",
+        median(a1.clone()),
+        per(median(a1.clone())),
+        a1
+    );
+    println!(
+        "  arm A (no words), second: median turn {:?} ({:.1} us a result), all {:?}",
+        median(a2.clone()),
+        per(median(a2.clone())),
+        a2
+    );
+    println!(
+        "  arm B (each result names no space): median turn {:?} ({:.1} us a result), all {:?}",
+        median(b.clone()),
+        per(median(b.clone())),
+        b
+    );
+    println!("  test writes in a turn: arm A {writes_a:?}, arm B {writes_b:?}");
+    println!(
+        "  B against A: {:+.1} us a result; noise A against A: {:+.1} us a result",
+        per(median(b)) - per(median(a1.clone())),
+        per(median(a2)) - per(median(a1))
+    );
+}
+
+/// The test write alone on the build host's own disk (in a session the storage is a network mount: 1.9 to 3.6 ms a write were
+/// measured there, median per run), and the two calls the foreground makes: the collector taking a final tool result, with and
+/// without the words, and the wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "a measurement: run with --run-ignored only --no-capture"]
+async fn b881_cost_of_one_test_write_one_result_and_one_wake() {
+    use agentd::acp::AcpHandler;
+    let dir = common::scratch("b881-cost");
+    let mut writes: Vec<Duration> = (0..500)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            agentd::direct::storage_watch::HostWrites
+                .test(&dir)
+                .unwrap();
+            t.elapsed()
+        })
+        .collect();
+    writes.sort();
+    println!(
+        "b881 cost, one test write on the build host (500 runs): median {:?}, p95 {:?}, max {:?}",
+        writes[250], writes[475], writes[499]
+    );
+    // The collector: a final tool result of 256 KiB and of 200 bytes, with the words at its end and without them.
+    let rec = EventRecorder::new("run1", "direct");
+    let watch = StorageWatch::new(WatchSetup {
+        writes: Arc::new(CountedHost::default()),
+        probe: Scripted::new(vec![ample()]),
+        rec: rec.clone(),
+        log: MemoryLog::new(),
+        run_id: "run1".to_string(),
+        session: 1,
+        run_dir: dir.clone(),
+        limits: Limits::default(),
+        test_refusal: false,
+    });
+    let task = watch.start();
+    for (label, with_watch) in [("with the watch", true), ("without a watch", false)] {
+        for (size, bytes) in [("256 KiB", 256 * 1024usize), ("200 bytes", 200usize)] {
+            for (words, tail) in [
+                ("no words", "ok\n"),
+                ("the words", "No space left on device\n"),
+            ] {
+                let body = format!("{}{tail}", "x".repeat(bytes.saturating_sub(tail.len())));
+                let mut c = DirectCollector::new(rec.clone()).with_engine("cline");
+                if with_watch {
+                    c = c.with_storage_watch(watch.clone());
+                }
+                let mut times = Vec::new();
+                for i in 0..200 {
+                    let id = format!("c{i}");
+                    let call = json!({"sessionId": "s", "update": {"sessionUpdate": "tool_call", "toolCallId": id, "title": "run_commands: make", "kind": "execute", "status": "pending", "rawInput": {"commands": ["make"]}}});
+                    let done = json!({"sessionId": "s", "update": {"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed", "rawOutput": body}});
+                    c.on_notification("session/update", &call);
+                    let t = std::time::Instant::now();
+                    c.on_notification("session/update", &done);
+                    times.push(t.elapsed());
+                }
+                times.sort();
+                println!(
+                    "b881 cost, the collector takes one final result of {size} ({words}, {label}): median {:?}, p95 {:?}",
+                    times[100], times[190]
+                );
+                rec.drain();
+            }
+        }
+    }
+    let mut wakes: Vec<Duration> = (0..10_000)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            watch.wake(agentd::direct::storage_watch::Seen::PromptBoundary);
+            t.elapsed()
+        })
+        .collect();
+    wakes.sort();
+    println!(
+        "b881 cost, one wake (10,000 runs): median {:?}, p95 {:?}, max {:?}",
+        wakes[5_000], wakes[9_500], wakes[9_999]
+    );
+    watch.idle().await;
+    println!(
+        "b881 cost, test writes the 10,000 wakes and the results started: {}",
+        watch.test_writes_started()
+    );
+    task.stop().await;
+}
+
+// ----: the note about a large workspace folder, through the real driver ---------------------------------------------------
+//
+// The events are read as the service gets them: from the batches a flusher handed to a sink (`EventSink::post_events`), not from
+// the recorder's queue. Began with a notice that was only known to have been queued.
+
+const B889_W4_920: &str = "The workspace folder is nearly full: 920 MiB used against a stop mark of 960 MiB, over 90 percent of it. Nothing is deleted.";
+const B889_N1_920: &str = "The workspace folder holds 920 MiB. In measurements this storage at times refused writes from 300 MiB up and none up to 200 MiB. The run goes on.";
+const B889_N2: &str = "A new run with --compute instances, where the stage has such machines, keeps the workspace folder on the machine's own disk. That machine runs no containers.";
+const B889_ENGINE_WORDS: &str = "b889 the engine's first words";
+
+/// What a flusher posted, batch by batch.
+#[derive(Default)]
+struct Posted {
+    batches: Mutex<Vec<harness_protocol::api::internal::EventsBatchRequest>>,
+}
+
+impl agentd::events::EventSink for Posted {
+    fn post_events<'a>(
+        &'a self,
+        batch: harness_protocol::api::internal::EventsBatchRequest,
+    ) -> BoxFuture<'a, Result<harness_protocol::api::internal::EventsBatchResponse, String>> {
+        let n = batch.events.len() as u32;
+        self.batches.lock().unwrap().push(batch);
+        Box::pin(async move {
+            Ok(harness_protocol::api::internal::EventsBatchResponse {
+                accepted: n,
+                pending: vec![],
+            })
+        })
+    }
+
+    fn heartbeat<'a>(
+        &'a self,
+        _req: harness_protocol::api::internal::HeartbeatRequest,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl Posted {
+    /// The posted events in the order they were posted.
+    fn envelopes(&self) -> Vec<Envelope> {
+        self.batches
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|b| b.events.iter().cloned())
+            .collect()
+    }
+}
+
+/// A module that listens to the ladder: the reasons of the `Notify` events it was told.
+#[derive(Default)]
+struct Listener {
+    told: Mutex<Vec<String>>,
+}
+
+impl DirectHook for Listener {
+    fn name(&self) -> &'static str {
+        "listener"
+    }
+
+    fn on_event(&self, event: &agentd::direct::hooks::Event<'_>) {
+        if let agentd::direct::hooks::Event::Ladder(agentd::direct::hooks::LadderEvent::Notify {
+            reason,
+            ..
+        }) = event
+        {
+            self.told.lock().unwrap().push((*reason).to_string());
+        }
+    }
+}
+
+struct B889Run {
+    end: DriverEnd,
+    posted: Vec<Envelope>,
+    received: Received,
+    log: Vec<String>,
+    told: Vec<String>,
+}
+
+impl B889Run {
+    /// The posted `notify` events in order: reason and detail.
+    fn notify(&self) -> Vec<(String, String)> {
+        self.posted
+            .iter()
+            .filter_map(kind_of)
+            .filter(|(k, _)| k == "notify")
+            .map(|(_, v)| {
+                (
+                    v["reason"].as_str().unwrap_or_default().to_string(),
+                    v["detail"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn notes(&self) -> Vec<String> {
+        self.notify()
+            .into_iter()
+            .filter(|(r, _)| r == "disk_note")
+            .map(|(_, d)| d)
+            .collect()
+    }
+
+    fn lines(&self, part: &str) -> Vec<String> {
+        self.log
+            .iter()
+            .filter(|l| l.contains(part))
+            .cloned()
+            .collect()
+    }
+}
+
+/// One session of the worker: the real driver, the scripted engine, `disk` under `limits`, a module that listens to the ladder, a log,
+/// and a flusher that posts to a sink.
+async fn b889_run(prompts: Vec<Vec<Step>>, disk: &Arc<Scripted>, limits: Limits) -> B889Run {
+    let log = MemoryLog::new();
+    let listener = Arc::new(Listener::default());
+    let mut s = Setup::new(
+        prompts,
+        RetryPolicy::new(3, Duration::from_secs(1))
+            .with_disk(DiskCheck::new(disk.clone(), limits))
+            .with_log(log.clone()),
+    );
+    let hook: Arc<dyn DirectHook> = listener.clone();
+    s.hooks = vec![hook];
+    let mut live = start(s);
+    let sink = Arc::new(Posted::default());
+    let (cancel, _cancelled) = watch::channel(false);
+    let flusher = agentd::events::spawn_flusher(
+        live.rec.clone(),
+        sink.clone(),
+        Duration::from_millis(50),
+        Duration::from_secs(60),
+        1,
+        MemoryLog::new(),
+        cancel,
+    );
+    let end = (&mut live.handle).await.unwrap();
+    flusher.stop().await;
+    B889Run {
+        end,
+        posted: sink.envelopes(),
+        received: live.received.clone(),
+        log: log.lines(),
+        told: listener.told.lock().unwrap().clone(),
+    }
+}
+
+/// A prompt whose answer is `calls` tool calls and then the engine's words.
+fn b889_prompt(calls: usize) -> Vec<Step> {
+    let mut steps = tool_results(calls, "ok");
+    // `tool_results` ends with a chunk and the finish; the engine's own words go in front of them.
+    let tail = steps.split_off(steps.len() - 2);
+    steps.push(chunk(B889_ENGINE_WORDS));
+    steps.extend(tail);
+    steps
+}
+
+/// T7: a whole session with a folder of 920 MiB. The service is posted the nearly-full notice and the two rows of the note, in
+/// that order, before anything of the engine's answer; only the nearly-full notice is a ladder event.
+#[tokio::test(start_paused = true)]
+async fn b889_a_session_on_a_large_folder_posts_the_note_before_the_engines_answer() {
+    let disk = Scripted::new(vec![nearly(920)]);
+    let run = b889_run(vec![b889_prompt(2)], &disk, Limits::default()).await;
+    assert!(
+        disk.calls() >= 1,
+        "TRIGGER ABSENT: the probe was not asked for a reading"
+    );
+    println!(
+        "TRIGGER PRESENT: reading 920 MiB above the mark {} MiB",
+        agentd::direct::disk::NOTE_ABOVE_MB
+    );
+    assert_eq!(count(&run.received, "session/prompt"), 1);
+    assert!(run.end.disk_full.is_none());
+    let notes = run.notes();
+    assert_eq!(
+        notes.len(),
+        2,
+        "{} events with reason disk_note, expected 2: {:?}",
+        notes.len(),
+        run.notify()
+    );
+    assert_eq!(
+        run.notify(),
+        vec![
+            ("disk_low".to_string(), B889_W4_920.to_string()),
+            ("disk_note".to_string(), B889_N1_920.to_string()),
+            ("disk_note".to_string(), B889_N2.to_string()),
+        ]
+    );
+    // The three are posted before the first tool call and before the engine's words.
+    let is_notify = |e: &Envelope| kind_of(e).is_some_and(|(k, _)| k == "notify");
+    let last_notice = run.posted.iter().rposition(is_notify).unwrap();
+    let text = |e: &Envelope| serde_json::to_string(e).unwrap();
+    let first_engine = run
+        .posted
+        .iter()
+        .position(|e| {
+            e.event_type == harness_protocol::envelope::EventType::ToolSummary
+                || text(e).contains(B889_ENGINE_WORDS)
+                || text(e).contains("run_commands: make")
+        })
+        .expect("the engine's tool calls are posted too");
+    assert!(
+        last_notice < first_engine,
+        "notice at {last_notice}, the engine's first event at {first_engine}: {:?}",
+        run.posted.iter().map(|e| e.event_type).collect::<Vec<_>>()
+    );
+    // The note is no ladder event: no module hears of it, so none can turn it into a prompt. The nearly-full notice keeps the
+    // ladder event it had.
+    assert_eq!(run.told, vec!["disk_low".to_string()]);
+    // The log: the session's first reading, the crossing, the two rows, in that order.
+    let disk_lines = run.lines("direct turn disk ");
+    assert_eq!(
+        disk_lines,
+        vec![
+            "direct turn disk reading: workspace 920 MiB used".to_string(),
+            format!("direct turn disk low: {B889_W4_920}"),
+            format!("direct turn disk note: {B889_N1_920}"),
+            format!("direct turn disk note: {B889_N2}"),
+        ]
+    );
+}
+
+/// T6 (the order): with the root volume low as well, its sentence and the nearly-full sentence come first, then the two rows.
+#[tokio::test(start_paused = true)]
+async fn b889_the_order_is_the_older_notices_and_then_the_two_rows() {
+    let disk = Scripted::new(vec![Reading {
+        root_free_mb: Some(400),
+        workspace_used_mb: Some(920),
+        workspace_partial: false,
+        writable: None,
+    }]);
+    let run = b889_run(vec![end_turn("Done.")], &disk, Limits::default()).await;
+    assert_eq!(
+        run.notify(),
+        vec![
+            (
+                "disk_low".to_string(),
+                "The session's root volume is running low: 400 MiB free, below the 512 MiB mark. Nothing is deleted.".to_string()
+            ),
+            ("disk_low".to_string(), B889_W4_920.to_string()),
+            ("disk_note".to_string(), B889_N1_920.to_string()),
+            ("disk_note".to_string(), B889_N2.to_string()),
+        ]
+    );
+    // A folder between the two marks says the note alone, with its own size.
+    let disk = Scripted::new(vec![nearly(250)]);
+    let run = b889_run(vec![end_turn("Done.")], &disk, Limits::default()).await;
+    assert_eq!(
+        run.notify(),
+        vec![
+            (
+                "disk_note".to_string(),
+                "The workspace folder holds 250 MiB. In measurements this storage at times refused writes from 300 MiB up and none up to 200 MiB. The run goes on.".to_string()
+            ),
+            ("disk_note".to_string(), B889_N2.to_string()),
+        ]
+    );
+    assert!(run.told.is_empty(), "{:?}", run.told);
+}
+
+/// T8, the control: a folder of 100 MiB says nothing, and a folder of 920 MiB with the workspace check off says nothing (T4 through
+/// the driver: the Instances runtime sets that limit to 0).
+#[tokio::test(start_paused = true)]
+async fn b889_a_small_folder_and_a_session_without_the_workspace_check_say_nothing() {
+    let disk = Scripted::new(vec![nearly(100)]);
+    let run = b889_run(vec![b889_prompt(2)], &disk, Limits::default()).await;
+    assert_eq!(disk.calls(), 1);
+    println!("TRIGGER ABSENT (control): reading 100 MiB, the mark is 200 MiB");
+    assert!(run.notify().is_empty(), "{:?}", run.notify());
+    assert_eq!(
+        run.lines("direct turn disk "),
+        vec!["direct turn disk reading: workspace 100 MiB used".to_string()]
+    );
+    let disk = Scripted::new(vec![nearly(920)]);
+    let off = Limits {
+        root_low_mb: 512,
+        workspace_limit_mb: 0,
+    };
+    let run = b889_run(vec![b889_prompt(2)], &disk, off).await;
+    assert_eq!(disk.calls(), 1);
+    assert!(run.notify().is_empty(), "{:?}", run.notify());
+}
+
+/// T1 and T9 through the driver: a later prompt boundary of the session says nothing again, also when the folder has grown past the
+/// mark by then; a second session of the same run, which restores the work again, says the note again.
+#[tokio::test(start_paused = true)]
+async fn b889_the_note_is_said_once_for_a_session_and_again_by_the_next_session() {
+    // Three boundaries in one session (a provider fault twice, then the answer); the folder is measured at each and after each fault.
+    let disk = Scripted::new(vec![nearly(920)]);
+    let run = b889_run(
+        vec![provider_503(), provider_503(), end_turn("Done.")],
+        &disk,
+        Limits::default(),
+    )
+    .await;
+    assert_eq!(count(&run.received, "session/prompt"), 3);
+    assert_eq!(
+        run.notes(),
+        vec![B889_N1_920.to_string(), B889_N2.to_string()]
+    );
+    assert_eq!(run.lines("direct turn disk reading").len(), 1);
+    // A folder that is small at the session's first reading and large at a later boundary brings no note.
+    let grown = Scripted::new(vec![nearly(100), nearly(100), nearly(700)]);
+    let run = b889_run(
+        vec![provider_503(), end_turn("Done.")],
+        &grown,
+        Limits::default(),
+    )
+    .await;
+    assert_eq!(count(&run.received, "session/prompt"), 2);
+    assert!(run.notes().is_empty(), "{:?}", run.notify());
+    // The next session of the run: its own first reading, its own note. It is the third session in this one process, so a
+    // "said once" state that belongs to the process and not to the worker's session fails here, while a test of one session
+    // still passes (seen with such a state put into `FolderNote::first_reading` on purpose).
+    let again = Scripted::new(vec![nearly(920)]);
+    let run = b889_run(vec![end_turn("Done.")], &again, Limits::default()).await;
+    assert_eq!(
+        run.notes().len(),
+        2,
+        "{} events with reason disk_note in the second session, expected 2",
+        run.notes().len()
+    );
+}
+
+/// One prompt boundary is one reading, with a folder above the mark and with one below it, and a prompt with 50 tool calls adds
+/// none.
+#[tokio::test(start_paused = true)]
+async fn b889_the_note_adds_no_reading_to_a_prompt_boundary() {
+    for used in [920, 100] {
+        let disk = Scripted::new(vec![nearly(used)]);
+        let run = b889_run(vec![b889_prompt(50)], &disk, Limits::default()).await;
+        assert_eq!(count(&run.received, "session/prompt"), 1);
+        assert_eq!(
+            disk.calls(),
+            1,
+            "measure was called {} times, expected 1 (first reading {used} MiB, 50 tool calls)",
+            disk.calls()
+        );
+        assert_eq!(run.notes().len(), if used > 200 { 2 } else { 0 });
+    }
+    // Two boundaries with a fault between them: the boundary's reading twice and the reading after the fault, as before the note.
+    let disk = Scripted::new(vec![nearly(920)]);
+    let run = b889_run(
+        vec![provider_503(), b889_prompt(50)],
+        &disk,
+        Limits::default(),
+    )
+    .await;
+    assert_eq!(count(&run.received, "session/prompt"), 2);
+    assert_eq!(
+        disk.calls(),
+        3,
+        "measure was called {} times, expected 3",
+        disk.calls()
+    );
 }

@@ -417,6 +417,29 @@ export function resolveToolsMode(setting: string | undefined): ToolsMode {
 }
 
 /**
+ * The switch of the live test row of the storage notice: `HAMH_TEST_STORAGE_REFUSAL=on` makes the worker runtime carry `AGENTD_TEST_STORAGE_REFUSAL=1`. A worker
+ * built for an account entry with the role `test` then answers one test write of a session with "no space left on device" without touching the storage, and its log line
+ * and its notice say that the switch made the answer (crates/agentd/src/direct/storage_watch.rs). The word is an input of one deploy: it is kept by no settings record, so
+ * the next deploy without it takes the variable out of the runtime again. It is for a test stage only: `on` for an entry of any other role throws, so a synth stops, and
+ * the worker of such a stage ignores the variable in any case. Unset, empty, blank and `off` leave the runtime as it was.
+ */
+export const TEST_STORAGE_REFUSAL_VAR = "AGENTD_TEST_STORAGE_REFUSAL";
+export const TEST_STORAGE_REFUSAL_WORDS = ["off", "on"] as const;
+
+/** Resolves `HAMH_TEST_STORAGE_REFUSAL` for an entry of role `role`: whether the worker runtime carries the variable. */
+export function resolveTestStorageRefusal(setting: string | undefined, role: Target["role"]): boolean {
+  const word = trimSetting(setting ?? "").toLowerCase();
+  if (word === "" || word === "off") return false;
+  if (word !== "on") {
+    throw new Error(`HAMH_TEST_STORAGE_REFUSAL="${setting}" is not one of ${TEST_STORAGE_REFUSAL_WORDS.join(", ")} (unset or empty means off)`);
+  }
+  if (role !== "test") {
+    throw new Error(`HAMH_TEST_STORAGE_REFUSAL=on is for an account entry with the role test: it makes a worker answer one write with a test answer. The selected entry has the role ${role}`);
+  }
+  return true;
+}
+
+/**
  * The stage setting of the Instances compute type: `HAMH_COMPUTE_INSTANCES`. Off (the default), the stage has the one microVM worker runtime
  * it always had. On, the runtimes stack also creates a capacity provider (EC2 machines in the stage's own VPC) and a second worker runtime on the same image that runs on it,
  * the security stack creates the provider's operator role, and run-session may start and end sessions on that runtime. Like `HAMH_TOOLS_MODE`, the word is per deploy and

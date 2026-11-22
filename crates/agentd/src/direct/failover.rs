@@ -639,6 +639,9 @@ pub struct FailoverRecord {
     pub stage: StageFacts,
     /// Which early warnings of the session's disks are on: one notice per crossing, for the whole run.
     pub disk: crate::direct::disk::DiskWatch,
+    /// Whether the session's first reading of its disks was taken: the note about a large workspace folder is said with it,
+    /// once for the worker's session.
+    pub folder_note: crate::direct::disk::FolderNote,
 }
 
 impl FailoverRecord {

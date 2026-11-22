@@ -47,8 +47,8 @@ pub fn path(workspace_root: &Path, run: &str) -> PathBuf {
     workspace_root.join(run).join(MARKER_FILE)
 }
 
-/// Writes `marker` as the marker of `run`: a new file beside it, synced, then renamed over it, so a reader finds the earlier marker or
-/// this one and never half of one. The file calls are on the session's storage, which can stop answering: they run on a thread of their
+/// Writes `marker` as the marker of `run`: a new file beside it, synced, its close checked, then renamed over it
+/// (`crate::checked_write::replace`), so a reader finds the earlier marker or this one and never half of one. The file calls are on the session's storage, which can stop answering: they run on a thread of their
 /// own and are waited for [`TREE_ANSWER_LIMIT`] at the most.
 pub async fn write(workspace_root: &Path, run: &str, marker: &CopyMarker) -> Result<(), String> {
     let dir = workspace_root.join(run);
@@ -71,31 +71,38 @@ fn io(what: &str, e: &std::io::Error) -> String {
     format!("marker: {what}: {e}")
 }
 
+/// The marker write for the watch of the session's storage (`crate::direct::storage_watch`), which reads the error's number:
+/// one writer at a time, as in [`write`], and the step that failed with its error. The caller is on a thread that may wait for the disk.
+pub(crate) fn write_locked(dir: &Path, bytes: &[u8]) -> Result<(), (&'static str, std::io::Error)> {
+    let _one = WRITING.lock().unwrap_or_else(|p| p.into_inner());
+    write_steps(dir, bytes)
+}
+
 fn write_now(dir: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    write_steps(dir, bytes).map_err(|(what, e)| io(what, &e))
+}
+
+fn write_steps(dir: &Path, bytes: &[u8]) -> Result<(), (&'static str, std::io::Error)> {
+    write_with(&crate::checked_write::Host, dir, bytes)
+}
+
+/// The marker's write with its file calls given, so that a test can answer one as the session's storage did. The bytes are
+/// written beside the marker, the file is synced, its close is checked and it is renamed over the marker
+/// (`crate::checked_write::replace`): a write the storage refuses is an error with its step, and the earlier marker stands as it
+/// stood. The folder is synced after the rename; a folder that cannot be opened for that does not undo the marker.
+pub fn write_with(
+    calls: &dyn crate::checked_write::FileCalls,
+    dir: &Path,
+    bytes: &[u8],
+) -> Result<(), (&'static str, std::io::Error)> {
     let tmp = dir.join(MARKER_TMP);
-    // A file that a write which never ended left behind is replaced. `create_new` makes the file itself and follows no link.
+    // A file that a write which never ended left behind is replaced. The new file is made with `O_EXCL` and follows no link.
     match std::fs::remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io("the earlier temporary file", &e)),
+        Err(e) => return Err(("the earlier temporary file", e)),
     }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(MARKER_MODE)
-        .open(&tmp)
-        .map_err(|e| io("create", &e))?;
-    file.write_all(bytes).map_err(|e| io("write", &e))?;
-    file.sync_all().map_err(|e| io("sync", &e))?;
-    drop(file);
-    std::fs::rename(&tmp, dir.join(MARKER_FILE)).map_err(|e| io("rename", &e))?;
-    // The new name is on the storage once the folder is synced. A folder that cannot be opened for that does not undo the marker.
-    if let Ok(folder) = std::fs::File::open(dir) {
-        let _ = folder.sync_all();
-    }
-    Ok(())
+    crate::checked_write::replace(calls, &tmp, &dir.join(MARKER_FILE), MARKER_MODE, bytes)
 }
 
 /// The marker of `run` on the storage at `workspace_root`, as the worker of a read takes it: `None` unless the run's folder is a real

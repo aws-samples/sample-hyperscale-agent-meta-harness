@@ -47,6 +47,7 @@ fn download(size: u64) -> SnapshotDownload {
         recovered: false,
         session: None,
         base: None,
+        before_refusal: None,
     }
 }
 

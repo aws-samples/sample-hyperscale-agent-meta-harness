@@ -232,6 +232,7 @@ const ABOUT_PULL: &str = "The default download is the zip. Files go to download_
 const OPT_PULL_ARTIFACT: &str = "Choose zip (default), evidence (a zip without source), or partial. The partial option finds nothing for runs started with --direct.";
 const OPT_PULL_SNAPSHOT: &str = "Download the latest saved copy of the run's work, while the run works or after it ended; this option cannot accompany --artifact.";
 const OPT_PULL_READ_BACK: &str = "Download the files the service read back from the storage of session n after that session ended, whether the run went on from them or not; this option stands alone.";
+const OPT_PULL_BEFORE_REFUSAL: &str = "Download the last copy a session had saved before ham first saw the session's storage refuse a write; the id is the one the run's notice printed; this option stands alone.";
 const ABOUT_CLONE: &str = "Use ham clone <runId> [dir], with ./<repository name> as the default directory. The local repository comes from repo.bundle inside the zip.";
 const ABOUT_PUSH: &str = "Use ham push <runId> <git-url> [--branch <name>] to rebuild the repository from the zip and push the run's branch with your git credentials. Give a URL without a password.";
 const OPT_PUSH_BRANCH: &str =
@@ -384,7 +385,7 @@ fn forms(name: &str) -> Vec<String> {
         "models" => fixed(&["ham models [--server]"]),
         "pr" => fixed(&["ham pr <runId>"]),
         "pull" => fixed(&[
-            "ham pull <runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n>]",
+            "ham pull <runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n> | --before-refusal <notice id>]",
         ]),
         "clone" => fixed(&["ham clone <runId> [dir]"]),
         "push" => fixed(&["ham push <runId> <git-url> [--branch <name>]"]),
@@ -470,6 +471,7 @@ fn sections(name: &str) -> Vec<Section> {
             ("--artifact zip|partial|evidence", OPT_PULL_ARTIFACT),
             ("--snapshot", OPT_PULL_SNAPSHOT),
             ("--read-back <n>", OPT_PULL_READ_BACK),
+            ("--before-refusal <notice id>", OPT_PULL_BEFORE_REFUSAL),
         ]),
         "push" => with_json(&[("--branch <name>", OPT_PUSH_BRANCH)]),
         "doctor" => with_json(&[("--catalog-max-age <hours>", OPT_DOCTOR_CATALOG_MAX_AGE)]),

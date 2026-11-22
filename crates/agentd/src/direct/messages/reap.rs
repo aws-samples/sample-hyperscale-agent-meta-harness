@@ -22,7 +22,9 @@
 //!   orphaned is found where the kernel reports no filter count.
 //!
 //! agentd does not make itself a subreaper for this: an orphan would become its child and stay a zombie after the kill, because agentd's
-//! `wait` belongs to the runtime that started its children, and a `waitpid` of its own would take their exit status.
+//! `wait` belongs to the runtime that started its children, and a `waitpid` of its own would take their exit status. In a session's
+//! microVM the first process of the machine collects every ended process that is handed to it; agentd works
+//! behind it as the worker and is still no subreaper.
 //!
 //! A reap repeats scan and kill until a scan finds nothing, so a loop that forks while it is being killed is caught on the next round;
 //! zombies are not killed (they are dead; their parent has not collected them). The kill itself is `kill -KILL <pids>`, an argument-list
@@ -315,7 +317,8 @@ impl Reaper {
     }
 
     /// Marks the engine: the family member agentd started, by pid and start time. Called when a session starts, so a restarted engine is
-    /// the one marked. With several candidates (survivors of an earlier engine that agentd now parents) the newest is the engine.
+    /// the one marked. With several candidates (survivors of an earlier engine that agentd parents where it is the first process of
+    /// its machine and serves itself; behind a first process they belong to process 1 and are no candidates) the newest is the engine.
     pub fn mark_engine(&self) {
         let candidates: Vec<Proc> = self
             .scan()

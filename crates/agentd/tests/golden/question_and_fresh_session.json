@@ -10,6 +10,7 @@
     "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn answer window on: wait <n>s, 3 question(s) at most",
+    "direct turn disk reading: workspace 0 MiB used",
     "direct turn engine stop 1 of 1: loop-guard: the engine stopped the run itself (5 identical tool calls in a row); the model stays us.anthropic.claude-opus-5-5; one more try follows in <n>s",
     "direct turn needs input: request <ulid> n=1 reason=engine_stop window=<n>s",
     "direct messages: the control plane cannot serve message control for this run (no-route: /internal/message-session is not served: /internal/message-session returned 405 (final)); the module stayed out of it",

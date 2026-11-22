@@ -17,6 +17,15 @@ test-group = 'seccomp-children'
 filter = 'binary(=fake_cline_inproc) & test(=b836_a_thousand_exchanges_beside_busy_threads_are_never_answered_from_the_queue)'
 threads-required = 'num-test-threads'
 
+# The cost test of the first process holds what the first-process role costs a turn under three times the noise that the same run measures: the
+# difference between two turns without the role. That noise grows with whatever else the machine does, and the bound with it: alone on the build host the
+# test held a turn under 20.6 to 27.7 ms, inside a full run of the worker's crate under 90.4 ms, so a cost that it catches alone passed beside the other
+# tests. It gets every test thread of the run, as the stress test above does. The row costs a run the length of the test, in which no other test of the
+# run works, and the wait until the tests in flight have ended.
+[[profile.default.overrides]]
+filter = 'binary(=b883_first_process) & test(=b883_cost_a_turn_behind_process_1_against_process_1_serving_itself)'
+threads-required = 'num-test-threads'
+
 # Four tests with a time bound of their own failed a first pass of a full run on a loaded build host and passed alone: the draw of 5,000 agents of the
 # client (0.505 s against its 0.5 s bound) and three copy tests of the worker, which wait for a copy that git processes make (a copy not seen within its
 # 7 s, one notice more than expected, 18.66 s against 16 s). Their bounds stay as they are. Each gets every test thread of the run, as the stress test

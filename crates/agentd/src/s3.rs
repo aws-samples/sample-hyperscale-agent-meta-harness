@@ -378,6 +378,25 @@ impl S3Objects {
         retries: u32,
         pause: Duration,
     ) -> Result<(), String> {
+        self.put_file_retrying_with_version(uri, creds, src, digest, retries, pause)
+            .await
+            .map(|_| ())
+    }
+
+    /// [`put_file_retrying_with`](Self::put_file_retrying_with) that returns the `x-amz-version-id` of the answer of the try
+    /// that stored the object, never of an earlier try; `None` when that answer carried none (a bucket that keeps no versions). The
+    /// copy task keeps the version of each copy it stored, so that a notice can name one copy after a newer copy replaced it at the
+    /// same key (`crate::direct::storage_watch::CopyRef`). The header is in the answer that is read anyway, and nothing here hashes the
+    /// file: `digest` is still the one hash of the bundle.
+    pub async fn put_file_retrying_with_version(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        src: &Path,
+        digest: &FileDigest,
+        retries: u32,
+        pause: Duration,
+    ) -> Result<Option<String>, String> {
         let mut wait = pause;
         let mut last = String::new();
         for attempt in 0..=retries {
@@ -386,7 +405,7 @@ impl S3Objects {
                 wait *= 2;
             }
             match self.put_digested(uri, creds, src, digest).await {
-                Ok(_) => return Ok(()),
+                Ok(pin) => return Ok(pin.version_id),
                 Err(e) => last = e,
             }
         }

@@ -191,6 +191,42 @@ fn with_a_user_to_sweep_the_marks_change_nothing() {
     assert_eq!(pids, [200, 201]);
 }
 
+/// The worker is not process 1. The marks of a sandboxed run: the engine has no user of its own. A process counts with more
+/// seccomp filters than the worker, or as a child of the family. Process 1 (the first process, a root `agentd`) has the worker's
+/// count and is no child of the family. Process 1, the worker itself, an ended entry that waits for process 1 and a service of the
+/// machine are never selected. The same tree under the mark of the engine's user is
+/// `b883_the_sweep_of_a_turn_leaves_process_1_and_the_worker_alone` of `b883_first_process.rs`.
+#[test]
+fn b883_the_sweep_of_a_sandboxed_turn_leaves_process_1_and_the_worker_alone() {
+    const FIRST: u32 = 1;
+    const WORKER: u32 = 7;
+    let root = scratch_proc();
+    let tag = format!("{TAG_ENV}=run-a");
+    let plain = ["PATH=/usr/bin"];
+    let tagged = ["PATH=/usr/bin", tag.as_str()];
+    plant(&root, &proc(FIRST, "agentd", 0, &plain, Some(0)));
+    plant(&root, &proc(WORKER, "agentd", FIRST, &plain, Some(0)));
+    plant(&root, &proc(44, "cline", WORKER, &tagged, Some(1)));
+    plant(&root, &proc(45, "node", 44, &plain, Some(1)));
+    plant(&root, &proc(47, "tool", FIRST, &plain, Some(1)));
+    plant(&root, &proc(48, "child-of-tool", 47, &plain, None));
+    plant(
+        &root,
+        &Proc {
+            state: 'Z',
+            ..proc(60, "git", FIRST, &plain, Some(1))
+        },
+    );
+    plant(&root, &proc(500, "sshd", FIRST, &plain, Some(0)));
+    let r = Reaper::with_root(root, WORKER, "run-a", None).with_sandbox_marks();
+    assert!(
+        r.uses_sandbox_marks(),
+        "TRIGGER PRESENT: the sandbox marks are in use"
+    );
+    let pids: Vec<u32> = r.scan().iter().map(|p| p.pid).collect();
+    assert_eq!(pids, [44, 45, 47, 48]);
+}
+
 #[cfg(target_os = "linux")]
 mod real_processes {
     use super::*;

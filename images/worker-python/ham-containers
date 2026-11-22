@@ -293,11 +293,89 @@ def pid_alive(pid: int) -> bool:
         return True
 
 
+# The kernel gives no process a number above this one (4 x 1024 x 1024).
+PID_LIMIT = 4_194_304
+
+
 def _pid(path: Path) -> int | None:
+    """The process a record names. A value below 2 names no process to end: 1 is the first process of the machine, and 0 or a negative
+    value would name a group of processes or every process. A value above PID_LIMIT names no process either, and a handle of it cannot be
+    asked for."""
     try:
-        return int(path.read_text().strip())
+        pid = int(path.read_text().strip())
     except (OSError, ValueError):
         return None
+    return pid if 2 <= pid <= PID_LIMIT else None
+
+
+def _is_runtime(pid: int, owner: int, proc: Path = Path("/proc")) -> bool:
+    """Whether process `pid` is one that `down` may end as root. The records are files of the engine's user, so root trusts no number in
+    them: it ends a process of that user (`owner`, the owner of the run folder: the front and the first process of the runtime's
+    namespace run as it), or this helper's own supervisor and the launcher it turns into, which run as root under this program's name.
+    Anything else is left alone: the worker, the first process of the machine, the package proxy, a process of any other user."""
+    try:
+        ids = None
+        for line in (proc / str(pid) / "status").read_text().splitlines():
+            if line.startswith("Uid:"):
+                ids = [int(v) for v in line.split()[1:]]
+        if ids is None or len(ids) != 4:
+            return False
+        if owner != 0 and all(i == owner for i in ids):
+            return True
+        if any(i != 0 for i in ids):
+            return False
+        argv = [a.decode("utf-8", "replace") for a in (proc / str(pid) / "cmdline").read_bytes().split(b"\0")[:3]]
+    except (OSError, ValueError):
+        return False
+    return len(argv) == 3 and argv[0] == PYTHON and argv[1] == str(SELF) and argv[2] in ("_supervisor", "_userns")
+
+
+class _Handle:
+    """One handle of a process: what is checked and what is signalled through it is the same process, whatever becomes of its number."""
+
+    def __init__(self, pid: int) -> None:
+        self.fd = os.pidfd_open(pid)
+
+    def send(self, sig: int) -> None:
+        signal.pidfd_send_signal(self.fd, sig)
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+def _ended(pid: int, proc: Path) -> bool:
+    """Whether process `pid` has ended and only waits to be collected (state Z). Such a process has no command line any more, so it
+    cannot be identified, and there is nothing left of it to end."""
+    try:
+        return (proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def _end_as_root(name: str, pid: int, owner: int, proc: Path, handle) -> bool:
+    """Ends the process a record names when it is the runtime's: opened, identified, found alive through the handle (so the number was not
+    given to another process while it was read), then ended through the same handle. Returns False only when the process could not be
+    opened for a reason other than "no such process": it may still run, and `down` then does not report the runtime as down."""
+    try:
+        h = handle(pid)
+    except ProcessLookupError:
+        return True
+    except OSError as e:
+        print(f"ham-containers: the process of the {name} record could not be opened ({e}); left alone")
+        return False
+    try:
+        if _ended(pid, proc):
+            return True  # ended and not collected yet: nothing to end, and an ordinary stop gets no line
+        if not _is_runtime(pid, owner, proc):
+            print(f"ham-containers: the {name} record names a process that is not the runtime's; left alone")
+            return True
+        h.send(0)
+        h.send(signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        h.close()
+    return True
 
 
 def _mkdir(path: Path, uid: int, gid: int, chown) -> None:
@@ -406,17 +484,45 @@ def cmd_up(
     return 0
 
 
-def cmd_down(*, paths: Paths | None = None, kill=os.kill, alive=pid_alive, sleep=time.sleep) -> int:
+def cmd_down(
+    *,
+    paths: Paths | None = None,
+    kill=os.kill,
+    alive=pid_alive,
+    sleep=time.sleep,
+    geteuid=os.geteuid,
+    owner: int | None = None,
+    proc: Path = Path("/proc"),
+    handle=_Handle,
+) -> int:
     paths = paths or Paths()
-    for pidfile in (paths.holder_pid, paths.supervisor_pid, paths.front_pid):  # the namespace's init first: its death ends everything inside it
+    root = geteuid() == 0
+    if root and owner is None:
+        try:
+            owner = os.stat(paths.run).st_uid  # `up` made the folder and gave it to the engine's user, who cannot change its owner
+        except OSError:
+            owner = 0
+    unopened = 0
+    # the namespace's init first: its death ends everything inside it
+    for name, pidfile in (("holder", paths.holder_pid), ("supervisor", paths.supervisor_pid), ("front", paths.front_pid)):
         pid = _pid(pidfile)
-        if pid and alive(pid):
+        if not pid:
+            continue
+        if root:
+            # The records are files of the engine's user: root ends only what it identifies as the runtime's (`_is_runtime`).
+            if not _end_as_root(name, pid, owner or 0, proc, handle):
+                unopened += 1
+        elif alive(pid):
             try:
                 kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
     if paths.link.is_symlink():
         paths.link.unlink()
+    if unopened:
+        # A process that could not be opened may still run: no CONTAINERS DOWN line, and the caller sees a failed stop.
+        print(f"ham-containers: down left {unopened} process{'' if unopened == 1 else 'es'} of the runtime that could not be opened")
+        return 1
     print("CONTAINERS DOWN")
     return 0
 

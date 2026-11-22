@@ -143,6 +143,13 @@ pub struct App {
     pub creds: Arc<CredStore>,
     /// The end of the session, as a termination signal announces it.
     pub ending: Arc<Ending>,
+    /// The file calls and the repeat of the write of the git settings at a session's end, when a test gave its own
+    /// (`crate::direct::git_settings`). The product never sets it: the calls are then the host's, or those of the storage watch's
+    /// test switch, and the repeat is the measured one.
+    pub settings_write: std::sync::OnceLock<(
+        Arc<dyn crate::checked_write::FileCalls>,
+        crate::direct::git_settings::Repeat,
+    )>,
     /// One turn at a time: an AgentCore session belongs to one agent.
     pub(crate) turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// What this machine is for: nothing yet ([`MODE_NONE`]), the turns of a session ([`MODE_TURNS`]) or one read of a stopped
@@ -182,6 +189,7 @@ impl App {
             log,
             creds: CredStore::new(Arc::new(HttpRefresher::new()), Arc::new(SystemClock)),
             ending: Arc::new(Ending::default()),
+            settings_write: std::sync::OnceLock::new(),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             mode: AtomicU8::new(MODE_NONE),
             recover_attempt: std::sync::OnceLock::new(),
@@ -377,9 +385,36 @@ const EXIT_SIGTERM: i32 = 143;
 const EXIT_SIGINT: i32 = 130;
 
 /// Whether the agentd with process id `pid` ends once the copy that a termination signal asked for is saved: every process but
-/// the first of its machine. Process 1 never got such a signal while agentd had no handler, so it runs on as before.
-pub fn ends_after_the_copy(pid: u32) -> bool {
-    pid != 1
+/// the first of its machine and the worker that the first process started. Process 1 never got
+/// such a signal while agentd had no handler, so it runs on as before; in a session's microVM the worker behind process 1 now does that
+/// work and runs on in its place.
+pub fn ends_after_the_copy(pid: u32, behind_first: bool) -> bool {
+    pid != 1 && !behind_first
+}
+
+/// The two signals that ask `agentd serve` to end, watched. `agentd serve` starts to watch them before it binds its port, so the
+/// worker behind the first process can say that it is ready for them.
+#[derive(Debug)]
+pub struct StopSignals {
+    term: tokio::signal::unix::Signal,
+    int: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    /// `None`, with one line in the log, when the signals cannot be watched: a signal then ends agentd as before it had a handler.
+    pub fn watch(log: &dyn crate::logging::LogSink) -> Option<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(term), Ok(int)) => Some(Self { term, int }),
+            _ => {
+                log.line("termination signals cannot be watched: a signal ends agentd as before");
+                None
+            }
+        }
+    }
 }
 
 /// Answers the signals that ask `agentd serve` to end, SIGTERM and SIGINT: the copy task of a running turn saves a copy of the
@@ -388,23 +423,19 @@ pub fn ends_after_the_copy(pid: u32) -> bool {
 ///
 /// What follows keeps what each signal did before agentd had a handler. As the first process of its machine (process 1, as in a session's
 /// microVM) agentd ran on, because the kernel gives such a process no signal it has no handler for: it still runs on, the copy task keeps
-/// its timer and cuts none of its looks short, and the platform ends the machine. Anywhere else the signal ended agentd: it still ends,
-/// with the signal's exit code, once the copy is saved and its event had two event periods to reach the service.
+/// its timer and cuts none of its looks short, and the platform ends the machine. In a session's microVM the worker behind process 1
+/// gets the signal from process 1 and runs on in the same way. Anywhere else the signal ended agentd: it still ends, with the
+/// signal's exit code, once the copy is saved and its event had two event periods to reach the service.
 ///
 /// A turn that is not in its prompt phase has no copy task (it is starting, or in its end sequence, which saves the copy of the end
 /// itself): the signal then asks for no copy and is logged as that. The first process runs on through it; any other process ends at once,
 /// in the middle of that turn, as it did before agentd had a handler.
-pub async fn end_on_signals(app: Arc<App>) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let (Ok(mut term), Ok(mut int)) = (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-    ) else {
-        app.log
-            .line("termination signals cannot be watched: a signal ends agentd as before");
+pub async fn end_on_signals(app: Arc<App>, stops: Option<StopSignals>) {
+    let Some(StopSignals { mut term, mut int }) = stops else {
         return;
     };
-    let first_process = !ends_after_the_copy(std::process::id());
+    let behind_first = crate::first::behind_first();
+    let first_process = !ends_after_the_copy(std::process::id(), behind_first);
     loop {
         let (name, code) = tokio::select! {
             _ = term.recv() => ("SIGTERM", EXIT_SIGTERM),
@@ -436,7 +467,12 @@ pub async fn end_on_signals(app: Arc<App>) {
         }
         if first_process {
             app.log.line(&format!(
-                "termination signal {name}: agentd is the first process of its machine and runs on until the machine ends"
+                "termination signal {name}: {}",
+                if behind_first {
+                    "agentd works behind the first process of its machine and runs on until the machine ends"
+                } else {
+                    "agentd is the first process of its machine and runs on until the machine ends"
+                }
             ));
             continue;
         }

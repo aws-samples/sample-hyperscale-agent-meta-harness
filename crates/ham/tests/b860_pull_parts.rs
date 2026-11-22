@@ -611,6 +611,7 @@ fn b860_the_look_line_works_for_a_branch_named_snapshot_and_a_folder_with_a_blan
         asked_read_back: false,
         base: Some((base_path.clone(), w.base_bytes.len() as u64)),
         needs_base: false,
+        before_refusal: None,
     };
     let text = ham::snapshot_cmd::text(RUN, &fetched);
     let look = text

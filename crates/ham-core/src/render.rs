@@ -413,6 +413,8 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
             let detail = failover::tidy(d, |id| ended_text(id, chosen));
             lines.push(format!("Detail    {detail}"));
         }
+        // What the run said about its session's storage, from its notice events: every session, however the run ended.
+        lines.extend(storage_rows(v));
     } else if let Some(waited) = card.label_missing_after {
         // `ham watch` waited and `run.completed` did not come.
         lines.push(format!(
@@ -420,6 +422,10 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
             wait_text(waited),
             v.run_id
         ));
+        lines.extend(storage_rows(v));
+    } else {
+        // A run that ended without a result (a blocked run) has no detail; the rows stand under its Run line.
+        lines.extend(storage_rows(v));
     }
     // The card names the model the run used. A run that switched names the model it ended on,
     // and the model the user asked for on the next line.
@@ -472,6 +478,17 @@ fn card_text(v: &RunView, card: &FinalCard, on_screen: bool) -> String {
         lines.push(format!("{FLOW_LABEL}{f}"));
     }
     lines.join("\n")
+}
+
+/// The `Storage` rows of the card of a run that ended and whose session's storage refused a write while it ran
+/// (`crate::storage_notice::card_rows`): how often ham saw it, the command for the last copy saved before ham first saw it, and the
+/// command for the newest copy. Empty for a run without such a notice and for a run that still works (its notices are in the
+/// conversation).
+pub fn storage_rows(v: &RunView) -> Vec<String> {
+    if !v.has_ended() {
+        return Vec::new();
+    }
+    crate::storage_notice::card_rows(&v.storage, &v.run_id)
 }
 
 /// One line per run for the watch loop and the dashboard header: no gate counts (a direct run has none), and the harness's label

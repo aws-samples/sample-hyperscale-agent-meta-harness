@@ -31,7 +31,13 @@ al2023_arm64 = "public.ecr.aws/amazonlinux/amazonlinux@sha256:6b60f399998548f63d
 # gate tool set (images/tools/install.sh) at HAMH_TOOLS/gate-tools: this
 # CPython (installed by the pinned uv under HAMH_TOOLS/python), the tools.txt venv, the runtime.txt
 # wheels, and these tools from the [[tool]] entries. The worker image uses its own python3.12.
-python = "3.12.11"
+# Where the gate tool set holds the only managed CPython, the script tests run with this interpreter, and the tests of
+# the worker image's helper images/worker-python/ham-containers start the helper with it. The helper holds a process by
+# a handle (os.pidfd_open, signal.pidfd_send_signal): the managed 3.12.11 has neither function and 3.12.14 has both,
+# like the image's python3.12. scripts/tests/test_tools_lock.py keeps the pin at 3.12.14 or later.
+# The helper needs a second thing that no pin gives: a kernel with the call behind os.pidfd_open. A session has it. On a build machine
+# whose kernel answers errno 38, the helper's test with real processes skips with that reason.
+python = "3.12.14"
 tools = ["uv", "gitleaks"]
 
 [[tool]]

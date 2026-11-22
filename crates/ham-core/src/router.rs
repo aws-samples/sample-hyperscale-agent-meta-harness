@@ -332,9 +332,10 @@ fn one_line(rest: &str) -> Result<&str, &'static str> {
 }
 
 /// The shell options that take a value; their value is not a positional word.
-const VALUED_OPTIONS: [&str; 16] = [
+const VALUED_OPTIONS: [&str; 17] = [
     "--artifact",
     "--read-back",
+    "--before-refusal",
     "--branch",
     "--request",
     "--text",

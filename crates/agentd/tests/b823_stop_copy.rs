@@ -767,7 +767,7 @@ async fn b823_the_first_process_saves_a_copy_when_asked_to_end_and_runs_on_and_t
     );
     assert!(
         log.contains(
-            "agentd is the first process of its machine and runs on until the machine ends"
+            "agentd works behind the first process of its machine and runs on until the machine ends"
         ),
         "{log}"
     );
@@ -1092,10 +1092,13 @@ async fn b823_who_asks_agentd_to_end_waits_for_the_copy_and_for_nothing_when_no_
 #[test]
 fn b823_only_the_first_process_of_its_machine_runs_on_after_the_copy() {
     // Process 1 ignored the signal while agentd had no handler; it still runs on, and the timer keeps saving copies.
-    assert!(!ends_after_the_copy(1));
+    assert!(!ends_after_the_copy(1, false));
+    // In a session's microVM process 1 starts the worker and passes the signal on to it; the worker runs on in its place.
+    assert!(!ends_after_the_copy(2, true));
+    assert!(!ends_after_the_copy(1, true));
     // Any other process was ended by the signal; it still ends, after the copy.
-    assert!(ends_after_the_copy(2));
-    assert!(ends_after_the_copy(std::process::id()));
+    assert!(ends_after_the_copy(2, false));
+    assert!(ends_after_the_copy(std::process::id(), false));
 }
 
 #[tokio::test(flavor = "multi_thread")]

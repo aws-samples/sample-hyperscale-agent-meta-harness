@@ -159,6 +159,12 @@ pub struct SnapshotDownload {
     /// for a copy that clones alone and from a service older than the member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<SnapshotBase>,
+    /// The answer is the copy that the notice of a storage refusal with this event id names (`?beforeRefusal=<id>`): the
+    /// last copy the session had saved before its worker first saw the storage refuse a write, at the version the notice names.
+    /// Present only in the answer to such a request; a service older than the member ignores the query and answers with the run's
+    /// newest copy and no such member, which is how a client tells the two apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_refusal: Option<String>,
 }
 
 /// The bundle a run started from, as the download route names it beside a copy that needs it. `url` is a bearer capability and
@@ -200,6 +206,7 @@ impl std::fmt::Debug for SnapshotDownload {
             .field("recovered", &self.recovered)
             .field("session", &self.session)
             .field("base", &self.base)
+            .field("before_refusal", &self.before_refusal)
             .finish()
     }
 }

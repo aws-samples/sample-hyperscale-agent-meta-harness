@@ -56,6 +56,7 @@ fn fetched(
         asked_read_back: false,
         base: None,
         needs_base: false,
+        before_refusal: None,
     }
 }
 

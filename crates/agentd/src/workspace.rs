@@ -2,6 +2,7 @@
 //! into `<root>/<run>/<agent>/repo` on branch `harness/<run>/<agent>`; the profiles' hidden paths
 //! are moved aside for the turn; the turn is committed and bundled.
 
+use crate::checked_write::{FileCalls, Host};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, fchmod, fstat, openat, statat};
 use rustix::io::Errno;
 use std::collections::{BTreeSet, HashMap};
@@ -33,6 +34,17 @@ pub enum WsError {
     /// did. No git call of agentd's runs in it ([`check_git_dir`], [`GitState`]).
     #[error("the repository is not the one the run started with: {0}")]
     Untrusted(String),
+    /// The session's storage refused the data of a write agentd made itself: errno 28 at the create, the write, the sync, the close or
+    /// the rename. The file the write was for stands as it stood, and nothing says that the repository changed.
+    #[error("the session's storage refused the write of {file} ({step}: {text})")]
+    StorageRefused {
+        /// The file, as a path below the checkout: `.git/config` or `.git/info/attributes`.
+        file: String,
+        /// The step that was refused (`crate::checked_write::replace`).
+        step: &'static str,
+        /// The system's words.
+        text: String,
+    },
 }
 
 fn io(e: std::io::Error) -> WsError {
@@ -1125,10 +1137,14 @@ pub async fn commit_message(wt: &Worktree, sha: &str) -> Result<String, WsError>
 /// rewrite both (a clean filter in `.git/config` runs on `git add`); `restore` puts them back
 /// before agentd's own git calls and checks that it did, and `verify` compares them with these bytes again.
 ///
+/// Each file is put back with a checked write: written beside itself, synced, its close
+/// checked, then renamed over the file. The session's storage can refuse the data of a write with errno 28 at the sync or the close
+/// while the write call works; such a write is [`WsError::StorageRefused`] and leaves the file as it stood.
+///
 /// Neither call follows a link: the engine can replace a file or `.git/info` by a link to a file of agentd's, and agentd writes as the
 /// user that owns it. `.git` itself must be the repository's own plain directory ([`git_dir_problem`]); a redirect there is an error,
 /// never something to repair, because the configuration git would read is not in the files this holds.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GitState {
     config: Option<Vec<u8>>,
     attributes: Option<Vec<u8>>,
@@ -1170,17 +1186,40 @@ fn remove_entry(p: &Path) -> Result<(), WsError> {
     }
 }
 
-/// A new plain file with `bytes` at `p`: made with `O_EXCL` and `O_NOFOLLOW`, so a name that appeared since the entry was removed is an error and
-/// not a write into whatever the name leads to.
-fn write_new(p: &Path, bytes: &[u8]) -> Result<(), WsError> {
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(p)
-        .map_err(io)?;
-    f.write_all(bytes).map_err(io)
+/// What follows a settings file's name in the name its new bytes are written to before they are renamed over it.
+pub const NEW_SUFFIX: &str = ".agentd-new";
+
+/// The name beside `p` that its new bytes are written to.
+fn beside(p: &Path) -> PathBuf {
+    let mut name = p
+        .file_name()
+        .map_or_else(std::ffi::OsString::new, std::ffi::OsStr::to_os_string);
+    name.push(NEW_SUFFIX);
+    p.with_file_name(name)
+}
+
+/// `bytes` as the plain file at `p` (`<repo>/.git/<name>`), written so that a write the session's storage refuses is seen
+/// (`crate::checked_write::replace`). No link is followed: whatever stands at the name beside `p` is taken away first, the new
+/// file is made there with `O_EXCL` and `O_NOFOLLOW`, so a name that appeared since is an error and not a write into whatever the name
+/// leads to, and the rename replaces a link at `p` itself, never what it names. A directory at `p` goes first, with what it holds,
+/// because no file can be renamed over it. The new file belongs to agentd's user, mode 0644, as before.
+fn put_file(calls: &dyn FileCalls, p: &Path, name: &str, bytes: &[u8]) -> Result<(), WsError> {
+    let new = beside(p);
+    remove_entry(&new)?;
+    if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir()) {
+        remove_entry(p)?;
+    }
+    crate::checked_write::replace(calls, &new, p, 0o644, bytes).map_err(|failed| {
+        if crate::checked_write::refused(&failed) {
+            WsError::StorageRefused {
+                file: format!(".git/{name}"),
+                step: failed.0,
+                text: failed.1.to_string(),
+            }
+        } else {
+            WsError::Io(format!("{}: {}", failed.0, failed.1))
+        }
+    })
 }
 
 /// `<repo>/.git/info` when it is the plain directory it must be, `None` when it is not there; anything else (a link, a file) is an error.
@@ -1211,26 +1250,30 @@ impl GitState {
     }
 
     /// Puts both files back, without following a link, and checks that they read as they did at the start. An error leaves the checkout as the
-    /// engine left it: the caller does not commit in it.
+    /// engine left it: the caller does not commit in it. A write the session's storage refused is [`WsError::StorageRefused`]: the same
+    /// call made again later can work (`crate::direct::git_settings::put_back` repeats it).
     pub fn restore(&self, wt: &Worktree) -> Result<(), WsError> {
+        self.restore_with(wt, &Host)
+    }
+
+    /// [`Self::restore`] with the file calls of its writes given, so that a test can answer one as the session's storage did.
+    pub fn restore_with(&self, wt: &Worktree, calls: &dyn FileCalls) -> Result<(), WsError> {
         check_git_dir(&wt.repo)?;
         let git_dir = wt.repo.join(".git");
         let config = git_dir.join("config");
-        remove_entry(&config)?;
-        if let Some(bytes) = &self.config {
-            write_new(&config, bytes)?;
+        match &self.config {
+            Some(bytes) => put_file(calls, &config, "config", bytes)?,
+            None => remove_entry(&config)?,
         }
         let info = info_dir(&git_dir)?;
         match (&self.attributes, info) {
             (Some(bytes), Some(info)) => {
-                let attributes = info.join("attributes");
-                remove_entry(&attributes)?;
-                write_new(&attributes, bytes)?;
+                put_file(calls, &info.join("attributes"), "info/attributes", bytes)?;
             }
             (Some(bytes), None) => {
                 let info = git_dir.join("info");
                 std::fs::create_dir(&info).map_err(io)?;
-                write_new(&info.join("attributes"), bytes)?;
+                put_file(calls, &info.join("attributes"), "info/attributes", bytes)?;
             }
             (None, Some(info)) => remove_entry(&info.join("attributes"))?,
             (None, None) => {}

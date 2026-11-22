@@ -1,6 +1,6 @@
 import { App, Stack, Tags } from "aws-cdk-lib";
 import {
-  ACCOUNT, checkResearchProvider, DEFAULT_RESEARCH_PROVIDER, KEEP_TAG_EXCEPTIONS, KEEP_TAGS, OWNER, PROJECT, REGION, type ResearchProvider, resolveComputeInstances, resolveToolsMode, resolveUtilityModel,
+  ACCOUNT, checkResearchProvider, DEFAULT_RESEARCH_PROVIDER, KEEP_TAG_EXCEPTIONS, KEEP_TAGS, OWNER, PROJECT, REGION, type ResearchProvider, resolveComputeInstances, resolveTestStorageRefusal, resolveToolsMode, TARGET, resolveUtilityModel,
   resolveResearchAlarms, resolveStageSettings, resolveUtilityPurposes, STAGE_KIND, type Stage, type StageSettingsRaw, stageConfig,
 } from "./config.ts";
 import { ControlStack } from "./stacks/control.ts";
@@ -53,6 +53,11 @@ export interface BuildOptions {
    */
   computeInstances?: string;
   /**
+   * The switch of the live test row of the storage notice, as `HAMH_TEST_STORAGE_REFUSAL` states it: `off` or `on` in any letter case. Unset or blank means `off`.
+   * `on` is for an account entry with the role `test` and throws for any other; any other word throws (lib/config.ts `resolveTestStorageRefusal`).
+   */
+  testStorageRefusal?: string;
+  /**
    * The stage settings that were constants: `HAMH_LOG_RETENTION_DAYS`, `HAMH_PR_CHECK_MINUTES`, `HAMH_PR_CHECK_COMPUTE` and the five instance words, as the deploy was
    * given them. A member left out keeps the old value; a value outside its range throws and names its variable (`resolveStageSettings`).
    */
@@ -81,6 +86,8 @@ export function buildApp(opts: BuildOptions): App {
   const toolsMode = resolveToolsMode(opts.toolsMode);
   // The Instances compute type's stage setting, resolved before any stack exists for the same reason.
   const computeInstances = resolveComputeInstances(opts.computeInstances) === "on";
+  // The switch of the live test row, resolved before any stack exists: `on` stops the synth for an entry that has not the role test.
+  const testStorageRefusal = resolveTestStorageRefusal(opts.testStorageRefusal, TARGET.role);
   const app = new App(opts.outdir ? { outdir: opts.outdir } : {});
   const env = { account: ACCOUNT, region: REGION };
   const stack = (name: string) => ({ env, stackName: `${cfg.prefix}-${name}`, cfg });
@@ -92,7 +99,7 @@ export function buildApp(opts: BuildOptions): App {
     ...stack("control"), network, security, data, lambdaDir: opts.lambdaDir ?? FIXTURE_LAMBDA_DIR, researchProvider, researchAlarms,
   });
   const runtimes = new RuntimesStack(app, `${cfg.prefix}-runtimes`, {
-    ...stack("runtimes"), network, security, workerImage: opts.workerImage, workerRevision: opts.workerRevision ?? 0, packages, toolsMode, computeInstances,
+    ...stack("runtimes"), network, security, workerImage: opts.workerImage, workerRevision: opts.workerRevision ?? 0, packages, toolsMode, computeInstances, testStorageRefusal,
   });
   // The runtimes name the Go module store (a bucket of the packages stack) by convention, with no CloudFormation reference,
   // so the assembly needs the edge scripts/lib/deploy.py orders by.

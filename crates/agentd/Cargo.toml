@@ -48,3 +48,10 @@ rustix = { workspace = true, features = ["time"] }
 [[bin]]
 name = "agentd"
 path = "src/main.rs"
+
+# The loop of the first process (`src/first.rs`) around any program, for the tests. No image copies it and it is no entry of the
+# shipped program.
+[[bin]]
+name = "agentd-first-process-rig"
+path = "src/bin/first_process_rig.rs"
+test = false

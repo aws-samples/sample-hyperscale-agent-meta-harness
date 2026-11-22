@@ -341,6 +341,11 @@ pub struct RunView {
     /// once for each streak and a stored copy ends the streak. They are in `notices` too. The run screen shows them in the
     /// conversation; a surface without one (`ham watch` in line mode) prints these, each once by its event.
     pub copy_notices: Vec<Notice>,
+    /// What the run said about the disks of its session, in event order and in the worker's own sentences: a disk that
+    /// is running low (`disk_low`) and the note about a large workspace folder at the start of a session (`disk_note`). The newest
+    /// `notice::MAX_DISK_NOTICES`. They are in `notices` too. The run screen shows them in the conversation; `ham watch` prints
+    /// these, each once by its event, and its JSON view carries them as `diskNotices`.
+    pub disk_notices: Vec<crate::notice::DiskNotice>,
     /// The route in use and a retry or wait in progress.
     pub route: RouteStatus,
     /// The card of a goal-loop brake: which stopping rule ended the run, how far the loop got and the follow-up command.
@@ -362,6 +367,9 @@ pub struct RunView {
     /// The newest copy of its work the run saved, from the `savedCopy` member of the direct agent's progress events. `None` for a
     /// run that saved none and for a service older than the member.
     pub saved: Option<crate::saved_copy::SavedCopy>,
+    /// What the run said about its session's storage refusing writes (`crate::storage_notice`): how many notices, over every
+    /// session, the first one, and the lines of the newest ones. The card of a run that ended has its `Storage` rows from it.
+    pub storage: crate::storage_notice::StorageSeen,
     /// When the engine last started a session (`session.started`, Unix seconds). A copy of an end from before it is the end of an
     /// earlier session of a run that renewed its session, so the view does not call it the end.
     pub engine_started_unix: Option<i64>,
@@ -863,6 +871,7 @@ impl RunState {
             tools: Vec::new(),
             notices: Vec::new(),
             copy_notices: Vec::new(),
+            disk_notices: Vec::new(),
             route: RouteStatus::default(),
             goal_brake: None,
             harness_prompts: 0,
@@ -870,6 +879,7 @@ impl RunState {
             engine_config: None,
             report: None,
             saved: None,
+            storage: crate::storage_notice::StorageSeen::default(),
             engine_started_unix: None,
             lost: Vec::new(),
             heard_at: None,
@@ -1024,6 +1034,11 @@ fn fold_progress(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
     {
         v.report = Some(now);
     }
+    // A notice that the session's storage refused a write is counted for the card of the run, whichever session wrote it.
+    if e.agent_id.as_deref() == Some(harness_protocol::direct::DIRECT_AGENT_ID) {
+        let run_id = v.run_id.clone();
+        v.storage.fold(e, &run_id);
+    }
     let Some(n) = notice_of_for(e, crate::engines::of_view(v)) else {
         return;
     };
@@ -1059,6 +1074,18 @@ fn fold_progress(v: &mut RunView, e: &Envelope, tools: &mut ToolTracker) {
         _ => {}
     }
     if n.kind.is_run_notice() {
+        // What the run said about the disks of its session is kept apart as well, for `ham watch`.
+        if let Some(reason) = crate::notice::disk_reason(e) {
+            if v.disk_notices.len() >= crate::notice::MAX_DISK_NOTICES {
+                v.disk_notices.remove(0);
+            }
+            v.disk_notices.push(crate::notice::DiskNotice {
+                event_id: n.event_id.clone(),
+                ts: n.ts.clone(),
+                reason,
+                text: n.text.clone(),
+            });
+        }
         if crate::notice::is_copy_notice(e) {
             if v.copy_notices.len() >= crate::notice::MAX_COPY_NOTICES {
                 v.copy_notices.remove(0);

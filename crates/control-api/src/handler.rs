@@ -531,6 +531,21 @@ pub trait Blobs: Send + Sync {
             ))
         }
     }
+    /// [`Blobs::read_prefix`] of one named version of an object (`versionId` on the ranged GET), for a copy that a newer copy
+    /// replaced at its key. `None` when the store does not give that version: it is gone (the bucket removes a replaced version
+    /// after its rule), it never existed, or its read is refused. A store that reads no named version reports itself unavailable.
+    fn read_prefix_version(
+        &self,
+        _key: &str,
+        _version_id: &str,
+        _max_bytes: u64,
+    ) -> impl Future<Output = Result<Option<ObjectPrefix>, StoreError>> + Send {
+        async {
+            Err(StoreError::Unavailable(
+                "this blob store reads no named version".into(),
+            ))
+        }
+    }
 }
 
 /// What [`Blobs::read_or_refused`] gives.

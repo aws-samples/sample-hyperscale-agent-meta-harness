@@ -244,7 +244,7 @@ impl<P: ControlPlane> Api<P> {
     /// `POST /v1/runs/{runId}/snapshot/download-url`: the latest snapshot bundle of the run, where to get it and what it must hold. The
     /// call writes nothing; a pair that is being saved answers 409, which [`fetch_snapshot`] asks again.
     pub async fn snapshot_download(&self, run_id: &str) -> Result<SnapshotDownload, ApiError> {
-        self.copy_download(run_id, None).await
+        self.copy_download(run_id, Which::Newest).await
     }
 
     /// The same route with `?readBack=<session>`: the files the service read back from the storage of that session after it
@@ -254,22 +254,39 @@ impl<P: ControlPlane> Api<P> {
         run_id: &str,
         session: u32,
     ) -> Result<SnapshotDownload, ApiError> {
-        self.copy_download(run_id, Some(session)).await
+        self.copy_download(run_id, Which::ReadBack(session)).await
+    }
+
+    /// The same route with `?beforeRefusal=<notice id>`: the last copy a session had saved before the worker first saw the
+    /// session's storage refuse a write, as the notice with that event id names it. The copy can need the repository the run started
+    /// from, so the request always says `parts=1`. A stage that predates the member ignores it and answers with the newest copy,
+    /// which [`fetch_before_refusal`] refuses.
+    pub async fn before_refusal_download(
+        &self,
+        run_id: &str,
+        notice_id: &str,
+    ) -> Result<SnapshotDownload, ApiError> {
+        self.copy_download(run_id, Which::BeforeRefusal(notice_id))
+            .await
     }
 
     async fn copy_download(
         &self,
         run_id: &str,
-        read_back: Option<u32>,
+        which: Which<'_>,
     ) -> Result<SnapshotDownload, ApiError> {
         let key = crate::start::new_nonce();
-        let path = match read_back {
-            Some(session) => {
+        let path = match which {
+            Which::ReadBack(session) => {
                 format!("/v1/runs/{run_id}/snapshot/download-url?readBack={session}")
             }
             // This client takes a copy that needs the repository the run started from in two parts. A stage that predates the
             // member ignores it. The files read back are whole and are asked for as before.
-            None => format!("/v1/runs/{run_id}/snapshot/download-url?parts=1"),
+            Which::Newest => format!("/v1/runs/{run_id}/snapshot/download-url?parts=1"),
+            // The id is an event id (checked by the caller): letters and digits, safe in a query.
+            Which::BeforeRefusal(id) => {
+                format!("/v1/runs/{run_id}/snapshot/download-url?parts=1&beforeRefusal={id}")
+            }
         };
         self.once(
             "SnapshotDownload",
@@ -280,6 +297,25 @@ impl<P: ControlPlane> Api<P> {
         )
         .await
     }
+}
+
+/// Which copy of a run a download asks the route for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Which<'a> {
+    /// The run's newest copy.
+    Newest,
+    /// The files the service read back from the storage of this session.
+    ReadBack(u32),
+    /// The copy that the notice of a storage refusal with this event id names.
+    BeforeRefusal(&'a str),
+}
+
+/// What `ham pull <runId> --before-refusal <id>` says on a stage that does not know the selector and answered with the run's
+/// newest copy. Nothing is written.
+pub fn before_refusal_not_known(run_id: &str) -> String {
+    format!(
+        "this stage predates copies from before a storage refusal; ham pull {run_id} --snapshot downloads the newest copy"
+    )
 }
 
 /// Rows of the run list and where to go on.
@@ -336,6 +372,9 @@ pub struct SnapshotFetched {
     /// The copy needs the repository the run started from and the stage did not send it (a route older than its worker). The
     /// copy is on disk; it does not clone alone.
     pub needs_base: bool,
+    /// The command asked for the copy from before a storage refusal (`--before-refusal <notice id>`): the id of the notice.
+    /// `None` for every other download.
+    pub before_refusal: Option<String>,
 }
 
 fn io(e: std::io::Error) -> SnapshotFetchError {
@@ -346,14 +385,14 @@ fn io(e: std::io::Error) -> SnapshotFetchError {
 async fn download_when_settled<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
-    read_back: Option<u32>,
+    which: Which<'_>,
 ) -> Result<SnapshotDownload, SnapshotFetchError> {
     let retry = api.retry();
     let mut wait = retry.base;
     let mut tries = 0;
     loop {
         tries += 1;
-        match api.copy_download(run_id, read_back).await {
+        match api.copy_download(run_id, which).await {
             Ok(d) => return Ok(d),
             Err(ApiError::Http { status: 409, error })
                 if error.code == "snapshot-updating" && tries < SNAPSHOT_TRIES =>
@@ -504,7 +543,33 @@ pub async fn fetch_read_back<P: ControlPlane>(
     session: u32,
     dir: &Path,
 ) -> Result<SnapshotFetched, SnapshotFetchError> {
-    fetch_copy_with(api, run_id, Some(session), dir, CHUNK_BYTES).await
+    fetch_copy_with(api, run_id, Which::ReadBack(session), dir, CHUNK_BYTES).await
+}
+
+/// Downloads the copy that the notice `notice_id` of the run names (the last copy its session had saved before `ham` first
+/// saw the session's storage refuse a write) into `dir` as `<runId>-before-refusal-<notice id>.bundle`, with the checks of
+/// [`fetch_snapshot`]. A copy that needs the repository the run started from comes with it, as `<runId>-base.bundle`, like the newest
+/// copy does: the base does not change during a run. An answer that is not about that notice (a stage that predates the
+/// selector answers with the run's newest copy) is refused before anything is written.
+pub async fn fetch_before_refusal<P: ControlPlane>(
+    api: &Api<P>,
+    run_id: &str,
+    notice_id: &str,
+    dir: &Path,
+) -> Result<SnapshotFetched, SnapshotFetchError> {
+    if !harness_protocol::common::is_ulid(notice_id) {
+        return Err(SnapshotFetchError::Fetch(format!(
+            "{notice_id:?} is not the id of a notice"
+        )));
+    }
+    fetch_copy_with(
+        api,
+        run_id,
+        Which::BeforeRefusal(notice_id),
+        dir,
+        CHUNK_BYTES,
+    )
+    .await
 }
 
 /// [`fetch_snapshot`] with `chunk`-byte ranges (the header the check reads is gathered from the first bytes, whatever the chunk). The bytes go to a `.part` file
@@ -515,7 +580,7 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
     dir: &Path,
     chunk: u64,
 ) -> Result<SnapshotFetched, SnapshotFetchError> {
-    fetch_copy_with(api, run_id, None, dir, chunk).await
+    fetch_copy_with(api, run_id, Which::Newest, dir, chunk).await
 }
 
 /// The download behind [`fetch_snapshot_with`] and [`fetch_read_back`]: the run's newest copy, or with `read_back` the files read
@@ -524,7 +589,7 @@ pub async fn fetch_snapshot_with<P: ControlPlane>(
 async fn fetch_copy_with<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
-    read_back: Option<u32>,
+    which: Which<'_>,
     dir: &Path,
     chunk: u64,
 ) -> Result<SnapshotFetched, SnapshotFetchError> {
@@ -533,19 +598,45 @@ async fn fetch_copy_with<P: ControlPlane>(
             "{run_id:?} is not a run id"
         )));
     }
-    std::fs::create_dir_all(dir).map_err(io)?;
-    let mut d = download_when_settled(api, run_id, read_back).await?;
+    // A download from before a storage refusal writes nothing, the download directory included, until the stage has
+    // answered about the notice that was asked for.
+    let before_refusal = match which {
+        Which::BeforeRefusal(id) => Some(id),
+        _ => None,
+    };
+    if before_refusal.is_none() {
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
+    let mut d = download_when_settled(api, run_id, which).await?;
     sane(&d)?;
     // The files read back from one session were asked for: the answer must be about that session and nothing else.
-    if let Some(session) = read_back
+    if let Which::ReadBack(session) = which
         && !(d.recovered && d.session == Some(session))
     {
         return Err(SnapshotFetchError::Fetch(format!(
             "the stage did not answer with the files read back from session {session}; it may predate ham pull --read-back"
         )));
     }
+    // The copy a notice names was asked for: the answer must say that it is about that notice. A stage that predates the
+    // selector ignores it and answers with the run's newest copy, which is not the copy that was asked for.
+    if let Some(id) = before_refusal {
+        if d.before_refusal.as_deref() != Some(id) || d.recovered {
+            return Err(SnapshotFetchError::Fetch(before_refusal_not_known(run_id)));
+        }
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
     let read_back_from = d.session.filter(|_| d.recovered);
     let name = match (read_back_from, d.count) {
+        (None, _) if before_refusal.is_some() => {
+            let id = before_refusal.unwrap_or_default();
+            let plain = format!("{run_id}-before-refusal-{id}.bundle");
+            // One notice names one copy; a file of this name that holds another commit is kept, and this one carries its commit.
+            if holds_another_copy(&dir.join(&plain), &d.head_sha) {
+                format!("{run_id}-before-refusal-{id}-{}.bundle", &d.head_sha[..12])
+            } else {
+                plain
+            }
+        }
         (Some(session), _) => {
             let plain = format!("{run_id}-read-back-{session}.bundle");
             if holds_another_copy(&dir.join(&plain), &d.head_sha) {
@@ -601,11 +692,12 @@ async fn fetch_copy_with<P: ControlPlane>(
                 ranges.push(range);
                 // A renewed URL is the same object's: the bytes already written, the header and the ranges still to come belong to the
                 // object the first answer described, so a renewal that describes another one ends the download.
-                let renewed = download_when_settled(api, run_id, read_back).await?;
+                let renewed = download_when_settled(api, run_id, which).await?;
                 sane(&renewed)?;
                 if renewed.etag != d.etag
                     || renewed.size_bytes != d.size_bytes
                     || renewed.head_sha != d.head_sha
+                    || renewed.before_refusal != d.before_refusal
                 {
                     return Err(SnapshotFetchError::Fetch(
                         "the snapshot changed while it was downloading; run the command again"
@@ -633,7 +725,7 @@ async fn fetch_copy_with<P: ControlPlane>(
     // says so. A stage that sent none for such a copy (a route older than its worker) leaves the copy alone, and the text says what
     // it needs.
     let (base, needs_base) = match d.base.clone() {
-        Some(base) => match fetch_base(api, run_id, read_back, dir, chunk, base).await {
+        Some(base) => match fetch_base(api, run_id, which, dir, chunk, base).await {
             Ok(got) => (Some(got), false),
             Err(e) => {
                 return Err(SnapshotFetchError::Base {
@@ -656,9 +748,10 @@ async fn fetch_copy_with<P: ControlPlane>(
         final_copy: d.final_copy,
         engine: d.engine.clone(),
         read_back_from,
-        asked_read_back: read_back.is_some(),
+        asked_read_back: matches!(which, Which::ReadBack(_)),
         base,
         needs_base,
+        before_refusal: before_refusal.map(str::to_string),
     })
 }
 
@@ -675,7 +768,7 @@ pub fn base_file_name(run_id: &str) -> String {
 async fn fetch_base<P: ControlPlane>(
     api: &Api<P>,
     run_id: &str,
-    read_back: Option<u32>,
+    which: Which<'_>,
     dir: &Path,
     chunk: u64,
     mut base: SnapshotBase,
@@ -716,7 +809,7 @@ async fn fetch_base<P: ControlPlane>(
                 // The route is asked again, and its answer is about the run's newest copy now. That copy can be a whole one by then
                 // (the engine removed `.git`, or the files read back were chosen), and such an answer names no base: nothing changed
                 // about the base, the stage only sends none any more. An answer that names another object is a base that changed.
-                let renewed = match download_when_settled(api, run_id, read_back).await?.base {
+                let renewed = match download_when_settled(api, run_id, which).await?.base {
                     Some(r) if r.etag == base.etag && r.size_bytes == base.size_bytes => r,
                     Some(_) => {
                         return Err(SnapshotFetchError::Fetch(

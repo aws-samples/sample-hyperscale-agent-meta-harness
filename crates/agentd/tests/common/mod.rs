@@ -127,14 +127,25 @@ pub fn plugin_folder() -> PathBuf {
     dir
 }
 
+/// Both dates of every commit the test support makes: 2026-01-01T00:00:00Z, in the form git reads from its environment.
+/// git stamps a commit with the second of the clock when no date is given, so the same fixture was another repository in every
+/// second: each stand-in store of a test held a starting repository of its own, and whether the copies of a later session left
+/// out what the run's base holds followed the clock. With both dates fixed the same fixture is the same commits whenever it is
+/// made. The date lies more than 90 days back, so git's expiry of reflog entries reads these repositories the same way on every
+/// day. A test that needs a commit with another date runs git itself.
+pub const FIXTURE_DATE: &str = "@1767225600 +0000";
+
+/// Runs git in `dir` as the author and committer of the fixtures, with [`FIXTURE_DATE`] as both dates of a commit it makes.
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_AUTHOR_DATE", FIXTURE_DATE)
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_DATE", FIXTURE_DATE)
         .output()
         .unwrap();
     assert!(

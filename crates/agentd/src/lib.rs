@@ -10,6 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub mod acp;
+pub mod checked_write;
 pub mod config;
 pub mod creds;
 pub mod creds_socket;
@@ -17,6 +18,7 @@ pub mod direct;
 pub mod emit;
 pub mod engine;
 pub mod events;
+pub mod first;
 pub mod health;
 pub mod http;
 pub mod logging;

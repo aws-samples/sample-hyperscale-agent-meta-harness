@@ -39,6 +39,12 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   processes make. A row is not free: it waits for the tests in flight and then holds every test thread, and the four rows add about a third to the length of a full run of the
   workspace's tests; add one only for a test that failed a first pass beside the other tests and passed alone. The note stands here and not in the agentd crate because every file
   of that crate is an input of the worker image key.
+- A test that holds a cost under a multiple of the noise which its own run measures gets such a row as well: the other tests of a run make that noise
+  larger, so beside them the bound is wider than alone and a cost that the test catches alone passes. The cost test of the first process,
+  `b883_cost_a_turn_behind_process_1_against_process_1_serving_itself` of `agentd/tests/b883_first_process.rs`, held a turn under 20.6 to 27.7 ms alone
+  on the build host and under 90.4 ms inside a full run of the worker's crate. The row costs a run the length of the test, in which no other test of
+  the run works, and the wait until the tests in flight have ended. The test took 98 to 102 s on a machine that ran one partition of the workspace's
+  tests and nothing else, in a partition that was not the longest, and 133 to 160 s on the build host beside other work.
 
 ## Verification
 

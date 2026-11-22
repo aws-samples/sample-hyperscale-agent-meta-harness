@@ -123,6 +123,32 @@ pub struct DirectConfig {
     /// `engine::watchdog`): how long a tool call may run with the engine sending no line at all before agentd cancels the prompt and
     /// starts the engine again. A value that is not a whole number is the default.
     pub tool_idle_s: Option<u64>,
+    /// [`STORAGE_TEST_REFUSAL_VAR`]: the watch of the session's storage answers one test write that a
+    /// tool result asked for with "no space left on device", once per session, without touching the storage; the worker's log and the
+    /// notice event say that the switch made the answer. The first write of the git settings at the session's end is answered
+    /// the same way, once, and the log says so; the worker repeats that write as after a refusal of the storage. Read only by a worker built for an `accounts.json` entry with the role `test`
+    /// ([`storage_test_refusal`]): in a build for any other entry the variable does nothing. It is a variable of the worker's own
+    /// process, which the stage's deploy sets; no request member, no user setting and no file of a work tree sets it.
+    pub storage_test_refusal: bool,
+}
+
+/// The variable of the switch of the live test row ([`DirectConfig::storage_test_refusal`]).
+pub const STORAGE_TEST_REFUSAL_VAR: &str = "AGENTD_TEST_STORAGE_REFUSAL";
+
+/// The role of the `accounts.json` entry this binary was built for (`active`, `history` or `test`): the selection every binary carries
+/// (`harness_protocol::target`). Empty when the entry is not in the list, which no build produces.
+pub fn built_for_role() -> &'static str {
+    use harness_protocol::target::{ACCOUNTS, E2E_ACCOUNT, E2E_PROFILE};
+    ACCOUNTS
+        .iter()
+        .find(|(account, _, profile, _)| *account == E2E_ACCOUNT && *profile == E2E_PROFILE)
+        .map_or("", |(_, _, _, role)| role)
+}
+
+/// Whether the switch of the live test row is on for a worker built for an entry with the role `role`: only the role `test`
+/// reads the variable, and only the value `1` switches it on.
+pub fn storage_test_refusal(get: &impl Fn(&str) -> Option<String>, role: &str) -> bool {
+    role == "test" && get(STORAGE_TEST_REFUSAL_VAR).is_some_and(|v| v.trim() == "1")
 }
 
 impl DirectConfig {
@@ -293,6 +319,7 @@ impl DirectConfig {
                     .filter(|n| REVIEW_GUARD_S.contains(*n))
                     .map_or(u64::from(REVIEW_GUARD_S.default), u64::from),
             ),
+            storage_test_refusal: storage_test_refusal(get, built_for_role()),
         }
     }
 }

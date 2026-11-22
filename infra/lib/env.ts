@@ -34,7 +34,7 @@ const setting: VariableRule = { emptyIsUnset: true, selector: false, earlier: tr
 const selector: VariableRule = { emptyIsUnset: true, selector: true, earlier: true };
 const deployInput: VariableRule = { emptyIsUnset: true, selector: false, earlier: false };
 
-/** Every variable the app reads, by the part after the prefix. lib/entry.ts reads twenty-one, lib/config.ts five, lib/repo-names.ts one, lib/stacks/network.ts one. */
+/** Every variable the app reads, by the part after the prefix. lib/entry.ts reads twenty-two, lib/config.ts five, lib/repo-names.ts one, lib/stacks/network.ts one. */
 export const VARIABLES: Readonly<Record<string, VariableRule>> = {
   // Where the app builds: the account, the accounts file and the owner tag.
   AWS_PROFILE: selector,
@@ -70,6 +70,9 @@ export const VARIABLES: Readonly<Record<string, VariableRule>> = {
   // The keep tag and the kind of the stage, which the role of the account entry gave until a stage could keep them (lib/config.ts `keepTags`, `stageKind`).
   KEEP_TAG: setting,
   STAGE_KIND: setting,
+  // The switch of one live test row, for one deploy of a test stage (lib/config.ts `resolveTestStorageRefusal`). It is a documented variable, so it is
+  // read like every stage setting; no settings record keeps it.
+  TEST_STORAGE_REFUSAL: setting,
 };
 
 /** What a read answers: the value (absent when no name is set) and the name of the variable that answered (the current name when none is set). */

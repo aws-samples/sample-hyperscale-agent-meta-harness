@@ -1372,6 +1372,17 @@ pub struct Opts {
     /// microVM, where the kernel gives it no signal it has no handler for. Needs a machine that can make such a namespace
     /// ([`first_process_possible`]).
     pub first_process: bool,
+    /// The command of `agentd serve` carries the argument that only a first process gives its worker
+    /// (`agentd::first::WORKER_FLAG`). As a first process ([`Opts::first_process`]) agentd then takes no first-process role and serves
+    /// itself, which is what every session ran and the arm without the role of the cost test. As an ordinary process the
+    /// argument must change nothing, because the parent is not process 1.
+    pub serves_itself: bool,
+    /// The real `agentd serve` process gets the coverage profile variable of the test process ([`with_coverage_profile`]). For
+    /// a test that lets the program end by itself (a stop signal it answers, a worker that ends) and waits for that end: the program
+    /// then writes its profile, and the lines that only `agentd serve` as a process reaches count in a coverage run. Every other test
+    /// ends the program with KILL at its own end and keeps the cleared environment: a program that is killed while it writes would
+    /// leave half a profile behind.
+    pub writes_profile: bool,
     /// `StartDirectRunRequest.review` as the JSON of the request member. `None` leaves the member out of
     /// `request.json`, so the request of every other test is byte for byte what it was.
     pub review: Option<serde_json::Value>,
@@ -1420,6 +1431,8 @@ impl Default for Opts {
             mcp: false,
             agentd_env: Vec::new(),
             first_process: false,
+            serves_itself: false,
+            writes_profile: false,
             review: None,
             build: None,
             goal: None,
@@ -1440,14 +1453,124 @@ const FIRST_PROCESS_ARGS: [&str; 4] = ["--user", "--map-root-user", "--pid", "--
 
 /// Whether this machine can start a command as the first process of a process-id namespace of its own: a probe of the same command
 /// line with `true`. A container that refuses `unshare` cannot; a test that needs process 1 says so and does not run there.
+///
+/// With `HAMH_TEST_REQUIRE_PROCESS_1=1` (a variable of this rig only) a machine that cannot make the namespace fails the test
+/// in place of skipping it, so a run that must show the first-process tests cannot count a skip as a pass.
 pub fn first_process_possible() -> bool {
-    std::process::Command::new(UNSHARE)
+    let possible = std::process::Command::new(UNSHARE)
         .args(FIRST_PROCESS_ARGS)
         .arg("true")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|s| s.success())
+        .is_ok_and(|s| s.success());
+    assert!(
+        possible || std::env::var("HAMH_TEST_REQUIRE_PROCESS_1").as_deref() != Ok("1"),
+        "HAMH_TEST_REQUIRE_PROCESS_1=1: this machine cannot start a process as the first one of a process-id namespace \
+         (unshare --user --map-root-user --pid --fork), and a skipped first-process test is no pass here"
+    );
+    if !possible && let Some(record) = std::env::var_os(SKIP_RECORD_VAR) {
+        record_skip_in(Path::new(&record));
+    }
+    possible
+}
+
+/// The variable that names the file in which a first-process test that skips leaves its `SKIPPED:` line.
+const SKIP_RECORD_VAR: &str = "HAMH_TEST_SKIP_RECORD";
+
+/// Appends the `SKIPPED:` line of the test that runs on this thread to `record`.
+pub fn record_skip_in(record: &Path) {
+    use std::io::Write;
+    let thread = std::thread::current();
+    let line = format!(
+        "SKIPPED: {}: this machine cannot start a process as the first one of a process-id namespace\n",
+        thread.name().unwrap_or("a test without a name")
+    );
+    // One write of the whole line in append mode, so that the lines of tests that run at the same time do not mix.
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(record)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// The variable that tells an instrumented program where to write its coverage profile. `cargo llvm-cov` sets it for the tests.
+const PROFILE_VAR: &str = "LLVM_PROFILE_FILE";
+
+/// Gives `command` the coverage profile variable of this test process, when it has one. The tests start `agentd serve` with
+/// a cleared environment, so the program wrote no profile and the lines that only the program reaches counted as not run. With the
+/// variable it writes its profile when it ends by itself; a program that a signal's default action ends writes none. Outside a
+/// coverage run the variable is not set and nothing changes.
+pub fn with_coverage_profile(command: &mut std::process::Command) {
+    if let Some(profile) = std::env::var_os(PROFILE_VAR) {
+        command.env(PROFILE_VAR, profile);
+    }
+}
+
+/// A command that runs `program` as the first process of a process-id namespace of its own ([`first_process_possible`]).
+pub fn as_first_process(program: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new(UNSHARE);
+    c.args(FIRST_PROCESS_ARGS).arg(program);
+    c
+}
+
+/// The ended entries of this machine whose parent is `parent`: processes that have ended and that nobody has waited for (state `Z`),
+/// as (process id, name). Read from `/proc/*/stat`, so it sees the processes of a namespace from outside it.
+pub fn ended_entries_with_parent(parent: u32) -> Vec<(u32, String)> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // `pid (name) state parent ...`; the name may hold spaces and brackets, so the fields are read after its last bracket.
+        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
+        let mut rest = stat[close + 1..].split_whitespace();
+        let (state, ppid) = (rest.next(), rest.next().and_then(|p| p.parse::<u32>().ok()));
+        if state == Some("Z") && ppid == Some(parent) {
+            found.push((pid, stat[open + 1..close].to_string()));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A `git` that leaves a detached process behind at every call and then is the real git: the shape measured in a session (one ended
+/// entry per commit, a leader of a session of its own, handed to process 1). It appends one line to `calls` per call. The process it
+/// leaves is a `sleep` of 0.2 s: handed over alive when git ends first, and as an ended entry when git runs longer. It
+/// holds none of git's three streams, as a program that detaches itself does: a caller that reads git's output to its end does not
+/// wait the 0.2 s for it.
+pub fn leaving_git(dir: &Path) -> (PathBuf, PathBuf) {
+    let found = std::process::Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(found.stdout).unwrap().trim().to_string();
+    assert!(real.starts_with('/'), "git on the search path: {real:?}");
+    let bin = dir.join("leaving-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let calls = dir.join("git-calls.txt");
+    let script = format!(
+        "#!/bin/sh\nprintf 'call\\n' >> '{calls}'\nsetsid sleep 0.2 </dev/null >/dev/null 2>&1 &\nexec '{real}' \"$@\"\n",
+        calls = calls.display()
+    );
+    let path = bin.join("git");
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, calls)
 }
 
 /// The real `agentd serve` binary, killed when the test ends.
@@ -1456,13 +1579,15 @@ pub struct Process {
     /// The process id of `agentd serve` on this machine when `child` is the program that made its namespace ([`Opts::first_process`]).
     in_namespace: Option<u32>,
     pub log_file: PathBuf,
+    /// How long the program took from its start to its first `/ping` 200.
+    pub start_took: Duration,
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         // The first process of a process-id namespace takes every process of the namespace with it; the program that made the namespace
         // would leave it running.
-        if let Some(pid) = self.in_namespace {
+        if let Some(pid) = self.first_to_end() {
             let _ = std::process::Command::new("kill")
                 .args(["-s", "KILL", &pid.to_string()])
                 .stderr(std::process::Stdio::null())
@@ -1473,8 +1598,9 @@ impl Drop for Process {
     }
 }
 
-/// The one child of the process `outer`: `agentd serve` under the program that made its namespace.
-fn child_of(outer: u32) -> u32 {
+/// The first child of the process `outer`: `agentd serve` under the program that made its namespace, and the worker under a first
+/// process.
+pub fn child_of(outer: u32) -> u32 {
     let children = format!("/proc/{outer}/task/{outer}/children");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -1493,9 +1619,23 @@ fn child_of(outer: u32) -> u32 {
 }
 
 impl Process {
+    /// The process that the drop ends with KILL: `agentd serve` as process 1 of its namespace, and only while the program that made
+    /// the namespace still runs. That program waits for process 1, so the number stays taken until it has ended; afterwards
+    /// the machine may give the number to any other process, and the drop names none.
+    pub fn first_to_end(&mut self) -> Option<u32> {
+        let pid = self.in_namespace?;
+        matches!(self.child.try_wait(), Ok(None)).then_some(pid)
+    }
+
     /// The process id of `agentd serve` on this machine.
     pub fn pid(&self) -> u32 {
         self.in_namespace.unwrap_or_else(|| self.child.id())
+    }
+
+    /// The process id, on this machine, of the worker that `agentd serve` started as the first process of its namespace: its
+    /// first child. (Where process 1 serves itself, this is whatever it started first.)
+    pub fn worker_pid(&self) -> u32 {
+        child_of(self.pid())
     }
 
     /// The process id `agentd serve` has in its own process-id namespace (the last number of the `NSpid` line of its status).
@@ -1867,30 +2007,39 @@ impl Direct {
             drop(listener);
             let log_file = dir.join("agentd.log");
             let mut command = if opts.first_process {
-                let mut c = std::process::Command::new(UNSHARE);
-                c.args(FIRST_PROCESS_ARGS).arg(env!("CARGO_BIN_EXE_agentd"));
-                c
+                as_first_process(Path::new(env!("CARGO_BIN_EXE_agentd")))
             } else {
                 std::process::Command::new(env!("CARGO_BIN_EXE_agentd"))
             };
-            let child = command
+            command
                 .args(["serve", "--listen", &addr.to_string()])
+                .args(opts.serves_itself.then_some(agentd::first::WORKER_FLAG))
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin")
                 .envs(env)
-                .stderr(std::fs::File::create(&log_file).unwrap())
-                .spawn()
-                .unwrap();
+                .stderr(std::fs::File::create(&log_file).unwrap());
+            if opts.writes_profile {
+                with_coverage_profile(&mut command);
+            }
+            let began = Instant::now();
+            let child = command.spawn().unwrap();
             let in_namespace = opts.first_process.then(|| child_of(child.id()));
             process = Some(Process {
                 child,
                 in_namespace,
                 log_file,
+                start_took: Duration::ZERO,
             });
             let deadline = Instant::now() + Duration::from_secs(10);
+            // A first process is looked for every 5 ms, so that the cost test can tell two starts apart; every other test keeps
+            // its 50 ms.
+            let pause = Duration::from_millis(if opts.first_process { 5 } else { 50 });
             while http("GET", &format!("http://{addr}/ping"), None).await.0 != 200 {
                 assert!(Instant::now() < deadline, "agentd serve did not come up");
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(pause).await;
+            }
+            if let Some(p) = process.as_mut() {
+                p.start_took = began.elapsed();
             }
         } else {
             let served = app.clone();
@@ -1979,6 +2128,12 @@ impl Direct {
 
     /// Waits for result.json, which agentd writes last.
     pub async fn wait_result(&self) -> InvocationResponse {
+        self.wait_result_every(Duration::from_millis(50)).await
+    }
+
+    /// [`Direct::wait_result`] with a look every `pause`. A test that measures how long a turn takes looks every millisecond: with a
+    /// look every 50 ms two turns of the same length differ by nothing or by 50 ms.
+    pub async fn wait_result_every(&self, pause: Duration) -> InvocationResponse {
         let deadline = Instant::now() + Duration::from_secs(u64::from(self.req.timeout_s) + 90);
         loop {
             if let Ok(text) = std::fs::read_to_string(self.result_path())
@@ -1992,18 +2147,23 @@ impl Direct {
                 "no result at {}",
                 self.result_path().display()
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(pause).await;
         }
     }
 
     pub async fn wait_healthy(&self) {
+        self.wait_healthy_every(Duration::from_millis(50)).await;
+    }
+
+    /// [`Direct::wait_healthy`] with a look every `pause` (see [`Direct::wait_result_every`]).
+    pub async fn wait_healthy_every(&self, pause: Duration) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while self.ping().await != PingStatus::Healthy {
             assert!(
                 Instant::now() < deadline,
                 "/ping stayed busy after the result"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(pause).await;
         }
     }
 

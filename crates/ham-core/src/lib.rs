@@ -65,6 +65,7 @@ pub mod skills;
 pub mod skills_card;
 pub mod snapshot;
 pub mod state;
+pub mod storage_notice;
 pub mod stored;
 pub mod tables;
 pub mod tagexplore;

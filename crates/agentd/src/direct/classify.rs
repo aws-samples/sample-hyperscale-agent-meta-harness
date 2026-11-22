@@ -252,6 +252,34 @@ pub fn repository_not_trusted(why: &str) -> Classified {
     )
 }
 
+/// What a run the engine ended with a message ends as when agentd did not put the git settings back, or found the checkout changed
+/// before its commit, and so ran no git in it. `run` is the run's id, for a command the words name.
+pub fn no_git(why: &crate::direct::git_settings::NotPutBack, run: &str) -> Classified {
+    use crate::direct::git_settings::{NotPutBack, reason};
+    match why {
+        NotPutBack::Refused { file, secs, .. } => settings_write_refused(file, *secs, run),
+        NotPutBack::Other(e) => repository_not_trusted(&reason(e)),
+    }
+}
+
+/// The session's storage refused agentd's own write of a git settings file (`file`: `.git/config` or `.git/info/attributes`)
+/// with errno 28 at every try for `secs` seconds (`git_settings::put_back`), so agentd ran no git in the checkout of a run the engine
+/// ended with a message. The storage refused a write. Nothing says that the repository changed, and these words
+/// do not say it. The run ends on row 14 (`stopped_other`) with the harness's own stop sentence, as [`repository_not_trusted`] does,
+/// and `DirectOutcome::label_for` reads "<engine> stopped: the harness ended the run (the session's storage refused the write of
+/// <file> for <secs> s; agentd did not commit or bundle the checkout)". The detail names the command that downloads the newest copy
+/// of `run`. The telemetry outcome is `failed`. No new outcome and no new label text. Pure.
+pub fn settings_write_refused(file: &str, secs: u64, run: &str) -> Classified {
+    classified(
+        DirectOutcome::StoppedOther,
+        TurnOutcome::Failed,
+        Some(format!(
+            "{HARNESS_STOP_PREFIX} the session's storage refused the write of {file} for {secs} s; agentd did not commit or bundle the checkout. Each try was answered with no space left on device. What the engine did is in the checkout and in the newest copy, if one was saved: ham pull {run} --snapshot downloads it."
+        )),
+        None,
+    )
+}
+
 /// The one sentence of a conflict on an end-of-run object: `the object <object> already existed before agentd wrote it`. `object` is
 /// the key below `runs/<run>/agents/direct/` (`turns/1/bundle`, `turns/1/summary.json`, `turns/1/test-report.json`).
 pub fn upload_conflict_text(object: &str) -> String {

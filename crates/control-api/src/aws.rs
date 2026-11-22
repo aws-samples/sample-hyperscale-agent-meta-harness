@@ -1526,13 +1526,20 @@ pub struct S3Blobs {
 
 impl S3Blobs {
     /// One ranged GET of the first `max_bytes` of `key`, with the failure classified where the answer of the store is still at hand:
-    /// `Err` only for a failure that may pass on a retry ([`s3_may_pass`]).
-    async fn fetch_prefix(&self, key: &str, max_bytes: u64) -> Result<Fetched, StoreError> {
+    /// `Err` only for a failure that may pass on a retry ([`s3_may_pass`]). With `version_id` the read is of that one version
+    /// of the object, for a copy that a newer copy replaced at its key.
+    async fn fetch_prefix(
+        &self,
+        key: &str,
+        version_id: Option<&str>,
+        max_bytes: u64,
+    ) -> Result<Fetched, StoreError> {
         let res = self
             .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
+            .set_version_id(version_id.map(str::to_string))
             .range(format!("bytes=0-{}", max_bytes.saturating_sub(1)))
             .send()
             .await;
@@ -1631,10 +1638,25 @@ impl Blobs for S3Blobs {
         max_bytes: u64,
     ) -> Result<Option<ObjectPrefix>, StoreError> {
         // Every caller of this read treats a refusal as an outage, as: the store's reason is the error.
-        match self.fetch_prefix(key, max_bytes).await? {
+        match self.fetch_prefix(key, None, max_bytes).await? {
             Fetched::Object(object) => Ok(Some(object)),
             Fetched::Absent => Ok(None),
             Fetched::Refused(why) => Err(StoreError::Unavailable(why)),
+        }
+    }
+
+    /// A named version the store does not give is no object: it is gone (`NoSuchVersion`; the bucket removes a replaced
+    /// version after its rule), its id is none of this bucket's, it is a delete marker, or its read is refused. Each is an answer no
+    /// retry changes, and the caller has one sentence for all of them. A failure that may pass on a retry is the error.
+    async fn read_prefix_version(
+        &self,
+        key: &str,
+        version_id: &str,
+        max_bytes: u64,
+    ) -> Result<Option<ObjectPrefix>, StoreError> {
+        match self.fetch_prefix(key, Some(version_id), max_bytes).await? {
+            Fetched::Object(object) => Ok(Some(object)),
+            Fetched::Absent | Fetched::Refused(_) => Ok(None),
         }
     }
 
@@ -1643,7 +1665,7 @@ impl Blobs for S3Blobs {
         key: &str,
         max_bytes: u64,
     ) -> Result<ReadOrRefused, StoreError> {
-        Ok(match self.fetch_prefix(key, max_bytes).await? {
+        Ok(match self.fetch_prefix(key, None, max_bytes).await? {
             Fetched::Object(object) => ReadOrRefused::Object(object),
             Fetched::Absent => {
                 ReadOrRefused::Refused("the store has no such key (NoSuchKey)".to_string())

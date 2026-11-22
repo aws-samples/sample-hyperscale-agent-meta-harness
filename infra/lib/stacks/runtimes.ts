@@ -13,7 +13,7 @@ import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as cr from "aws-cdk-lib/custom-resources";
 import { createHash } from "node:crypto";
 import type { Construct } from "constructs";
-import { ACCOUNT, instancesProviderShape, names, type StageConfig, type ToolsMode } from "../config.ts";
+import { ACCOUNT, instancesProviderShape, names, type StageConfig, TEST_STORAGE_REFUSAL_VAR, type ToolsMode } from "../config.ts";
 import { DIRECT_IMAGE_REPOSITORIES, addImageBuild } from "./image-build.ts";
 import type { NetworkStack } from "./network.ts";
 import type { SecurityStack } from "./security.ts";
@@ -41,6 +41,11 @@ export interface RuntimesStackProps extends StackProps {
   toolsMode: ToolsMode;
   /** Create the Instances capacity provider and the second runtime (`HAMH_COMPUTE_INSTANCES=on`). Default false: the stack is the one it was. */
   computeInstances?: boolean;
+  /**
+   * The worker runtimes carry `AGENTD_TEST_STORAGE_REFUSAL=1`, the switch of the live test row of the storage notice (`HAMH_TEST_STORAGE_REFUSAL=on`, resolved by
+   * lib/config.ts `resolveTestStorageRefusal`, which allows it for an account entry with the role `test` alone). Default false: the runtime has no such variable.
+   */
+  testStorageRefusal?: boolean;
 }
 
 type Compute = { kind: "microvm" } | { kind: "instances"; capacityProviderArn: string; volumeName: string; mountPath: string };
@@ -107,6 +112,9 @@ export class RuntimesStack extends Stack {
         // engine as uid 901); an Instances container has no capabilities, so there the engine runs in a Landlock sandbox (`landlock`). The mode is the deployment's, never
         // a user setting (root invariant 2 is locked), and agentd refuses to start the engine when the word is missing or not one of the two.
         AGENTD_ENGINE_SANDBOX: "uid",
+        // The switch of the live test row of the storage notice, only when the deploy of a test stage asked for it. A worker built for an entry of another
+        // role ignores the variable; a change is a change of the runtime's environment, so a new runtime version.
+        ...(props.testStorageRefusal === true ? { [TEST_STORAGE_REFUSAL_VAR]: "1" } : {}),
       };
       this.workerRuntimeArn = this.runtime(props, {
         id: "WorkerPython", slug: "worker-python",

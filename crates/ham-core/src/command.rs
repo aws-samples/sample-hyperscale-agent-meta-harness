@@ -356,7 +356,14 @@ pub enum PullArtifact {
     /// `--read-back <n>`: the files the service read back from the storage of session `n` after that session ended, whether
     /// the run went on from them or not. Like a snapshot they are no artifact of the run, and the option stands alone.
     ReadBack(u32),
+    /// `--before-refusal <notice id>`: the last copy a session had saved before `ham` first saw the session's storage refuse
+    /// a write, named by the id of the run's notice (an event id, as the notice printed it). The option stands alone.
+    BeforeRefusal(String),
 }
+
+/// What `ham pull` says when `--before-refusal` comes with another option or without the id of a notice.
+pub const BEFORE_REFUSAL_USAGE: &str =
+    "ham pull takes --before-refusal <notice id> alone, as the run's notice printed it";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError(String);
@@ -1115,7 +1122,23 @@ fn parse_sub(name: &str, a: Args) -> Result<Command, ParseError> {
         }
         "pr" => Command::Pr { run_id: one(a)? },
         "pull" => {
-            let s = scan(name, a, &["--artifact", "--read-back"], &["--snapshot"], 1)?;
+            let s = scan(
+                name,
+                a,
+                &["--artifact", "--read-back", "--before-refusal"],
+                &["--snapshot"],
+                1,
+            )?;
+            // The copy from before a storage refusal is neither the newest copy, the files read back nor a delivered file,
+            // and its id is an event id, 26 characters of the id alphabet.
+            let before_refusal = match s.opt("--before-refusal") {
+                None => None,
+                Some(_) if s.has("--snapshot") || s.has("--artifact") || s.has("--read-back") => {
+                    return err(BEFORE_REFUSAL_USAGE);
+                }
+                Some(id) if harness_protocol::common::is_ulid(&id) => Some(id),
+                Some(_) => return err(BEFORE_REFUSAL_USAGE),
+            };
             if s.has("--snapshot") && s.has("--artifact") {
                 return err(
                     "ham pull takes --snapshot or --artifact, not both: the snapshot is the work so far, an artifact is a delivered file",
@@ -1140,6 +1163,9 @@ fn parse_sub(name: &str, a: Args) -> Result<Command, ParseError> {
                 },
             };
             let artifact = match (read_back, s.opt("--artifact").as_deref()) {
+                _ if before_refusal.is_some() => {
+                    PullArtifact::BeforeRefusal(before_refusal.unwrap_or_default())
+                }
                 (Some(n), _) => PullArtifact::ReadBack(n),
                 (None, None) if s.has("--snapshot") => PullArtifact::Snapshot,
                 (None, None | Some("zip")) => PullArtifact::Zip,
@@ -1671,6 +1697,7 @@ impl Invocation {
                     PullArtifact::Evidence => push(&["--artifact", "evidence"]),
                     PullArtifact::Snapshot => push(&["--snapshot"]),
                     PullArtifact::ReadBack(n) => push(&["--read-back", &n.to_string()]),
+                    PullArtifact::BeforeRefusal(id) => push(&["--before-refusal", id]),
                 }
             }
             Command::Clone { run_id, dir } => {

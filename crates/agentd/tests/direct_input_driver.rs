@@ -1384,3 +1384,74 @@ async fn an_answer_that_arrives_after_the_last_stop_is_told_the_run_is_over() {
     );
     assert_eq!(late.drain(), 0, "nothing is acknowledged twice");
 }
+
+// ----: a fresh conversation inside one session of the worker -------------------------------------------------------------
+
+/// A session's disks with a workspace folder of 920 MiB at every reading.
+#[derive(Debug)]
+struct B889Large;
+
+impl agentd::direct::disk::DiskProbe for B889Large {
+    fn measure(&self) -> agentd::BoxFuture<'_, agentd::direct::disk::Reading> {
+        Box::pin(async {
+            agentd::direct::disk::Reading {
+                root_free_mb: Some(2400),
+                workspace_used_mb: Some(920),
+                workspace_partial: false,
+                writable: None,
+            }
+        })
+    }
+}
+
+/// T9: the note about a large workspace folder belongs to the first reading of the worker's session. A fresh conversation of the
+/// engine inside that session is a second prompt boundary of the same session: it says nothing again.
+#[tokio::test(start_paused = true)]
+async fn b889_a_fresh_conversation_inside_a_session_does_not_say_the_note_again() {
+    let mut s = Setup::new(Script::new(vec![
+        vec![vec![
+            chunk("I read the files."),
+            Step::Finish("end_turn", None),
+        ]],
+        vec![vec![chunk("Added it."), Step::Finish("end_turn", None)]],
+    ]));
+    s.plan.retry = RetryPolicy::off().with_disk(agentd::direct::disk::DiskCheck::new(
+        Arc::new(B889Large),
+        agentd::direct::disk::Limits::default(),
+    ));
+    let mut live = start(s);
+    let q = live.needs_input(1).await;
+    let id = q["requestId"].as_str().unwrap().to_string();
+    live.answer(
+        &id,
+        InstructAction::NewSessionWithPrompt,
+        Some("try again carefully"),
+        None,
+    )
+    .await;
+    let (end, events, procs) = live.finish().await;
+    assert_eq!(
+        end.fresh_sessions.len(),
+        1,
+        "the engine began a fresh conversation"
+    );
+    assert_eq!(
+        methods(&procs[0])
+            .iter()
+            .filter(|m| m.as_str() == "session/prompt")
+            .count(),
+        2,
+        "two prompts, so two prompt boundaries"
+    );
+    let reasons: Vec<&str> = events
+        .iter()
+        .filter(|v| v["kind"] == "notify")
+        .filter_map(|v| v["reason"].as_str())
+        .collect();
+    let notes = reasons.iter().filter(|r| **r == "disk_note").count();
+    assert_eq!(
+        notes, 2,
+        "{notes} events with reason disk_note, expected the two rows once: {reasons:?}"
+    );
+    assert_eq!(reasons, ["disk_low", "disk_note", "disk_note"]);
+}

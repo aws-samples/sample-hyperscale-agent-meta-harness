@@ -85,7 +85,7 @@ fn b854_the_usage_and_the_help_of_pull_name_the_option() {
     let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains(
-            "ham pull <runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n>]"
+            "ham pull <runId> [--artifact zip|partial|evidence | --snapshot | --read-back <n> | --before-refusal <notice id>]"
         ),
         "{help}"
     );

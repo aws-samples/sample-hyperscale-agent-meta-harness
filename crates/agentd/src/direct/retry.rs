@@ -23,6 +23,7 @@ use crate::direct::failover::{
     FRUITLESS_PROMPTS_MAX, FailoverRecord, Ladder, LadderPolicy, Next, ProbeAnswer, Route,
 };
 use crate::direct::local_fault::{self, Tally};
+use crate::direct::storage_watch::{Seen, StorageWatch, StorageWrite};
 use crate::engine::config::acp_model_value;
 use crate::engine::faults::is_idle_timeout;
 use crate::logging::LogSink;
@@ -100,6 +101,8 @@ pub struct RetryPolicy {
     log: Option<Arc<dyn LogSink>>,
     /// The measurement of the session's two disks; `None` measures nothing.
     disk: Option<DiskCheck>,
+    /// The watch of the session's storage; `None` makes no test write of its own.
+    storage: Option<StorageWatch>,
 }
 
 impl RetryPolicy {
@@ -117,6 +120,7 @@ impl RetryPolicy {
             jitter_pct: 0,
             log: None,
             disk: None,
+            storage: None,
         }
     }
 
@@ -139,6 +143,22 @@ impl RetryPolicy {
     pub fn with_disk(mut self, check: DiskCheck) -> Self {
         self.disk = Some(check);
         self
+    }
+
+    /// The watch of the session's storage: each prompt boundary wakes it (one test write of the worker's own, which no prompt
+    /// waits for), and the fresh measurement after a -32603 makes that write beside it, so that a stop whose numbers show room names
+    /// the refusal and not a full disk. The decision to stop is the disk check's, as before.
+    pub fn with_storage(mut self, watch: StorageWatch) -> Self {
+        self.storage = Some(watch);
+        self
+    }
+
+    /// The worker's own test write beside a fresh measurement: whether the storage refused it. `false` without a watch.
+    async fn storage_refused(&self) -> bool {
+        match &self.storage {
+            Some(watch) => watch.test_now(Seen::EngineError).await == StorageWrite::Refused,
+            None => false,
+        }
     }
 
     /// How many retries a failure of this class gets.
@@ -454,19 +474,41 @@ const OUTAGE_ALARM_AFTER: Duration = Duration::from_secs(900);
 
 /// A prompt boundary: measures the session's two disks and announces each crossing of an early mark once (`notify`, reason
 /// `disk_low`). It deletes nothing. A run with no disk check measures nothing.
+///
+/// The first boundary of a session also writes its reading to the log (`direct turn disk reading: ...`) and, when the
+/// workspace check is on and the folder reads above `disk::NOTE_ABOVE_MB`, says the note about the session's storage: two `notify`
+/// events with the reason `disk_note`, after the crossings, each with its log line (`direct turn disk note: ...`). The note uses the
+/// reading this boundary takes anyway: it makes no reading, no write and no call of its own, and it raises no ladder event.
 pub(crate) async fn disk_boundary(
     policy: &RetryPolicy,
     collector: &DirectCollector,
     record: &mut FailoverRecord,
 ) {
+    // The storage is tested by the watch's own task; the prompt does not wait for it.
+    if let Some(watch) = &policy.storage {
+        watch.wake(Seen::PromptBoundary);
+    }
     let Some(check) = &policy.disk else {
         return;
     };
     let reading = check.probe.measure().await;
+    let first = record.folder_note.first_reading(&check.limits, &reading);
+    if let (Some(_), Some(log)) = (&first, &policy.log) {
+        log.line(&format!(
+            "direct turn disk reading: {}",
+            crate::direct::disk::reading_words(&reading)
+        ));
+    }
     for note in record.disk.crossings(&check.limits, &reading) {
         collector.record_notify("disk_low", None, &note);
         if let Some(log) = &policy.log {
             log.line(&format!("direct turn disk low: {note}"));
+        }
+    }
+    for row in first.unwrap_or_default() {
+        collector.record_note(crate::direct::disk::NOTE_REASON, &row);
+        if let Some(log) = &policy.log {
+            log.line(&format!("direct turn disk note: {row}"));
         }
     }
 }
@@ -661,7 +703,15 @@ where
                 if signal.is_some()
                     || matches!(class, RetryClass::Transient | RetryClass::Permanent)
                 {
-                    check.limits.full_with(&check.probe.measure().await, signal)
+                    let mut full = check.limits.full_with(&check.probe.measure().await, signal);
+                    // The worker's own write to the storage, beside the measurement. It never decides the stop; when the stop
+                    // comes and the numbers show room, its words name the refusal and not a full disk.
+                    let refused = policy.storage_refused().await;
+                    if let Some(full) = full.as_mut() {
+                        full.storage_refused = refused;
+                        full.engine.clone_from(&plan.engine);
+                    }
+                    full
                 } else {
                     None
                 }
@@ -971,7 +1021,10 @@ where
                             .disk
                             .as_ref()
                             .map_or_else(Limits::default, |c| c.limits);
-                        let full = limits.engine_fault(&reading);
+                        let mut full = limits.engine_fault(&reading);
+                        // As after the first error, the worker's own write is made beside the measurement.
+                        full.storage_refused = policy.storage_refused().await;
+                        full.engine.clone_from(&plan.engine);
                         if let Some(a) = attempts.last_mut() {
                             a.retry_class = Some(full.reason_word().to_string());
                             a.detail = Some(scrub_detail(&format!("{detail} ({})", full.line())));

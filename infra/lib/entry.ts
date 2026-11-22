@@ -10,8 +10,8 @@ import { join } from "node:path";
 import type { BuildOptions } from "./app.ts";
 import { lookupEnv, resolveEnv } from "./env.ts";
 import {
-  LAMBDAS, REGION, RESEARCH_PROVIDERS, type ResearchProvider, resolveComputeInstances, resolveResearchAlarms, resolveStageSettings, resolveToolsMode, resolveUtilityModel,
-  resolveUtilityPurposes, type Stage, type StageSettingsRaw, trimSetting,
+  LAMBDAS, REGION, RESEARCH_PROVIDERS, type ResearchProvider, resolveComputeInstances, resolveResearchAlarms, resolveStageSettings, resolveTestStorageRefusal, resolveToolsMode,
+  resolveUtilityModel, resolveUtilityPurposes, type Stage, type StageSettingsRaw, TARGET, trimSetting,
 } from "./config.ts";
 
 export function entryOptions(env: Record<string, string | undefined>): BuildOptions {
@@ -61,6 +61,10 @@ export function entryOptions(env: Record<string, string | undefined>): BuildOpti
   // here by name. The app resolves the same word again.
   const instances = trimSetting(lookupEnv(env, "COMPUTE_INSTANCES") ?? "");
   resolveComputeInstances(instances);
+  // The switch of the live test row of the storage notice, an input of one deploy of a test stage. Absent or blank adds no option; `on` for an entry
+  // that has not the role test, and any other word, stops the deploy here by name. The app resolves the same word again.
+  const testStorageRefusal = trimSetting(lookupEnv(env, "TEST_STORAGE_REFUSAL") ?? "");
+  resolveTestStorageRefusal(testStorageRefusal, TARGET.role);
   // The stage settings that were constants (log retention, the pull request check, the machine of the Instances part). Absent or blank keeps the old value;
   // a value outside its range stops the deploy here by name. The app resolves the same words again.
   const words: StageSettingsRaw = {};
@@ -84,6 +88,7 @@ export function entryOptions(env: Record<string, string | undefined>): BuildOpti
     ...(maxAge === "" ? {} : { tavilyKeyMaxAgeDays: maxAge }),
     ...(topic === "" ? {} : { researchAlarmTopicArn: topic }),
     ...(instances === "" ? {} : { computeInstances: instances }),
+    ...(testStorageRefusal === "" ? {} : { testStorageRefusal }),
     ...(Object.keys(words).length === 0 ? {} : { settings: words }),
   };
 }

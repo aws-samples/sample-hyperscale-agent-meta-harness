@@ -189,9 +189,9 @@ fn a_notify_about_an_unusable_history_says_a_fresh_session_starts_over() {
 fn a_notify_with_a_reason_this_client_does_not_know_shows_the_reason() {
     let n = only(&progress(
         1,
-        json!({"turn": 1, "kind": "notify", "reason": "disk_low", "outageMinutes": null, "detail": "free space 3%"}),
+        json!({"turn": 1, "kind": "notify", "reason": "made_up_x", "outageMinutes": null, "detail": "free space 3%"}),
     ));
-    assert_eq!(n.text, "Notice from the run (disk_low). free space 3%");
+    assert_eq!(n.text, "Notice from the run (made_up_x). free space 3%");
 }
 
 #[test]

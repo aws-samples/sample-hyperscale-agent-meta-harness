@@ -175,6 +175,19 @@ pub fn view_json(v: &RunView) -> Value {
             .collect();
         o.insert("copyNotices".into(), Value::Array(notices));
     }
+    // Only a view that holds what the run said about the disks of its session carries it: each notice with its time,
+    // its reason (`disk_low`: a disk is running low; `disk_note`: the note about a large workspace folder) and the worker's
+    // sentence. Line mode prints these sentences; a script that follows the JSON view had no way to learn of them.
+    if let (false, Some(o)) = (v.disk_notices.is_empty(), out.as_object_mut()) {
+        let notices: Vec<Value> = v
+            .disk_notices
+            .iter()
+            .map(|n| {
+                json!({"at": ham_core::sanitize::sanitize_line(&n.ts), "reason": n.reason, "text": n.text})
+            })
+            .collect();
+        o.insert("diskNotices".into(), Value::Array(notices));
+    }
     // Only a run that ended early carries it, so every other view is unchanged.
     if let (Some(a), Some(o)) = (&v.aborted, out.as_object_mut()) {
         o.insert(
@@ -459,6 +472,21 @@ impl InputMemo {
                 } else {
                     after_notice = Some(out.len());
                 }
+            }
+        }
+        // What the run said about the disks of its session (a disk that is running low, the note about a large
+        // workspace folder) is told once for each notice, in event order and in the worker's own sentence. The run screen shows
+        // these in the conversation; line mode printed none of them.
+        for n in &v.disk_notices {
+            if self.shown.insert(format!("disk:{}", n.event_id)) {
+                out.push(n.text.clone());
+            }
+        }
+        // What the run said about its session's storage refusing a write is told once for each notice, in the client's own
+        // lines (the fact with the size of the files, what ham does not know, and both commands, none of them cut).
+        for (id, lines) in &v.storage.recent {
+            if self.shown.insert(format!("storage:{id}")) {
+                out.extend(lines.iter().cloned());
             }
         }
         if let Some(quiet) = quiet

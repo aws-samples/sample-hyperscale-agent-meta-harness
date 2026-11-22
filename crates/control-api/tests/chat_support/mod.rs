@@ -178,6 +178,12 @@ pub struct World {
     pub presigned: Mutex<Vec<(String, Duration)>>,
     /// The version each presign was pinned to, in the order of `presigned`.
     pub presigned_versions: Mutex<Vec<Option<String>>>,
+    /// Versions of objects that a newer object replaced at their key, by (key, version id), as a bucket that keeps versions
+    /// still holds them.
+    pub versions: Mutex<BTreeMap<(String, String), Vec<u8>>>,
+    /// The store refuses the read of a named version (S3 `AccessDenied`), which the adapter answers like a version that is
+    /// gone.
+    pub version_denied: AtomicBool,
     /// Every store, blob and execution call, by name and its main arguments.
     pub calls: Mutex<Vec<String>>,
     pub idem: Mutex<BTreeMap<String, IdempotencyItem>>,
@@ -251,6 +257,13 @@ impl World {
     pub fn put_object(&self, key: &str, bytes: Vec<u8>) {
         self.objects.lock().unwrap().insert(key.into(), bytes);
         self.modified.lock().unwrap().remove(key);
+    }
+    /// A version of `key` that the bucket still holds after a newer object replaced it.
+    pub fn put_version(&self, key: &str, version_id: &str, bytes: Vec<u8>) {
+        self.versions
+            .lock()
+            .unwrap()
+            .insert((key.into(), version_id.into()), bytes);
     }
     pub fn put_object_at(&self, key: &str, bytes: Vec<u8>, modified: &str) {
         self.objects.lock().unwrap().insert(key.into(), bytes);
@@ -432,6 +445,19 @@ impl Store for &World {
         out.retain(|e| after.is_none_or(|a| e.event_id.as_str() > a));
         out.truncate(limit);
         Ok(out)
+    }
+    /// One event by its exact key (DynamoDB `GetItem`): the run, the shard and the event id.
+    async fn get_event(
+        &self,
+        run_id: &str,
+        shard: u8,
+        event_id: &str,
+    ) -> Result<Option<Envelope>, StoreError> {
+        self.log(format!("get_event {run_id} {shard} {event_id}"));
+        Ok(self
+            .shard_events(run_id, shard)
+            .into_iter()
+            .find(|e| e.event_id == event_id))
     }
     async fn list_artifacts(&self, _: &str) -> Result<Vec<ArtifactItem>, StoreError> {
         Ok(vec![])
@@ -942,6 +968,45 @@ impl Blobs for &World {
                     .cloned()
                     .unwrap_or_else(|| "2020-01-01T00:00:00Z".to_string()),
             ),
+        }))
+    }
+    /// A ranged GET of one named version (`versionId`). A version the bucket no longer holds is S3's 404 `NoSuchVersion`, and
+    /// a refused read its 403 `AccessDenied`; the adapter answers both with `None`.
+    async fn read_prefix_version(
+        &self,
+        key: &str,
+        version_id: &str,
+        max_bytes: u64,
+    ) -> Result<Option<ObjectPrefix>, StoreError> {
+        self.log(format!(
+            "read_prefix_version {key} {version_id} {max_bytes}"
+        ));
+        if self.objects_down.load(Ordering::SeqCst) {
+            return Err(unavailable("object read"));
+        }
+        assert!(max_bytes >= 1, "a ranged GET needs at least one byte");
+        // "Version IDs are ... no more than 1,024 bytes long" (How S3 Versioning works): a longer one is refused by S3 (400).
+        assert!(
+            !version_id.is_empty() && version_id.len() <= 1024,
+            "S3 refuses a version id of {} bytes",
+            version_id.len()
+        );
+        if self.version_denied.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let g = self.versions.lock().unwrap();
+        let Some(bytes) = g.get(&(key.to_string(), version_id.to_string())) else {
+            return Ok(None);
+        };
+        let take = usize::try_from(max_bytes)
+            .unwrap_or(usize::MAX)
+            .min(bytes.len());
+        Ok(Some(ObjectPrefix {
+            bytes: bytes[..take].to_vec(),
+            size: bytes.len() as u64,
+            etag: Some(etag_of(bytes)),
+            version_id: Some(version_id.to_string()),
+            last_modified: Some("2020-01-01T00:00:00Z".to_string()),
         }))
     }
 }

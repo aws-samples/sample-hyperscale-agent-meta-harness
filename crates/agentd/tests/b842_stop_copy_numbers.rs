@@ -105,9 +105,9 @@ async fn b842_b823_b841_a_restarted_session_with_a_long_timer_and_a_stop_copy_go
         ..Opts::default()
     })
     .await;
-    // Every stand-in bucket is made with a repository of its own, whose commits carry the second they were made in. Left as it
-    // is, this bucket would name a base that the work of session 1 holds only when both repositories were made within the same
-    // second, and the copies of this session would be whole or not as the clock reads. The object of the run takes its place.
+    // Every stand-in bucket is made with a repository of its own. Its commits carry fixed dates, so it is the repository
+    // the run started from, whenever it is made; before, the copies of this session were whole or not as the clock read. The
+    // object of the run is put here all the same: the bucket of a run holds that one object for all its sessions.
     d.aws.put(&keys::repo_bundle_key(RUN), started_from.clone());
     d.aws.put(&keys::bundle_key_t(RUN, 1), bundle);
     d.aws.put(

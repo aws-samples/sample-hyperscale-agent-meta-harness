@@ -164,11 +164,12 @@ refusal texts. `test_repo_names.py` runs it through `scripts/lib/aws_target.py`,
   subprocess environment, or around an in-process module load; the `test` entry, is selected the same way with
   `HAMH_AWS_PROFILE=<profile>`). It also refuses the profile of any other project: such a profile never appears in
   code or as an accounts.json profile.
-- `test_cargo_slot.py` holds `scripts/cargo-slot.sh`: the slot count, the exit code, the priority registrations and the fallback of a default lock folder that cannot be made to `$TMPDIR/cargo-slots`, while a folder named
-  with `CARGO_SLOT_DIR` that cannot be made exits 2.
-  COMPAT-CAH: two cases pin the default lock folder chosen by `CAH_TOOLS` when `HAMH_TOOLS` is unset and the precedence of `HAMH_TOOLS` when both are set.
-  `test_tools_lock.py` holds `scripts/lib/tools_lock.py`; its root cases use paths that do not exist: the working directory and `TMPDIR` are the allowed roots and no path of one machine is a default,
-  `TOOLS_LOCK_ROOTS` is the whole list when set, and a working directory or `TMPDIR` that is `/`, empty or relative is ignored.
+- `test_cargo_slot.py` holds `scripts/cargo-slot.sh`: the slot count, the exit code, the priority registrations and the fallback of a default lock folder that cannot be made to `$TMPDIR/cargo-slots`, while a folder named with
+  `CARGO_SLOT_DIR` that cannot be made exits 2. COMPAT-CAH: two cases pin the default lock folder chosen by `CAH_TOOLS` when `HAMH_TOOLS` is unset and the precedence of `HAMH_TOOLS` when both are set. `test_tools_lock.py` holds
+  `scripts/lib/tools_lock.py`; its root cases use paths that do not exist: the working directory and `TMPDIR` are the allowed roots and no path of one machine is a default, `TOOLS_LOCK_ROOTS` is the whole list when set, and a
+  working directory or `TMPDIR` that is `/`, empty or relative is ignored. The helper's test with real processes (`test_b883_a_pid_file_that_names_the_worker_does_not_end_it`) skips where the kernel of the machine answers errno
+  38 to that call, with the reason in its text, and nowhere else for it: a session's kernel has the call, a build machine's may not. `handle_refused_by_kernel` is the probe, and a case with stand-ins holds it for every error
+  number. A round on machines without the call skips the test and does not say why; `test_b883_down_as_root_leaves_a_record_alone_where_the_kernel_has_no_handle_call` holds with a stand-in what the helper does there.
 - `test_teardown.py` models a deployed stage and what is not the stage's in one JSON state file
   shared by a fake `aws` and a fake CDK CLI; its `cdk destroy` fails the way CloudFormation does.
   Class `ListedMember` pins `listed` of `scripts/lib/teardown.py`, the reader of the member of a `list-*` answer.

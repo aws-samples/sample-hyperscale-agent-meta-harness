@@ -578,6 +578,9 @@ pub struct Recorder {
     command_limit_ms: Option<u64>,
     /// The newest cut at another number than the run's limit, until [`Self::take_limit_miss`] hands it out.
     limit_miss: Option<LimitMiss>,
+    /// The newest final result of a tool call names that no space is left on a device (`disk::names_no_space`), until
+    /// [`Self::take_space_named`] hands it out.
+    space_named: bool,
 }
 
 impl Recorder {
@@ -615,6 +618,13 @@ impl Recorder {
     /// A call that named no limit and was cut at another number than the run's limit, once.
     pub fn take_limit_miss(&mut self) -> Option<LimitMiss> {
         self.limit_miss.take()
+    }
+
+    /// Whether the newest final result of a tool call named that no space is left on a device, once. The words alone say
+    /// nothing about the session's storage (a search or a test log can quote them): the collector makes the worker test the storage
+    /// itself (`crate::direct::storage_watch`).
+    pub fn take_space_named(&mut self) -> bool {
+        std::mem::take(&mut self.space_named)
     }
 
     /// Replaces the secret values with a set of its own holding `secrets` (the collector's `with_secrets`).
@@ -784,8 +794,15 @@ impl Recorder {
             }
         }
         let mut full_tail: Option<String> = None;
+        // Whether this update's result names no space left: the tail that is read anyway and the error's text.
+        let mut space_named = false;
         if let Some(out) = out {
             let text = tail_bytes(&out.text, PRE_REDACT_OUTPUT_BYTES);
+            space_named = crate::direct::disk::names_no_space(text)
+                || out
+                    .error
+                    .as_deref()
+                    .is_some_and(crate::direct::disk::names_no_space);
             let redacted = self.redact(text);
             entry.rec.output_bytes = out.text.len();
             entry.rec.output_tail = tail_bytes(&redacted, OUTPUT_TAIL_BYTES)
@@ -810,6 +827,8 @@ impl Recorder {
         if !matches!(status, "completed" | "failed") {
             return;
         }
+        // The newest final result decides: one that names nothing takes back what an earlier one named.
+        self.space_named = space_named;
         let bad_exit = entry.rec.exit_code.is_some_and(|c| c != 0);
         entry.rec.verdict = if entry.timed_out {
             CallVerdict::TimedOut

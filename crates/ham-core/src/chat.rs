@@ -609,12 +609,31 @@ impl ChatModel {
                 &format!("Run blocked: {}", bl.reason),
             ));
         }
+        // What the run said about its session's storage, once the run has ended: after the detail in the delivery block, and
+        // as lines of their own for a run that delivered nothing (a blocked run has no delivery block).
+        let storage: Vec<String> = if view.has_ended() {
+            crate::storage_notice::card_values(&view.storage, &view.run_id)
+        } else {
+            Vec::new()
+        };
+        if !(delivered || view.pr_url.is_some()) {
+            for (i, line) in storage.iter().enumerate() {
+                b.blocks.push(Block::notice(
+                    &format!("storage:{i}"),
+                    NoticeKind::RunStatus,
+                    line,
+                ));
+            }
+        }
         let mut rows: Vec<(String, String)> = Vec::new();
         if let Some(r) = &view.result {
             rows.push(("Outcome".into(), r.label.clone()));
             if let Some(d) = &r.detail {
                 rows.push(("Detail".into(), d.clone()));
             }
+        }
+        for (i, line) in storage.iter().enumerate() {
+            rows.push((if i == 0 { "Storage" } else { "" }.into(), line.clone()));
         }
         if let Some(m) = view.direct_model_id() {
             rows.push(("Model".into(), model_name(m)));
@@ -832,6 +851,20 @@ impl Builder {
         } else {
             self.blocks
                 .push(Block::notice(&format!("n:{}", e.event_id), n.kind, &n.text));
+        }
+        // The lines that follow the notice of a storage refusal, each a line of its own: no command is cut.
+        if let Some(storage) = crate::storage_notice::parse(e) {
+            let run_id = e.run_id.clone();
+            for (i, line) in crate::storage_notice::follow_up(&storage, &run_id)
+                .iter()
+                .enumerate()
+            {
+                self.blocks.push(Block::notice(
+                    &format!("n:{}:storage:{i}", e.event_id),
+                    NoticeKind::Notify,
+                    line,
+                ));
+            }
         }
         // The engine's own BLOCKED line follows the brake that quotes it, on a line of its own.
         if let Some(line) = goal_blocked_line(e) {

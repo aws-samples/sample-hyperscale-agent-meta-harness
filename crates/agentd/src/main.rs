@@ -1,16 +1,19 @@
-//! `agentd serve [--listen <addr>]`: the runtime contract server (settings in `agentd::config`).
+//! `agentd serve [--listen <addr>]`: the runtime contract server (settings in `agentd::config`). As process 1 of its machine it starts
+//! itself once more as the worker, with the argument `--behind-first-process` that only process 1 gives, and keeps the first-process
+//! role.
 //! `agentd creds --socket <path>`: the engine's `credential_process`; prints credentials JSON or
 //! exits 1 (fail closed). `agentd sandbox-exec --policy-json <json> -- <program> [args]`: the engine's launcher in the
 //! `landlock` mode. `agentd --version`.
 
 use agentd::config::{Config, open_files_cap};
 use agentd::creds_socket::fetch_credentials;
+use agentd::first;
 use agentd::logging::StderrLog;
 use agentd::nofile::{KernelLimits, apply};
 use agentd::sandbox::{
     ENV_VAR, Mode, Setting, main_sandbox_exec, note_process_mode, set_non_dumpable,
 };
-use agentd::server::{App, end_on_signals, serve};
+use agentd::server::{App, StopSignals, end_on_signals, serve};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -79,6 +82,22 @@ fn serve_cmd(args: &[String]) -> ExitCode {
     if let Err(code) = harden() {
         return code;
     }
+    // As process 1 of its machine, which is what a session's microVM runs, `agentd serve` starts the worker as its one child and
+    // only collects ended processes and passes the stop signals on (`agentd::first`). Nothing else is read or started here.
+    if first::takes_the_role(std::process::id(), args) {
+        return match first::worker_command(args) {
+            Ok(worker) => ExitCode::from(first::split(worker)),
+            Err(e) => {
+                first::say(&format!(
+                    "the worker could not be started ({e}); process 1 ends"
+                ));
+                ExitCode::from(1)
+            }
+        };
+    }
+    if first::is_behind_first(args, first::parent_pid()) {
+        first::note_behind_first();
+    }
     // Before the settings are used and before anything is started: every process agentd starts inherits the open-files limit it has now, and a
     // limit of hundreds of millions makes programs that close every descriptor number take minutes per start (`agentd::nofile`). It logs one line
     // and never ends the start.
@@ -98,6 +117,12 @@ fn serve_cmd(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     };
     rt.block_on(async move {
+        // The signals that ask agentd to end are watched before the port is bound. The worker behind the first process
+        // then tells process 1 that it is ready for them; a signal that came earlier is held there and passed on now.
+        let stops = StopSignals::watch(&StderrLog);
+        if stops.is_some() {
+            first::say_ready(&StderrLog);
+        }
         let listener = match tokio::net::TcpListener::bind(cfg.listen).await {
             Ok(l) => l,
             Err(e) => {
@@ -108,7 +133,7 @@ fn serve_cmd(args: &[String]) -> ExitCode {
         eprintln!("agentd: listening on {}", cfg.listen);
         let app = App::new(cfg, Arc::new(StderrLog));
         // A signal that asks agentd to end is answered with a copy of the work first.
-        tokio::spawn(end_on_signals(app.clone()));
+        tokio::spawn(end_on_signals(app.clone(), stops));
         match serve(app, listener).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

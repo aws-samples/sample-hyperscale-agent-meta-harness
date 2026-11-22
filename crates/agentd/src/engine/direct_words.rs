@@ -26,6 +26,20 @@ pub fn engine_fault_question() -> &'static str {
     "Send a message with `ham say` (Cline may not be able to answer), or end the run with `ham finish` and keep what exists."
 }
 
+/// What the person can do when a prompt failed while the session's storage refused writes and its files left room, as the question
+/// of the card and the end of the notice. It names the engine that ran (its display name; "The engine" when the caller has none), so it
+/// lives here.
+pub fn storage_refused_question(engine: &str) -> String {
+    let name = if engine.trim().is_empty() {
+        "The engine".to_string()
+    } else {
+        display(engine)
+    };
+    format!(
+        "Send a message with `ham say` to go on once the storage takes writes again ({name} may not be able to answer while it refuses them), or end the run with `ham finish` and keep what exists."
+    )
+}
+
 /// The plain title of a reason (at most 120 characters).
 pub fn reason_title(reason: NeedsInputReason) -> &'static str {
     use NeedsInputReason as R;

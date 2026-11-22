@@ -100,6 +100,11 @@ pub fn select(artifacts: &[ArtifactView], which: &PullArtifact) -> Result<Artifa
                 "files read back are not an artifact; ham pull <runId> --read-back {n} downloads them"
             )));
         }
+        PullArtifact::BeforeRefusal(id) => {
+            return Err(PullError::NoArtifact(format!(
+                "a copy from before a storage refusal is not an artifact; ham pull <runId> --before-refusal {id} downloads it"
+            )));
+        }
         PullArtifact::Zip => newest(ArtifactKind::Zip),
         PullArtifact::Evidence => newest(ArtifactKind::Evidence),
         PullArtifact::Partial => newest(ArtifactKind::Partial),

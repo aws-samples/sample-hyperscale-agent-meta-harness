@@ -6,6 +6,23 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.26] - 2026-11-21
+
+### Added
+
+- A run says when its session's storage refuses writes while its files leave room. The notice gives the size of the files and what such a refusal has meant on this storage, and comes once per stretch of refusals. The run goes on.
+- `ham pull <runId> --before-refusal <notice id>` downloads the last copy saved before ham first saw the refusal. `ham pull <runId> --snapshot` downloads the newest copy.
+- The card of a run that ended has `Storage` rows when the run saw a refusal.
+- A stage of an account entry with the role `test` that is deployed with `HAMH_TEST_STORAGE_REFUSAL=on` answers one test write of a session with a refusal, so that the notice can be tested. A stage of any other entry ignores the switch.
+- A run prints two lines at the start of a session on the microVM when its workspace folder holds more than 200 MiB. The first gives the folder's size and the sizes at which the measurements saw refused writes on this storage. The second names `--compute instances` for a new run. The run goes on.
+- `ham watch --json` carries the worker's disk notices in the new member `diskNotices`.
+
+### Fixed
+
+- `ham watch` prints the worker's disk notices, such as the notice that the workspace folder is nearly full. It printed none of them before. The run screen shows each notice without the words “Notice from the run”.
+- A long run no longer leaves one ended process entry in its session for every commit.
+- A run no longer ends as "not what the run started with" when the session storage refused the worker's write of the git settings at the end of the run. The worker repeats the write.
+
 ## [5.25] - 2026-11-20
 
 ### Added

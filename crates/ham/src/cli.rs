@@ -439,6 +439,21 @@ pub async fn execute<P: ControlPlane>(
             )
             .await
         }
+        // The last copy saved before ham first saw the session's storage refuse a write, by the id of the run's notice.
+        Command::Pull {
+            run_id,
+            artifact: PullArtifact::BeforeRefusal(notice_id),
+        } => {
+            crate::snapshot_cmd::pull_before_refusal(
+                api,
+                run_id,
+                notice_id,
+                json,
+                ctx.downloads,
+                out,
+            )
+            .await
+        }
         Command::Pull { run_id, artifact } => {
             cmd_pull(api, run_id, artifact, json, ctx.downloads, ctx.chunk, out).await
         }

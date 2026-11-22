@@ -31,6 +31,7 @@ pub mod engine_stop;
 pub mod failover;
 pub mod flow;
 pub mod fresh;
+pub mod git_settings;
 pub mod goal;
 pub mod hooks;
 pub mod input;
@@ -54,6 +55,7 @@ pub mod rules_place;
 pub mod skills;
 pub mod slice;
 pub mod snapshot;
+pub mod storage_watch;
 pub mod summary;
 pub mod tools;
 pub mod transcript;
@@ -681,6 +683,9 @@ struct State {
     base: Option<String>,
     hidden: Option<Hidden>,
     git_state: Option<GitState>,
+    /// The watch of the session's storage, when the session has one. The end sequence tells it what its own write of the git
+    /// settings met.
+    storage: Option<storage_watch::StorageWatch>,
     quarantined: Vec<String>,
     proxy: Option<Box<dyn ProxyRun>>,
     containers: Option<Box<dyn ContainersRun>>,
@@ -1217,15 +1222,53 @@ async fn start_and_prompt(
         .ok()
         .and_then(|subject| copy_number(&subject))
         .unwrap_or(0);
-    if let Err(e) = marker::write(
+    // The session's two disks: measured at each prompt boundary and, fresh, after a -32603. Both settings at 0 switch
+    // the measurement off.
+    let disk_check = (cfg.direct.disk_low_mb > 0 || cfg.direct.workspace_limit_mb > 0).then(|| {
+        disk::DiskCheck::new(
+            // The test write goes to the run's own folder, the checkout's parent on the managed storage and the
+            // engine's state folder, besides the two roots.
+            Arc::new(
+                disk::HostDisk::new(cfg.data_root.clone(), cfg.workspace_root.clone())
+                    .with_write_dirs([agent_data.clone(), wt.root.clone(), data_dir.clone()]),
+            ),
+            disk::Limits {
+                root_low_mb: cfg.direct.disk_low_mb,
+                workspace_limit_mb: cfg.direct.workspace_limit_mb,
+            },
+        )
+    });
+    // The watch of the session's storage is built where the disk check is, so a deployment that switches both checks off has
+    // neither. Its test write goes to the run's own folder on the storage, which agentd makes and the engine cannot write. It says
+    // when the storage refuses a write while the files leave room; it stops nothing and tells the engine nothing. It is built before
+    // the session's first marker is written, because every write of the marker goes through it: the marker is a write the worker
+    // makes on the session's storage anyway, and its result counts like a test write's.
+    let storage = disk_check.as_ref().map(|check| {
+        storage_watch::StorageWatch::new(storage_watch::WatchSetup {
+            writes: Arc::new(storage_watch::HostWrites),
+            probe: check.probe.clone(),
+            rec: rec.clone(),
+            log: app.log.clone(),
+            run_id: run.to_string(),
+            session: req.turn,
+            run_dir: cfg.workspace_root.join(run),
+            limits: check.limits,
+            test_refusal: cfg.direct.storage_test_refusal,
+        })
+    });
+    st.storage = storage.clone();
+    let start_marker = harness_protocol::direct::CopyMarker {
+        schema_version: marker::SCHEMA_VERSION,
+        session: req.turn,
+        count: started_count,
+        head_sha: started_on,
+    };
+    if let Err(e) = write_marker(
+        storage.as_ref(),
         &cfg.workspace_root,
         run,
-        &harness_protocol::direct::CopyMarker {
-            schema_version: marker::SCHEMA_VERSION,
-            session: req.turn,
-            count: started_count,
-            head_sha: started_on,
-        },
+        &start_marker,
+        storage_watch::Marked::Start,
     )
     .await
     {
@@ -1727,6 +1770,7 @@ async fn start_and_prompt(
             st.base_header.take(),
             st.snapshots.clone(),
             rec,
+            storage.clone(),
         )
         .await
         {
@@ -1792,6 +1836,9 @@ async fn start_and_prompt(
         // The copies of the work. The private repository is made before the engine starts (above), the copy of the end is made in
         // `finish`, and the task below looks at the tree on the timer and when a tool call ended.
         let tree_wake = Arc::new(tokio::sync::Notify::new());
+        // The session's two disks and the watch of its storage were built before the session's first marker, above.
+        // The task that makes the watch's test writes starts here and ends after the stage loop.
+        let storage_task = storage.as_ref().map(storage_watch::StorageWatch::start);
         let mut collector = DirectCollector::new(rec.clone())
             .with_engine(&req.engine)
             .with_command_limit(
@@ -1802,6 +1849,9 @@ async fn start_and_prompt(
             .with_secret_set(st.secrets.clone())
             .with_hooks(hooks.clone())
             .with_tree_wake(tree_wake.clone());
+        if let Some(watch) = &storage {
+            collector = collector.with_storage_watch(watch.clone());
+        }
         let snapshots = st
             .copies
             .as_ref()
@@ -1860,27 +1910,13 @@ async fn start_and_prompt(
                     cfg.direct.provider_retry_pause,
                 )
                 .with_log(app.log.clone());
-                // The session's two disks: measured at each prompt boundary and, fresh, after a -32603. Both settings at 0 switch
-                // the measurement off.
-                if cfg.direct.disk_low_mb > 0 || cfg.direct.workspace_limit_mb > 0 {
-                    retry.with_disk(disk::DiskCheck::new(
-                        // The test write goes to the run's own folder, the checkout's parent on the managed storage and the
-                        // engine's state folder, besides the two roots.
-                        Arc::new(
-                            disk::HostDisk::new(cfg.data_root.clone(), cfg.workspace_root.clone())
-                                .with_write_dirs([
-                                    agent_data.clone(),
-                                    wt.root.clone(),
-                                    data_dir.clone(),
-                                ]),
-                        ),
-                        disk::Limits {
-                            root_low_mb: cfg.direct.disk_low_mb,
-                            workspace_limit_mb: cfg.direct.workspace_limit_mb,
-                        },
-                    ))
-                } else {
-                    retry
+                let retry = match &disk_check {
+                    Some(check) => retry.with_disk(check.clone()),
+                    None => retry,
+                };
+                match &storage {
+                    Some(watch) => retry.with_storage(watch.clone()),
+                    None => retry,
                 }
             },
             // The retry setting at 0 means one prompt, as before the failover slices: the engine-stop resume follows it.
@@ -1944,6 +1980,11 @@ async fn start_and_prompt(
             let _ = (&mut h.0).await;
         }
         if let Some(task) = pruning {
+            task.stop().await;
+        }
+        // A test write that the last tool result asked for is given the time one write may take; then the task ends.
+        if let (Some(watch), Some(task)) = (&storage, storage_task) {
+            let _ = tokio::time::timeout(TREE_ANSWER_LIMIT, watch.idle()).await;
             task.stop().await;
         }
         drop(client); // closes stdin: ACP engines exit on EOF
@@ -2445,6 +2486,32 @@ struct Copies {
     marker_root: PathBuf,
     /// The marker could not be written after a copy and that was logged; it is logged again only after a marker was written.
     marker_failing: Arc<std::sync::atomic::AtomicBool>,
+    /// The watch of the session's storage, when the session has one: the marker of each stored copy is written through it,
+    /// with the copy and the version the bucket gave its bundle.
+    storage: Option<storage_watch::StorageWatch>,
+}
+
+/// Writes `marker` as the marker of `run`: through the watch of the session's storage when the session has one
+/// (`storage_watch::StorageWatch::marker_write_for`, which reads the result as it reads a test write's), else as before the watch
+/// (`marker::write`). The error has the words `marker::write` gives it, for the caller's log line.
+async fn write_marker(
+    storage: Option<&storage_watch::StorageWatch>,
+    workspace_root: &Path,
+    run: &str,
+    marker: &harness_protocol::direct::CopyMarker,
+    marked: storage_watch::Marked,
+) -> Result<(), String> {
+    let Some(watch) = storage else {
+        return marker::write(workspace_root, run, marker).await;
+    };
+    let bytes = serde_json::to_vec(marker).map_err(|e| format!("marker: {e}"))?;
+    watch.marker_write_for(bytes, marked).await.map_err(|e| {
+        if e.errno.is_none() && e.text.starts_with("the storage did not answer") {
+            format!("marker: {}", e.text)
+        } else {
+            format!("marker: {e}")
+        }
+    })
 }
 
 /// The limits of one look of the copy task. No look is waited for without them: a session that was stopped from outside lived on
@@ -2785,6 +2852,7 @@ impl Copies {
         base_header: Option<Vec<u8>>,
         stats: Arc<Mutex<DirectSnapshots>>,
         rec: &Arc<EventRecorder>,
+        storage: Option<storage_watch::StorageWatch>,
     ) -> Result<Self, String> {
         let mut snapshotter = Snapshotter::new(agent_data, &wt.repo, base).await?;
         // The tree was read once while the repository was made, before the engine starts, so that the first look of the copy
@@ -2837,7 +2905,10 @@ impl Copies {
             rec: rec.clone(),
             failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             late_said: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            ends_after_copy: crate::server::ends_after_the_copy(std::process::id()),
+            ends_after_copy: crate::server::ends_after_the_copy(
+                std::process::id(),
+                crate::first::behind_first(),
+            ),
             final_budget: app.cfg.direct.final_copy_budget,
             before,
             limits: CopyLimits {
@@ -2851,6 +2922,7 @@ impl Copies {
             tree: TreeAlive::new(&wt.repo),
             marker_root: app.cfg.workspace_root.clone(),
             marker_failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            storage,
         })
     }
 
@@ -2876,8 +2948,10 @@ impl Copies {
             Some(digest) => digest.clone(),
             None => crate::s3::digest_file(&made.bundle).await?,
         };
-        s3_objects
-            .put_file_retrying_with(
+        // The version the bucket gave this bundle is in the answer of the upload that is read anyway. The watch of the storage
+        // keeps it with the copy, so that a notice can name this copy after a newer one replaced it at the same key.
+        let version_id = s3_objects
+            .put_file_retrying_with_version(
                 &bundle_uri,
                 &c,
                 &made.bundle,
@@ -2886,11 +2960,11 @@ impl Copies {
                 self.pause,
             )
             .await?;
-        // The bundle is in the bucket, so the storage now stands at this copy: the marker says so before the record is uploaded. A
-        // bundle that was not stored never reaches this line, and a marker that cannot be written does not fail the copy.
-        self.mark(made).await;
         // The time the copy names is from before its tree was read, not the time it was stored.
         let at = format_rfc3339(cut_unix(made.read_unix));
+        // The bundle is in the bucket, so the storage now stands at this copy: the marker says so before the record is uploaded. A
+        // bundle that was not stored never reaches this line, and a marker that cannot be written does not fail the copy.
+        self.mark(made, &at, version_id).await;
         let json_path = made.bundle.with_file_name("snapshot.json");
         std::fs::write(&json_path, snapshot_json(made, &at)).map_err(|e| e.to_string())?;
         let json_uri = s3::uri(&self.bucket, &s3::snapshot_json_key_t(&self.run, self.turn));
@@ -2922,15 +2996,43 @@ impl Copies {
     }
 
     /// Writes the marker of the storage for the copy `made`, whose bundle is stored (`marker::write`). What it could not do is
-    /// logged once until a marker is written again; the copy is not affected.
-    async fn mark(&self, made: &SnapshotMade) {
+    /// logged once until a marker is written again; the copy is not affected. The write goes through the watch of the
+    /// session's storage when the session has one, with the copy as a notice would name it: its time `at` and the version
+    /// `version_id` the bucket gave its bundle. A copy without a version cannot be named, and the log says so.
+    async fn mark(&self, made: &SnapshotMade, at: &str, version_id: Option<String>) {
         let marker = harness_protocol::direct::CopyMarker {
             schema_version: marker::SCHEMA_VERSION,
             session: self.turn,
             count: made.count,
             head_sha: made.commit.clone(),
         };
-        match marker::write(&self.marker_root, &self.run, &marker).await {
+        let marked = match version_id {
+            Some(version_id) => storage_watch::Marked::Copy(storage_watch::CopyRef {
+                session: self.turn,
+                count: made.count,
+                at: at.to_string(),
+                head_sha: made.commit.clone(),
+                version_id,
+            }),
+            None => {
+                if self.storage.is_some() {
+                    self.log.line(&format!(
+                        "direct turn storage: the bucket gave copy {} no version; a notice of a refused write cannot name it",
+                        made.count
+                    ));
+                }
+                storage_watch::Marked::Unnamed
+            }
+        };
+        match write_marker(
+            self.storage.as_ref(),
+            &self.marker_root,
+            &self.run,
+            &marker,
+            marked,
+        )
+        .await
+        {
             Ok(()) => self
                 .marker_failing
                 .store(false, std::sync::atomic::Ordering::SeqCst),
@@ -3496,6 +3598,9 @@ async fn upload_file_receipt(
         .await
 }
 
+/// How the end sequence's error starts when the git settings were not put back (`git_settings::put_back`).
+const SETTINGS_NOT_BACK: &str = "restore git settings: ";
+
 /// The turn's `error`: the stop's detail (a stop that is not "reported done"), the upload failure and what the end sequence could
 /// not do, on one scrubbed line without the session's secrets; `None` when there is nothing to say.
 fn compose_error(
@@ -3532,14 +3637,6 @@ pub fn report_step_applies(outcome: DirectOutcome) -> bool {
         outcome,
         DirectOutcome::StoppedByUser | DirectOutcome::StoppedTimeout
     )
-}
-
-/// Why agentd runs no git in the checkout: the reason of an [`workspace::WsError::Untrusted`], else the text of the error that stopped the restore.
-fn untrusted_reason(e: &workspace::WsError) -> String {
-    match e {
-        workspace::WsError::Untrusted(why) => why.clone(),
-        other => other.to_string(),
-    }
 }
 
 /// The end sequence and the result.
@@ -3589,20 +3686,59 @@ async fn finish(
     // 2. hidden paths and git settings back
     // A repository whose settings could not be put back (or whose `.git` is not its own directory any more) gets no git call of agentd's: the
     // engine's settings could name a program, and it would start in agentd's `git add` with agentd's rights.
-    let mut untrusted: Option<String> = None;
+    let mut no_git: Option<git_settings::NotPutBack> = None;
+    // The copy of the end was stored before a wait on the storage.
+    let mut early_copy_stored = false;
     if let Some(wt) = &st.wt {
         if let Some(h) = st.hidden.take()
             && let Err(e) = workspace::restore_hidden(wt, h)
         {
             errors.push(format!("restore hidden paths: {e}"));
         }
+        // The files are written with the host's calls. With the watch's test switch on, the first one is answered once as the
+        // storage was seen to answer.
+        // A test gives its own calls and its own repeat (`App::settings_write`); the product never does.
+        let (calls, repeat): (
+            Arc<dyn crate::checked_write::FileCalls>,
+            git_settings::Repeat,
+        ) = match (app.settings_write.get(), &st.storage) {
+            (Some((calls, repeat)), _) => (calls.clone(), *repeat),
+            (None, Some(watch)) => (watch.settings_calls(), git_settings::Repeat::default()),
+            (None, None) => (
+                Arc::new(crate::checked_write::Host),
+                git_settings::Repeat::default(),
+            ),
+        };
+        // Root invariant 9: a refused write is repeated for minutes, and the session can end in that wait. The copy of the end
+        // is saved before it, as the tree is: no git call reads the engine's repository for that copy. When the write works in the end,
+        // the commit step below saves the copy of the end again, with the head.
         if let Some(g) = &st.git_state
-            && let Err(e) = g.restore(wt)
+            && let Err(e) = git_settings::put_back(
+                g,
+                wt,
+                calls,
+                repeat,
+                &app.log,
+                st.storage.as_ref(),
+                async || {
+                    if let Some(copies) = &st.copies {
+                        let said = copies.save_final(None).await;
+                        app.log.line(&match &said {
+                            None => git_settings::COPIED_BEFORE_WAIT.to_string(),
+                            Some(e) => format!(
+                                "{}: {}",
+                                git_settings::NOT_COPIED_BEFORE_WAIT,
+                                scrub_detail(e)
+                            ),
+                        });
+                        early_copy_stored = said.is_none();
+                    }
+                },
+            )
+            .await
         {
-            errors.push(format!("restore git settings: {e}"));
-            app.log
-                .line(&format!("direct turn repository not trusted: {e}"));
-            untrusted = Some(untrusted_reason(&e));
+            errors.push(format!("{SETTINGS_NOT_BACK}{e}"));
+            no_git = Some(e);
         }
     }
 
@@ -3635,7 +3771,7 @@ async fn finish(
         .map(|(b, _)| b.to_string())
         .unwrap_or_default();
     let pause = app.cfg.direct.upload_retry_pause;
-    if let Some(wt) = st.wt.as_ref().filter(|_| untrusted.is_none()) {
+    if let Some(wt) = st.wt.as_ref().filter(|_| no_git.is_none()) {
         let before = workspace::head(wt).await.ok();
         // Read before the harness makes its own commit below: the final task commit is the one the engine left last.
         flow = Some(flow::of_run(wt, before.as_deref(), st.base.as_deref(), &raw.message).await);
@@ -3653,7 +3789,7 @@ async fn finish(
             Err(e) => {
                 errors.push(format!("commit: {e}"));
                 if matches!(e, workspace::WsError::Untrusted(_)) {
-                    untrusted = Some(untrusted_reason(&e));
+                    no_git = Some(git_settings::NotPutBack::Other(e));
                 }
                 None
             }
@@ -3761,7 +3897,9 @@ async fn finish(
     // A checkout agentd runs no git in still has its end state copied: the tree as it is, hashed in agentd's own repository, which
     // has its own configuration and reads nothing but files from the checkout. When the engine removed or replaced `.git` the copy holds
     // the whole tree, without the history it can no longer read. No session bundle follows it, so there is one try.
+    // When that copy was stored before the wait on the storage, it holds this tree: nothing has written it since.
     if !final_copy_tried
+        && !early_copy_stored
         && let Some(copies) = &st.copies
         && let Some(e) = copies.save_final(None).await
     {
@@ -3784,10 +3922,18 @@ async fn finish(
     );
     // A repository agentd would not run git in: a done the harness cannot deliver is not one it claims. Any other end keeps its label, and the
     // error text carries the reason (the same rule as a summary that cannot be written).
-    if let Some(why) = &untrusted
-        && classified.outcome == DirectOutcome::ReportedDone
-    {
-        classified = classify::repository_not_trusted(why);
+    if let Some(why) = &no_git {
+        if classified.outcome == DirectOutcome::ReportedDone {
+            classified = classify::no_git(why, run);
+        } else if matches!(why, git_settings::NotPutBack::Refused { .. })
+            && let Some(said) = errors.iter_mut().find(|e| e.starts_with(SETTINGS_NOT_BACK))
+        {
+            // The engine's label stays, so the harness's detail with the command of the newest copy is not said. The error
+            // names the command itself, once.
+            *said = format!(
+                "{said}; ham pull {run} --snapshot downloads the newest copy, if one was saved"
+            );
+        }
     }
     // A bundle that was there before agentd's write: the run ends on row 14 with the harness's sentence naming the object, whatever
     // the engine's last prompt said; the summary built below carries it.

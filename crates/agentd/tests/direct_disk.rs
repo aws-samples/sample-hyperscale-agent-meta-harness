@@ -580,8 +580,9 @@ fn a_read_only_disk_is_named_read_only_or_full_and_a_full_disk_is_named_full() {
         "{notice}"
     );
 
+    // A text that says no space while a number is short: the disk is full.
     let nospace = limits()
-        .full_with(&reading(Some(5700), Some(40)), Some(Signal::NoSpace))
+        .full_with(&reading(Some(100), Some(40)), Some(Signal::NoSpace))
         .unwrap();
     assert_eq!(nospace.cause(), "the session disk is full");
     assert_eq!(nospace.title(), "The session disk is full");
@@ -729,5 +730,491 @@ async fn the_machines_report_names_each_folder_and_stays_bounded() {
         text.chars().count() <= 4096,
         "{} characters",
         text.chars().count()
+    );
+}
+
+// ----: a stop with room names the storage's refusal, not a full disk ------------------------------------------------------
+
+/// The numbers of the two measured refusals: files of 158 MiB on a storage of 1024 MiB, 5343 MiB free on the root volume.
+fn room() -> Reading {
+    reading(Some(5343), Some(158))
+}
+
+/// The closing of a stop with room.
+const B881_CLOSING: &str = "More prompts can fail the same way while the storage refuses writes. The refusal can end by itself.";
+
+#[test]
+fn b881_the_words_of_a_stop_with_room_do_not_call_the_disk_full() {
+    for own_write_refused in [false, true] {
+        let mut full = limits().full_with(&room(), Some(Signal::NoSpace)).unwrap();
+        full.storage_refused = own_write_refused;
+        full.engine = "cline".to_string();
+        let line = "the engine reported no space left on device, but the files add up to 158 MiB of 1024 MiB, root 5343 MiB free";
+        assert_eq!(full.line(), line);
+        assert_eq!(full.title(), "The engine reported no space left on device");
+        assert_eq!(
+            full.detail(),
+            format!("The harness ended the run: {line}. {B881_CLOSING}")
+        );
+        assert_eq!(
+            DirectOutcome::StoppedOther.label_for(Some(&full.detail())),
+            format!("Cline stopped: the harness ended the run ({line})")
+        );
+        let own = if own_write_refused {
+            "ham's own write to the session's storage was refused too. "
+        } else {
+            ""
+        };
+        assert_eq!(
+            full.notice(),
+            format!(
+                "The engine reported no space left on device, but the files add up to 158 MiB of 1024 MiB, root 5343 MiB free. Prompts can fail while the storage refuses writes. {own}Send a message with `ham say` to go on once the storage takes writes again (Cline may not be able to answer while it refuses them), or end the run with `ham finish` and keep what exists."
+            )
+        );
+        for text in [
+            full.line(),
+            full.detail(),
+            full.notice(),
+            full.title().to_string(),
+        ] {
+            for wrong in [
+                "disk is full",
+                "read-only or full",
+                "until space is freed",
+                "The engine's error says",
+                "A test write to a folder of the run failed",
+                "stop mark",
+            ] {
+                assert!(!text.contains(wrong), "{wrong:?} in {text:?}");
+            }
+        }
+        // The wire word of the notice and of the question's reason stays.
+        assert_eq!(full.reason_word(), "disk_full");
+        assert_eq!(banned_claim_word(&full.detail()), None);
+        assert!(full.detail().chars().count() <= harness_protocol::direct::MAX_DIRECT_DETAIL_CHARS);
+    }
+    // The label holds the whole reason with the longest numbers too: a walk cut short and a root number of six digits.
+    let mut long = limits()
+        .full_with(
+            &Reading {
+                workspace_partial: true,
+                ..reading(Some(123_456), Some(958))
+            },
+            Some(Signal::NoSpace),
+        )
+        .unwrap();
+    long.engine = "cline".to_string();
+    let line = "the engine reported no space left on device, but the files add up to at least 958 MiB of 1024 MiB, root 123456 MiB free";
+    assert_eq!(long.line(), line);
+    assert!(line.chars().count() <= 120, "{}", line.chars().count());
+    assert_eq!(
+        DirectOutcome::StoppedOther.label_for(Some(&long.detail())),
+        format!("Cline stopped: the harness ended the run ({line})")
+    );
+}
+
+#[test]
+fn b881_a_bare_error_with_a_refused_write_and_room_names_the_refusal() {
+    // No text of the engine; the disk rule's own test write failed as it does today, and ham's private write got errno 28.
+    for disk_rule_write in [Some(false), Some(true), None] {
+        let reading = Reading {
+            writable: disk_rule_write,
+            ..room()
+        };
+        // The stop decision is the one of today: without a text it needs the disk rule's failed write.
+        let Some(mut full) = limits().full_with(&reading, None) else {
+            assert_ne!(disk_rule_write, Some(false));
+            continue;
+        };
+        full.storage_refused = true;
+        full.engine = "opencode".to_string();
+        let line = "the session's storage refused a write while its files add up to 158 MiB of 1024 MiB, root 5343 MiB free";
+        assert_eq!(full.line(), line);
+        assert_eq!(full.title(), "The session's storage refused a write");
+        assert_eq!(
+            full.detail(),
+            format!("The harness ended the run: {line}. {B881_CLOSING}")
+        );
+        assert_eq!(
+            DirectOutcome::StoppedOther.label_for(Some(&full.detail())),
+            format!("Cline stopped: the harness ended the run ({line})")
+        );
+        assert_eq!(
+            full.notice(),
+            "The session's storage refused a write while its files add up to 158 MiB of 1024 MiB, root 5343 MiB free. Prompts can fail while the storage refuses writes. Send a message with `ham say` to go on once the storage takes writes again (OpenCode may not be able to answer while it refuses them), or end the run with `ham finish` and keep what exists."
+        );
+        for text in [
+            full.line(),
+            full.detail(),
+            full.notice(),
+            full.title().to_string(),
+        ] {
+            for wrong in ["read-only or full", "until space is freed", "disk is full"] {
+                assert!(!text.contains(wrong), "{wrong:?} in {text:?}");
+            }
+        }
+        assert_eq!(full.reason_word(), "disk_full");
+    }
+    // The longest numbers fit the label.
+    let mut long = limits()
+        .full_with(
+            &Reading {
+                workspace_partial: true,
+                writable: Some(false),
+                ..reading(Some(123_456), Some(958))
+            },
+            None,
+        )
+        .unwrap();
+    long.storage_refused = true;
+    let line = "the session's storage refused a write while its files add up to at least 958 MiB of 1024 MiB, root 123456 MiB free";
+    assert_eq!(long.line(), line);
+    assert!(line.chars().count() <= 120);
+    // A refused write of ham's own changes no word while a number is short or was not measured: the disk rule's words cover those.
+    let mut short = limits().full(&reading(Some(2400), Some(975))).unwrap();
+    short.storage_refused = true;
+    assert_eq!(
+        short.line(),
+        "the session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB free"
+    );
+    let mut unknown = limits()
+        .full_with(&reading(None, Some(40)), Some(Signal::NoSpace))
+        .unwrap();
+    unknown.storage_refused = true;
+    assert_eq!(unknown.cause(), "the session disk is full");
+}
+
+#[test]
+fn b881_every_other_stop_keeps_its_words() {
+    // A disk the measurement calls full.
+    let full = sample();
+    assert_eq!(
+        full.line(),
+        "the session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB free"
+    );
+    assert_eq!(full.title(), "The session disk is full");
+    assert_eq!(
+        full.detail(),
+        "The harness ended the run: the session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB free. More prompts would fail the same way until space is freed."
+    );
+    assert!(full.notice().starts_with("The session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB free. Prompts fail until space is freed. Send a message with `ham say` that asks Cline to delete build output"));
+    // A text that says no space while a number is short: the disk is full.
+    let both = limits()
+        .full_with(&reading(Some(100), Some(975)), Some(Signal::NoSpace))
+        .unwrap();
+    assert_eq!(both.cause(), "the session disk is full");
+    assert!(
+        both.detail()
+            .contains("The engine's error says: no space left on device.")
+    );
+    // A text that says read-only, with room.
+    let ro = limits()
+        .full_with(&reading(Some(5700), Some(40)), Some(Signal::ReadOnly))
+        .unwrap();
+    assert_eq!(
+        ro.line(),
+        "the session disk is read-only or full, workspace 40 MiB against a stop mark of 960 MiB, root 5700 MiB free"
+    );
+    assert_eq!(ro.title(), "The session disk is read-only or full");
+    assert!(ro.detail().ends_with("The engine's error says: read-only file system. More prompts would fail the same way until space is freed."));
+    // A failed test write of the disk rule with no text and no refused write of ham's own.
+    let unwritable = limits().full(&with_writable(Some(false))).unwrap();
+    assert_eq!(unwritable.cause(), "the session disk is read-only or full");
+    assert!(
+        unwritable
+            .detail()
+            .contains("A test write to a folder of the run failed.")
+    );
+    // The engine failing on every route.
+    let fault = limits().engine_fault(&reading(Some(5700), Some(40)));
+    assert_eq!(
+        fault.line(),
+        "the engine failed on every route while every route answered a test request, workspace 40 MiB used, root 5700 MiB free"
+    );
+    assert_eq!(fault.reason_word(), "engine_fault");
+    assert!(
+        fault
+            .detail()
+            .ends_with("Another try on any route would fail the same way.")
+    );
+}
+
+#[test]
+fn b881_the_question_names_the_engine_that_ran() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        let mut full = limits().full_with(&room(), Some(Signal::NoSpace)).unwrap();
+        full.engine = engine.to_string();
+        let q = full.question();
+        assert_eq!(
+            q,
+            format!(
+                "Send a message with `ham say` to go on once the storage takes writes again ({name} may not be able to answer while it refuses them), or end the run with `ham finish` and keep what exists."
+            )
+        );
+        assert!(q.chars().count() <= harness_protocol::direct::MAX_NEEDS_INPUT_QUESTION_CHARS);
+        assert_eq!(
+            agentd::engine::direct_words::storage_refused_question(engine),
+            q
+        );
+    }
+    // A cause that was given no engine name says "The engine".
+    let bare = limits().full_with(&room(), Some(Signal::NoSpace)).unwrap();
+    assert!(
+        bare.question()
+            .contains("(The engine may not be able to answer"),
+        "{}",
+        bare.question()
+    );
+}
+
+#[test]
+fn b881_a_result_is_read_for_no_space_as_an_error_text_is() {
+    // `names_no_space` reads a tool result in one pass; it answers what `signal_of` answers for every text.
+    let texts = [
+        "No space left on device",
+        "NO SPACE LEFT ON DEVICE",
+        "cp: error writing 'x': No space left on device\n",
+        "no space left on devices",
+        "no  space left on device",
+        "ENOSPC",
+        "Error: ENOSPC: no space left, write",
+        "enospc_handler",
+        "xENOSPC",
+        "an ENOSPC.",
+        "os error 28",
+        "(os error 28)",
+        "os error 280",
+        "macos error 28",
+        "Os Error 28",
+        "os error 2",
+        "Read-only file system (os error 30)",
+        "EROFS",
+        "no space",
+        "",
+        "n",
+        "o",
+        "e",
+        "\u{e9}nospc",
+        "\u{e9}ENOSPC\u{e9}",
+        "ENOSPC\u{4e2d}",
+        "\u{4e2d} ENOSPC \u{4e2d}",
+        "os error 28\u{e9}",
+        "both: Read-only file system and No space left on device",
+    ];
+    for text in texts {
+        assert_eq!(
+            disk::names_no_space(text),
+            signal_of(text) == Some(Signal::NoSpace),
+            "{text:?}"
+        );
+    }
+    assert!(disk::names_no_space(
+        "write failed: No space left on device (os error 28)"
+    ));
+    assert!(!disk::names_no_space(
+        "touch: Read-only file system (os error 30)"
+    ));
+}
+
+// ----: the note about a large workspace folder --------------------------------------------------------------------------
+
+const B889_N1_920: &str = "The workspace folder holds 920 MiB. In measurements this storage at times refused writes from 300 MiB up and none up to 200 MiB. The run goes on.";
+const B889_N2: &str = "A new run with --compute instances, where the stage has such machines, keeps the workspace folder on the machine's own disk. That machine runs no containers.";
+
+fn b889_partial(used: u64) -> Reading {
+    Reading {
+        workspace_partial: true,
+        ..reading(Some(5000), Some(used))
+    }
+}
+
+/// T1: the note comes with the first reading of a session and never later.
+#[test]
+fn b889_the_note_comes_with_the_first_reading_of_a_session_and_only_then() {
+    let l = limits();
+    // A first reading of 100 brings no row, and a later 201 or 950 brings none either.
+    let mut small = disk::FolderNote::default();
+    assert_eq!(
+        small.first_reading(&l, &reading(Some(5000), Some(100))),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        small.first_reading(&l, &reading(Some(5000), Some(201))),
+        None
+    );
+    assert_eq!(
+        small.first_reading(&l, &reading(Some(5000), Some(950))),
+        None
+    );
+    // 950 still brings the nearly-full notice, as before.
+    let mut watch = DiskWatch::default();
+    assert_eq!(
+        watch.crossings(&l, &reading(Some(5000), Some(950))).len(),
+        1
+    );
+    // A first reading of 201 brings both rows; a second boundary of that session brings none.
+    let mut large = disk::FolderNote::default();
+    assert_eq!(
+        large.first_reading(&l, &reading(Some(5000), Some(201))),
+        Some(vec![
+            "The workspace folder holds 201 MiB. In measurements this storage at times refused writes from 300 MiB up and none up to 200 MiB. The run goes on.".to_string(),
+            B889_N2.to_string(),
+        ])
+    );
+    assert_eq!(
+        large.first_reading(&l, &reading(Some(5000), Some(201))),
+        None
+    );
+    assert_eq!(
+        large.first_reading(&l, &reading(Some(5000), Some(920))),
+        None
+    );
+}
+
+/// T2: the mark is "more than 200 MiB", in whole MiB rounded down.
+#[test]
+fn b889_the_mark_is_above_200_mib_and_a_sum_of_bytes_is_whole_mib_rounded_down() {
+    assert_eq!(disk::NOTE_ABOVE_MB, 200);
+    assert_eq!(disk::REFUSALS_FROM_MB, 300);
+    let l = limits();
+    assert_eq!(
+        disk::FolderNote::default().first_reading(&l, &reading(Some(5000), Some(200))),
+        Some(Vec::new()),
+        "200 MiB is the size the measurements saw no refusal at"
+    );
+    let at_201 = disk::FolderNote::default()
+        .first_reading(&l, &reading(Some(5000), Some(201)))
+        .unwrap();
+    assert_eq!(at_201.len(), 2, "{at_201:?}");
+    // The reading is a sum of allocated bytes shifted to whole MiB: the last byte below 201 MiB still reads 200.
+    assert_eq!(disk::whole_mib(210_763_775), 200);
+    assert_eq!(disk::whole_mib(210_763_776), 201);
+    assert_eq!(disk::whole_mib(0), 0);
+}
+
+/// T3: a walk cut short is a lower bound and says so; a first reading without a number brings nothing, also later.
+#[test]
+fn b889_a_walk_cut_short_reads_at_least_and_an_unmeasured_first_reading_brings_nothing_later() {
+    let l = limits();
+    let rows = disk::FolderNote::default()
+        .first_reading(&l, &b889_partial(350))
+        .unwrap();
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some(
+            "The workspace folder holds at least 350 MiB. In measurements this storage at times refused writes from 300 MiB up and none up to 200 MiB. The run goes on."
+        )
+    );
+    assert_eq!(rows.get(1).map(String::as_str), Some(B889_N2));
+    // A lower bound at or below the mark brings nothing: the folder may be larger, and the worker does not guess.
+    assert_eq!(
+        disk::FolderNote::default().first_reading(&l, &b889_partial(200)),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        disk::FolderNote::default().first_reading(&l, &b889_partial(150)),
+        Some(Vec::new())
+    );
+    // The first reading measured no workspace number: nothing now, and nothing at the next reading either.
+    let mut unread = disk::FolderNote::default();
+    assert_eq!(
+        unread.first_reading(&l, &reading(Some(5000), None)),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        unread.first_reading(&l, &reading(Some(5000), Some(920))),
+        None
+    );
+}
+
+/// T4: the note follows the workspace check; a deployment (and the Instances runtime) that sets its limit to 0 has no note.
+#[test]
+fn b889_with_the_workspace_check_off_there_is_no_note() {
+    let off = Limits {
+        root_low_mb: 512,
+        workspace_limit_mb: 0,
+    };
+    assert_eq!(
+        disk::FolderNote::default().first_reading(&off, &reading(Some(5000), Some(920))),
+        Some(Vec::new())
+    );
+    // The root volume's check alone being off changes nothing for the note.
+    let root_off = Limits {
+        root_low_mb: 0,
+        workspace_limit_mb: 960,
+    };
+    assert_eq!(
+        disk::FolderNote::default()
+            .first_reading(&root_off, &reading(None, Some(920)))
+            .map(|rows| rows.len()),
+        Some(2)
+    );
+}
+
+/// T5: a notice holds 160 characters in the client; each row fits for every size the storage can hold, and the second holds no number.
+#[test]
+fn b889_each_row_fits_a_notice_and_the_second_row_holds_no_digit() {
+    for used in 201..=1024u64 {
+        for at_least in [false, true] {
+            let row = disk::note_size_row(used, at_least);
+            assert!(
+                row.chars().count() <= 160,
+                "{} characters: {row}",
+                row.chars().count()
+            );
+            assert_eq!(row.contains("at least"), at_least, "{row}");
+        }
+    }
+    assert_eq!(disk::note_size_row(920, false), B889_N1_920);
+    assert_eq!(disk::note_size_row(920, false).chars().count(), 145);
+    assert_eq!(disk::note_size_row(1024, true).chars().count(), 155);
+    assert_eq!(disk::NOTE_COMPUTE_ROW, B889_N2);
+    assert_eq!(disk::NOTE_COMPUTE_ROW.chars().count(), 157);
+    assert!(
+        !disk::NOTE_COMPUTE_ROW.chars().any(|c| c.is_ascii_digit()),
+        "the second row names no count and no size"
+    );
+    assert_eq!(disk::NOTE_REASON, "disk_note");
+    // The rows name the two constants, so a changed constant changes the row with it.
+    let row = disk::note_size_row(250, false);
+    assert!(
+        row.contains(&format!("from {} MiB up", disk::REFUSALS_FROM_MB)),
+        "{row}"
+    );
+    assert!(
+        row.contains(&format!("none up to {} MiB", disk::NOTE_ABOVE_MB)),
+        "{row}"
+    );
+}
+
+/// T6 (the words): at 920 MiB the nearly-full sentence and the root volume's sentence are byte for byte what they were, and the
+/// note's rows come beside them. The order on the wire is pinned by the driver test in `direct_disk_stop.rs`.
+#[test]
+fn b889_the_older_sentences_are_byte_for_byte_what_they_were() {
+    let l = limits();
+    let mut watch = DiskWatch::default();
+    assert_eq!(
+        watch.crossings(&l, &reading(Some(400), Some(920))),
+        vec![
+            "The session's root volume is running low: 400 MiB free, below the 512 MiB mark. Nothing is deleted.".to_string(),
+            "The workspace folder is nearly full: 920 MiB used against a stop mark of 960 MiB, over 90 percent of it. Nothing is deleted.".to_string(),
+        ]
+    );
+    assert_eq!(
+        disk::FolderNote::default().first_reading(&l, &reading(Some(400), Some(920))),
+        Some(vec![B889_N1_920.to_string(), B889_N2.to_string()])
+    );
+    // The session's first reading in the log: the folder's size, and a folder that was not read says so.
+    assert_eq!(
+        disk::reading_words(&reading(Some(5700), Some(920))),
+        "workspace 920 MiB used"
+    );
+    assert_eq!(
+        disk::reading_words(&b889_partial(350)),
+        "workspace at least 350 MiB used"
+    );
+    assert_eq!(
+        disk::reading_words(&reading(None, None)),
+        "workspace not measured"
     );
 }

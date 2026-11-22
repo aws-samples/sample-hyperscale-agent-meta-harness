@@ -93,12 +93,14 @@ Owned by the root contract. Each script documents its inputs, outputs, and exit 
   go faster (a third build OOM-killed the linker on the 30 GB host); use the priority. A machine without `flock` (a stock macOS) or with a bash older than
   4.1 (its bash is 3.2) runs the command at once after one line on standard error that says so; a `flock` that fails with a message, or with an exit code of 126
   or more, ends the run with exit 2 and what it said. Only the silent exit 1 of `flock -n` and `flock -w` is a busy slot that is waited for.
-- `lib/tools_lock.py` reads `../tools.lock` (schema "1": `[rust]`, `[node]`, `[containers]`, `[gate_tools]`, `[[tool]]` with https url, sha256, kind `binary|tar.gz|tar.xz|zip`,
-  bin list). `install` verifies each download before unpacking to `<dest>/pkgs/<name>-<version>/`, links `bin` into `<dest>/bin`, and prints `TOOL OK|FAIL`; exit 4 on a checksum
-  mismatch; a dest outside the workspace roots is refused (exit 2). `check` only reads `<dest>`: `TOOL OK <name> <version> (present)` or `TOOL FAIL <name> not installed` (exit 1).
-  `cargo-audit` and `osv-scanner` are pinned for the advisory check. `gate-tools` installs the `[gate_tools].tools` entries (uv and gitleaks), CPython `[gate_tools].python`
-  through that uv under `<dest>/python`, then runs `images/tools/install.sh <dest>/gate-tools <python> <uv> <gitleaks>` (exit 3 on an invalid `[gate_tools]` table, 5 with
-  `GATE-TOOLS FAIL <detail>` on an install failure).
+- `lib/tools_lock.py` reads `../tools.lock` (schema "1": `[rust]`, `[node]`, `[containers]`, `[gate_tools]`, `[[tool]]` with https url, sha256, kind `binary|tar.gz|tar.xz|zip`, bin list). `install`
+  verifies each download before unpacking to `<dest>/pkgs/<name>-<version>/`, links `bin` into `<dest>/bin`, and prints `TOOL OK|FAIL`; exit 4 on a checksum mismatch; a dest outside the workspace roots
+  is refused (exit 2). `check` only reads `<dest>`: `TOOL OK <name> <version> (present)` or `TOOL FAIL <name> not installed` (exit 1). `cargo-audit` and `osv-scanner` are pinned for the advisory check.
+  `gate-tools` installs the `[gate_tools].tools` entries (uv and gitleaks), CPython `[gate_tools].python` through that uv under `<dest>/python`, then runs `images/tools/install.sh <dest>/gate-tools
+  <python> <uv> <gitleaks>` (exit 3 on an invalid `[gate_tools]` table, 5 with `GATE-TOOLS FAIL <detail>` on an install failure). Where the kernel of the machine has no such call (errno 38), the
+  helper's test with real processes skips with that reason, and a full round on such machines then has no run of the helper's root path with real processes: its count of skipped script tests is one
+  higher and nothing in the round names the reason. A case with a stand-in holds what the helper does there on every machine. A host keeps the CPython its gate tool set was installed with until its
+  bootstrap script installs the set again; nothing compares the installed set with the pin.
 - `lib/python.sh`: sourced by wrappers; picks a Python 3.8+ interpreter and sets `$py`. Order: `HAMH_PYTHON`, the managed CPython 3.12 of `$UV_PYTHON_INSTALL_DIR`, `python3.12`, `python3.11`, `~/.local/bin/python3.11`, `python3`. COMPAT-CAH: when it is sourced it also runs `hamh_host_env_compat`: for the four host-level
   names (`CAH_PYTHON`, `CAH_TOOLS`, `CAH_TMP`, `CAH_DEVDOCS`), a value exported under the old prefix (the `env.sh` of a host written before the rename) is exported under the new name when the new name is unset or empty. A non-empty new value wins; each old name prints one notice on stderr per process unless
   `HAMH_NO_DEPRECATION_NOTICES=1`. The function uses no external command and no `eval`, and child processes see the new names. The block sits between the lines `COMPAT-CAH begin` and `COMPAT-CAH end`.

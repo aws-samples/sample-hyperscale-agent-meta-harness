@@ -25,6 +25,12 @@
 //! therefore also makes a test write ([`Reading::writable`]); a folder that refuses it is the cause by itself ([`DiskFull::unwritable`]).
 //! [`DiskProbe::diagnose`] says what the machine reports for the log, and [`Limits::engine_fault`] is the cause of a run that ended because
 //! the engine failed on every route while every route answered a test request (`crate::direct::local_fault`).
+//!
+//! The session's storage can refuse writes with "no space left on device" while its files are far below its limit. A stop whose
+//! numbers show room therefore does not call the disk full ([`DiskFull::no_space_with_room`]): it says that the engine reported no space,
+//! or that the worker's own write to the storage was refused (`crate::direct::storage_watch`), with the size of the files. The stop
+//! decision is the one it was. [`names_no_space`] is how a tool result is read for the words, and [`DiskProbe::storage_used`] is the walk
+//! alone, for the notice of a refusal.
 
 use crate::BoxFuture;
 use harness_protocol::direct::HARNESS_STOP_PREFIX;
@@ -79,6 +85,13 @@ pub trait DiskProbe: Send + Sync + std::fmt::Debug {
     /// of the kernel log. Best effort, bounded, nothing secret. Empty when the probe has nothing to add.
     fn diagnose(&self) -> BoxFuture<'_, String> {
         Box::pin(async { String::new() })
+    }
+
+    /// The size of the files on the session's storage in MiB, from the walk alone (no test write, no look at the root volume), and
+    /// whether the walk was cut short (the number is then a lower bound). `(None, false)` when it was not measured, which is what a probe
+    /// that has no walk answers.
+    fn storage_used(&self) -> BoxFuture<'_, (Option<u64>, bool)> {
+        Box::pin(async { (None, false) })
     }
 }
 
@@ -152,7 +165,20 @@ impl Limits {
             signal,
             unwritable: r.writable == Some(false),
             engine_fault: false,
+            storage_refused: false,
+            engine: String::new(),
         }
+    }
+
+    /// The mark at which the files count as nearly filling the storage: [`WARN_PERCENT`] of the stop mark, in MiB (864 by
+    /// default). With the workspace check switched off the default stop mark decides, so the mark never is 0.
+    pub fn storage_warn_mb(&self) -> u64 {
+        let limit = if self.workspace_limit_mb == 0 {
+            DEFAULT_WORKSPACE_LIMIT_MB
+        } else {
+            self.workspace_limit_mb
+        };
+        limit.saturating_mul(WARN_PERCENT) / 100
     }
 }
 
@@ -172,6 +198,12 @@ pub struct DiskFull {
     pub unwritable: bool,
     /// The engine failed on every route while every route answered a test request: a fault of the machine, not of a provider.
     pub engine_fault: bool,
+    /// The worker's own test write to the session's storage, made beside this measurement, got "no space left on device"
+    /// (`crate::direct::storage_watch`). The caller sets it; it changes the words only when both numbers show room
+    /// ([`Self::no_space_with_room`]), never the decision to stop.
+    pub storage_refused: bool,
+    /// The profile name of the engine that ran, for the question of a stop with room. The caller sets it; empty reads "The engine".
+    pub engine: String,
 }
 
 impl DiskFull {
@@ -182,7 +214,37 @@ impl DiskFull {
 
     /// The engine failed everywhere and nothing names the disk.
     fn only_engine(&self) -> bool {
-        self.engine_fault && !self.disk_cause()
+        self.engine_fault && !self.disk_cause() && !self.no_space_with_room()
+    }
+
+    /// Both numbers were measured, neither is short, and either the engine's text says no space left or the worker's own write
+    /// to the session's storage was refused. The disk is then not full, and the words say what was seen: a refusal with room.
+    pub fn no_space_with_room(&self) -> bool {
+        self.root_free_mb.is_some()
+            && self.workspace_used_mb.is_some()
+            && !self.root_short
+            && !self.workspace_short
+            && (self.signal == Some(Signal::NoSpace) || self.storage_refused)
+    }
+
+    /// The engine's own text says no space left (the first of the two cases of a stop with room).
+    fn engine_said_no_space(&self) -> bool {
+        self.signal == Some(Signal::NoSpace)
+    }
+
+    /// `158 MiB of 1024 MiB, root 5343 MiB free`, the numbers of a stop with room: the size of the files against what the storage
+    /// holds (not the stop mark), `at least` for a walk cut short.
+    fn numbers_with_room(&self) -> String {
+        let at_least = if self.workspace_partial {
+            "at least "
+        } else {
+            ""
+        };
+        format!(
+            "{at_least}{} MiB of {MOUNT_QUOTA_MB} MiB, root {} MiB free",
+            self.workspace_used_mb.unwrap_or_default(),
+            self.root_free_mb.unwrap_or_default()
+        )
     }
 
     /// The read-only words: the engine's text said so, or a test write failed and no text said full.
@@ -197,7 +259,13 @@ impl DiskFull {
     /// The title of the question: `The session disk is read-only or full` when the engine's text said read-only or a test write failed,
     /// `The engine failed on every route` when nothing names the disk, else `The session disk is full`.
     pub fn title(&self) -> &'static str {
-        if self.read_only() {
+        if self.no_space_with_room() {
+            if self.engine_said_no_space() {
+                TITLE_ENGINE_NO_SPACE
+            } else {
+                TITLE_STORAGE_REFUSED
+            }
+        } else if self.read_only() {
             TITLE_READ_ONLY
         } else if self.only_engine() {
             TITLE_ENGINE_FAULT
@@ -209,7 +277,13 @@ impl DiskFull {
     /// The cause, as the run's label and notices name it. A text or a test write that says read-only names both causes, because the
     /// measurement may show room.
     pub fn cause(&self) -> &'static str {
-        if self.read_only() {
+        if self.no_space_with_room() {
+            if self.engine_said_no_space() {
+                "the engine reported no space left on device"
+            } else {
+                "the session's storage refused a write"
+            }
+        } else if self.read_only() {
             "the session disk is read-only or full"
         } else if self.only_engine() {
             "the engine failed on every route while every route answered a test request"
@@ -229,6 +303,10 @@ impl DiskFull {
 
     /// `The engine's error says: read-only file system. A test write to a folder of the run failed. ` for what named the disk, else nothing.
     fn says(&self) -> String {
+        // The cause of a stop with room says it already.
+        if self.no_space_with_room() {
+            return String::new();
+        }
         let mut out = self.signal.map_or_else(String::new, |signal| {
             format!("The engine's error says: {}. ", signal.word())
         });
@@ -240,7 +318,9 @@ impl DiskFull {
 
     /// The last sentence of the stop and the notice: what more prompts will do.
     fn closing(&self) -> &'static str {
-        if self.only_engine() {
+        if self.no_space_with_room() {
+            "More prompts can fail the same way while the storage refuses writes. The refusal can end by itself."
+        } else if self.only_engine() {
             "Another try on any route would fail the same way."
         } else {
             "More prompts would fail the same way until space is freed."
@@ -279,6 +359,22 @@ impl DiskFull {
     /// The cause and its numbers on one line: `the session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB
     /// free`. It is the error line of the question and the start of the stop detail.
     pub fn line(&self) -> String {
+        // A stop with room names what was seen and the size of the files against the storage's own size.
+        if self.no_space_with_room() {
+            return if self.engine_said_no_space() {
+                format!(
+                    "{}, but the files add up to {}",
+                    self.cause(),
+                    self.numbers_with_room()
+                )
+            } else {
+                format!(
+                    "{} while its files add up to {}",
+                    self.cause(),
+                    self.numbers_with_room()
+                )
+            };
+        }
         if self.only_engine() {
             return format!("{}, {}", self.cause(), self.numbers_short());
         }
@@ -319,6 +415,19 @@ impl DiskFull {
 
     /// The notice of the run's events: the cause, the numbers and what the user can do.
     pub fn notice(&self) -> String {
+        if self.no_space_with_room() {
+            let own = if self.engine_said_no_space() && self.storage_refused {
+                "ham's own write to the session's storage was refused too. "
+            } else {
+                ""
+            };
+            let line = self.line();
+            return format!(
+                "The {}. Prompts can fail while the storage refuses writes. {own}{}",
+                line.trim_start_matches("the "),
+                self.question()
+            );
+        }
         let fails = if self.only_engine() {
             "Prompts fail the same way on every route."
         } else {
@@ -333,7 +442,9 @@ impl DiskFull {
 
     /// What the user can do, for the question of the card and the end of the notice.
     pub fn question(&self) -> String {
-        if self.only_engine() {
+        if self.no_space_with_room() {
+            crate::engine::direct_words::storage_refused_question(&self.engine)
+        } else if self.only_engine() {
             crate::engine::direct_words::engine_fault_question().to_string()
         } else {
             crate::engine::direct_words::disk_full_question().to_string()
@@ -349,6 +460,12 @@ pub const TITLE_READ_ONLY: &str = "The session disk is read-only or full";
 
 /// The title of the question when the engine failed on every route and nothing names the disk.
 pub const TITLE_ENGINE_FAULT: &str = "The engine failed on every route";
+
+/// The title of the question when the engine's text says no space left and the numbers show room.
+pub const TITLE_ENGINE_NO_SPACE: &str = "The engine reported no space left on device";
+
+/// The title of the question when the worker's own write to the session's storage was refused and the numbers show room.
+pub const TITLE_STORAGE_REFUSED: &str = "The session's storage refused a write";
 
 /// What the engine's own error text says about the disk: the managed session storage turns read-only once it is
 /// full, so the engine's -32603 answers carried `Read-only file system (os error 30)` and not only `No space left on device`. The text
@@ -397,6 +514,17 @@ pub fn signal_of(text: &str) -> Option<Signal> {
     }
     (t.contains("read-only file system") || has_word(&t, "erofs") || has_word(&t, "os error 30"))
         .then_some(Signal::ReadOnly)
+}
+
+/// Whether `text` names that no space is left on a device (the words, `ENOSPC`, `os error 28`): how the result of a tool call is
+/// read. A text that only quotes the words reads the same, which is why the words alone never bring a notice: they make the worker test
+/// the storage itself (`crate::direct::storage_watch`).
+pub fn names_no_space(text: &str) -> bool {
+    // The answer of `signal_of(text) == Some(Signal::NoSpace)` with one ASCII-lowered copy and three searches, and without the
+    // search for the read-only words: this runs on every final tool result, on up to 256 KiB. The needles are ASCII and hold no
+    // letter that a character outside ASCII lowers to, so the ASCII-lowered text finds what the fully lowered text finds.
+    let t = text.to_ascii_lowercase();
+    t.contains("no space left on device") || has_word(&t, "enospc") || has_word(&t, "os error 28")
 }
 
 /// [`signal_of`] for the message and the data of the engine's -32603; no other error is read (another code is another kind of failure).
@@ -463,6 +591,71 @@ impl DiskWatch {
             self.workspace_high = high;
         }
         out
+    }
+}
+
+/// A session whose first reading of the workspace folder is above this many MiB says the note about its storage. It is the
+/// largest restored size at which the measurement rounds saw no refused write on the session's storage (repositories of 60, 100 and
+/// 200 MiB). The counts are in the user guide ("When the session's storage refuses writes"), not here. No setting changes the mark:
+/// it moves, as a code change, when a measurement gives it new neighbours.
+pub const NOTE_ABOVE_MB: u64 = 200;
+/// The smallest restored size at which the measurement rounds saw a refused write on the session's storage (a repository of
+/// 300 MiB; the larger measured sizes, 600 and 920 MiB, had refusals too). The note's first row names it beside [`NOTE_ABOVE_MB`].
+pub const REFUSALS_FROM_MB: u64 = 300;
+/// The reason of the note's events (`turn.progress`, kind `notify`), one event for each row.
+pub const NOTE_REASON: &str = "disk_note";
+/// The note's second row. It holds no number: the flag is named on every stage, with its condition in words.
+pub const NOTE_COMPUTE_ROW: &str = "A new run with --compute instances, where the stage has such machines, keeps the workspace folder on the machine's own disk. That machine runs no containers.";
+
+/// The note's first row for a first reading of `used` MiB; `at_least` for a walk that was cut short, whose number is a lower bound.
+pub fn note_size_row(used: u64, at_least: bool) -> String {
+    let bound = if at_least { "at least " } else { "" };
+    format!(
+        "The workspace folder holds {bound}{used} MiB. In measurements this storage at times refused writes from {REFUSALS_FROM_MB} MiB up and none up to {NOTE_ABOVE_MB} MiB. The run goes on."
+    )
+}
+
+/// A sum of bytes in whole MiB, rounded down: how the walk's sum becomes the number of a [`Reading`].
+pub fn whole_mib(bytes: u64) -> u64 {
+    bytes >> 20
+}
+
+/// What a session's first reading says in the log (`direct turn disk reading: ...`): the size of the workspace folder, `at least`
+/// for a walk that was cut short and `not measured` when it was not read. The root volume's free space is not in the line: it
+/// differs between two runs of the same code, and the worker's golden streams hold the log line for line.
+pub fn reading_words(r: &Reading) -> String {
+    match (r.workspace_used_mb, r.workspace_partial) {
+        (Some(used), true) => format!("workspace at least {used} MiB used"),
+        (Some(used), false) => format!("workspace {used} MiB used"),
+        (None, _) => "workspace not measured".to_string(),
+    }
+}
+
+/// Whether the session's first reading was taken. The note about a large workspace folder is said with that reading and
+/// never later: its mark comes from restored repositories, and the first reading of a session is the restored work before the
+/// first prompt. The state lives beside [`DiskWatch`] for the worker's session, so a fresh conversation of the engine inside the
+/// session says nothing again, and a later session of the same run, which restores the work again, says the note again.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FolderNote {
+    read: bool,
+}
+
+impl FolderNote {
+    /// `None` for every reading after the session's first. For the first one: the rows of the note, which are two when the workspace
+    /// check is on (`workspace_limit_mb` above 0) and the folder was measured above [`NOTE_ABOVE_MB`], and none otherwise. A first
+    /// reading that did not measure the folder brings no row, and no later reading does. It makes no reading of its own.
+    pub fn first_reading(&mut self, limits: &Limits, r: &Reading) -> Option<Vec<String>> {
+        if std::mem::replace(&mut self.read, true) {
+            return None;
+        }
+        let rows = match r.workspace_used_mb {
+            Some(used) if limits.workspace_limit_mb > 0 && used > NOTE_ABOVE_MB => vec![
+                note_size_row(used, r.workspace_partial),
+                NOTE_COMPUTE_ROW.to_string(),
+            ],
+            _ => Vec::new(),
+        };
+        Some(rows)
     }
 }
 
@@ -538,6 +731,19 @@ impl DiskProbe for HostDisk {
         })
     }
 
+    fn storage_used(&self) -> BoxFuture<'_, (Option<u64>, bool)> {
+        let (workspace, budget) = (self.workspace.clone(), self.budget);
+        Box::pin(async move {
+            // The walk reads many directory entries: not on an async worker.
+            tokio::task::spawn_blocking(move || match used_bytes(&workspace, budget) {
+                Some((bytes, complete)) => (Some(whole_mib(bytes)), !complete),
+                None => (None, false),
+            })
+            .await
+            .unwrap_or((None, false))
+        })
+    }
+
     fn diagnose(&self) -> BoxFuture<'_, String> {
         let (root, workspace) = (self.root.clone(), self.workspace.clone());
         let write_dirs = self.write_dirs.clone();
@@ -554,7 +760,7 @@ impl DiskProbe for HostDisk {
 
 fn read(root: &Path, workspace: &Path, budget: WalkBudget, write_dirs: &[PathBuf]) -> Reading {
     let (workspace_used_mb, workspace_partial) = match used_bytes(workspace, budget) {
-        Some((bytes, complete)) => (Some(bytes >> 20), !complete),
+        Some((bytes, complete)) => (Some(whole_mib(bytes)), !complete),
         None => (None, false),
     };
     Reading {

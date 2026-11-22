@@ -9,9 +9,14 @@
 //! downloads them when they are the copy the run goes on from, and says so. `ham pull <runId> --read-back <n>` downloads the files
 //! read back from session `n` whether the run went on from them or not ([`crate::chat_routes::fetch_read_back`]); its text says what
 //! the copy is and does not say that it is newer than the saved copy or that the run used it.
+//!
+//! `ham pull <runId> --before-refusal <notice id>` downloads the last copy a session had saved before `ham` first saw the
+//! session's storage refuse a write ([`crate::chat_routes::fetch_before_refusal`]); the id is the one the run's notice printed. Its
+//! text says what the copy is and what it cannot promise: changes after its time are not in it, and a refusal that `ham` did not see
+//! can have emptied files in it too. A copy that needs the repository the run started from comes with it, as the newest copy does.
 
 use crate::api::Api;
-use crate::chat_routes::{SnapshotFetched, fetch_read_back, fetch_snapshot};
+use crate::chat_routes::{SnapshotFetched, fetch_before_refusal, fetch_read_back, fetch_snapshot};
 use crate::http::ControlPlane;
 use crate::output::Output;
 use ham_core::sanitize::sanitize_line;
@@ -44,6 +49,14 @@ fn saved_line(f: &SnapshotFetched) -> Option<String> {
     if f.read_back_from.is_some() {
         return None;
     }
+    // The copy from before a storage refusal says what it is, with its number and its time to the minute.
+    if f.before_refusal.is_some() {
+        let when = utc_minute(&sanitize_line(&f.taken_at));
+        return Some(match f.count {
+            Some(n) => format!("Saved     copy {n}, {when}: {BEFORE_REFUSAL_SAVED}"),
+            None => format!("Saved     {when}: {BEFORE_REFUSAL_SAVED}"),
+        });
+    }
     if f.record_stale {
         None
     } else if f.final_copy {
@@ -72,6 +85,22 @@ pub fn read_back_note(n: u32, asked_read_back: bool) -> String {
         )
     } else {
         format!("{what} It is newer than the last copy saved while the run worked.")
+    }
+}
+
+/// What the copy from before a storage refusal is.
+pub const BEFORE_REFUSAL_SAVED: &str =
+    "the last copy saved before ham first saw the session's storage refuse a write";
+/// What that copy cannot promise.
+pub const BEFORE_REFUSAL_NOTE: &str = "Changes after that time are not in it. A refusal that ham did not see can have emptied files in it too.";
+
+/// `2026-11-21 00:37 UTC` for `2026-11-21T00:37:12Z`: a time to the minute. A text that is no such time is returned as it is.
+fn utc_minute(at: &str) -> String {
+    let b = at.as_bytes();
+    if b.len() >= 20 && b[10] == b'T' && at.ends_with('Z') && at.is_char_boundary(16) {
+        format!("{} {} UTC", &at[..10], &at[11..16])
+    } else {
+        at.to_string()
     }
 }
 
@@ -105,6 +134,9 @@ pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
     let title = match f.read_back_from {
         Some(n) if f.asked_read_back => {
             format!("pulled the files read back from session {n} of run {run_id}")
+        }
+        _ if f.before_refusal.is_some() => {
+            format!("pulled the copy from before a storage refusal of run {run_id}")
         }
         _ => format!("pulled the snapshot of run {run_id}"),
     };
@@ -144,9 +176,15 @@ pub fn text(run_id: &str, f: &SnapshotFetched) -> String {
             read_back_note(n, f.asked_read_back)
         ));
     }
+    if f.before_refusal.is_some() {
+        lines.push(format!("Note      {BEFORE_REFUSAL_NOTE}"));
+    }
     // The status note says "this copy is its work" of a run that delivered no zip. That is said of the run's newest copy, not of the
-    // files read back from one named session, which the run may not have gone on from.
-    if let Some(note) = status_note(run_id, f.run_status).filter(|_| !f.asked_read_back) {
+    // files read back from one named session, which the run may not have gone on from, and not of a copy from before a storage
+    // refusal, which the run worked on after.
+    if let Some(note) = status_note(run_id, f.run_status)
+        .filter(|_| !f.asked_read_back && f.before_refusal.is_none())
+    {
         lines.push(format!("Note      {note}"));
     }
     lines.push(look_line(f));
@@ -238,6 +276,10 @@ pub fn json_of(run_id: &str, f: &SnapshotFetched) -> serde_json::Value {
     if f.needs_base {
         s.insert("needsBase".into(), json!(true));
     }
+    // Present only for the copy from before a storage refusal: the id of the notice that names it.
+    if let Some(id) = &f.before_refusal {
+        s.insert("beforeRefusal".into(), json!(id));
+    }
     s.insert("note".into(), json!(SNAPSHOT_TRUST_NOTE));
     json!({"runId": run_id, "snapshot": serde_json::Value::Object(s)})
 }
@@ -256,6 +298,34 @@ pub async fn pull_snapshot<P: ControlPlane>(
         Some(session) => fetch_read_back(api, run_id, session, dir).await,
         None => fetch_snapshot(api, run_id, dir).await,
     };
+    say(run_id, fetched, json, out)
+}
+
+/// `ham pull <runId> --before-refusal <notice id>`: 0 when the copy the notice names is on disk and checked, 1 with
+/// `ham: <reason>` on standard error otherwise.
+pub async fn pull_before_refusal<P: ControlPlane>(
+    api: &Api<P>,
+    run_id: &str,
+    notice_id: &str,
+    json: bool,
+    dir: &Path,
+    out: &Output,
+) -> i32 {
+    say(
+        run_id,
+        fetch_before_refusal(api, run_id, notice_id, dir).await,
+        json,
+        out,
+    )
+}
+
+/// Prints what a download came to and returns the exit code.
+fn say(
+    run_id: &str,
+    fetched: Result<SnapshotFetched, crate::chat_routes::SnapshotFetchError>,
+    json: bool,
+    out: &Output,
+) -> i32 {
     match fetched {
         Ok(f) => {
             if json {

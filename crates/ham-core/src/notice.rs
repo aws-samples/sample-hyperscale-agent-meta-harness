@@ -199,6 +199,50 @@ pub fn is_copy_notice(e: &Envelope) -> bool {
         )
 }
 
+/// The reason of the worker's notice that a disk of its session is running low: the workspace folder at 90 percent of its
+/// stop mark, or the root volume below its low mark. The sentence is the worker's (`agentd::direct::disk`, `DiskWatch::crossings`).
+pub const DISK_LOW: &str = "disk_low";
+/// The reason of the worker's note about a large workspace folder at the start of a session:
+/// one event for each of its two rows.
+pub const DISK_NOTE: &str = "disk_note";
+/// What a [`DISK_LOW`] notice reads when the event carries no sentence.
+pub const DISK_LOW_FALLBACK: &str = "The run said its disk is running low.";
+/// What a [`DISK_NOTE`] notice reads when the event carries no sentence.
+pub const DISK_NOTE_FALLBACK: &str = "The run said its workspace folder is large.";
+/// The most notices about the session's disks the run view keeps ([`disk_reason`]): the newest ones.
+pub const MAX_DISK_NOTICES: usize = 32;
+
+/// One thing the run said about the disks of its session, in the worker's own sentence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskNotice {
+    pub event_id: String,
+    pub ts: String,
+    /// [`DISK_LOW`] or [`DISK_NOTE`].
+    pub reason: &'static str,
+    pub text: String,
+}
+
+/// The reason of `e` when it is the worker's word about the disks of its session: a `turn.progress` event of kind `notify`
+/// with the reason [`DISK_LOW`] or [`DISK_NOTE`]. The run view keeps these apart (`RunView::disk_notices`) for a surface that has
+/// no conversation to show them in: `ham watch` printed none of them, so a run on a nearly full workspace folder said so only on
+/// the run screen.
+pub fn disk_reason(e: &Envelope) -> Option<&'static str> {
+    if e.event_type != EventType::TurnProgress {
+        return None;
+    }
+    let Payload::Inline { value } = &e.payload else {
+        return None;
+    };
+    if string(value, "kind") != Some("notify") {
+        return None;
+    }
+    match string(value, "reason") {
+        Some(DISK_LOW) => Some(DISK_LOW),
+        Some(DISK_NOTE) => Some(DISK_NOTE),
+        _ => None,
+    }
+}
+
 /// The first words of the worker's sentence for a request to end whose copy could not be saved (`agentd::direct`,
 /// `STOP_COPY_NOT_SAVED`: "The session was asked to end, and a copy of the work could not be saved."). The worker says nothing else
 /// about a request to end, so these words are how the client knows of one; a test holds them to the worker's source.
@@ -235,11 +279,32 @@ fn notify(v: &Value) -> String {
             Some(detail) => detail,
             None => "The run's command time limit is not confirmed for this session.".to_string(),
         },
+        // The session's storage refused a write while its files left room. The line is built from the event's `storage`
+        // member (`crate::storage_notice`, which also gives the lines that follow it); an event without the member shows the
+        // worker's own sentence.
+        crate::storage_notice::REASON => crate::storage_notice::first_line_of(v)
+            .unwrap_or_else(|| own_detail(v, "The session's storage refused a write.")),
+        // The stop on an engine error that names a disk carries the worker's whole sentence; the reason word is a wire
+        // word and says "full" also when the storage only refused writes, so it is not printed.
+        "disk_full" => own_detail(v, "The run stopped on a disk error."),
+        // The worker's own sentence about a disk of its session that is running low. The sentence names the disk and its
+        // numbers, so the reason word is not printed in front of it.
+        DISK_LOW => own_detail(v, DISK_LOW_FALLBACK),
+        // A row of the worker's note about a large workspace folder, as the worker wrote it.
+        DISK_NOTE => own_detail(v, DISK_NOTE_FALLBACK),
         other => with_detail(
             format!("Notice from the run ({})", clean(other)),
             string(v, "detail"),
         ),
     }
+}
+
+/// The worker's own sentence of a `notify` event (its `detail`), else `fallback`.
+fn own_detail(v: &Value, fallback: &str) -> String {
+    string(v, "detail")
+        .map(clean)
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn provider_wait(v: &Value) -> String {

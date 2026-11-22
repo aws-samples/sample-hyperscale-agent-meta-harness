@@ -69,6 +69,18 @@ class ToolsLockCase(unittest.TestCase):
         for image in ("node", "binfmt", "hello_arm64"):
             self.assertRegex(lock["containers"][image], r"@sha256:[0-9a-f]{64}$", image)
 
+    def test_b883_the_gate_tools_python_can_run_the_worker_image_helper(self) -> None:
+        """Where the gate tool set holds the only managed CPython, the script tests run with the CPython of `[gate_tools].python`, and the
+        tests of the worker image's helper `images/worker-python/ham-containers` start the helper with their own interpreter, which
+        stands in for the image's python3.12. The helper holds a process by a handle (`os.pidfd_open`, `signal.pidfd_send_signal`).
+        The managed CPython 3.12.11 has neither function and 3.12.14 has both, so the pin stays at 3.12.14 or later."""
+        lock = self.tl.load(LOCK)
+        version = tuple(int(part) for part in lock["gate_tools"]["python"].split("."))
+        self.assertGreaterEqual(
+            version, (3, 12, 14),
+            "tools.lock [gate_tools] python is older than 3.12.14: the managed CPython 3.12.11 has no os.pidfd_open, so the tests of the "
+            "worker image's helper (images/worker-python/ham-containers) fail where this interpreter runs the script tests")
+
     def test_repo_lock_pins_the_audit_scanners(self) -> None:
         # The advisory check runs `cargo audit --json` and `osv-scanner --format json -r <directory>` from the
         # tools folder, so both come from HAMH_TOOLS/bin.

@@ -91,6 +91,8 @@ pub struct DirectCollector {
     wait_stops_forgiven: u32,
     /// This engine session was already told that a command was cut at another number than the run's limit.
     limit_miss_told: bool,
+    /// The watch of the session's storage ([`Self::with_storage_watch`]); `None` for a run that has none.
+    storage: Option<crate::direct::storage_watch::StorageWatch>,
 }
 
 impl DirectCollector {
@@ -121,6 +123,24 @@ impl DirectCollector {
             tail_shortest: None,
             wait_stops_forgiven: 0,
             limit_miss_told: false,
+            storage: None,
+        }
+    }
+
+    /// The watch of the session's storage. A final tool result that names no space left on device wakes it, and the watch makes
+    /// a test write of its own; the collector only sets that flag and never waits for the storage. The words of a result bring no
+    /// notice by themselves.
+    pub fn with_storage_watch(mut self, watch: crate::direct::storage_watch::StorageWatch) -> Self {
+        self.storage = Some(watch);
+        self
+    }
+
+    /// Hands a tool result that named no space left on to the watch of the storage, once.
+    fn storage_named(&mut self) {
+        if self.recorder.take_space_named()
+            && let Some(watch) = &self.storage
+        {
+            watch.wake(crate::direct::storage_watch::Seen::ToolResult);
         }
     }
 
@@ -344,6 +364,22 @@ impl DirectCollector {
             self.hooks
                 .event(&Event::Ladder(LadderEvent::OutageRecovered { waited_s }));
         }
+    }
+
+    /// A fact the run says while it goes on (`turn.progress`, kind `notify`), in the worker's own sentence: the event of
+    /// [`Self::record_notify`] without its ladder event, as the notice about a late copy is sent. No module hears of it, so none can
+    /// turn it into a prompt.
+    pub fn record_note(&self, reason: &str, detail: &str) {
+        self.rec.record(
+            EventType::TurnProgress,
+            json!({
+                "turn": DIRECT_TURN,
+                "kind": "notify",
+                "reason": reason,
+                "outageMinutes": null,
+                "detail": self.clean(detail),
+            }),
+        );
     }
 
     /// Something the user or the harness must know about while the run goes on or ends (`turn.progress`, kind `notify`): `reason` is
@@ -719,6 +755,7 @@ impl AcpHandler for DirectCollector {
                     self.recorder.on_message(&self.current);
                 }
                 self.recorder.on_tool_call(update);
+                self.storage_named();
                 if let (Some(id), Some(status)) = (
                     update.get("toolCallId").and_then(Value::as_str),
                     update.get("status").and_then(Value::as_str),
@@ -747,6 +784,7 @@ impl AcpHandler for DirectCollector {
             }
             "tool_call_update" => {
                 self.recorder.on_tool_call_update(update);
+                self.storage_named();
                 if let Some(miss) = self.recorder.take_limit_miss()
                     && !self.limit_miss_told
                 {
