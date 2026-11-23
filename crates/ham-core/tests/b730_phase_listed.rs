@@ -1,5 +1,5 @@
 //! The phase of a finished run on the command line. The service writes a run's phase `delivering` once and moves the status to
-//! `complete` without writing a phase again, so `ham runs`, `ham status`, `ham watch` and the card the command prints said
+//! `complete` without writing a phase again, so `ham runs`, `ham watch` and the card the command prints said
 //! `complete (delivering)` hours after the zip was in the bucket. A `complete` run now reads `complete (delivered)` there; a run in any other
 //! status keeps the phase as stored, and the JSON keeps the stored word.
 #![allow(clippy::unwrap_used)]

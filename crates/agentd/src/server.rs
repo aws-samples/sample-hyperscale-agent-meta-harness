@@ -150,6 +150,9 @@ pub struct App {
         Arc<dyn crate::checked_write::FileCalls>,
         crate::direct::git_settings::Repeat,
     )>,
+    /// The two writes of the watch of the session's storage (`crate::direct::storage_watch::StorageWrites`), when a test
+    /// gave its own. The product never sets it: the writes are then the host's (`HostWrites`).
+    pub storage_writes: std::sync::OnceLock<Arc<dyn crate::direct::storage_watch::StorageWrites>>,
     /// One turn at a time: an AgentCore session belongs to one agent.
     pub(crate) turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// What this machine is for: nothing yet ([`MODE_NONE`]), the turns of a session ([`MODE_TURNS`]) or one read of a stopped
@@ -190,6 +193,7 @@ impl App {
             creds: CredStore::new(Arc::new(HttpRefresher::new()), Arc::new(SystemClock)),
             ending: Arc::new(Ending::default()),
             settings_write: std::sync::OnceLock::new(),
+            storage_writes: std::sync::OnceLock::new(),
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             mode: AtomicU8::new(MODE_NONE),
             recover_attempt: std::sync::OnceLock::new(),

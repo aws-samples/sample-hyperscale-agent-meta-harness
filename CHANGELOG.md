@@ -6,6 +6,16 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.27] - 2026-11-22
+
+### Added
+
+- `ham watch --json` carries the notices that a session's storage refused a write in the new member `storageNotices`.
+
+### Changed
+
+- The record of a storage notice says when the refused write was the marker of a session's start.
+
 ## [5.26] - 2026-11-21
 
 ### Added

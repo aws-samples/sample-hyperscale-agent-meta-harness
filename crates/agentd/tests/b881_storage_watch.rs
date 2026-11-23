@@ -9,6 +9,7 @@ mod common;
 
 use agentd::BoxFuture;
 use agentd::direct::disk::{DiskProbe, Limits, Reading};
+use agentd::direct::snapshot::TREE_ANSWER_LIMIT;
 use agentd::direct::storage_watch::{
     CopyRef, Marked, Seen, StorageWatch, StorageWrite, StorageWrites, WatchSetup, WatchTask,
     WriteError,
@@ -200,9 +201,11 @@ impl Rig {
         self.settle().await;
     }
 
-    /// Waits until the result of the write in progress is applied.
+    /// Waits until every test write the task was asked for is made and its result applied, with the notice of a first refusal
+    /// recorded. `idle` counts the wakes the task answered; `settled` alone returns while the files of a first notice are
+    /// measured, because that walk runs with the lock free.
     async fn settle(&self) {
-        self.watch.settled().await;
+        self.watch.idle().await;
     }
 
     async fn until(&mut self, what: &str, f: impl Fn(&Rig) -> bool) {
@@ -799,6 +802,72 @@ async fn b881_one_test_write_per_wake_and_never_two_at_once() {
     r.stop().await;
 }
 
+/// Wakes that arrive before the task ran are one test write. When a tool result that names the words finds the test write of
+/// a prompt boundary pending, that write is made after the result and answers it too: the log says that the storage took it, as it
+/// does for a write a tool result asked for. The live row's leg `quote` stands on either line. A prompt boundary alone says nothing,
+/// and a refusal keeps the word of what asked first.
+#[tokio::test]
+async fn b884_a_tool_result_that_finds_the_test_write_of_a_prompt_boundary_pending_gets_its_line() {
+    let worked = |log: &MemoryLog| -> Vec<String> {
+        log.lines()
+            .into_iter()
+            .filter(|l| l.contains("test write to the session's storage worked"))
+            .collect()
+    };
+    let mut r = rig(Vec::new());
+    // Both wakes arrive before the task runs: one test write, which the prompt boundary asked for.
+    r.watch.wake(Seen::PromptBoundary);
+    r.watch.wake(Seen::ToolResult);
+    r.until("the test write", |r| r.script.tests() == 1).await;
+    r.settle().await;
+    assert_eq!(
+        r.script.tests(),
+        1,
+        "B884 TRIGGER ABSENT: the two wakes were two test writes"
+    );
+    println!(
+        "B884 TRIGGER PRESENT: the wake of the tool result joined the pending test write of the prompt boundary"
+    );
+    assert_eq!(
+        worked(&r.log),
+        vec![
+            "direct turn storage: a tool result named no space left on device while the test write of a prompt boundary had not started; that test write to the session's storage worked"
+        ],
+        "{:?}",
+        r.log.lines()
+    );
+    assert!(r.notices().is_empty());
+    // A prompt boundary alone: its write is taken and the log says nothing.
+    r.wake(Seen::PromptBoundary).await;
+    assert_eq!(r.script.tests(), 2);
+    assert_eq!(worked(&r.log).len(), 1, "{:?}", r.log.lines());
+    // The other order: the tool result asked first and the prompt boundary joined. The line is the one of a tool result.
+    r.watch.wake(Seen::ToolResult);
+    r.watch.wake(Seen::PromptBoundary);
+    r.until("the test write", |r| r.script.tests() == 3).await;
+    r.settle().await;
+    assert_eq!(r.script.tests(), 3);
+    assert_eq!(
+        worked(&r.log)[1..],
+        [
+            "direct turn storage: a tool result named no space left on device; a test write to the session's storage worked"
+        ],
+        "{:?}",
+        r.log.lines()
+    );
+    // A write the storage refuses says nothing of the kind, and its notice keeps the word of what asked first.
+    r.script.push(Ans::Errno(28));
+    r.watch.wake(Seen::PromptBoundary);
+    r.watch.wake(Seen::ToolResult);
+    r.until("the test write", |r| r.script.tests() == 4).await;
+    r.settle().await;
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    assert_eq!(n[0].1["storage"]["seen"], "prompt");
+    assert_eq!(worked(&r.log).len(), 2, "{:?}", r.log.lines());
+    r.stop().await;
+}
+
 // ---- the switch of the live test row (the lead's ruling 2) -------------------------------------------------------------------------
 
 #[tokio::test]
@@ -948,5 +1017,545 @@ async fn b881_the_notice_says_what_is_known_about_this_storage_and_never_that_ha
         "{detail}"
     );
     assert!(!detail.contains("cannot read why"), "{detail}");
+    r.stop().await;
+}
+
+// ----: the marker of a session's start has a word of its own -------------------------------------------------------------------
+
+#[tokio::test]
+async fn b884_a_refused_start_marker_brings_the_full_notice_with_the_word_start() {
+    // The first write of a session through the watch is the marker of its start. The storage refuses it: the notice is the full one,
+    // it names no copy, and its `seen` member says that the marker of the start met the refusal and no copy's marker.
+    let mut r = rig(vec![Ans::Errno(28), Ans::Took, Ans::Errno(28)]);
+    let refused = r
+        .watch
+        .marker_write_for(b"{}".to_vec(), Marked::Start)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.errno, Some(28));
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    let s = &n[0].1["storage"];
+    assert_eq!(s["seen"], "start");
+    assert_eq!(s["stretch"], 1);
+    assert_eq!(s["usedMb"], 165);
+    assert!(s.get("copyBefore").is_none(), "{}", n[0].1);
+    assert!(
+        r.log_has(
+            "direct turn storage refused a write (seen at the marker of the session's start)"
+        ),
+        "{:?}",
+        r.log.lines()
+    );
+    // The marker of a stored copy keeps its word: the storage takes the first one, which closes the stretch, and refuses the next.
+    r.watch
+        .marker_write_for(b"{}".to_vec(), Marked::Copy(copy(1)))
+        .await
+        .unwrap();
+    r.watch
+        .marker_write_for(b"{}".to_vec(), Marked::Copy(copy(2)))
+        .await
+        .unwrap_err();
+    let n = r.notices();
+    assert_eq!(n.len(), 2, "{:?}", r.log.lines());
+    assert_eq!(n[1].1["storage"]["seen"], "copy");
+    assert_eq!(n[1].1["storage"]["stretch"], 2);
+    // The copy a notice names was frozen at the session's first refusal, when none was marked.
+    assert!(n[1].1["storage"].get("copyBefore").is_none(), "{}", n[1].1);
+    r.stop().await;
+}
+
+// ----: the walk of the first notice runs with the lock free, under a limit of its own -------------------------------------------
+
+/// A size whose walk does not answer until the test lets it go.
+#[derive(Debug)]
+struct HungWalk {
+    used: (Option<u64>, bool),
+    walks: AtomicU32,
+    let_go: tokio::sync::Notify,
+}
+
+impl HungWalk {
+    fn new(used: Option<u64>, partial: bool) -> Arc<Self> {
+        Arc::new(Self {
+            used: (used, partial),
+            walks: AtomicU32::new(0),
+            let_go: tokio::sync::Notify::new(),
+        })
+    }
+
+    fn walks(&self) -> u32 {
+        self.walks.load(Ordering::SeqCst)
+    }
+}
+
+impl DiskProbe for HungWalk {
+    fn measure(&self) -> BoxFuture<'_, Reading> {
+        Box::pin(async { Reading::default() })
+    }
+
+    fn storage_used(&self) -> BoxFuture<'_, (Option<u64>, bool)> {
+        Box::pin(async move {
+            self.walks.fetch_add(1, Ordering::SeqCst);
+            self.let_go.notified().await;
+            self.used
+        })
+    }
+}
+
+/// The rig with a walk that hangs in place of the scripted size.
+fn rig_walk(answers: Vec<Ans>, walk: Arc<HungWalk>) -> Rig {
+    let script = Script::new(answers);
+    let rec = EventRecorder::new(RUN, "direct");
+    let log = MemoryLog::new();
+    let watch = StorageWatch::new(WatchSetup {
+        writes: script.clone(),
+        probe: walk,
+        rec: rec.clone(),
+        log: log.clone(),
+        run_id: RUN.to_string(),
+        session: 1,
+        run_dir: common::scratch("b884-watch"),
+        limits: Limits::default(),
+        test_refusal: false,
+    });
+    let task = Some(watch.start());
+    Rig {
+        watch,
+        task,
+        script,
+        size: Sized::new(None, false),
+        rec,
+        log,
+        seen: Vec::new(),
+    }
+}
+
+/// With the clock paused: lets the other tasks run and gives the threads of the writes real time, until `f` holds.
+async fn in_real_time(what: &str, mut f: impl FnMut() -> bool) {
+    for _ in 0..5000 {
+        if f() {
+            return;
+        }
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("{what} did not happen");
+}
+
+/// Holds for a marker write and a test write that are made while the walk of another write's first notice is out. The write that
+/// is itself the session's first refusal waits for the walk, for at most its limit
+/// (`b884_a_write_that_is_the_sessions_first_refusal_waits_for_the_walk_for_its_limit_at_the_most`).
+#[tokio::test(start_paused = true)]
+async fn b884_a_walk_that_hangs_delays_neither_a_marker_write_nor_the_test_write_after_an_engine_error()
+ {
+    let walk = HungWalk::new(Some(165), false);
+    let mut r = rig_walk(vec![Ans::Errno(28)], walk.clone());
+    // The session's first refusal: the watch's task measures the files for the notice, and the walk does not answer.
+    r.watch.wake(Seen::ToolResult);
+    in_real_time("the walk of the first notice", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: the walk of the session's first notice is out and does not answer"
+    );
+    // The copy task's marker write and the test write after an engine error are made meanwhile. The clock is paused: a call that
+    // waits for the walk has nothing else to wait for and meets the limit below at once. The limit is below the walk's own, so a
+    // call that waits for the walk fails the assertion that names the delay, and not a later one.
+    let wait = Duration::from_secs(1);
+    assert!(wait < TREE_ANSWER_LIMIT);
+    let marker =
+        tokio::time::timeout(wait, r.watch.marker_write(b"{}".to_vec(), Some(copy(7)))).await;
+    assert!(
+        marker.is_ok(),
+        "the marker write waited for the walk of the files; log: {:?}",
+        r.log.lines()
+    );
+    marker.unwrap().unwrap();
+    let test = tokio::time::timeout(wait, r.watch.test_now(Seen::EngineError)).await;
+    assert_eq!(
+        test,
+        Ok(StorageWrite::Took),
+        "the test write after an engine error waited for the walk of the files; log: {:?}",
+        r.log.lines()
+    );
+    assert_eq!(
+        *r.script.order.lock().unwrap(),
+        vec!["test", "marker", "test"]
+    );
+    // Both were made while the walk was out: the notice is not recorded yet.
+    assert_eq!(walk.walks(), 1);
+    assert_eq!(
+        r.notices().len(),
+        0,
+        "the first notice was recorded before the walk answered"
+    );
+    // The walk answers: the notice is the full one with the size, for stretch 1. The storage took the marker write meanwhile, so
+    // the stretch of that notice is closed, and the line of the notice says so.
+    walk.let_go.notify_one();
+    in_real_time("the first notice", || !r.notices().is_empty()).await;
+    assert!(
+        r.log_has(
+            "stretch 1, files 165 MiB; the storage took a write while the files were measured"
+        ),
+        "{:?}",
+        r.log.lines()
+    );
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    let first_id = n[0].0.clone();
+    assert_eq!(n[0].1["storage"]["stretch"], 1);
+    assert_eq!(n[0].1["storage"]["seen"], "tool");
+    assert_eq!(n[0].1["storage"]["usedMb"], 165);
+    // The copy marked while the files were measured was saved after the refusal: no notice names it.
+    assert!(n[0].1["storage"].get("copyBefore").is_none(), "{}", n[0].1);
+    // The stretch of that notice closed while the files were measured: the next refusal opens stretch 2, with the short notice.
+    r.script.push(Ans::Errno(28));
+    r.wake(Seen::PromptBoundary).await;
+    let n = r.notices();
+    assert_eq!(n.len(), 2, "{:?}", r.log.lines());
+    assert_eq!(n[1].1["storage"]["stretch"], 2);
+    assert_eq!(n[1].1["storage"]["first"], first_id.as_str());
+    assert_eq!(walk.walks(), 1, "the files are measured once in a session");
+    r.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn b884_a_walk_that_never_answers_is_given_up_at_its_limit_and_the_notice_says_the_size_was_not_measured()
+ {
+    let walk = HungWalk::new(Some(165), false);
+    let mut r = rig_walk(vec![Ans::Errno(28), Ans::Errno(28)], walk.clone());
+    r.watch.wake(Seen::ToolResult);
+    in_real_time("the walk of the first notice", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: the walk of the session's first notice is out and never answers"
+    );
+    // Short of the limit nothing is recorded.
+    tokio::time::advance(Duration::from_secs(4)).await;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(r.notices().len(), 0);
+    // Past the limit the watch gives the walk up and records the notice without a size.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let mut seen = 0;
+    for _ in 0..2000 {
+        seen = r.notices().len();
+        if seen > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        seen,
+        1,
+        "no notice after the limit of the walk had passed; log: {:?}",
+        r.log.lines()
+    );
+    let n = r.notices();
+    assert!(
+        n[0].1["detail"].as_str().unwrap().starts_with(
+            "The session's storage refused a write (no space left on device); the size of its files could not be measured."
+        ),
+        "{}",
+        n[0].1
+    );
+    assert!(n[0].1["storage"].get("usedMb").is_none(), "{}", n[0].1);
+    assert_eq!(n[0].1["storage"]["stretch"], 1);
+    assert!(
+        r.log_has("files not measured (no answer within 5 s)"),
+        "{:?}",
+        r.log.lines()
+    );
+    // The stretch is open and told: a further refusal says nothing and starts no second walk, and a write the storage takes closes
+    // stretch 1.
+    r.wake(Seen::PromptBoundary).await;
+    assert_eq!(r.notices().len(), 1);
+    assert_eq!(walk.walks(), 1);
+    r.wake(Seen::PromptBoundary).await;
+    assert!(r.log_has("stretch 1 closed"), "{:?}", r.log.lines());
+    r.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn b884_what_writes_meet_while_the_files_are_measured_belongs_to_the_first_notice() {
+    let walk = HungWalk::new(Some(165), false);
+    // Refused (the walk starts); then, while the walk is out: refused, taken, refused.
+    let mut r = rig_walk(
+        vec![Ans::Errno(28), Ans::Errno(28), Ans::Took, Ans::Errno(28)],
+        walk.clone(),
+    );
+    r.watch.wake(Seen::ToolResult);
+    in_real_time("the walk of the first notice", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: the walk of the session's first notice is out and does not answer"
+    );
+    // Below the walk's own limit: a test write that waits for the walk fails the assertion that names the delay.
+    let wait = Duration::from_secs(1);
+    assert!(wait < TREE_ANSWER_LIMIT);
+    for expected in [
+        StorageWrite::Refused,
+        StorageWrite::Took,
+        StorageWrite::Refused,
+    ] {
+        let got = tokio::time::timeout(wait, r.watch.test_now(Seen::EngineError)).await;
+        assert_eq!(
+            got,
+            Ok(expected),
+            "a test write waited for the walk of the files; log: {:?}",
+            r.log.lines()
+        );
+    }
+    assert_eq!(
+        walk.walks(),
+        1,
+        "a second walk started while the first was out"
+    );
+    assert_eq!(r.notices().len(), 0);
+    walk.let_go.notify_one();
+    in_real_time("the first notice", || !r.notices().is_empty()).await;
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    assert_eq!(n[0].1["storage"]["stretch"], 1);
+    assert_eq!(n[0].1["storage"]["seen"], "tool");
+    // The stretch that is open is the one the notice tells of: a further refusal says nothing, and the next write the storage
+    // takes closes stretch 1.
+    r.script.push(Ans::Errno(28));
+    r.wake(Seen::PromptBoundary).await;
+    assert_eq!(r.notices().len(), 1, "{:?}", r.log.lines());
+    r.wake(Seen::PromptBoundary).await;
+    assert!(r.log_has("stretch 1 closed"), "{:?}", r.log.lines());
+    assert_eq!(walk.walks(), 1);
+    r.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn b884_a_task_that_ends_while_the_files_are_measured_leaves_the_next_refusal_its_walk_and_its_notice()
+ {
+    let walk = HungWalk::new(Some(165), false);
+    let mut r = rig_walk(vec![Ans::Errno(28), Ans::Errno(28)], walk.clone());
+    // The session's first refusal: the watch's task measures the files, and the walk does not answer.
+    r.watch.wake(Seen::ToolResult);
+    in_real_time("the walk of the first notice", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: the walk of the session's first notice is out and does not answer"
+    );
+    // The session ends: the task of the watch is stopped while it waits for the walk. No notice was recorded.
+    r.task.take().unwrap().stop().await;
+    assert_eq!(r.notices().len(), 0);
+    // The end sequence writes the copies' marker, and the storage refuses it. The files are measured again (this walk answers),
+    // and the notice comes.
+    walk.let_go.notify_one();
+    let marker = tokio::time::timeout(
+        Duration::from_secs(60),
+        r.watch.marker_write(b"{}".to_vec(), None),
+    )
+    .await;
+    let refused = marker
+        .expect("the marker write waited for a walk that nobody runs")
+        .unwrap_err();
+    assert!(refused.refused(), "{refused:?}");
+    assert_eq!(
+        walk.walks(),
+        2,
+        "the refusal after the task ended did not measure the files; log: {:?}",
+        r.log.lines()
+    );
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    assert_eq!(n[0].1["storage"]["stretch"], 1);
+    assert_eq!(n[0].1["storage"]["seen"], "start");
+    assert_eq!(n[0].1["storage"]["usedMb"], 165);
+    // Nothing waits for the walk that was given up with its task.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(60), r.watch.settled())
+            .await
+            .is_ok(),
+        "settled waits for a walk that nobody runs"
+    );
+    r.stop().await;
+}
+
+// ----, after the review of the walk: what the first refusal's own caller waits for, the mark, the end of a session -----------
+
+/// The write that is itself the session's first refusal waits for the walk of the files, and for no longer than the walk's limit
+/// ([`TREE_ANSWER_LIMIT`]). Held for the copy task's marker write and for the test write after an engine error, with a walk that
+/// never answers.
+#[tokio::test(start_paused = true)]
+async fn b884_a_write_that_is_the_sessions_first_refusal_waits_for_the_walk_for_its_limit_at_the_most()
+ {
+    for who in ["the marker write", "the test write after an engine error"] {
+        let walk = HungWalk::new(Some(165), false);
+        let mut r = rig_walk(vec![Ans::Errno(28)], walk.clone());
+        let began = tokio::time::Instant::now();
+        // Four times the limit is given, so that a wait past the limit is measured and not cut short.
+        let refused = tokio::time::timeout(TREE_ANSWER_LIMIT * 4, async {
+            if who == "the marker write" {
+                r.watch
+                    .marker_write(b"{}".to_vec(), Some(copy(7)))
+                    .await
+                    .is_err_and(|e| e.refused())
+            } else {
+                r.watch.test_now(Seen::EngineError).await == StorageWrite::Refused
+            }
+        })
+        .await;
+        let waited = began.elapsed();
+        assert_eq!(
+            refused,
+            Ok(true),
+            "{who} did not come back as a refusal within four times the walk's limit; log: {:?}",
+            r.log.lines()
+        );
+        assert_eq!(
+            walk.walks(),
+            1,
+            "B884 TRIGGER ABSENT: {who} was not the session's first refusal, no walk started"
+        );
+        assert!(
+            waited > Duration::ZERO,
+            "B884 TRIGGER ABSENT: {who} did not wait for the walk of the files"
+        );
+        println!(
+            "B884 TRIGGER PRESENT: {who} is the session's first refusal and waited {waited:?} for a walk that never answers"
+        );
+        assert!(
+            waited <= TREE_ANSWER_LIMIT,
+            "{who} waited {waited:?} for the walk of the files, longer than the walk's limit of {TREE_ANSWER_LIMIT:?}"
+        );
+        // The notice is recorded when the call returns, and it says that the size could not be measured.
+        let n = r.notices();
+        assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+        assert_eq!(
+            n[0].1["storage"]["seen"],
+            if who == "the marker write" {
+                "copy"
+            } else {
+                "error"
+            }
+        );
+        assert!(n[0].1["storage"].get("usedMb").is_none(), "{}", n[0].1);
+        assert!(
+            r.log_has("files not measured (no answer within 5 s)"),
+            "{:?}",
+            r.log.lines()
+        );
+        r.stop().await;
+    }
+}
+
+/// With the files at the early-warning mark a refusal brings one log line and no notice, and it opens a stretch only when the
+/// storage took no write while the files were measured. After such a write the next refusal is a refusal of its own: it measures
+/// the files again and is not taken for a part of a stretch that is open.
+#[tokio::test(start_paused = true)]
+async fn b884_at_the_warning_mark_a_write_the_storage_took_while_the_files_were_measured_leaves_no_stretch_open()
+ {
+    let mark = Limits::default().storage_warn_mb();
+    let walk = HungWalk::new(Some(mark), false);
+    // Refused (the walk starts); taken while the walk is out; refused again after the walk answered.
+    let mut r = rig_walk(
+        vec![Ans::Errno(28), Ans::Took, Ans::Errno(28)],
+        walk.clone(),
+    );
+    let covered = |log: &MemoryLog| {
+        log.lines()
+            .iter()
+            .filter(|l| l.contains("the disk notices cover it"))
+            .count()
+    };
+    r.watch.wake(Seen::ToolResult);
+    in_real_time("the walk of the first refusal", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: the walk of the session's first refusal is out and does not answer"
+    );
+    let wait = Duration::from_secs(1);
+    assert!(wait < TREE_ANSWER_LIMIT);
+    let took = tokio::time::timeout(wait, r.watch.test_now(Seen::EngineError)).await;
+    assert_eq!(
+        took,
+        Ok(StorageWrite::Took),
+        "the write the storage takes while the files are measured; log: {:?}",
+        r.log.lines()
+    );
+    assert_eq!(covered(&r.log), 0);
+    // The walk answers a size at the mark: the disk rule's own notices cover a storage that is full. One log line, no notice.
+    walk.let_go.notify_one();
+    in_real_time("the log line of a refusal at the mark", || {
+        covered(&r.log) == 1
+    })
+    .await;
+    assert!(
+        r.log_has(&format!(
+            "direct turn storage refused a write while its files add up to {mark} MiB: the disk notices cover it"
+        )),
+        "{:?}",
+        r.log.lines()
+    );
+    assert_eq!(r.notices().len(), 0);
+    // The storage took a write while the files were measured, so no stretch is open. The next refusal is one of its own: the files
+    // are measured again (this walk answers at once) and the log says so again.
+    walk.let_go.notify_one();
+    r.wake(Seen::PromptBoundary).await;
+    assert_eq!(
+        walk.walks(),
+        2,
+        "the refusal after a write the storage took was taken for a part of an open stretch; log: {:?}",
+        r.log.lines()
+    );
+    assert_eq!(covered(&r.log), 2, "{:?}", r.log.lines());
+    assert_eq!(r.notices().len(), 0);
+    // That second refusal met no write the storage took: its stretch is open. A further refusal says nothing and measures
+    // nothing, and the next write the storage takes closes the stretch.
+    r.script.push(Ans::Errno(28));
+    r.wake(Seen::PromptBoundary).await;
+    assert_eq!(walk.walks(), 2);
+    assert_eq!(covered(&r.log), 2, "{:?}", r.log.lines());
+    r.wake(Seen::PromptBoundary).await;
+    assert!(
+        r.log_has("direct turn storage takes writes again after"),
+        "{:?}",
+        r.log.lines()
+    );
+    assert_eq!(r.notices().len(), 0);
+    r.stop().await;
+}
+
+/// The end of a session waits, through `idle`, for the test writes the watch's own task was asked for. A walk of the files that
+/// another caller started (here a marker write that is the session's first refusal) is that caller's wait: `settled` and `idle`
+/// return while it is out, and the caller gets its notice when the walk answers.
+#[tokio::test(start_paused = true)]
+async fn b884_the_end_of_a_session_does_not_wait_for_a_walk_that_another_caller_started() {
+    let walk = HungWalk::new(Some(165), false);
+    let mut r = rig_walk(vec![Ans::Errno(28)], walk.clone());
+    let watch = r.watch.clone();
+    let marker =
+        tokio::spawn(async move { watch.marker_write(b"{}".to_vec(), Some(copy(7))).await });
+    in_real_time("the walk of the first notice", || walk.walks() == 1).await;
+    println!(
+        "B884 TRIGGER PRESENT: a marker write is the session's first refusal and its walk of the files is out"
+    );
+    let wait = Duration::from_secs(1);
+    assert!(wait < TREE_ANSWER_LIMIT);
+    assert!(
+        tokio::time::timeout(wait, r.watch.settled()).await.is_ok(),
+        "settled waited for a walk of the files that another caller started"
+    );
+    assert!(
+        tokio::time::timeout(wait, r.watch.idle()).await.is_ok(),
+        "idle waited for a walk of the files that another caller started"
+    );
+    assert_eq!(walk.walks(), 1);
+    assert_eq!(
+        r.notices().len(),
+        0,
+        "the notice of that walk was recorded before the walk answered"
+    );
+    // The walk answers: the caller of that write returns with the refusal, and its notice is recorded.
+    walk.let_go.notify_one();
+    let refused = marker.await.unwrap().unwrap_err();
+    assert!(refused.refused(), "{refused:?}");
+    let n = r.notices();
+    assert_eq!(n.len(), 1, "{:?}", r.log.lines());
+    assert_eq!(n[0].1["storage"]["seen"], "copy");
+    assert_eq!(n[0].1["storage"]["usedMb"], 165);
     r.stop().await;
 }

@@ -1245,7 +1245,11 @@ async fn start_and_prompt(
     // makes on the session's storage anyway, and its result counts like a test write's.
     let storage = disk_check.as_ref().map(|check| {
         storage_watch::StorageWatch::new(storage_watch::WatchSetup {
-            writes: Arc::new(storage_watch::HostWrites),
+            // A test gives its own writes; the product never does.
+            writes: match app.storage_writes.get() {
+                Some(own) => own.clone(),
+                None => Arc::new(storage_watch::HostWrites),
+            },
             probe: check.probe.clone(),
             rec: rec.clone(),
             log: app.log.clone(),

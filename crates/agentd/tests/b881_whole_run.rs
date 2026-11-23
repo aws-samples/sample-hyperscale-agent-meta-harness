@@ -406,3 +406,51 @@ async fn b881_with_both_disk_checks_off_there_is_no_watch() {
     // The marker is written as before the watch.
     assert!(marked_copy(&d) >= 1, "the copy of the end is marked");
 }
+
+// ----: the hashes of a whole run ----------------------------------------------------------------------------------------------
+
+/// Over a whole run the worker hashes each file it stores once: each stored bundle (every copy of the work and the bundle of the
+/// end) and each other object it stores from a file. The parts of the transcript are stored from memory and no file is hashed for
+/// them. The test above counts the hashes around one upload it makes itself; this one counts them from before the run's start to
+/// after its end. The count is the process's own (`agentd::s3::digests_made`): nextest gives each test a process of its own, and
+/// the count is exact only so.
+#[tokio::test(flavor = "multi_thread")]
+async fn b884_over_a_whole_run_each_stored_bundle_is_hashed_once() {
+    let hashed_before = agentd::s3::digests_made();
+    let (d, resp) = stepped(false, "b884-hashes").await;
+    let hashed = usize::try_from(agentd::s3::digests_made() - hashed_before).unwrap();
+    assert_eq!(resp.outcome, TurnOutcome::Completed, "{resp:?}");
+    // What the worker stored, by every version of every object of the turn. The request and the repository the run started from
+    // were put into the bucket by the test and are not counted.
+    let bucket = format!("{}/", direct_support::BUCKET);
+    let turn = format!("runs/{RUN}/agents/direct/turns/1/");
+    let (mut bundles, mut other_files, mut from_memory) = (0usize, 0usize, 0usize);
+    for full in d.aws.keys() {
+        let key = full.strip_prefix(&bucket).unwrap_or(&full);
+        let Some(name) = key.strip_prefix(&turn) else {
+            continue;
+        };
+        let versions = d.aws.versions_of(key).len();
+        if name.starts_with("transcript/") {
+            from_memory += versions;
+        } else if name == "bundle" || name.ends_with(".bundle") {
+            bundles += versions;
+        } else {
+            other_files += versions;
+        }
+    }
+    let copies = d.aws.versions_of(&keys::snapshot_bundle_key(RUN)).len();
+    assert!(
+        copies >= 2 && bundles == copies + 1 && other_files >= 1 && from_memory >= 1,
+        "TRIGGER PRESENT is not shown: {copies} copies, {bundles} bundles, {other_files} other files, {from_memory} transcript parts; keys: {:?}",
+        d.aws.keys()
+    );
+    println!(
+        "B884 TRIGGER PRESENT: the run stored {copies} copies of the work and the bundle of the end ({bundles} bundles), {other_files} other files and {from_memory} parts of the transcript; {hashed} files were hashed"
+    );
+    assert_eq!(
+        hashed,
+        bundles + other_files,
+        "{hashed} hashes for {bundles} stored bundles and {other_files} other stored files: a bundle hashed again for its upload adds one for each stored bundle"
+    );
+}

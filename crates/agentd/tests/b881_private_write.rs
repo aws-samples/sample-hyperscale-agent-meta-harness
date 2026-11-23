@@ -6,7 +6,7 @@
 
 mod common;
 
-use agentd::direct::storage_watch::{HostWrites, StorageWrites, TEST_FILE};
+use agentd::direct::storage_watch::{HostWrites, StorageWrites, TEST_FILE, test_write_with};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -146,4 +146,81 @@ fn b881_which_errors_are_a_refusal() {
     for step in ["remove", "leftover", "folder"] {
         assert!(!e(step, Some(28)).refused(), "{step}");
     }
+}
+
+// ----: the write stays in the folder that was checked --------------------------------------------------------------------------
+
+#[test]
+fn b884_the_test_write_stays_in_the_folder_that_was_checked_when_its_path_comes_to_name_another() {
+    let (root, run) = layout();
+    // Another folder, with a file at the test file's name: what a write by path meets once the path names that folder.
+    let other = root.join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(other.join(TEST_FILE), "another folder's file").unwrap();
+    let moved = root.join("the-run-moved");
+    let swapped = std::cell::Cell::new(false);
+    // Between the check of the folder and the write, the checked folder is moved away and a link to the other folder takes its
+    // place: the run's path now names the other folder.
+    let done = test_write_with(&run, &|| {
+        std::fs::rename(&run, &moved).unwrap();
+        std::os::unix::fs::symlink(&other, &run).unwrap();
+        swapped.set(true);
+    });
+    assert!(
+        swapped.get(),
+        "TRIGGER PRESENT is not shown: the seam between the check and the write was not called"
+    );
+    println!(
+        "B884 TRIGGER PRESENT: the run's path named another folder between the check and the write"
+    );
+    // The other folder was not touched: its file is there with its content, and nothing was added.
+    assert_eq!(
+        std::fs::read_to_string(other.join(TEST_FILE))
+            .ok()
+            .as_deref(),
+        Some("another folder's file"),
+        "the write went to the folder the path named after the check"
+    );
+    assert_eq!(names(&other), vec![TEST_FILE.to_string()]);
+    // The write was made in the folder that was checked: it worked there and left nothing behind.
+    done.unwrap();
+    assert_eq!(names(&moved), vec!["direct".to_string()]);
+}
+
+#[test]
+fn b884_a_folder_that_fails_the_rule_is_not_written_to_and_the_seam_is_not_reached() {
+    let (root, run) = layout();
+    let reached = std::cell::Cell::new(0u32);
+    let count = || reached.set(reached.get() + 1);
+    // A folder that group or others may write, a link in the folder's place, a file in its place and a missing folder.
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o775)).unwrap();
+    assert_eq!(test_write_with(&run, &count).unwrap_err().step, "folder");
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = root.join("link-to-run");
+    std::os::unix::fs::symlink(&run, &link).unwrap();
+    let e = test_write_with(&link, &count).unwrap_err();
+    assert_eq!(
+        (e.step, e.text.as_str()),
+        ("folder", "the run's folder is not a folder")
+    );
+    let file = root.join("a-file");
+    std::fs::write(&file, "x").unwrap();
+    let e = test_write_with(&file, &count).unwrap_err();
+    assert_eq!(
+        (e.step, e.text.as_str()),
+        ("folder", "the run's folder is not a folder")
+    );
+    assert_eq!(
+        test_write_with(&root.join("no-such-run"), &count)
+            .unwrap_err()
+            .step,
+        "folder"
+    );
+    assert_eq!(reached.get(), 0);
+    assert_eq!(names(&run), vec!["direct".to_string()]);
+    // A folder that passes reaches the seam once, and the write works.
+    test_write_with(&run, &count).unwrap();
+    assert_eq!(reached.get(), 1);
+    assert_eq!(names(&run), vec!["direct".to_string()]);
 }

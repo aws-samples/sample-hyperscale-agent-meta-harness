@@ -8,15 +8,18 @@
 //! * **What makes it look.** A tool result that names no space left ([`Seen::ToolResult`]), each prompt boundary
 //!   ([`Seen::PromptBoundary`]) and the engine error that may end the run ([`Seen::EngineError`]) each make the worker write a test file
 //!   of its own. The write of the copies' marker ([`StorageWatch::marker_write`], [`Seen::CopyMarker`]) is a write the worker makes
-//!   anyway, and its result counts the same way. The first two only set a flag and wake the task ([`StorageWatch::wake`]): the collector
+//!   anyway, and its result counts the same way. The marker of a session's start is written the same way and has a word of its own.
+//!   The first two only set a flag and wake the task ([`StorageWatch::wake`]): the collector
 //!   and the prompt loop never wait for the storage.
 //! * **The git settings at a session's end.** The end sequence writes `.git/config` and `.git/info/attributes` anew.
 //!   That is a write the worker makes anyway too, and each of its answers counts the same
 //!   way ([`StorageWatch::own_write`], [`Seen::GitSettings`]).
 //! * **The write that decides.** [`HostWrites::test`] writes in the run's own folder, `<workspace root>/<run>`: it is on the session's
 //!   storage, the worker makes it, and the engine cannot write there (its user owns only `direct/` inside it; in the `landlock` mode no
-//!   grant covers it). The folder must be a real folder of the worker's own user that neither group nor others may write, the file is
-//!   created new without following a link, mode 0600, 4 KiB, synced and removed. Only errno 28 from the create, the write or the sync is
+//!   grant covers it). The folder must be a real folder of the worker's own user that neither group nor others may write: it is
+//!   opened once without following a link, checked through that handle, and the file is made and removed through it,
+//!   so the write stays in the folder that was checked. The folders above it are the platform's
+//!   mount and are not checked. The file is created new without following a link, mode 0600, 4 KiB, synced and removed. Only errno 28 from the create, the write or the sync is
 //!   a refusal ([`StorageWrite::Refused`]). Every other error, an error of the remove, a folder that fails the rule and no answer within
 //!   [`TREE_ANSWER_LIMIT`] is one log line and nothing else.
 //! * **A notice needs room.** A refusal while the files are at or over the early-warning mark of the disk rule
@@ -24,7 +27,12 @@
 //! * **One notice per stretch.** A stretch opens at the first refused write and closes at the first write the storage takes. The first
 //!   notice of a session measures the files once ([`DiskProbe::storage_used`]) and is the full one; each later stretch brings a short
 //!   notice with the count. One lock is held from before a write until its result is applied, so results are applied in the order the
-//!   writes ran.
+//!   writes ran. The walk of the first notice is the one step that runs with the lock free: it is given up after
+//!   [`TREE_ANSWER_LIMIT`], and a marker write or a test write made meanwhile does not wait for it. The write that is itself the
+//!   session's first refusal waits for the walk, for at most that limit, whoever made it. What those writes meet while
+//!   the files are measured belongs to that first notice: a refusal brings no notice of its own and starts no second walk, and
+//!   after a write the storage took the notice is recorded for a stretch that is closed. A caller that is dropped while it waits
+//!   for the walk (the watch's task at a session's end) leaves the next refusal its walk and its notice.
 //! * **The copy named.** The copy task writes the marker of each stored copy through the watch ([`StorageWatch::marker_write_for`])
 //!   and hands it the copy with the version the bucket gave its bundle ([`CopyRef`]). The newest copy of this session whose marker
 //!   write the storage took before the session's first refusal is frozen at that refusal, and every notice of the session names it. A
@@ -60,8 +68,6 @@ pub const TEST_FILE: &str = ".ham-storage-test";
 /// The size of the test write.
 pub const TEST_BYTES: usize = 4096;
 pub use crate::checked_write::ENOSPC;
-/// The bits that let somebody but the owner write.
-const WRITABLE_BY_OTHERS: u32 = 0o022;
 /// The words of errno 28, as the notices and the log say them.
 const NO_SPACE: &str = "no space left on device";
 /// What is known about a refused write with room left on this storage. It is a statement about the storage, from measurements, and
@@ -126,48 +132,72 @@ pub trait StorageWrites: Send + Sync + std::fmt::Debug {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostWrites;
 
-impl StorageWrites for HostWrites {
-    fn test(&self, run_dir: &Path) -> Result<(), WriteError> {
-        use std::io::Write as _;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        // The folder is the run's own: a real folder (no link) of this process's user that neither group nor others may write. A
-        // folder that fails the rule is not written to, because somebody else could then decide what the write meets.
-        let folder =
-            std::fs::symlink_metadata(run_dir).map_err(|e| WriteError::io("folder", &e))?;
-        let me = rustix::process::geteuid().as_raw();
-        if !folder.file_type().is_dir() {
+/// The test write of [`HostWrites`]. The run's folder is opened once without following a link. It is checked through that handle, and
+/// the test file is made and removed through it, so the write stays in the folder that was checked whatever its path comes to name
+/// afterwards. The folders above it are the platform's mount and are not checked. `checked` runs once, when the folder has
+/// passed the rule and before the file is touched: the product gives nothing to run, and a test changes there what the path names.
+pub fn test_write_with(run_dir: &Path, checked: &dyn Fn()) -> Result<(), WriteError> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    use rustix::io::Errno;
+    use std::io::Write as _;
+    let from = |step: &'static str, e: Errno| WriteError::io(step, &std::io::Error::from(e));
+    // The folder is the run's own: a real folder (no link) of this process's user that neither group nor others may write. A
+    // folder that fails the rule is not written to, because somebody else could then decide what the write meets.
+    let dir = match rustix::fs::open(
+        run_dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(dir) => dir,
+        // A link or a file in the folder's place.
+        Err(e) if e == Errno::LOOP || e == Errno::NOTDIR => {
             return Err(WriteError::plain(
                 "folder",
                 "the run's folder is not a folder".to_string(),
             ));
         }
-        if folder.uid() != me || folder.mode() & WRITABLE_BY_OTHERS != 0 {
-            return Err(WriteError::plain(
-                "folder",
-                "the run's folder is not the worker's own".to_string(),
-            ));
-        }
-        let file = run_dir.join(TEST_FILE);
-        // A file that a test which never ended left behind is removed. `create_new` makes the file itself and follows no link.
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(WriteError::io("leftover", &e)),
-        }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&file)
-            .map_err(|e| WriteError::io("create", &e))?;
-        let wrote = f
-            .write_all(&[0u8; TEST_BYTES])
-            .map_err(|e| WriteError::io("write", &e))
-            .and_then(|()| f.sync_all().map_err(|e| WriteError::io("sync", &e)));
-        drop(f);
-        let removed = std::fs::remove_file(&file).map_err(|e| WriteError::io("remove", &e));
-        // What the write met comes first: a refused write whose file could not be removed either is a refused write.
-        wrote.and(removed)
+        Err(e) => return Err(from("folder", e)),
+    };
+    let folder = rustix::fs::fstat(&dir).map_err(|e| from("folder", e))?;
+    let me = rustix::process::geteuid().as_raw();
+    if folder.st_uid != me
+        || Mode::from_raw_mode(folder.st_mode).intersects(Mode::WGRP | Mode::WOTH)
+    {
+        return Err(WriteError::plain(
+            "folder",
+            "the run's folder is not the worker's own".to_string(),
+        ));
+    }
+    checked();
+    // A file that a test which never ended left behind is removed as a name: a link there is not followed.
+    match rustix::fs::unlinkat(&dir, TEST_FILE, AtFlags::empty()) {
+        Ok(()) => {}
+        Err(e) if e == Errno::NOENT => {}
+        Err(e) => return Err(from("leftover", e)),
+    }
+    // The file is made new in the folder that was checked, and no link is followed.
+    let fd = rustix::fs::openat(
+        &dir,
+        TEST_FILE,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|e| from("create", e))?;
+    let mut f = std::fs::File::from(fd);
+    let wrote = f
+        .write_all(&[0u8; TEST_BYTES])
+        .map_err(|e| WriteError::io("write", &e))
+        .and_then(|()| f.sync_all().map_err(|e| WriteError::io("sync", &e)));
+    drop(f);
+    let removed =
+        rustix::fs::unlinkat(&dir, TEST_FILE, AtFlags::empty()).map_err(|e| from("remove", e));
+    // What the write met comes first: a refused write whose file could not be removed either is a refused write.
+    wrote.and(removed)
+}
+
+impl StorageWrites for HostWrites {
+    fn test(&self, run_dir: &Path) -> Result<(), WriteError> {
+        test_write_with(run_dir, &|| {})
     }
 
     fn marker(&self, run_dir: &Path, bytes: &[u8]) -> Result<(), WriteError> {
@@ -247,6 +277,8 @@ pub enum Seen {
     PromptBoundary,
     /// The marker of a stored copy was written.
     CopyMarker,
+    /// The marker of a session's start was written. It is no copy's marker and names no copy of this session.
+    StartMarker,
     /// The engine answered error -32603 and the disks are measured afresh.
     EngineError,
     /// The git settings were written anew at the session's end (`crate::direct::git_settings`).
@@ -260,6 +292,7 @@ impl Seen {
             Self::ToolResult => "tool",
             Self::PromptBoundary => "prompt",
             Self::CopyMarker => "copy",
+            Self::StartMarker => "start",
             Self::EngineError => "error",
             Self::GitSettings => "end",
         }
@@ -270,6 +303,7 @@ impl Seen {
             Self::ToolResult => "a tool result",
             Self::PromptBoundary => "a prompt boundary",
             Self::CopyMarker => "a copy's marker",
+            Self::StartMarker => "the marker of the session's start",
             Self::EngineError => "an engine error",
             Self::GitSettings => "the git settings at the session's end",
         }
@@ -360,6 +394,19 @@ struct State {
     refusal_seen: bool,
     /// The test switch has made its one answer.
     switch_spent: bool,
+    /// The newest result applied was a write the storage took. It says whether a stretch is open when the walk of the
+    /// session's first notice answers, because other writes are applied while the files are measured.
+    took_last: bool,
+}
+
+/// What asked for a test write that has not started yet.
+#[derive(Clone, Copy, Debug)]
+struct Asked {
+    /// What asked first: a refusal's notice carries its word.
+    seen: Seen,
+    /// A tool result named no space left on device while this write, which something else had asked for, had not
+    /// started. The write is made after the result and answers it too.
+    tool_named: bool,
 }
 
 #[derive(Debug)]
@@ -368,10 +415,13 @@ struct Inner {
     /// Held from before a write until its result is applied.
     state: tokio::sync::Mutex<State>,
     /// What asked for a test write that has not started yet.
-    pending: std::sync::Mutex<Option<Seen>>,
+    pending: std::sync::Mutex<Option<Asked>>,
     notify: tokio::sync::Notify,
     /// A test write that got no answer in time is still out on its thread: no second one starts.
     out: Arc<AtomicBool>,
+    /// The walk of the session's first notice is out, with the lock free. A refusal seen meanwhile starts no second walk.
+    /// [`WalkOut`] gives the flag back when the walk's step is over, and when the caller that waited for the walk is dropped.
+    measuring: AtomicBool,
     /// Test writes started (the real ones), for the cost tests.
     started: AtomicU64,
     /// Test writes [`StorageWatch::wake`] asked for, and how many of them the task has answered ([`StorageWatch::idle`]).
@@ -416,6 +466,7 @@ impl StorageWatch {
                 pending: std::sync::Mutex::new(None),
                 notify: tokio::sync::Notify::new(),
                 out: Arc::new(AtomicBool::new(false)),
+                measuring: AtomicBool::new(false),
                 started: AtomicU64::new(0),
                 asked: AtomicU64::new(0),
                 answered: AtomicU64::new(0),
@@ -436,8 +487,8 @@ impl StorageWatch {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .take();
-                    let Some(seen) = next else { break };
-                    inner.test(seen).await;
+                    let Some(asked) = next else { break };
+                    inner.test(asked.seen, asked.tool_named).await;
                     inner.answered.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -445,21 +496,32 @@ impl StorageWatch {
     }
 
     /// Asks for one test write and returns at once: it sets a flag and wakes the task. Wakes that arrive before the task ran are one
-    /// test write.
+    /// test write, which keeps the word of the first. A tool result that finds the write of something else pending is
+    /// remembered with it, so that the log says that a test write worked after that result too.
     pub fn wake(&self, seen: Seen) {
         let mut pending = self.inner.pending.lock().unwrap_or_else(|p| p.into_inner());
-        if pending.is_none() {
-            *pending = Some(seen);
-            self.inner.asked.fetch_add(1, Ordering::SeqCst);
+        match pending.as_mut() {
+            None => {
+                *pending = Some(Asked {
+                    seen,
+                    tool_named: false,
+                });
+                self.inner.asked.fetch_add(1, Ordering::SeqCst);
+            }
+            Some(first) if seen == Seen::ToolResult && first.seen != Seen::ToolResult => {
+                first.tool_named = true;
+            }
+            Some(_) => {}
         }
         drop(pending);
         self.inner.notify.notify_one();
     }
 
-    /// Makes one test write now and returns what it came to, after its result was applied: for the stop after an engine error only,
-    /// whose words depend on it.
+    /// Makes one test write now and returns what it came to, after its result was applied. The prompt loop calls it beside each
+    /// fresh measurement of the disks after an engine error, whether the run then stops or goes on, and once more at the stop after
+    /// every route refused the switch; the words of a stop depend on the answer.
     pub async fn test_now(&self, seen: Seen) -> StorageWrite {
-        self.inner.test(seen).await
+        self.inner.test(seen, false).await
     }
 
     /// [`Self::marker_write_for`] for a stored copy the bucket gave a version (`Some`) or for the marker of a session's start (`None`).
@@ -478,6 +540,12 @@ impl StorageWatch {
     /// log line.
     pub async fn marker_write_for(&self, bytes: Vec<u8>, marked: Marked) -> Result<(), WriteError> {
         let inner = &self.inner;
+        // The marker of a session's start is no copy's marker, and a notice says so with a word of its own.
+        let seen = if marked == Marked::Start {
+            Seen::StartMarker
+        } else {
+            Seen::CopyMarker
+        };
         let mut st = inner.state.lock().await;
         let (writes, dir) = (inner.setup.writes.clone(), inner.setup.run_dir.clone());
         let work = tokio::task::spawn_blocking(move || writes.marker(&dir, &bytes));
@@ -508,7 +576,7 @@ impl StorageWatch {
         };
         // A marker write that failed in another way is logged by its caller, as before the watch.
         if matches!(result, StorageWrite::Took | StorageWrite::Refused) {
-            inner.step(&mut st, Seen::CopyMarker, &result, false).await;
+            inner.step(st, seen, &result, false).await;
         }
         answer
     }
@@ -527,13 +595,13 @@ impl StorageWatch {
         {
             return;
         }
-        let mut st = self.inner.state.lock().await;
+        let st = self.inner.state.lock().await;
         let result = if refused {
             StorageWrite::Refused
         } else {
             StorageWrite::Took
         };
-        self.inner.step(&mut st, seen, &result, false).await;
+        self.inner.step(st, seen, &result, false).await;
     }
 
     /// The file calls for the write of the git settings at this session's end (`crate::direct::git_settings`): the host's,
@@ -546,13 +614,17 @@ impl StorageWatch {
         }
     }
 
-    /// Returns once no write is in progress and the result of the last one is applied (the lock is free).
+    /// Returns once no write is in progress (the lock is free). The walk of a session's first notice runs with the lock free
+    /// and is not waited for here: the caller whose write is that first refusal waits for it, and [`Self::idle`] waits
+    /// for a walk of the watch's own task through its count of the wakes the task answered.
     pub async fn settled(&self) {
         drop(self.inner.state.lock().await);
     }
 
-    /// Returns once every test write that [`Self::wake`] asked for was made and applied. The end of a session waits for it (with a
-    /// bound of its own) before it stops the task, so that a refusal seen at the last tool result still brings its notice.
+    /// Returns once every test write that [`Self::wake`] asked for was made and applied, with the notice of a first refusal
+    /// recorded. The end of a session waits for it (with a bound of its own) before it stops the task, so that a refusal seen at
+    /// the last tool result still brings its notice. A walk of the files that another caller started is that caller's wait and
+    /// is not waited for: at a session's end the copy task is stopped and the prompt loop is over, so no other caller is left.
     pub async fn idle(&self) {
         while self.inner.answered.load(Ordering::SeqCst) < self.inner.asked.load(Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -566,9 +638,21 @@ impl StorageWatch {
     }
 }
 
+/// Gives the flag of the walk back when it is dropped: at the end of the walk's step, and when the caller that waited for
+/// the walk is dropped first (the watch's task, which a session's end stops). The next refusal then measures the files again and
+/// brings its notice.
+struct WalkOut<'a>(&'a AtomicBool);
+
+impl Drop for WalkOut<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl Inner {
-    /// One test write under the lock, and its result applied.
-    async fn test(&self, seen: Seen) -> StorageWrite {
+    /// One test write under the lock, and its result applied. `tool_named`: a tool result named no space left on device while
+    /// this write, which `seen` had asked for, had not started.
+    async fn test(&self, seen: Seen, tool_named: bool) -> StorageWrite {
         let mut st = self.state.lock().await;
         // The switch of the live test row: one answer, to a test write that a tool result asked for once a copy of the session is
         // marked, so that the notice names a copy and the row can download it.
@@ -582,11 +666,21 @@ impl Inner {
                 "direct turn storage: the stage's test switch answered this test write with no space left on device; the storage refused no write",
             );
             let result = StorageWrite::Refused;
-            self.step(&mut st, seen, &result, true).await;
+            self.step(st, seen, &result, true).await;
             return result;
         }
         let result = self.write().await;
-        self.step(&mut st, seen, &result, false).await;
+        // The storage took a write that was made after a tool result named the words, with no stretch open: the log says
+        // so, as `step` does for a write that the tool result itself asked for.
+        let answered_a_tool_result =
+            tool_named && result == StorageWrite::Took && st.open.is_none();
+        self.step(st, seen, &result, false).await;
+        if answered_a_tool_result {
+            self.setup.log.line(&format!(
+                "direct turn storage: a tool result named no space left on device while the test write of {} had not started; that test write to the session's storage worked",
+                seen.log_words()
+            ));
+        }
         result
     }
 
@@ -618,11 +712,22 @@ impl Inner {
         }
     }
 
-    /// Applies the result of one write, under the lock.
-    async fn step(&self, st: &mut State, seen: Seen, result: &StorageWrite, by_switch: bool) {
+    /// Applies the result of one write. It takes the lock its caller has held from before the write and gives it up when the
+    /// result is applied. The walk of the session's first notice runs with the lock free and is given up after
+    /// [`TREE_ANSWER_LIMIT`] (around the probe's own budget), so a walk that hangs holds up no other write; the lock is taken
+    /// again only to record the notice.
+    async fn step(
+        &self,
+        mut st: tokio::sync::MutexGuard<'_, State>,
+        seen: Seen,
+        result: &StorageWrite,
+        by_switch: bool,
+    ) {
         let log = &self.setup.log;
         match result {
-            StorageWrite::Took => match st.open.take() {
+            StorageWrite::Took => {
+                st.took_last = true;
+                match st.open.take() {
                 Some(open) if open.n == 0 => log.line(&format!(
                     "direct turn storage takes writes again after {} s",
                     open.since.elapsed().as_secs()
@@ -636,7 +741,8 @@ impl Inner {
                     "direct turn storage: a tool result named no space left on device; a test write to the session's storage worked",
                 ),
                 None => {}
-            },
+            }
+            }
             StorageWrite::Inconclusive(why) => {
                 log.line(&format!(
                     "direct turn storage: test write inconclusive ({why})"
@@ -647,6 +753,7 @@ impl Inner {
                 TREE_ANSWER_LIMIT.as_secs()
             )),
             StorageWrite::Refused => {
+                st.took_last = false;
                 if st.open.is_some() {
                     return;
                 }
@@ -662,13 +769,27 @@ impl Inner {
                         "direct turn storage refused a write (seen at {}): {NO_SPACE}; stretch {n}",
                         seen.log_words()
                     ));
-                    self.record(st, seen, n, None, false, by_switch);
+                    self.record(&st, seen, n, None, false, by_switch);
                     return;
                 }
-                // The session's first notice: the files are measured once.
-                let (used, partial) = self.setup.probe.storage_used().await;
+                // The session's first notice: the files are measured once, with the lock free. A refusal that finds a walk out
+                // starts no second one: the notice of that walk tells of it.
+                if self.measuring.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let _walk_out = WalkOut(&self.measuring);
+                drop(st);
+                let walked =
+                    tokio::time::timeout(TREE_ANSWER_LIMIT, self.setup.probe.storage_used()).await;
+                let mut st = self.state.lock().await;
+                let gave_up = walked.is_err();
+                let (used, partial) = walked.unwrap_or((None, false));
+                // What the newest write met while the files were measured says whether the stretch is still open.
+                let still_open = !st.took_last;
                 if used.is_some_and(|u| u >= self.setup.limits.storage_warn_mb()) {
-                    st.open = Some(Open { n: 0, since });
+                    if still_open {
+                        st.open = Some(Open { n: 0, since });
+                    }
                     log.line(&format!(
                         "direct turn storage refused a write while its files add up to {} MiB: the disk notices cover it",
                         used.unwrap_or_default()
@@ -677,16 +798,28 @@ impl Inner {
                 }
                 st.notices += 1;
                 let n = st.notices;
-                st.open = Some(Open { n, since });
+                // The stretch this notice tells of is open, unless the storage took a write while the files were measured.
+                if still_open {
+                    st.open = Some(Open { n, since });
+                }
                 log.line(&format!(
-                    "direct turn storage refused a write (seen at {}): {NO_SPACE}; stretch {n}, files {}",
+                    "direct turn storage refused a write (seen at {}): {NO_SPACE}; stretch {n}, files {}{}",
                     seen.log_words(),
-                    used.map_or_else(
-                        || "not measured".to_string(),
-                        |u| format!("{}{u} MiB", if partial { "at least " } else { "" })
-                    )
+                    match used {
+                        Some(u) => format!("{}{u} MiB", if partial { "at least " } else { "" }),
+                        None if gave_up => format!(
+                            "not measured (no answer within {} s)",
+                            TREE_ANSWER_LIMIT.as_secs()
+                        ),
+                        None => "not measured".to_string(),
+                    },
+                    if still_open {
+                        ""
+                    } else {
+                        "; the storage took a write while the files were measured"
+                    }
                 ));
-                let id = self.record(st, seen, n, Some((used, partial)), true, by_switch);
+                let id = self.record(&st, seen, n, Some((used, partial)), true, by_switch);
                 st.first_id = Some(id);
             }
         }

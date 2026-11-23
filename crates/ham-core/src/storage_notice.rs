@@ -225,6 +225,29 @@ pub fn lines(n: &StorageNotice, run_id: &str) -> Vec<String> {
     out
 }
 
+/// One of the newest notices the view keeps: the notice, and its lines as line mode prints them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recent {
+    pub notice: StorageNotice,
+    pub lines: Vec<String>,
+}
+
+/// The entry of a notice in the member `storageNotices` of the JSON view of `ham watch`: `at` (the time of the notice), `id`
+/// (the notice's id, which `ham pull <run> --before-refusal` takes when the notice names a copy), `session` (the session of the
+/// notice), `stretch` (the number of the notice within that session, so two sessions of a run can both have a notice 1), `text`
+/// ([`first_line`]) and, when the notice names a copy, `copyBefore` with the copy's `session`, `count` and `at`. The commit and
+/// the bucket's version of the copy stay out of the view.
+pub fn json_entry(n: &StorageNotice) -> Value {
+    let mut entry = serde_json::json!({
+        "at": n.ts, "id": n.event_id, "session": n.session, "stretch": n.stretch, "text": first_line(n)
+    });
+    if let Some(c) = &n.copy {
+        entry["copyBefore"] =
+            serde_json::json!({"session": c.session, "count": c.count, "at": c.at});
+    }
+    entry
+}
+
 /// The run's first notice, as the card names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageFirst {
@@ -242,8 +265,9 @@ pub struct StorageSeen {
     pub count: u32,
     /// The run's first such notice.
     pub first: Option<StorageFirst>,
-    /// The lines of the newest [`MAX_RECENT`] notices with their event ids, for a surface that prints them itself.
-    pub recent: Vec<(String, Vec<String>)>,
+    /// The newest [`MAX_RECENT`] notices with their lines, for a surface that prints them itself (line mode) and for the JSON view
+    /// of `ham watch` ([`json_entry`]).
+    pub recent: Vec<Recent>,
     /// A notice of the run was made by the stage's test switch.
     pub test_switch: bool,
 }
@@ -267,7 +291,8 @@ impl StorageSeen {
         if self.recent.len() >= MAX_RECENT {
             self.recent.remove(0);
         }
-        self.recent.push((n.event_id.clone(), lines(&n, run_id)));
+        let lines = lines(&n, run_id);
+        self.recent.push(Recent { notice: n, lines });
     }
 }
 

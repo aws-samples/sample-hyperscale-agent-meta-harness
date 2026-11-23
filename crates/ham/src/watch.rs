@@ -188,6 +188,19 @@ pub fn view_json(v: &RunView) -> Value {
             .collect();
         o.insert("diskNotices".into(), Value::Array(notices));
     }
+    // Only a view that holds a notice that the session's storage refused a write carries it: each of the newest notices the
+    // view keeps, with its time, its id (which `ham pull <run> --before-refusal` takes when the notice names a copy), its number
+    // within its session, its first line and the copy it names. Line mode prints the lines of each notice; a script that follows
+    // the JSON view learned of a refusal only from the card after the run.
+    if let (false, Some(o)) = (v.storage.recent.is_empty(), out.as_object_mut()) {
+        let notices: Vec<Value> = v
+            .storage
+            .recent
+            .iter()
+            .map(|r| ham_core::storage_notice::json_entry(&r.notice))
+            .collect();
+        o.insert("storageNotices".into(), Value::Array(notices));
+    }
     // Only a run that ended early carries it, so every other view is unchanged.
     if let (Some(a), Some(o)) = (&v.aborted, out.as_object_mut()) {
         o.insert(
@@ -484,9 +497,12 @@ impl InputMemo {
         }
         // What the run said about its session's storage refusing a write is told once for each notice, in the client's own
         // lines (the fact with the size of the files, what ham does not know, and both commands, none of them cut).
-        for (id, lines) in &v.storage.recent {
-            if self.shown.insert(format!("storage:{id}")) {
-                out.extend(lines.iter().cloned());
+        for recent in &v.storage.recent {
+            if self
+                .shown
+                .insert(format!("storage:{}", recent.notice.event_id))
+            {
+                out.extend(recent.lines.iter().cloned());
             }
         }
         if let Some(quiet) = quiet

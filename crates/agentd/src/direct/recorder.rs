@@ -794,15 +794,19 @@ impl Recorder {
             }
         }
         let mut full_tail: Option<String> = None;
-        // Whether this update's result names no space left: the tail that is read anyway and the error's text.
+        // Whether this update's result names no space left: the tail that is read anyway and the error's text. Only
+        // a final result is searched, because only a final result decides (below). An engine sends the output of a running
+        // command in many updates, and each of them was searched for an answer nobody read.
+        let is_final = matches!(entry.rec.engine_status.as_str(), "completed" | "failed");
         let mut space_named = false;
         if let Some(out) = out {
             let text = tail_bytes(&out.text, PRE_REDACT_OUTPUT_BYTES);
-            space_named = crate::direct::disk::names_no_space(text)
-                || out
-                    .error
-                    .as_deref()
-                    .is_some_and(crate::direct::disk::names_no_space);
+            space_named = is_final
+                && (crate::direct::disk::names_no_space(text)
+                    || out
+                        .error
+                        .as_deref()
+                        .is_some_and(crate::direct::disk::names_no_space));
             let redacted = self.redact(text);
             entry.rec.output_bytes = out.text.len();
             entry.rec.output_tail = tail_bytes(&redacted, OUTPUT_TAIL_BYTES)

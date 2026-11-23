@@ -45,6 +45,10 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   on the build host and under 90.4 ms inside a full run of the worker's crate. The row costs a run the length of the test, in which no other test of
   the run works, and the wait until the tests in flight have ended. The test took 98 to 102 s on a machine that ran one partition of the workspace's
   tests and nothing else, in a partition that was not the longest, and 133 to 160 s on the build host beside other work.
+- A test makes its folder with `create_dir` and passes over a name that exists; it never takes an existing folder with `create_dir_all`. A name built
+  from the process id is new among the processes that run now, not over time: the kernel hands an id out again, nextest starts one process for each
+  test, and the tests leave their folders in the scratch directory, so a later run can be handed a folder that holds another test's files and fail on
+  them. `tmp()` of `ham-core/tests/skills_namespace.rs` is the pattern, beside the test that plants such folders.
 
 ## Verification
 

@@ -516,10 +516,19 @@ pub fn signal_of(text: &str) -> Option<Signal> {
         .then_some(Signal::ReadOnly)
 }
 
+/// How many texts [`names_no_space`] has read in this process.
+static NO_SPACE_SEARCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many texts this process has searched with [`names_no_space`].
+pub fn no_space_searches() -> u64 {
+    NO_SPACE_SEARCHES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether `text` names that no space is left on a device (the words, `ENOSPC`, `os error 28`): how the result of a tool call is
 /// read. A text that only quotes the words reads the same, which is why the words alone never bring a notice: they make the worker test
 /// the storage itself (`crate::direct::storage_watch`).
 pub fn names_no_space(text: &str) -> bool {
+    NO_SPACE_SEARCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The answer of `signal_of(text) == Some(Signal::NoSpace)` with one ASCII-lowered copy and three searches, and without the
     // search for the read-only words: this runs on every final tool result, on up to 256 KiB. The needles are ASCII and hold no
     // letter that a character outside ASCII lowers to, so the ASCII-lowered text finds what the fully lowered text finds.

@@ -24,15 +24,52 @@ fn write(root: &Path, rel: &str, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
+/// The counter in the names of this process's test folders.
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// The name of a test folder: the process id and a counter. The id is unique among the processes that run now, not over time: the kernel
+/// hands an id out again and nextest starts one process for each test, so a later run can ask for a name that an earlier run used.
+fn folder_name(n: u64) -> String {
+    format!("ham-skills-ns-{}-{n}", std::process::id())
+}
+
+/// A new, empty folder below `base` for one test. `create_dir` refuses a folder that exists, so a folder that an earlier process with
+/// this process id left behind (these tests remove nothing) is passed over and never handed to a test with its old content.
+fn new_dir_in(base: &Path) -> PathBuf {
+    loop {
+        let dir = base.join(folder_name(NEXT.fetch_add(1, Ordering::SeqCst)));
+        let made = std::fs::create_dir(&dir);
+        if made
+            .as_ref()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+        {
+            continue;
+        }
+        made.unwrap();
+        return dir;
+    }
+}
+
 fn tmp() -> PathBuf {
-    static N: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "ham-skills-ns-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::SeqCst)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    new_dir_in(&std::env::temp_dir())
+}
+
+/// The names of the folders in `dir` in the order the file system lists them: no sort, the order a reader gets that takes the listing as it
+/// comes.
+fn listed_names(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The first name, in the order given, that the namespace reserves: it starts with the pack's prefix and is none of the pack's own names.
+fn first_reserved(names: &[String]) -> String {
+    names
+        .iter()
+        .find(|n| n.starts_with(pack::SKILL_PREFIX) && !pack::is_skill_name(n))
+        .cloned()
+        .unwrap()
 }
 
 /// The seven names the pack owns, from the pack itself.
@@ -145,4 +182,100 @@ fn one_reserved_name_among_good_ones_stops_the_whole_set() {
     write(&dir, "lifecycle-tdd/SKILL.md", &entry("lifecycle-tdd"));
     let e = read_skills_path(&dir).unwrap_err();
     assert_eq!(e.skill.as_deref(), Some("lifecycle-extra"), "{e}");
+}
+
+#[test]
+fn a_test_folder_is_new_even_when_an_earlier_process_with_this_id_left_one() {
+    // What a reused process id finds: folders under the names this process takes next, as the default-folder test above leaves them
+    // (`ham/skills/<skill>/SKILL.md` below a stand-in XDG_CONFIG_HOME). They are planted in a base of this test's own, so no other
+    // test of this binary can be handed one; the other tests take at most 7 names while this one runs.
+    let base = tmp();
+    let next = NEXT.load(Ordering::SeqCst);
+    for n in next..next + 16 {
+        write(
+            &base,
+            &format!("{}/ham/skills/lifecycle-mine/SKILL.md", folder_name(n)),
+            &entry("lifecycle-mine"),
+        );
+    }
+    let dir = new_dir_in(&base);
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(
+        left.is_empty(),
+        "a test was handed a folder with an earlier run's content: {left:?}"
+    );
+    // The reserved-names case of this file in the folder a test is handed: the name is the reserved skill's, never a leftover's.
+    write(&dir, "alpha/SKILL.md", &entry("alpha"));
+    write(&dir, "lifecycle-extra/SKILL.md", &entry("lifecycle-extra"));
+    write(&dir, "lifecycle-tdd/SKILL.md", &entry("lifecycle-tdd"));
+    let e = read_skills_path(&dir).unwrap_err();
+    assert_eq!(e.skill.as_deref(), Some("lifecycle-extra"), "{e}");
+    // The base is this test's own and new: its planted folders do not stay behind.
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn the_name_in_the_message_does_not_depend_on_the_order_the_folders_were_made_in() {
+    // Two reserved names in one set: the reader sorts the folder names, so the message names the same skill on every read, whatever
+    // order the folders were made in and whatever order the disk lists them in.
+    let orders = [
+        ["alpha", "lifecycle-beta", "lifecycle-zeta", "omega"],
+        ["omega", "lifecycle-zeta", "lifecycle-beta", "alpha"],
+    ];
+    for order in orders {
+        let dir = tmp();
+        for name in order {
+            write(&dir, &format!("{name}/SKILL.md"), &entry(name));
+        }
+        for _ in 0..3 {
+            let e = read_skills_path(&dir).unwrap_err();
+            assert_eq!(e.skill.as_deref(), Some("lifecycle-beta"), "{order:?}: {e}");
+        }
+    }
+    // The four names above cannot show the sort where the disk happens to list `lifecycle-beta` before `lifecycle-zeta`, whatever order
+    // they were made in. So eight larger sets follow, made forwards and backwards in turn, and for each one the test reads the listing of
+    // the disk itself. A set proves the sort only when the reserved name the disk lists first is another one than the reserved name that
+    // sorts first: a reader that took the listing as it comes would name that other skill.
+    let mut proving = 0;
+    for set in 0..8 {
+        let mut names: Vec<String> = (0..10).map(|n| format!("lifecycle-s{set}-n{n}")).collect();
+        names.push(format!("alpha-{set}"));
+        names.push(format!("omega-{set}"));
+        if set % 2 == 1 {
+            names.reverse();
+        }
+        let dir = tmp();
+        for name in &names {
+            write(&dir, &format!("{name}/SKILL.md"), &entry(name));
+        }
+        let listed = listed_names(&dir);
+        let mut sorted = listed.clone();
+        sorted.sort();
+        let first_sorted = first_reserved(&sorted);
+        assert_eq!(first_sorted, format!("lifecycle-s{set}-n0"));
+        if first_reserved(&listed) != first_sorted {
+            proving += 1;
+        }
+        for _ in 0..3 {
+            let e = read_skills_path(&dir).unwrap_err();
+            assert_eq!(
+                e.skill.as_deref(),
+                Some(first_sorted.as_str()),
+                "the disk lists {listed:?}: {e}"
+            );
+        }
+    }
+    if proving == 0 {
+        // Rust's test harness has no skipped state at run time, so the test says it, as the other tests of this workspace do.
+        eprintln!(
+            "SKIPPED the proof of the sort: the file system of {} listed the reserved name that sorts first in front in all 8 sets, so \
+             no set here can tell a reader that sorts from one that takes the listing as it comes",
+            std::env::temp_dir().display()
+        );
+    } else {
+        eprintln!("the sort is proved by {proving} of 8 sets on this file system");
+    }
 }

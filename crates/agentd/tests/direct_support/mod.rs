@@ -2399,3 +2399,77 @@ pub fn no_secrets(s: &str) {
         assert!(!s.contains(c), "secret leaked: {c}");
     }
 }
+
+/// The fault switch of the session's storage for whole runs. It stands where the two writes of the storage watch are
+/// (`App::storage_writes`): the host's writes, except that the first `markers` writes of the copies' marker and the first `tests` test
+/// writes are answered with errno 28 without touching the storage. It counts the calls of each kind.
+#[derive(Debug)]
+pub struct StorageFaults {
+    host: agentd::direct::storage_watch::HostWrites,
+    refuse_markers: std::sync::atomic::AtomicU32,
+    refuse_tests: std::sync::atomic::AtomicU32,
+    /// The writes of the copies' marker the watch asked for.
+    pub markers: std::sync::atomic::AtomicU32,
+    /// The test writes the watch asked for.
+    pub tests: std::sync::atomic::AtomicU32,
+}
+
+impl StorageFaults {
+    /// Whether one more write of this kind is refused; each refusal is taken from the number the test gave.
+    fn refuse(left: &std::sync::atomic::AtomicU32) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        left.fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    fn no_space() -> agentd::direct::storage_watch::WriteError {
+        agentd::direct::storage_watch::WriteError {
+            step: "write",
+            errno: Some(28),
+            text: std::io::Error::from_raw_os_error(28).to_string(),
+            test_switch: false,
+        }
+    }
+}
+
+impl agentd::direct::storage_watch::StorageWrites for StorageFaults {
+    fn test(&self, run_dir: &Path) -> Result<(), agentd::direct::storage_watch::WriteError> {
+        self.tests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if Self::refuse(&self.refuse_tests) {
+            return Err(Self::no_space());
+        }
+        agentd::direct::storage_watch::StorageWrites::test(&self.host, run_dir)
+    }
+
+    fn marker(
+        &self,
+        run_dir: &Path,
+        bytes: &[u8],
+    ) -> Result<(), agentd::direct::storage_watch::WriteError> {
+        self.markers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if Self::refuse(&self.refuse_markers) {
+            return Err(Self::no_space());
+        }
+        agentd::direct::storage_watch::StorageWrites::marker(&self.host, run_dir, bytes)
+    }
+}
+
+impl Direct {
+    /// Gives the run the fault switch of the session's storage ([`StorageFaults`]): the first `markers` writes of the copies'
+    /// marker and the first `tests` test writes of the watch are refused with errno 28. Call it before the run is invoked.
+    pub fn refuse_storage(&self, markers: u32, tests: u32) -> Arc<StorageFaults> {
+        let faults = Arc::new(StorageFaults {
+            host: agentd::direct::storage_watch::HostWrites,
+            refuse_markers: std::sync::atomic::AtomicU32::new(markers),
+            refuse_tests: std::sync::atomic::AtomicU32::new(tests),
+            markers: std::sync::atomic::AtomicU32::new(0),
+            tests: std::sync::atomic::AtomicU32::new(0),
+        });
+        assert!(
+            self.app.storage_writes.set(faults.clone()).is_ok(),
+            "the run was given its storage writes before"
+        );
+        faults
+    }
+}

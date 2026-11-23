@@ -112,7 +112,7 @@ pub fn phase_shown(status: Option<GoalStatus>, phase: Option<GoalPhase>) -> Opti
     Some(phase.map_or("-", phase_word))
 }
 
-/// The phase of a run as the command-line surfaces write it (`ham runs`, `ham status`, `ham watch`, the card the command prints): the stored
+/// The phase of a run as the command-line surfaces write it (`ham runs`, `ham watch`, the card the command prints): the stored
 /// phase, except that a `complete` run whose last stored phase is `delivering` reads `delivered`. The service writes `delivering` once
 /// and moves the status to `complete` without writing a phase again, so the stored word kept saying a delivery was going on hours after the zip
 /// was in the bucket. Every other pair is written as stored (a `blocked` run still says where it stopped), and the JSON of the API keeps

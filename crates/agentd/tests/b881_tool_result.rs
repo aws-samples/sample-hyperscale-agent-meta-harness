@@ -305,3 +305,52 @@ fn b881_reading_a_result_for_the_words_is_cheap() {
         "median {median:?}"
     );
 }
+
+// ----: only a final result is searched for the words ---------------------------------------------------------------------------
+
+/// An engine sends the output of a running command in many updates before the final one. Only a final result decides whether the
+/// storage is tested, so only a final result is searched. The count is the process's own (`disk::no_space_searches`): nextest runs
+/// each test in a process of its own, as the count of the hashes in `b881_whole_run.rs` needs too. The count is exact only with
+/// that runner, which is the project's: in a process that other tests of this file share, their searches would add to it.
+#[test]
+fn b884_a_result_that_is_not_final_is_not_searched_for_the_words() {
+    let mut r = Recorder::new(vec![]).with_engine("cline");
+    r.on_tool_call(&call("t1", "run_commands: make"));
+    let before = disk::no_space_searches();
+    for i in 0..40 {
+        r.on_tool_call_update(&done(
+            "t1",
+            "in_progress",
+            &format!("line {i} of the build output"),
+        ));
+    }
+    assert_eq!(
+        disk::no_space_searches() - before,
+        0,
+        "updates that are not final were searched"
+    );
+    assert!(!r.take_space_named());
+    r.on_tool_call_update(&done("t1", "failed", NO_SPACE_TEXTS[0]));
+    let searched = disk::no_space_searches() - before;
+    assert!(
+        (1..=2).contains(&searched),
+        "the final result is searched, its text and at the most its error text: {searched}"
+    );
+    assert!(r.take_space_named(), "the final result still decides");
+
+    // The second engine, whose result is in the content blocks.
+    let mut r = Recorder::new(vec![]).with_engine("opencode");
+    r.on_tool_call(&call("t2", "bash"));
+    let before = disk::no_space_searches();
+    for _ in 0..40 {
+        r.on_tool_call_update(&blocks("t2", "in_progress", "still building"));
+    }
+    assert_eq!(
+        disk::no_space_searches() - before,
+        0,
+        "updates that are not final were searched"
+    );
+    r.on_tool_call_update(&blocks("t2", "failed", NO_SPACE_TEXTS[1]));
+    assert!(disk::no_space_searches() - before >= 1);
+    assert!(r.take_space_named(), "the final result still decides");
+}
