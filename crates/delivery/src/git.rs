@@ -162,6 +162,10 @@ impl Git {
             .env("GIT_ASKPASS", "/bin/false")
             .env("SSH_ASKPASS", "/bin/false")
             .env("LC_ALL", "C")
+            // Git writes local times in some outputs: `git archive` gives each zip entry the commit time in the zone of its process.
+            // With no zone named here that is the machine's own zone, so two machines would write different bytes for one commit.
+            // `UTC0` names UTC in the form that needs no zone data on the machine.
+            .env("TZ", "UTC0")
             .args(GUARDS)
             .stdin(Stdio::null())
             .kill_on_drop(true);

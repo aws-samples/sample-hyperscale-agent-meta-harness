@@ -38,7 +38,7 @@ use crate::s3::FileDigest;
 use crate::time::now_unix;
 use crate::workspace::{
     WsError, git_bytes_with_env, git_dir_problem, git_with_env, git_with_env_outside,
-    git_with_env_until,
+    git_with_env_until, git_with_env_until_input,
 };
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use std::io::Read;
@@ -958,6 +958,10 @@ pub struct ScratchRepo {
     tidy_limit: Duration,
     /// The last clean-up found the disk of this repository below its free-space mark, and the log said so ([`Self::say_disk`]).
     disk_low: AtomicBool,
+    /// Reads what the engine's store holds as packs ([`Self::engine_packs`]): [`engine_packs_of`], or what a test set.
+    packs_reader: PacksQuestion,
+    /// A read of the engine's packs has not returned ([`Self::engine_packs`]); the thread that makes the read clears it.
+    packs_busy: Arc<AtomicBool>,
 }
 
 impl ScratchRepo {
@@ -1050,6 +1054,8 @@ impl ScratchRepo {
             tidy_said: AtomicBool::new(false),
             tidy_limit: TIDY_LIMIT,
             disk_low: AtomicBool::new(false),
+            packs_reader: PacksQuestion(Arc::new(engine_packs_of)),
+            packs_busy: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1575,6 +1581,10 @@ pub struct Snapshotter {
     /// The commits a copy above the floor leaves out with everything they reach ([`Self::set_floors`]): heads of the bundle the
     /// run started from that this repository can read. Empty: every bundle is whole.
     floors: Vec<String>,
+    /// What this repository knows for the keep of the run's commits ([`Self::keep_commits`]).
+    keep: KeepState,
+    /// How long the steps of the look in progress took, for the worker's log line of the look ([`Self::take_look_steps`]).
+    steps: LookSteps,
 }
 
 /// The lock files a git that was killed in the middle can leave in the private repository: the index's, the ref's, the bundle's
@@ -1612,7 +1622,39 @@ impl Snapshotter {
         base: &str,
         prime: Option<Duration>,
     ) -> Result<Self, String> {
+        Self::new_primed_with_free(agent_data, repo, base, prime, None).await
+    }
+
+    /// [`Self::new_primed`] with the free bytes that the keep's rules read in place of those of the disk of the private
+    /// repository, from the worker's start on: `None` reads the disk ([`Self::set_keep_free_bytes`]). Tests: a disk that is short
+    /// when a worker starts cannot be had from a real one.
+    pub async fn new_primed_with_free(
+        agent_data: &Path,
+        repo: &Path,
+        base: &str,
+        prime: Option<Duration>,
+        free: Option<u64>,
+    ) -> Result<Self, String> {
         let git_dir = agent_data.join("snapshot.git");
+        // Root invariant 9 wins over the keep at a worker's start too, before the start writes anything into the private
+        // repository. The pack an earlier worker kept is looked at first, and it does not stay on a disk that has less free than
+        // the keep's rule asks ([`Self::keep_rule_short`], the one function that a look asks too; at a start the last bundle is 0
+        // and the marks are those of a run): its bytes are free before `git init`, the config calls, the seed and the first
+        // reading write anything, and no check is paid for a pack that goes. Its head stays marked as tried, as after
+        // [`Self::keep_gives_way`]. One question to the worker's own disk, asked only while a pack stands; no git call.
+        let mut kept = kept_at_open(&git_dir);
+        let short = kept.is_some()
+            && Self::keep_rule_short(
+                &TidyMarks::RUN,
+                0,
+                0,
+                free.unwrap_or_else(|| free_bytes(&git_dir)),
+            )
+            .is_some();
+        let gave_way = kept.take_if(|_| short).map(|pack| {
+            remove_pack(&git_dir.join(KEPT_DIR).join("pack"), &pack.name);
+            pack.head
+        });
         let scratch = ScratchRepo::open(git_dir.clone(), repo)
             .await?
             .tuned()
@@ -1659,7 +1701,24 @@ impl Snapshotter {
             whole_note: std::sync::Mutex::new(None),
             form: BundleForm::Whole,
             floors: Vec::new(),
+            keep: KeepState::default(),
+            steps: LookSteps::default(),
         };
+        made.keep.kept = kept;
+        made.keep.free = free.into_iter().collect();
+        // A run whose check of a kept pack did not end once keeps no pack any more ([`KEPT_OFF`]).
+        made.keep.run_off = std::fs::symlink_metadata(made.git_dir.join(KEPT_DIR).join(KEPT_OFF))
+            .is_ok_and(|mark| mark.is_file());
+        if made.keep.run_off {
+            made.drop_kept();
+        }
+        made.check_kept(prime.unwrap_or(KEPT_CHECK_LIMIT)).await;
+        made.keep.tried = made
+            .keep
+            .kept
+            .as_ref()
+            .map(|kept| kept.head.clone())
+            .or(gave_way);
         if let Some(limit) = prime {
             made.prime(limit).await;
         }
@@ -1932,11 +1991,18 @@ impl Snapshotter {
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let below_floors: Vec<String> = self.floors.iter().map(|f| format!("^{f}")).collect();
+        // The two git calls of a look that walk the run's commits read the kept pack, when this look may
+        // ([`Self::keep_check`]). It is an object folder beside this repository's own store, named for these calls alone.
+        let kept_dir = self.git_dir.join(KEPT_DIR);
+        let mut envs: Vec<(&str, &Path)> = vec![("GIT_DIR", gd)];
+        if self.keep.use_kept {
+            envs.push(("GIT_ALTERNATE_OBJECT_DIRECTORIES", &kept_dir));
+        }
         let mut count_args = vec!["rev-list", "--count", "refs/heads/snapshot"];
         count_args.extend(below_floors.iter().map(String::as_str));
         let above: u64 = self
             .scratch
-            .git(cwd, &count_args, &[("GIT_DIR", gd)])
+            .git(cwd, &count_args, &envs)
             .await
             .map_err(ws)?
             .trim()
@@ -1974,10 +2040,7 @@ impl Snapshotter {
             "refs/heads/snapshot",
         ];
         args.extend(left_out.iter().map(String::as_str));
-        self.scratch
-            .git(cwd, &args, &[("GIT_DIR", gd)])
-            .await
-            .map_err(ws)?;
+        self.scratch.git(cwd, &args, &envs).await.map_err(ws)?;
         // The header as a reader will see it: it must end inside the bytes every reader takes, and say what the bundle needs.
         let mut prefix = Vec::new();
         std::fs::File::open(bundle)
@@ -2017,6 +2080,8 @@ impl Snapshotter {
             whole_note: std::sync::Mutex::new(None),
             form: BundleForm::Whole,
             floors: Vec::new(),
+            keep: KeepState::default(),
+            steps: LookSteps::default(),
         })
     }
 
@@ -2276,11 +2341,16 @@ impl Snapshotter {
     /// be read any more (the engine removed or replaced `.git`) the copy holds the whole tree and has no parent ([`Self::commit_copy`]).
     /// A copy is made whether or not the tree changed, so the newest record always says what the end state is.
     ///
-    /// It starts with the clean-up a look left due ([`Self::tidy_if_due`]), after the lock files are cleared.
+    /// It starts with the clean-up a look left due ([`Self::tidy_if_due`]), after the lock files are cleared. Before
+    /// both, a kept pack gives way on a short disk ([`Self::keep_gives_way`]).
     pub async fn final_copy(&mut self, head: Option<&str>) -> Result<SnapshotMade, String> {
         // The copy of the end has its caller's budget; a look that was aborted in the middle must not leave its own limit behind.
         self.scratch.give_up = None;
+        // Root invariant 9 over the keep comes first: on a short disk the bytes of a kept pack are the copy's.
+        self.keep_gives_way();
         self.clear_stale_locks();
+        // The copy of the end reads no kept pack and keeps none: nothing is in front of it, and a delivery is planned from it.
+        self.keep.use_kept = false;
         self.tidy_if_due().await;
         let made = self.final_copy_kept(head).await;
         self.tidy_due = true;
@@ -2360,7 +2430,12 @@ impl Snapshotter {
     }
 
     async fn look(&mut self) -> Result<Option<SnapshotMade>, String> {
+        self.steps = LookSteps::default();
+        let at = Instant::now();
+        // Root invariant 9 over the keep comes first, before anything is written into the private repository.
+        self.keep_gives_way();
         self.tidy_if_due().await;
+        self.steps.tidy = at.elapsed();
         let made = self.snapshot_kept().await;
         if !matches!(made, Ok(None)) {
             self.tidy_due = true;
@@ -2370,17 +2445,23 @@ impl Snapshotter {
 
     async fn snapshot_kept(&mut self) -> Result<Option<SnapshotMade>, String> {
         let read_unix = now_unix();
+        self.keep.rest_head = None;
+        let at = Instant::now();
         let tree = self.current_tree().await?;
+        self.steps.tree = at.elapsed();
         if tree == self.last_tree {
             return Ok(None);
         }
         let gd: &Path = &self.git_dir;
+        let at = Instant::now();
         let head = self.engine_head().await;
+        self.steps.head = at.elapsed();
         let parent = head
             .clone()
             .or_else(|| self.last_parent.clone())
             .unwrap_or_else(|| self.base.clone());
         let n = self.count + 1;
+        let at = Instant::now();
         let (commit, tree) = self.commit_copy(tree, Some(&parent), n).await?;
         self.scratch
             .git(
@@ -2390,7 +2471,12 @@ impl Snapshotter {
             )
             .await
             .map_err(ws)?;
+        self.steps.commit = at.elapsed();
+        let at = Instant::now();
+        self.keep_check(head.as_deref()).await;
         let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
+        self.steps.bundle = at.elapsed();
+        self.steps.engine = self.keep.note_head(head.as_deref(), bundle_bytes);
         self.last_tree = tree;
         if head.is_some() {
             self.last_parent = head;
@@ -2405,6 +2491,726 @@ impl Snapshotter {
             bundle_bytes,
             read_unix,
             digest: None,
+        }))
+    }
+}
+
+// ----: the kept pack of the run's commits -----------------------------------------------------------------------------------
+//
+// What costs in a look is loose objects: every copy above the base packs every commit the run made again, and git opens each loose
+// object of those commits in the engine's store on the session's storage. So the objects of the run's commits that are in no pack
+// are packed once into a folder of this repository on the worker's own disk (the keep), and the two git calls of a look that walk
+// the run's commits read them there. Root invariant 9 binds every line: a keep never fails, delays, thins or loses a copy.
+//
+// - The pack is no part of this repository's own object store. It lies in `kept/pack/`, an object folder of its own that only
+//   `rev-list --count` and `bundle create` of a look are given (`GIT_ALTERNATE_OBJECT_DIRECTORIES`). `add -A`, `write-tree`,
+//   `commit-tree`, `prune`, `repack` and `count-objects` never see it, so the index, the refs and the loose objects of this
+//   repository are what they are without a keep, and removing the kept pack at any moment leaves the repository of release 5.25.
+//   In `objects/pack` the pack would make `git prune` remove the loose copy of a blob that it also holds, and when the pack is
+//   replaced no store would hold a blob the index still names.
+// - It holds what is in no pack (`pack-objects --revs --unpacked --incremental`): what the engine has packed is read from the
+//   engine's pack, in the form the engine's pack has it, as in release 5.25. A pack of every commit of the run would hold whole
+//   objects where the engine's pack holds deltas against objects below the floors, and the copy would grow.
+// - A kept pack and a pack of the engine never hold the same object when a bundle is written. The names of the engine's packs
+//   are read before a keep and after it (a keep during which the engine repacked is a miss) and at every look that would read
+//   the kept pack ([`Snapshotter::keep_check`]): when they have changed, the kept pack is removed before the bundle is written and
+//   the next look at rest keeps again. Once the engine packs its own commits (`git gc`), its pack holds them as deltas where it
+//   can; a bundle that took the kept pack's whole objects instead would be many times the copy of release 5.25. Which of two
+//   packs git reads first differs between git versions (by the files' times in one, by the order of the object folders in
+//   another), so nothing here rests on it.
+// - The keep runs between two looks, never inside one, and whatever starts the next look ends it (`direct::start_snapshots`).
+
+/// The folder of the private repository of the copies that holds the kept pack, an object folder of its own.
+const KEPT_DIR: &str = "kept";
+/// How the first line of the marker of a kept pack starts; the engine's head the pack was kept for follows.
+const KEPT_LINE: &str = "agentd kept ";
+/// How the second line of the marker starts; what the engine's own packs were when the pack was kept follows
+/// ([`ScratchRepo::engine_packs`]).
+const KEPT_PACKS_LINE: &str = "engine packs ";
+/// The most packs of the engine's store whose names are read ([`ScratchRepo::engine_packs`]); a store with more keeps no pack.
+const ENGINE_PACKS_MAX: usize = 4_096;
+/// The longest the git of one keep may run before it is given up; whatever starts the next look ends it sooner. It is the
+/// least the git work of a look has ([`COPY_GIT_FLOOR`]).
+pub const KEEP_LIMIT: Duration = COPY_GIT_FLOOR;
+/// The longest git's own check of a pack that an earlier worker kept may run ([`Snapshotter::check_kept`]) before it is
+/// given up and the pack is removed. The check runs where the first reading of the tree runs, before the engine starts, and has
+/// that reading's limit: [`PRIME_LIMIT`] in a session, and the limit a caller of [`Snapshotter::new_primed`] names.
+pub const KEPT_CHECK_LIMIT: Duration = PRIME_LIMIT;
+/// The mark, a file in the folder [`KEPT_DIR`], that switches the keep off for the rest of the run: git's check of a kept
+/// pack did not end within its limit when a worker started ([`Snapshotter::check_kept`]). A pack that cannot be checked within the
+/// limit is never kept twice, whatever its size.
+const KEPT_OFF: &str = "off";
+
+/// What came of a keep of the run's commits ([`Snapshotter::keep_commits`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Keep {
+    /// No keep was due.
+    NotDue,
+    /// The pack is kept: its size in bytes.
+    Kept { bytes: u64 },
+    /// The keep's git ran and the run's commits hold nothing to keep: the engine has packed every object of them.
+    Nothing,
+    /// The keep was missed: why. No pack and no marker are left, and no copy is affected.
+    Missed(String),
+}
+
+/// What a look found of the engine's head, for the worker's log line of the look.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineHead {
+    /// The head could not be read: the engine removed or replaced `.git`.
+    #[default]
+    Gone,
+    /// Another head than the look before found, or the first head a look of this worker found.
+    Moved,
+    /// The head the look before found.
+    Same,
+}
+
+impl EngineHead {
+    /// The word of the log line.
+    pub fn word(self) -> &'static str {
+        match self {
+            EngineHead::Gone => "gone",
+            EngineHead::Moved => "moved",
+            EngineHead::Same => "same",
+        }
+    }
+}
+
+/// How long the steps of the last look took and what it found of the engine's head ([`Snapshotter::take_look_steps`]), for
+/// the worker's log line of the look.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LookSteps {
+    /// The clean-up of the private repository, when one was due.
+    pub tidy: Duration,
+    /// Reading the tree (`add -A`, `write-tree`).
+    pub tree: Duration,
+    /// Reading the engine's head.
+    pub head: Duration,
+    /// The copy's commit and its ref.
+    pub commit: Duration,
+    /// The bundle, with the read of the engine's packs while a pack is kept.
+    pub bundle: Duration,
+    /// What the look found of the engine's head.
+    pub engine: EngineHead,
+}
+
+/// The pack this repository keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct KeptPack {
+    /// The engine's head the pack was kept for.
+    head: String,
+    /// `pack-<hash>`, the name its files share.
+    name: String,
+    /// The size of the pack file.
+    bytes: u64,
+    /// What the engine's own packs were when the pack was kept ([`ScratchRepo::engine_packs`]).
+    engine_packs: String,
+}
+
+/// What a [`Snapshotter`] knows for the keep of the run's commits.
+#[derive(Debug, Default)]
+struct KeepState {
+    /// The keep is switched off (`AGENTD_DIRECT_KEEP_COMMITS=0`).
+    off: bool,
+    /// The engine's head as the last look that read it found it.
+    seen_head: Option<String>,
+    /// The engine's head when the look that just made a copy found the head the look before it had found. Two looks that find the
+    /// same head do not show that the engine is at rest: the keep reads the commit it was given, and a read that fails is a miss.
+    rest_head: Option<String>,
+    /// The pack that is kept.
+    kept: Option<KeptPack>,
+    /// The head a keep was last tried for: this worker does not try it again until the head has moved. The mark is in
+    /// memory: a worker that starts takes it from the pack that stands, or from the pack a short disk took at that start
+    /// ([`Snapshotter::new_primed_with_free`]), and has none on a private repository without a pack.
+    tried: Option<String>,
+    /// The head of a keep that is in flight; still set when the keep was cut ([`Snapshotter::keep_cut`]).
+    keeping: Option<String>,
+    /// The size of the bundle of the last copy.
+    last_bundle_bytes: u64,
+    /// The look in progress may read the kept pack ([`Snapshotter::keep_check`]).
+    use_kept: bool,
+    /// Why the pack an earlier worker kept was not adopted ([`Snapshotter::check_kept`]), until the caller has taken it
+    /// ([`Snapshotter::take_kept_note`]).
+    note: Option<String>,
+    /// The free bytes the keep's rules read in place of those of the disk of the private repository, one answer for each
+    /// question in order, the last one for every question after it; without one the disk is read
+    /// ([`Snapshotter::set_keep_free_bytes`], [`Snapshotter::set_keep_free_answers`]); tests.
+    free: Vec<u64>,
+    /// The size of the pack an earlier worker kept and how long git's check of it ran when this repository was opened
+    /// ([`Snapshotter::check_kept`]), until the caller has taken them ([`Snapshotter::take_kept_check`]).
+    checked: Option<(u64, Duration)>,
+    /// This run keeps no pack any more: the private repository carries the mark [`KEPT_OFF`].
+    run_off: bool,
+}
+
+impl KeepState {
+    /// The look that just made a copy found the engine's head at `head`, and its bundle has `bundle_bytes` bytes.
+    fn note_head(&mut self, head: Option<&str>, bundle_bytes: u64) -> EngineHead {
+        self.last_bundle_bytes = bundle_bytes;
+        let found = match head {
+            Some(head) if self.seen_head.as_deref() == Some(head) => {
+                self.rest_head = Some(head.to_string());
+                EngineHead::Same
+            }
+            Some(_) => EngineHead::Moved,
+            None => EngineHead::Gone,
+        };
+        self.seen_head = head.map(str::to_string);
+        found
+    }
+}
+
+/// Removes the files of the pack `name` in `dir`: the index first, so that git stops reading the pack, the marker last.
+fn remove_pack(dir: &Path, name: &str) {
+    for ext in ["idx", "pack", "rev", "keep"] {
+        let _ = std::fs::remove_file(dir.join(format!("{name}.{ext}")));
+    }
+}
+
+/// Removes every file in the folder `dir`.
+fn clear_folder(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// The folder a keep writes its pack into before the pack stands. It is emptied when a keep starts and when the keep ends in
+/// any way, also when the keep's future is dropped: a keep that failed, met a full disk or was cut leaves no file behind.
+struct Incoming(PathBuf);
+
+impl Drop for Incoming {
+    fn drop(&mut self) {
+        clear_folder(&self.0);
+    }
+}
+
+/// What the engine's store at `dir` (its `objects/pack`) holds as packs: their number and a hash over their names. A store
+/// without that folder holds none.
+fn engine_packs_of(dir: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut names: Vec<String> = match std::fs::read_dir(dir) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".pack"))
+            .take(ENGINE_PACKS_MAX + 1)
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(io(e)),
+    };
+    if names.len() > ENGINE_PACKS_MAX {
+        return Err(format!(
+            "snapshot: the engine's store holds more than {ENGINE_PACKS_MAX} packs"
+        ));
+    }
+    names.sort();
+    let mut hash = Sha256::new();
+    for name in &names {
+        hash.update(name.as_bytes());
+        hash.update(b"\n");
+    }
+    let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{}:{digest}", names.len()))
+}
+
+/// What reads the packs of an engine's store, given the store's `objects/pack` ([`engine_packs_of`]; a test gives a storage
+/// that answers slowly, [`Snapshotter::set_engine_packs_reader`]).
+pub type PacksReader = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
+
+/// A [`PacksReader`] as a member of [`ScratchRepo`].
+struct PacksQuestion(PacksReader);
+
+impl std::fmt::Debug for PacksQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PacksQuestion")
+    }
+}
+
+/// What a worker finds when it opens the private repository at `git_dir` that an earlier worker left (ruling 12 of the
+/// lead's rulings on the build brief). Everything in the folder a keep writes into is removed: a keep that was cut before its marker
+/// stood left it. Of the packs whose marker carries the worker's own line, the one with the newest marker that has its pack and its
+/// index is the kept pack; one that lacks a file (a keep that was cut after its marker stood) and every older one (a keep that was
+/// cut while the pack before was replaced) are removed. A pack with another marker, or with none, is not the worker's: it stays.
+fn kept_at_open(git_dir: &Path) -> Option<KeptPack> {
+    let kept = git_dir.join(KEPT_DIR);
+    clear_folder(&kept.join("incoming"));
+    let packs = kept.join("pack");
+    let mut own: Vec<(std::time::SystemTime, KeptPack)> = Vec::new();
+    for entry in std::fs::read_dir(&packs).ok()?.flatten() {
+        let file = entry.file_name().to_string_lossy().into_owned();
+        let Some(name) = file.strip_suffix(".keep") else {
+            continue;
+        };
+        let Some(text) =
+            read_regular_nofollow(&entry.path()).and_then(|b| String::from_utf8(b).ok())
+        else {
+            continue;
+        };
+        let mut lines = text.lines();
+        let Some(head) = lines.next().and_then(|l| l.strip_prefix(KEPT_LINE)) else {
+            continue;
+        };
+        let head = head.trim();
+        let engine_packs = lines
+            .next()
+            .and_then(|l| l.strip_prefix(KEPT_PACKS_LINE))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let pack = packs.join(format!("{name}.pack"));
+        let bytes = std::fs::metadata(&pack).map(|m| m.len()).ok();
+        match bytes {
+            Some(bytes)
+                if object_id(head).is_ok() && packs.join(format!("{name}.idx")).is_file() =>
+            {
+                let written = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                own.push((
+                    written,
+                    KeptPack {
+                        head: head.to_string(),
+                        name: name.to_string(),
+                        bytes,
+                        engine_packs,
+                    },
+                ));
+            }
+            _ => remove_pack(&packs, name),
+        }
+    }
+    own.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    let newest = own.pop().map(|(_, kept)| kept);
+    for (_, older) in own {
+        remove_pack(&packs, &older.name);
+    }
+    newest
+}
+
+impl ScratchRepo {
+    /// What the engine's store holds as packs now ([`engine_packs_of`]): one read of a folder on the work tree's file
+    /// system, made off the runtime's threads and given up with the keep or the look in progress, like the file calls of a look
+    /// ([`Self::on_tree`]). A keep makes it before and after it packs, and a look makes it once while a pack is kept
+    /// ([`Snapshotter::keep_check`]). It has a flag of its own. A keep is dropped when the next look is due, and its read may not
+    /// have returned then: under the flag of the look's file calls that look would be refused its own first call and fail, and
+    /// the copy of a stop would be lost to a keep. So one read of the packs is outstanding at most, a second one is refused at
+    /// once, and a look whose read is refused reads no kept pack. No file call of a look waits for it or is refused because of it.
+    async fn engine_packs(&self) -> Result<String, String> {
+        if self.packs_busy.swap(true, Ordering::SeqCst) {
+            return Err(
+                "snapshot: an earlier read of the engine's packs has not returned; they were not read"
+                    .to_string(),
+            );
+        }
+        let busy = self.packs_busy.clone();
+        let dir = self.repo.join(".git/objects/pack");
+        let read = self.packs_reader.0.clone();
+        let made = tokio::task::spawn_blocking(move || {
+            let out = read(&dir);
+            busy.store(false, Ordering::SeqCst);
+            out
+        });
+        let waited = match &self.give_up {
+            Some(give_up) => give_up.run(made).await,
+            None => Some(made.await),
+        };
+        match waited {
+            Some(Ok(out)) => out,
+            Some(Err(e)) => {
+                // The read ended in a panic: it is not outstanding.
+                self.packs_busy.store(false, Ordering::SeqCst);
+                Err(format!("snapshot: the engine's packs: {e}"))
+            }
+            None => Err(
+                "snapshot: the work tree did not answer; the engine's packs were not read"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+impl Snapshotter {
+    /// Whether this repository keeps the run's commits (`AGENTD_DIRECT_KEEP_COMMITS`, tests and the bench only). Switched
+    /// off, the pack the worker kept is removed, no look reads a kept pack and no keep is made: the looks are those of release 5.25.
+    pub fn set_keep_commits(&mut self, on: bool) {
+        self.keep.off = !on;
+        if !on {
+            self.drop_kept();
+        }
+    }
+
+    /// Another reader of the engine's packs than [`engine_packs_of`]; tests.
+    pub fn set_engine_packs_reader(&mut self, reader: PacksReader) {
+        self.scratch.packs_reader = PacksQuestion(reader);
+    }
+
+    /// The bytes of the kept pack; 0 without one.
+    pub fn kept_bytes(&self) -> u64 {
+        self.keep.kept.as_ref().map_or(0, |kept| kept.bytes)
+    }
+
+    /// Git's own check of the pack an earlier worker kept ([`kept_at_open`]), before this worker adopts it: `git index-pack
+    /// --verify`, the cheapest command of git that reads every object of a pack. It inflates each object, hashes it against the
+    /// pack's index, and hashes the whole file against its trailer. git copies the bytes of a packed object into a bundle without
+    /// reading them, so a look beside a pack with wrong bytes stored a copy that no reader could fetch. A pack that fails the
+    /// check is removed: the looks are then those of release 5.25, the head is kept again at its next rest, and
+    /// [`Self::take_kept_note`] says why, once.
+    ///
+    /// A check that has not ended after `limit` is given up, with its git ended. The pack is removed, and the keep is switched
+    /// off for the rest of the run by a mark in the private repository ([`KEPT_OFF`]): a later worker would keep the same
+    /// commits again and pay the same check at its start, so a pack that cannot be checked within the limit is not kept twice.
+    /// [`Self::take_kept_note`] says so, once. How long the check ran is kept for the caller's log ([`Self::take_kept_check`]).
+    ///
+    /// The check is given an object folder that holds nothing (the folder a keep writes into, which the open has just cleared).
+    /// With the objects of this repository at hand git would compare every object of the pack with the copy the repository
+    /// holds, and the engine's store on the session's storage holds each of them. So the check reads the pack and its index on
+    /// the worker's own disk and nothing else. It runs once, when the repository is opened, before the engine starts.
+    async fn check_kept(&mut self, limit: Duration) {
+        let Some(kept) = &self.keep.kept else {
+            return;
+        };
+        let bytes = kept.bytes;
+        let folder = self.git_dir.join(KEPT_DIR);
+        let pack = folder.join("pack").join(format!("{}.pack", kept.name));
+        let nothing = folder.join("incoming");
+        let gd: &Path = &self.git_dir;
+        let began = Instant::now();
+        let give_up = GiveUp::at(Some(tokio::time::Instant::now() + limit));
+        let checked = git_with_env_until(
+            self.git_dir.parent().unwrap_or(Path::new("/")),
+            &["index-pack", "--verify", pack.to_str().unwrap_or_default()],
+            &[("GIT_DIR", gd), ("GIT_OBJECT_DIRECTORY", &nothing)],
+            &give_up,
+        )
+        .await;
+        let took = began.elapsed();
+        self.keep.checked = Some((bytes, took));
+        if let Err(e) = checked {
+            self.keep.note = Some(if took >= limit {
+                self.keep.run_off = true;
+                let marked = std::fs::write(
+                    folder.join(KEPT_OFF),
+                    "agentd keeps no pack in this run: git's check of a kept pack did not end within its limit\n",
+                );
+                format!(
+                    "git's check of the pack an earlier worker kept did not end in {} s; the pack was removed and no pack is \
+                     kept for the rest of this run{}",
+                    limit.as_secs(),
+                    marked.err().map_or(String::new(), |e| format!(
+                        " (the mark that says so could not be written: {})",
+                        io(e)
+                    ))
+                )
+            } else {
+                format!(
+                    "the pack an earlier worker kept did not pass git's check and was removed: {}",
+                    ws(e)
+                )
+            });
+            self.drop_kept();
+        }
+    }
+
+    /// Why the pack an earlier worker kept was not adopted when this repository was opened ([`Self::check_kept`]), once;
+    /// `None` when it was adopted or there was none. The caller logs it.
+    pub fn take_kept_note(&mut self) -> Option<String> {
+        self.keep.note.take()
+    }
+
+    /// The size of the pack an earlier worker kept and how long git's check of it ran when this repository was opened
+    /// ([`Self::check_kept`]), once; `None` when the repository held no kept pack, so that nothing was checked. The caller logs
+    /// it in the line of the first reading of the tree: it is what the start of a turn pays for a kept pack.
+    pub fn take_kept_check(&mut self) -> Option<(u64, Duration)> {
+        self.keep.checked.take()
+    }
+
+    /// The free bytes the keep's rules read in place of those of the disk of the private repository; `None` reads the
+    /// disk. Tests: a disk whose free space lies between the two rules of the keep cannot be had from a real one.
+    pub fn set_keep_free_bytes(&mut self, free: Option<u64>) {
+        self.keep.free = free.into_iter().collect();
+    }
+
+    /// [`Self::set_keep_free_bytes`] with one answer for each question of the keep's rules from now on, in order; the
+    /// last answer stands for every question after it. Tests: the free space of a disk that changes between the start of a
+    /// look and its bundle.
+    pub fn set_keep_free_answers(&mut self, answers: Vec<u64>) {
+        self.keep.free = answers;
+    }
+
+    /// The keep's free-space rule, in one place: what the rule asks a disk to have free, when `free` is less. The rule
+    /// asks for the mark below which the clean-up runs whatever the growth ([`TidyMarks::free_bytes`]), twice the last bundle,
+    /// and `more`; a disk that has exactly that much free is not short. Every question of the keep comes here: that of a look,
+    /// of the copy of the end and of a keep before it starts ([`Self::keep_short_disk`]), and that of a worker that starts,
+    /// where no snapshotter exists yet ([`Self::new_primed_with_free`]: the marks of a run and no bundle yet). No file call
+    /// and no git call is made.
+    fn keep_rule_short(
+        marks: &TidyMarks,
+        last_bundle_bytes: u64,
+        more: u64,
+        free: u64,
+    ) -> Option<u64> {
+        let need = marks
+            .free_bytes
+            .saturating_add(last_bundle_bytes.saturating_mul(2))
+            .saturating_add(more);
+        (free < need).then_some(need)
+    }
+
+    /// The keep's free-space rule asked of the disk of the private repository: its free bytes and what the rule asks
+    /// for, when the disk has less ([`Self::keep_rule_short`], with the marks of this repository and its last bundle). A pack
+    /// that is kept does not stay on a disk that is short of the rule ([`Self::keep_gives_way`], `more` is 0). No keep is
+    /// started on a disk that is short of the rule and of the pack the keep is about to write, which is about as large as the
+    /// last bundle ([`Self::keep_commits`], `more` is the size of the last bundle): the pack that is then written leaves the
+    /// disk above the rule, so no look removes it for the room it took.
+    fn keep_short_disk(&mut self, more: u64) -> Option<(u64, u64)> {
+        let free = match self.keep.free.len() {
+            0 => free_bytes(&self.git_dir),
+            1 => self.keep.free[0],
+            _ => self.keep.free.remove(0),
+        };
+        Self::keep_rule_short(&self.scratch.marks, self.keep.last_bundle_bytes, more, free)
+            .map(|need| (free, need))
+    }
+
+    /// How long the steps of the last look took and what it found of the engine's head.
+    pub fn take_look_steps(&mut self) -> LookSteps {
+        std::mem::take(&mut self.steps)
+    }
+
+    /// Whether a keep would start after the look that just made a copy ([`Self::keep_commits`]): that look found the head the
+    /// look before it had found, that head is no commit the run started from (an engine that made no commit has nothing above the
+    /// base), the copies are above a floor, the keep is on (the switch, and no check of a kept pack was given up in this run),
+    /// and no keep was tried for that head. No git call and no file call is made for the answer.
+    pub fn keep_is_due(&self) -> bool {
+        self.keep
+            .rest_head
+            .as_deref()
+            .is_some_and(|head| self.keep_wanted(head))
+    }
+
+    fn keep_wanted(&self, head: &str) -> bool {
+        !self.keep.off
+            && !self.keep.run_off
+            && self.form == BundleForm::AboveFloor
+            && !self.floors.is_empty()
+            && !self.floors.iter().any(|floor| floor == head)
+            && self.keep.tried.as_deref() != Some(head)
+    }
+
+    /// A keep that was in flight was cut before the look that starts now. When the timer started that look (`by_timer`),
+    /// the keep is not tried again until the head has moved: a keep that does not fit between two looks of the timer is not paid
+    /// for at every look. When a tool call or a request to end cut it, it is tried again at the next look that qualifies.
+    pub fn keep_cut(&mut self, by_timer: bool) {
+        if let Some(head) = self.keep.keeping.take()
+            && !by_timer
+            && self.keep.tried.as_deref() == Some(head.as_str())
+        {
+            self.keep.tried = None;
+        }
+    }
+
+    /// Removes the kept pack. The repository is then what it is without a keep.
+    fn drop_kept(&mut self) {
+        self.keep.use_kept = false;
+        if let Some(kept) = self.keep.kept.take() {
+            remove_pack(&self.git_dir.join(KEPT_DIR).join("pack"), &kept.name);
+        }
+    }
+
+    /// Root invariant 9 wins over the keep, in one place. It is the first thing a look does, before anything is written
+    /// into the private repository ([`Self::look`]), the first thing the copy of the end does ([`Self::final_copy`]), and what the
+    /// check before the bundle starts with ([`Self::keep_check`]). A worker that starts asks the same rule, the one function
+    /// [`Self::keep_rule_short`], before its first write, where no snapshotter exists yet ([`Self::new_primed_with_free`]).
+    ///
+    /// A kept pack is removed when the disk of the private repository has less free than the keep's rule asks
+    /// ([`Self::keep_short_disk`], one question to the worker's own disk while a pack is kept). The pack is about as large as a
+    /// bundle, and on a disk that has run short since the keep its bytes are free before the tree is read: the copy that
+    /// release 5.26 stores there is stored. The head stays marked as tried, so this worker does not keep it again until it has
+    /// moved, and no pack is written and removed look after look.
+    ///
+    /// The folder a keep writes into is emptied too. The git of a keep that was cut is told to end and is not waited for, and a
+    /// file it made after the sweep of [`Incoming`] would stay on a disk where no keep starts. No keep is in flight here: a keep
+    /// holds the repository, and what starts a look or the copy of the end drops it first. No git call is made.
+    fn keep_gives_way(&mut self) {
+        clear_folder(&self.git_dir.join(KEPT_DIR).join("incoming"));
+        if self.keep.kept.is_some() && self.keep_short_disk(0).is_some() {
+            self.drop_kept();
+        }
+    }
+
+    /// Whether the look in progress, which found the engine's head at `head`, reads the kept pack: while a pack is kept,
+    /// the engine's `.git` is the repository's own, the head is above the floors, and the engine's store holds the packs it held
+    /// when the pack was kept ([`ScratchRepo::engine_packs`], one read of a folder on the session's storage). A kept pack that the
+    /// engine's packs overtook (a repack, a fetch, a pack a tool left) is removed here, before the bundle is written, and its head
+    /// stays marked as tried: this worker packs the run's commits again only when the head has moved, so an engine whose packs
+    /// change under a head that rests costs a worker one keep and one removal at the most, never a pack written and removed look
+    /// after look. The mark holds for this worker: a worker that starts later on a private repository without a pack keeps the
+    /// head once more. So is the pack of an engine whose `.git` is gone, and the pack of a head that is back at a commit the run
+    /// started from: nothing of the run is above the floors then, and that mark is cleared. When the folder cannot be read, or
+    /// an earlier read of it has not returned, this look reads no kept pack and is the look of release 5.25. No git call is
+    /// made for it.
+    ///
+    /// Root invariant 9 wins over the keep: before anything else the short-disk question is asked once more
+    /// ([`Self::keep_gives_way`]). The look asked it when it started, and has written the files that changed into the private
+    /// repository since.
+    async fn keep_check(&mut self, head: Option<&str>) {
+        self.keep.use_kept = false;
+        self.keep_gives_way();
+        let Some(kept) = &self.keep.kept else {
+            return;
+        };
+        let fresh = match head {
+            Some(head) if !self.floors.iter().any(|floor| floor == head) => self
+                .scratch
+                .engine_packs()
+                .await
+                .ok()
+                .map(|now| now == kept.engine_packs),
+            _ => {
+                self.drop_kept();
+                self.keep.tried = None;
+                return;
+            }
+        };
+        match fresh {
+            Some(true) => self.keep.use_kept = true,
+            Some(false) => self.drop_kept(),
+            None => {}
+        }
+    }
+
+    /// The keep of the run's commits (decisions 1 to 4 of the build brief, rulings 8 to 13 of the lead). The caller calls it
+    /// after a look that the timer started has stored its copy, never before the store and never inside a look, and drops it when
+    /// the next look is due, a tool call wakes the copy task or agentd is asked to end: the git of a dropped keep is ended with its
+    /// group and what it wrote is removed ([`Incoming`]).
+    ///
+    /// A keep is due when that look found the head the look before it had found ([`Self::keep_is_due`]). It reads the commit ids it
+    /// was given, the head that look read and the floors, never a ref that can move. One `git pack-objects --revs --unpacked
+    /// --incremental --non-empty` writes the objects of the run's commits that are in no pack into `kept/incoming/`; the marker
+    /// (`agentd kept <head>`, and what the engine's packs were) is written beside it; then the marker, the pack, its reverse index
+    /// and last its index are renamed into `kept/pack/`, where git sees a pack by its index; then the pack kept before is removed.
+    /// The marker is the only state. What the keep holds on the worker's disk is one pack, two while it is replaced, and it is not
+    /// started while the disk has less free than the mark of the clean-up and three times the last bundle: the keep's rule, and
+    /// the pack that is about to be written ([`Self::keep_short_disk`]).
+    ///
+    /// A keep is tried once for a head: a short disk, a git that failed (an object the engine pruned under it, a
+    /// disk that filled in the middle of the write), an engine that repacked while the pack was written, and nothing to pack are
+    /// all the one try, and none of them changes a copy. [`Keep::Missed`] says why, for the caller's log.
+    pub async fn keep_commits(&mut self, give_up: &GiveUp) -> Keep {
+        let Some(head) = self.keep.rest_head.take() else {
+            return Keep::NotDue;
+        };
+        if !self.keep_wanted(&head) {
+            return Keep::NotDue;
+        }
+        self.keep.tried = Some(head.clone());
+        if let Some((free, need)) = self.keep_short_disk(self.keep.last_bundle_bytes) {
+            return Keep::Missed(format!(
+                "the disk of the private repository has {free} bytes free; a pack is kept only above {need}"
+            ));
+        }
+        self.keep.keeping = Some(head.clone());
+        self.scratch.give_up = Some(give_up.clone());
+        let made = self.keep_pack(&head, give_up).await;
+        self.scratch.give_up = None;
+        self.keep.keeping = None;
+        match made {
+            Ok(Some(kept)) => {
+                let bytes = kept.bytes;
+                self.keep.kept = Some(kept);
+                Keep::Kept { bytes }
+            }
+            Ok(None) => {
+                self.drop_kept();
+                Keep::Nothing
+            }
+            Err(e) => Keep::Missed(e),
+        }
+    }
+
+    async fn keep_pack(
+        &mut self,
+        head: &str,
+        give_up: &GiveUp,
+    ) -> Result<Option<KeptPack>, String> {
+        let gd: &Path = &self.git_dir;
+        let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
+        let incoming = self.git_dir.join(KEPT_DIR).join("incoming");
+        let packs = self.git_dir.join(KEPT_DIR).join("pack");
+        std::fs::create_dir_all(&incoming).map_err(io)?;
+        std::fs::create_dir_all(&packs).map_err(io)?;
+        clear_folder(&incoming);
+        // Declared before the git call: when this future is dropped, git's group is ended first and its files are removed after.
+        let _left = Incoming(incoming.clone());
+        let engine_packs = self.scratch.engine_packs().await?;
+        let mut input = format!("{head}\n");
+        for floor in &self.floors {
+            input.push_str(&format!("^{floor}\n"));
+        }
+        let base = incoming.join("pack");
+        let hash = git_with_env_until_input(
+            cwd,
+            &[
+                "pack-objects",
+                "--revs",
+                "--unpacked",
+                "--incremental",
+                "--non-empty",
+                "-q",
+                base.to_str().unwrap_or_default(),
+            ],
+            &[("GIT_DIR", gd)],
+            Some(input.as_bytes()),
+            give_up,
+        )
+        .await
+        .map_err(ws)?;
+        if self.scratch.engine_packs().await? != engine_packs {
+            return Err(
+                "snapshot: the engine repacked its store while the pack was written".to_string(),
+            );
+        }
+        if hash.is_empty() {
+            return Ok(None);
+        }
+        object_id(&hash)?;
+        let name = format!("pack-{hash}");
+        let bytes = std::fs::metadata(incoming.join(format!("{name}.pack")))
+            .map_err(io)?
+            .len();
+        if !incoming.join(format!("{name}.idx")).is_file() {
+            return Err("snapshot: git pack-objects left no index of its pack".to_string());
+        }
+        std::fs::write(
+            incoming.join(format!("{name}.keep")),
+            format!("{KEPT_LINE}{head}\n{KEPT_PACKS_LINE}{engine_packs}\n"),
+        )
+        .map_err(io)?;
+        for ext in ["keep", "pack", "rev", "idx"] {
+            let from = incoming.join(format!("{name}.{ext}"));
+            if !from.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&from, packs.join(format!("{name}.{ext}"))) {
+                remove_pack(&packs, &name);
+                self.keep.kept = self.keep.kept.take().filter(|kept| kept.name != name);
+                return Err(io(e));
+            }
+        }
+        if let Some(old) = &self.keep.kept
+            && old.name != name
+        {
+            remove_pack(&packs, &old.name);
+        }
+        Ok(Some(KeptPack {
+            head: head.to_string(),
+            name,
+            bytes,
+            engine_packs,
         }))
     }
 }

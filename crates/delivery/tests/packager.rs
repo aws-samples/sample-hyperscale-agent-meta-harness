@@ -471,9 +471,10 @@ async fn in_tree_eol_ident_and_encoding_attributes_do_not_change_the_bytes_of_sr
     );
 }
 
-/// For a tree with no symlink and no attribute, `src/` keeps what a plain `git archive` writes: the entry names, bytes, times
+/// For a tree with no symlink and no attribute, `src/` keeps what a plain `git archive` in UTC writes: the entry names, bytes, times
 /// and execute bits, in the same order. (The mode type bits are not compared here; the symbolic link case above pins those of
-/// links, and the head-tree case pins the git mode of every path.)
+/// links, and the head-tree case pins the git mode of every path.) The plain archive is made by the fixture git, whose zone is UTC,
+/// so the comparison holds in a shell or on a machine of any time zone.
 #[tokio::test]
 async fn src_of_an_ordinary_tree_keeps_git_archives_names_bytes_times_and_execute_bits() {
     let w = world();
@@ -519,6 +520,68 @@ async fn src_of_an_ordinary_tree_keeps_git_archives_names_bytes_times_and_execut
     let plain = facts(&std::fs::read(&plain_path).unwrap());
     assert!(plain.len() > 3, "{plain:?}");
     assert_eq!(facts(&zip), plain);
+}
+
+/// A git that stands for a machine in another time zone: a process that names no zone gets the machine's own, so this git takes a zone
+/// seven hours behind UTC when its caller names none. The zone is written in the form that needs no zone data on the machine.
+fn git_of_a_machine_in_another_zone(root: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = root.join("git-in-another-zone");
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\nTZ=\"${TZ-MST7}\"\nexport TZ\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// The times in the zip do not follow the time zone of the machine that builds it. `git archive` writes each entry's time in
+/// the zone of its process, and the packager's git gets no variable of the packager's own environment, so without a zone of its own it
+/// would write `src/` in the machine's zone. Every entry carries the head's commit time in UTC, those of `src/` like the ones the
+/// packager writes itself.
+#[tokio::test]
+async fn b916_every_entry_carries_the_heads_commit_time_in_utc_on_a_machine_in_another_zone() {
+    let mut w = world();
+    w.p.git = Git::new(
+        git_of_a_machine_in_another_zone(&w.root),
+        w.root.join("home"),
+    );
+    w.p.package(&req(&w)).await.unwrap();
+    let (_, zip) = deliverable(&w);
+    let top = top_dir(REPO, RUN, &w.head);
+    let mut a = zip::ZipArchive::new(Cursor::new(zip)).unwrap();
+    let mut times = BTreeMap::new();
+    for i in 0..a.len() {
+        let f = a.by_index(i).unwrap();
+        let t = f.last_modified().map(|t| {
+            (
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second(),
+            )
+        });
+        times.insert(f.name().unwrap().to_string(), t);
+    }
+    let under_src = times
+        .keys()
+        .filter(|n| n.starts_with(&format!("{top}/src/")))
+        .count();
+    assert!(under_src > 3, "{times:?}");
+    assert!(
+        times.contains_key(&format!("{top}/MANIFEST.sha256")),
+        "{times:?}"
+    );
+    // The fixture's commits are dated 1,790,337,600 seconds after the epoch: 2026-09-25 12:00:00 UTC.
+    let commit_time = Some((2026, 9, 25, 12, 0, 0));
+    let other: Vec<_> = times.iter().filter(|(_, t)| **t != commit_time).collect();
+    assert!(
+        other.is_empty(),
+        "entries whose time is not the head's commit time in UTC: {other:?}"
+    );
 }
 
 /// A zip entry holds a link target as text, so a target that is not UTF-8 cannot be written verbatim: the package is refused with the

@@ -52,7 +52,9 @@ pub fn tmp() -> tempfile::TempDir {
         .unwrap()
 }
 
-/// Runs git with a fixed identity and no global or system config; panics on failure.
+/// Runs git with a fixed identity, in UTC, and with no global or system config; panics on failure. The zone is fixed because git writes
+/// local times in some outputs (`git archive` writes each zip entry's time in the zone of its process), and a fixture must not follow
+/// the zone of the machine or of the shell that runs the tests. `UTC0` is the form that needs no zone data on the machine.
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .current_dir(dir)
@@ -64,6 +66,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
         .env("GIT_AUTHOR_DATE", "@1790337600 +0000")
         .env("GIT_COMMITTER_DATE", "@1790337600 +0000")
+        .env("TZ", "UTC0")
         .args(args)
         .output()
         .unwrap();

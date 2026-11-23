@@ -299,14 +299,36 @@ pub struct FakeAws {
 
 type Shared = Arc<AwsState>;
 
+/// `t<k>-` for a key in the folder of session `k` of a run (`.../turns/<k>/...`) when `k` is 2 or more, else nothing.
+fn later_session_of(full: &str) -> String {
+    let parts: Vec<&str> = full.split('/').collect();
+    parts
+        .windows(2)
+        .find_map(|w| {
+            (w[0] == "turns")
+                .then(|| w[1].parse::<u32>().ok())
+                .flatten()
+        })
+        .filter(|k| *k >= 2)
+        .map(|k| format!("t{k}-"))
+        .unwrap_or_default()
+}
+
 /// Stores `body` as the newest version of `full` (`bucket/key`) and returns its version id.
 fn record_version(s: &AwsState, full: &str, body: &[u8]) -> String {
     // The id names the key's last segment and the version's place in that key's history, so it is the same on every run of the same flow
-    // (the golden streams carry it) whatever order the other keys are written in.
+    // (the golden streams carry it) whatever order the other keys are written in. The id of a key of a later session of a run also names
+    // that session: `turns/1/snapshot.bundle` and `turns/2/snapshot.bundle` each hold a first version, and a real bucket gives no
+    // two versions one id, so a test tells the copies of two sessions apart by the id alone. A counter of the whole bucket would do that
+    // too, but its ids would follow the order in which other keys are written. The ids of a first session's keys stay as they were.
     let mut versions = s.versions.lock().unwrap();
     let history = versions.entry(full.to_string()).or_default();
     let name = full.rsplit('/').next().unwrap_or_default();
-    let id = format!("fake-{}-{name}", history.len() + 1);
+    let id = format!(
+        "fake-{}-{}{name}",
+        history.len() + 1,
+        later_session_of(full)
+    );
     history.push((id.clone(), body.to_vec()));
     id
 }
@@ -658,6 +680,24 @@ async fn s3_get(
         .unwrap()
         .iter()
         .any(|sub| full.contains(sub.as_str()));
+    // A bucket that keeps versions answers a GET with the version it read (`x-amz-version-id`), as it answers a PUT and a
+    // HEAD. Here that is the newest version of the key; a bucket without versions answers none.
+    let version = if *s.no_version_ids.lock().unwrap() {
+        None
+    } else {
+        s.versions
+            .lock()
+            .unwrap()
+            .get(&full)
+            .and_then(|v| v.last().map(|(id, _)| id.clone()))
+    };
+    let versioned = |mut resp: axum::response::Response| {
+        if let Some(id) = &version {
+            resp.headers_mut()
+                .insert("x-amz-version-id", id.parse().unwrap());
+        }
+        resp
+    };
     match s.objects.lock().unwrap().get(&full) {
         // The first bytes of the object, as S3 answers `bytes=0-<n>`: 206 with the range, clipped to the object.
         Some(b) => match range
@@ -667,14 +707,16 @@ async fn s3_get(
         {
             Some(last) if !b.is_empty() => {
                 let end = last.min(b.len() - 1);
-                (
-                    StatusCode::PARTIAL_CONTENT,
-                    [("content-range", format!("bytes 0-{end}/{}", b.len()))],
-                    b[..=end].to_vec(),
+                versioned(
+                    (
+                        StatusCode::PARTIAL_CONTENT,
+                        [("content-range", format!("bytes 0-{end}/{}", b.len()))],
+                        b[..=end].to_vec(),
+                    )
+                        .into_response(),
                 )
-                    .into_response()
             }
-            _ => (StatusCode::OK, b.clone()).into_response(),
+            _ => versioned((StatusCode::OK, b.clone()).into_response()),
         },
         None if hidden => (
             StatusCode::FORBIDDEN,

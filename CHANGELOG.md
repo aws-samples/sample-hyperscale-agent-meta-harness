@@ -6,6 +6,17 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.28] - 2026-11-23
+
+### Changed
+
+- A storage notice of a later session that had saved no copy of its own names the copy the session started from. `ham pull <runId> --before-refusal <notice id>` downloads it.
+- A save of the run's work no longer reads every commit the run made from the session's storage again: the worker packs them once on its own disk. The worker logs one line for each save that stored a copy or failed.
+
+### Fixed
+
+- The delivered zip no longer depends on the time zone of the machine that builds it. Every entry shows the head commit time in UTC.
+
 ## [5.27] - 2026-11-22
 
 ### Added

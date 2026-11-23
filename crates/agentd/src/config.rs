@@ -48,6 +48,10 @@ pub struct DirectConfig {
     /// reaches; `base` leaves out what the bundle the run started from holds. Unset, and any other word, is the form of the release
     /// (`snapshot::BundleForm::RELEASE`). The form is a constant of the release: no deploy sets the variable, and no stage setting leads to it.
     pub copy_form: crate::direct::snapshot::BundleForm,
+    /// `AGENTD_DIRECT_KEEP_COMMITS`: `0` switches off the keep of the run's commits
+    /// (`snapshot::Snapshotter::keep_commits`), and the looks of the copy task are those of release 5.25. Unset, and any other
+    /// value, leaves it on. No deploy sets the variable, and no stage setting leads to it.
+    pub keep_commits: bool,
     /// `AGENTD_DIRECT_PROVIDER_RETRIES` (default 3, at most 6): how many times the prompt is retried on the same engine session
     /// after a provider failure (the first slice of provider failover). 0 switches it off; a bad value is the default.
     pub provider_retries: u32,
@@ -235,6 +239,7 @@ impl DirectConfig {
             copy_form: crate::direct::snapshot::BundleForm::from_word(
                 get("AGENTD_DIRECT_COPY_FORM").as_deref(),
             ),
+            keep_commits: get("AGENTD_DIRECT_KEEP_COMMITS").is_none_or(|v| v.trim() != "0"),
             provider_retries: get("AGENTD_DIRECT_PROVIDER_RETRIES")
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .map_or(3, |n| n.min(crate::direct::retry::MAX_CONFIGURED_RETRIES)),

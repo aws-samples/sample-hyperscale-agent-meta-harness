@@ -5,7 +5,7 @@
 
 use crate::common::{git, python_calc, scratch};
 use crate::direct_support::{BUCKET, Direct, Opts, RUN};
-use agentd::direct::snapshot::{BundleForm, Snapshotter};
+use agentd::direct::snapshot::{BundleForm, PRIME_LIMIT, Snapshotter};
 use agentd::workspace::prepare_from_bundle_state;
 use harness_protocol::bundle_header::{HEADER_BYTES_MAX, heads, needs};
 use harness_protocol::direct::{
@@ -69,6 +69,33 @@ pub async fn thin(l: &Lab, data: &str) -> Snapshotter {
     let data = l.dir.join(data);
     std::fs::create_dir_all(&data).unwrap();
     let mut s = Snapshotter::new(&data, &l.repo, &l.base).await.unwrap();
+    s.set_form(BundleForm::AboveFloor);
+    s.set_floors(heads(&prefix(&l.base_bundle)).unwrap());
+    s
+}
+
+/// [`thin`] for a worker whose first reading of the tree, and what else it does before the engine starts, has the limit `limit`
+/// in place of the minute of a session.
+pub async fn thin_within(l: &Lab, data: &str, limit: std::time::Duration) -> Snapshotter {
+    let data = l.dir.join(data);
+    std::fs::create_dir_all(&data).unwrap();
+    let mut s = Snapshotter::new_primed(&data, &l.repo, &l.base, Some(limit))
+        .await
+        .unwrap();
+    s.set_form(BundleForm::AboveFloor);
+    s.set_floors(heads(&prefix(&l.base_bundle)).unwrap());
+    s
+}
+
+/// [`thin`] for a worker that starts on a disk with `free` bytes free, as the keep's rules read them from the worker's start on
+/// (a disk that is short when a worker starts cannot be had from a real one).
+pub async fn thin_on(l: &Lab, data: &str, free: u64) -> Snapshotter {
+    let data = l.dir.join(data);
+    std::fs::create_dir_all(&data).unwrap();
+    let mut s =
+        Snapshotter::new_primed_with_free(&data, &l.repo, &l.base, Some(PRIME_LIMIT), Some(free))
+            .await
+            .unwrap();
     s.set_form(BundleForm::AboveFloor);
     s.set_floors(heads(&prefix(&l.base_bundle)).unwrap());
     s

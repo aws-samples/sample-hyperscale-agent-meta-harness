@@ -16,7 +16,8 @@
 //! so. Every package also writes the evidence archive (`<top>-evidence/`: EVIDENCE.md, `evidence/`, MANIFEST.sha256;
 //! `s3::evidence_archive_key`), each with its `ART#` item, so `ham pull --artifact evidence` finds it.
 //!
-//! Entries carry the head's commit time, so the same inputs give the same bytes; the artifact id
+//! Entries carry the head's commit time in UTC on a machine in any time zone (those of `src/` are written by the sandbox's git,
+//! whose zone is UTC), so the same inputs give the same bytes; the artifact id
 //! derives from the zip SHA-256, so a retried invocation rewrites the same object and item. The
 //! object goes up with bucket-default SSE-KMS and its SHA-256 in `x-amz-meta-sha256`; the
 //! `ART#<artifactId>` item records it; the return value is the `delivery.ready` payload.

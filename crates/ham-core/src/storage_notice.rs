@@ -27,7 +27,8 @@ const CARD_VALUE_CHARS: usize = 150;
 /// The most notices the view keeps the lines of, for a surface that prints them itself (`ham watch` in line mode): the newest ones.
 pub const MAX_RECENT: usize = 16;
 
-/// The copy a notice names: the newest one of its session before the worker first saw a refusal.
+/// The copy a notice names: the newest one of its session before the worker first saw a refusal, or, for a session that had
+/// stored none by then, the copy of an earlier session that the session started from. `session` says which it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyBefore {
     pub session: u32,
@@ -177,16 +178,35 @@ pub const ENDED_LINE: &str = "In measurements each refusal ended by itself, the 
 pub const EMPTY_LINE: &str =
     "A file that a command wrote meanwhile can be empty; ham does not know which.";
 
+/// How long the copy a session started from is kept, without the mark that ends the last sentence. The session that saved it
+/// writes no newer copy at its key once it has ended, and the bucket's one rule removes replaced versions only
+/// (`infra/lib/stacks/data.ts`): the copy stays while the stage's bucket exists. If that session is still alive and saves again,
+/// the copy is a replaced version and is kept for [`REPLACED_COPY_DAYS`] days more.
+fn started_from_kept(session: u32) -> String {
+    format!(
+        "It stays while the stage exists. If a newer copy of session {session} replaces it, it is kept for {REPLACED_COPY_DAYS} days after that"
+    )
+}
+
 /// The lines after the first: what is known about this storage, what ham does not know, the copy from before with its command on a
-/// line of its own, and the newest copy. A line holds one command at the most and is never cut.
+/// line of its own, and the newest copy. A line holds one command at the most and is never cut. A copy that an earlier
+/// session saved is named as the copy this session started from, after the sentence of a session without a copy of its own, and
+/// a line of its own says how long that copy is kept ([`started_from_kept`]).
 pub fn follow_up(n: &StorageNotice, run_id: &str) -> Vec<String> {
     let newest = format!(
         "The newest copy holds the files as they are, empty ones included: {}",
         newest(run_id)
     );
+    // A copy that an earlier session saved is the copy this session started from. The session had stored none of its own.
+    let started_from = n.copy.as_ref().filter(|c| c.session < n.session);
     let mut out = Vec::new();
     if n.stretch > 1 {
-        if n.copy.is_some() {
+        if started_from.is_some() {
+            out.push(format!(
+                "The copy this session started from: {}",
+                before(run_id, n)
+            ));
+        } else if n.copy.is_some() {
             out.push(format!(
                 "The last copy saved before ham first saw it: {}",
                 before(run_id, n)
@@ -198,6 +218,17 @@ pub fn follow_up(n: &StorageNotice, run_id: &str) -> Vec<String> {
         out.push(ENDED_LINE.to_string());
         out.push(EMPTY_LINE.to_string());
         match &n.copy {
+            Some(c) if started_from.is_some() => {
+                out.push("This session had saved no copy before ham first saw this.".to_string());
+                out.push(format!(
+                    "Copy {} of session {} ({}) is the copy this session started from.",
+                    c.count,
+                    c.session,
+                    crate::saved_copy::utc_minute(&c.at)
+                ));
+                out.push(format!("{}:", started_from_kept(c.session)));
+                out.push(format!("  {}", before(run_id, n)));
+            }
             Some(c) => {
                 out.push(format!(
                     "Copy {} ({}) is the last copy saved before ham first saw this. It is kept for {REPLACED_COPY_DAYS} days after a newer copy replaced it:",
@@ -256,6 +287,8 @@ pub struct StorageFirst {
     pub session: u32,
     /// The notice names a copy from before.
     pub has_copy: bool,
+    /// The session that saved that copy, when it is an earlier session than the notice's: the copy the session started from.
+    pub started_from: Option<u32>,
 }
 
 /// What the fold of a run's events keeps about its storage notices.
@@ -286,6 +319,11 @@ impl StorageSeen {
                 ts: n.ts.clone(),
                 session: n.session,
                 has_copy: n.copy.is_some(),
+                started_from: n
+                    .copy
+                    .as_ref()
+                    .filter(|c| c.session < n.session)
+                    .map(|c| c.session),
             });
         }
         if self.recent.len() >= MAX_RECENT {
@@ -298,7 +336,7 @@ impl StorageSeen {
 
 /// The values of the `Storage` rows of the card of a run that ended: empty for a run without a notice. The first row says how often
 /// ham saw it and when first; the others name the command for the copy from before, or say that there was none, and the command for
-/// the newest copy.
+/// the newest copy. For the copy a session started from, the row about how long it is kept is [`started_from_kept`].
 pub fn card_values(seen: &StorageSeen, run_id: &str) -> Vec<String> {
     let Some(first) = &seen.first else {
         return Vec::new();
@@ -326,9 +364,11 @@ pub fn card_values(seen: &StorageSeen, run_id: &str) -> Vec<String> {
             "ham pull {run} --before-refusal {} downloads the last copy saved before ham first saw it.",
             first.event_id
         ));
-        out.push(format!(
-            "It is kept {REPLACED_COPY_DAYS} days after a newer copy replaced it."
-        ));
+        out.push(match first.started_from {
+            // The copy the session started from is at the key of an earlier session.
+            Some(session) => format!("{}.", started_from_kept(session)),
+            None => format!("It is kept {REPLACED_COPY_DAYS} days after a newer copy replaced it."),
+        });
     } else {
         out.push("No copy had been saved before ham first saw it.".to_string());
     }

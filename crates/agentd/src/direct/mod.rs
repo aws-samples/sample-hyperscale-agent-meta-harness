@@ -1123,8 +1123,9 @@ async fn start_and_prompt(
         })
         .await?;
     let bundle_file = agent_data.join("input.bundle");
-    s3_objects
-        .get_to_file(&repo_uri, &creds, &bundle_file)
+    // The answer of this download names the version of the object that was read, when the bucket keeps versions.
+    let restored_version = s3_objects
+        .get_to_file_with_version(&repo_uri, &creds, &bundle_file)
         .await
         .map_err(|e| format!("worktree: {e}"))?;
     // A copy of the work may hold what the run changed and need what the bundle the run started from holds; its header says
@@ -1267,12 +1268,32 @@ async fn start_and_prompt(
         count: started_count,
         head_sha: started_on,
     };
+    // A later session that restored a saved copy of an earlier session, or the final bundle of one, hands the watch the
+    // copy it started from with the marker of its start, so that a notice can name it when this session had stored no copy of
+    // its own before its first refusal. Without a watch nothing is read.
+    let start_marked = match (&storage, &restored) {
+        (Some(_), Some(r)) => started_from(
+            app,
+            &s3_objects,
+            &creds,
+            run,
+            r,
+            &repo_uri,
+            restored_version,
+        )
+        .await
+        .map_or(
+            storage_watch::Marked::Start,
+            storage_watch::Marked::StartFrom,
+        ),
+        _ => storage_watch::Marked::Start,
+    };
     if let Err(e) = write_marker(
         storage.as_ref(),
         &cfg.workspace_root,
         run,
         &start_marker,
-        storage_watch::Marked::Start,
+        start_marked,
     )
     .await
     {
@@ -2493,6 +2514,9 @@ struct Copies {
     /// The watch of the session's storage, when the session has one: the marker of each stored copy is written through it,
     /// with the copy and the version the bucket gave its bundle.
     storage: Option<storage_watch::StorageWatch>,
+    /// The log line of a look whose keep has not ended; it is written with what came of the keep
+    /// ([`Copies::keep_between_looks`]).
+    keep_line: Arc<Mutex<Option<KeepLine>>>,
 }
 
 /// Writes `marker` as the marker of `run`: through the watch of the session's storage when the session has one
@@ -2564,6 +2588,10 @@ struct LookBound {
     git_started_at: Arc<std::sync::OnceLock<std::time::Instant>>,
     /// When that git work ended.
     git_ended_at: Arc<std::sync::OnceLock<std::time::Instant>>,
+    /// What started the look, for the worker's log line of the look.
+    by: LookBy,
+    /// What the look did so far, for that line ([`LookNote`]).
+    note: Arc<Mutex<LookNote>>,
 }
 
 impl LookBound {
@@ -2579,6 +2607,49 @@ impl LookBound {
             git_ended: Arc::default(),
             git_started_at: Arc::default(),
             git_ended_at: Arc::default(),
+            by: LookBy::Timer,
+            note: Arc::default(),
+        }
+    }
+
+    /// Changes what the worker's log line of this look will say.
+    fn note(&self, change: impl FnOnce(&mut LookNote)) {
+        change(&mut self.note.lock().unwrap_or_else(|p| p.into_inner()));
+    }
+
+    /// The worker's log line of this look up to its store: `stored`, or `failed` with the step that failed as `why`, what
+    /// started the look, what it found of the engine's head, the wall time up to now and the times of its steps in milliseconds.
+    /// What came of the keep, the bytes of the bundle and the bytes of the kept pack follow it ([`KeepLine::text`]).
+    fn line(&self, stored: bool) -> KeepLine {
+        let note = self.note.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let by = match self.by {
+            _ if note.for_a_stop => "stop",
+            LookBy::Timer => "timer",
+            LookBy::Tool => "tool",
+            LookBy::Retry => "retry",
+        };
+        let outcome = if stored {
+            "stored".to_string()
+        } else {
+            format!("failed why={}", note.step)
+        };
+        KeepLine {
+            head: format!(
+                "direct turn copy look n={} {outcome} by={by} engine={} ms total={} tidy={} tree={} head={} commit={} bundle={} \
+                 hash={} store={}",
+                note.n,
+                note.steps.engine.word(),
+                note.began.map_or(0, |began| began.elapsed().as_millis()),
+                note.steps.tidy.as_millis(),
+                note.steps.tree.as_millis(),
+                note.steps.head.as_millis(),
+                note.steps.commit.as_millis(),
+                note.steps.bundle.as_millis(),
+                note.hash.as_millis(),
+                note.store.as_millis(),
+            ),
+            bytes: note.bytes,
+            kept: note.kept,
         }
     }
 
@@ -2635,6 +2706,89 @@ impl LookBound {
             self.git_ended.load(std::sync::atomic::Ordering::SeqCst),
             Instant::now() >= self.git_at,
         )
+    }
+}
+
+/// What started a look of the copy task, for the worker's log line of the look. A look that a request to end asked for is
+/// told by the request itself ([`LookBound::was_asked_to_end`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LookBy {
+    /// The timer of the copies.
+    Timer,
+    /// A tool call that ended.
+    Tool,
+    /// The timer while the copy of a stop that could not be saved is tried again.
+    Retry,
+}
+
+/// What the worker's log line of a look says, gathered while the look runs ([`LookBound::line`]).
+#[derive(Clone, Debug, Default)]
+struct LookNote {
+    /// When the look began.
+    began: Option<std::time::Instant>,
+    /// agentd had been asked to end when the look began: the look is the one of a stop.
+    for_a_stop: bool,
+    /// What the look was doing last: `tree` (the question to the file system), `lock` (the wait for the private repository),
+    /// `git`, `hash` or `store`. A look that failed names it as why.
+    step: &'static str,
+    /// The number of the copy the look made; 0 before it has made one.
+    n: u32,
+    /// The times of the steps of its git work, and what it found of the engine's head.
+    steps: crate::direct::snapshot::LookSteps,
+    /// The hash of the bundle.
+    hash: Duration,
+    /// The store of the copy.
+    store: Duration,
+    /// The bytes of the bundle; 0 before the look has made one.
+    bytes: u64,
+    /// The bytes of the kept pack when the git work of the look had ended.
+    kept: u64,
+}
+
+/// The worker's log line of one look that stored a copy or failed, without what came of the keep that may follow the look:
+/// one line per such look, and none for a look at an unchanged tree.
+#[derive(Clone, Debug)]
+struct KeepLine {
+    /// The line up to the time of the store ([`LookBound::line`]).
+    head: String,
+    /// The bytes of the bundle.
+    bytes: u64,
+    /// The bytes of the kept pack when the look ended.
+    kept: u64,
+}
+
+impl KeepLine {
+    /// The whole line. `keep` is `0` when no keep followed the look, the milliseconds the keep took when it ran to its end, `ended`
+    /// when what started the next look cut it, and `missed` when it could not be made; `kept` is the bytes of the kept pack then.
+    fn text(&self, keep: &str, kept: u64) -> String {
+        format!("{} keep={keep} bytes={} kept={kept}", self.head, self.bytes)
+    }
+}
+
+/// The line of a look whose keep is in flight. It is written when the keep ends ([`Self::done`]); when the keep is dropped
+/// first (the next look is due, a tool call ended, agentd was asked to end, the copy task is over), it is written here, and says
+/// that the keep was ended, or that none started.
+struct KeepEnding {
+    log: Arc<dyn crate::logging::LogSink>,
+    line: Option<KeepLine>,
+    /// The keep has the private repository and may have started its git.
+    started: bool,
+}
+
+impl KeepEnding {
+    fn done(&mut self, keep: &str, kept: u64) {
+        if let Some(line) = self.line.take() {
+            self.log.line(&line.text(keep, kept));
+        }
+    }
+}
+
+impl Drop for KeepEnding {
+    fn drop(&mut self) {
+        if let Some(line) = self.line.take() {
+            self.log
+                .line(&line.text(if self.started { "ended" } else { "0" }, line.kept));
+        }
     }
 }
 
@@ -2717,6 +2871,180 @@ fn copy_number(subject: &str) -> Option<u32> {
         .strip_prefix("harness: snapshot ")?
         .parse()
         .ok()
+}
+
+/// The most bytes of the record of a copy that are read for the copy a session started from. A record is a few hundred.
+const STARTED_FROM_RECORD_BYTES: u64 = 4096;
+
+/// How long the start of a session waits for what names the copy it started from: the time the watch of the storage waits
+/// for an answer (`snapshot::TREE_ANSWER_LIMIT`). A start from a saved copy reads that copy's record; a start from a final bundle
+/// reads the record and then the first bytes of the saved copy, with one limit for both reads. These reads are the one place
+/// where naming the copy can hold the start of a session.
+const STARTED_FROM_RECORD_LIMIT: Duration = crate::direct::snapshot::TREE_ANSWER_LIMIT;
+
+/// The copy a later session started from, as a notice of the storage watch names it (`storage_watch::Marked::StartFrom`).
+/// The object the session restored (`repo_uri`) is one of two objects of an earlier session `k` of the run:
+///
+/// * its newest saved copy (`turns/<k>/snapshot.bundle`), as after a lost session. The version is the one the bucket answered
+///   for the restore's own download (`version`), and the copy's own record (`turns/<k>/snapshot.json`) must name the commit the
+///   session restored;
+/// * its final bundle (`turns/<k>/bundle`), as after a session that ended in order. That session saved its copy of the end
+///   before it wrote the bundle (root invariant 9), from the same commit. The record must name the commit the session
+///   restored. Then the first bytes of the saved copy are read once: the version is the one the bucket answers for that read,
+///   and the header in those bytes must name the same commit, which is what the download route requires of the version.
+///
+/// The record gives the copy's number and its time, which is from before the copy's tree was read; the commit's own
+/// date is later. Anything else is `None`, and the log says why: a bucket that keeps no versions answers none, a session that
+/// ended between the two uploads of a copy left the record of the copy before, and a session whose copy of the end was not
+/// stored left the record of another commit beside its bundle. The files read back from a stopped session are no numbered copy
+/// of the run: they are `None` without a line and without a read. The reads are waited for [`STARTED_FROM_RECORD_LIMIT`] at
+/// the most, one limit for both; the session starts whatever they come to.
+///
+/// A copy that was found is said in one line of the log for each invocation of the session, in the form of the line of the
+/// first reading of the tree: the copy's number, the session that saved it and the time the reads took. The reads are made at
+/// the start of every later session, so the log of any such session shows that the worker's own reads worked and what they
+/// cost the start. They are made at every start, so a later session that is invoked a second time writes the line again: two
+/// such lines in the log of one session mean two invocations. A session that names no copy has the line that says why, and
+/// not this one.
+async fn started_from(
+    app: &App,
+    s3_objects: &S3Objects,
+    creds: &harness_protocol::api::internal::ProcessCredentials,
+    run: &str,
+    restored: &slice::Restored,
+    repo_uri: &str,
+    version: Option<String>,
+) -> Option<storage_watch::CopyRef> {
+    const CANNOT: &str = "a notice of a refused write cannot name it";
+    let (bucket, key) = s3::split_uri(repo_uri)?;
+    // The newest saved copy of an earlier session (`false`), or the final bundle of one (`true`).
+    let (session, final_bundle) = (1..restored.turn).rev().find_map(|k| {
+        if key == s3::snapshot_bundle_key_t(run, k) {
+            Some((k, false))
+        } else if key == s3::bundle_key_t(run, k) {
+            Some((k, true))
+        } else {
+            None
+        }
+    })?;
+    let line = |text: String| app.log.line(&format!("direct turn storage: {text}"));
+    if !final_bundle && version.is_none() {
+        line(format!(
+            "the bucket answered no version for the copy this session started from; {CANNOT}"
+        ));
+        return None;
+    }
+    // The copy the reads are about, in the log's words.
+    let copy_words = if final_bundle {
+        format!("the newest saved copy of session {session}")
+    } else {
+        "the copy this session started from".to_string()
+    };
+    let no_answer = |what: &str| {
+        format!(
+            "{what} got no answer within {} s; {CANNOT}",
+            STARTED_FROM_RECORD_LIMIT.as_secs()
+        )
+    };
+    let reads_began = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + STARTED_FROM_RECORD_LIMIT;
+    let uri = s3::uri(bucket, &s3::snapshot_json_key_t(run, session));
+    let read = tokio::time::timeout_at(
+        deadline,
+        s3_objects.get_prefix(&uri, creds, STARTED_FROM_RECORD_BYTES),
+    )
+    .await;
+    let record = match read {
+        Ok(Ok(bytes)) => serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+        Err(_) => {
+            line(no_answer(&format!("the record of {copy_words}")));
+            return None;
+        }
+        Ok(Err(e)) => {
+            line(format!(
+                "the record of {copy_words} could not be read; {CANNOT}: {}",
+                scrub_detail(&e)
+            ));
+            return None;
+        }
+    };
+    let named = record.as_ref().and_then(|r| {
+        let count = u32::try_from(r.get("count")?.as_u64()?).ok()?;
+        let at = r.get("at")?.as_str()?;
+        (r.get("headSha")?.as_str()? == restored.restore_head
+            && count >= 1
+            && harness_protocol::common::parse_utc_unix(at).is_some())
+        .then(|| (count, at.to_string()))
+    });
+    let Some((count, at)) = named else {
+        line(if final_bundle {
+            format!(
+                "the record of session {session} does not name the commit this session started on; a notice of a refused write names no copy"
+            )
+        } else {
+            format!(
+                "the record of session {session} does not name the copy this session started from; {CANNOT}"
+            )
+        });
+        return None;
+    };
+    let version_id = if final_bundle {
+        // The saved copy was not downloaded. Its first bytes are read for the version the bucket holds of it and for its header.
+        let uri = s3::uri(bucket, &s3::snapshot_bundle_key_t(run, session));
+        let read = tokio::time::timeout_at(
+            deadline,
+            s3_objects.get_prefix_with_version(&uri, creds, bundle_header::HEADER_BYTES),
+        )
+        .await;
+        match read {
+            Ok(Ok((bytes, Some(version_id)))) => {
+                if bundle_header::bundle_head(&bytes).ok().as_deref()
+                    != Some(restored.restore_head.as_str())
+                {
+                    line(format!(
+                        "{copy_words} is not the commit this session started on; {CANNOT}"
+                    ));
+                    return None;
+                }
+                version_id
+            }
+            Ok(Ok((_, None))) => {
+                line(format!(
+                    "the bucket answered no version for {copy_words}; {CANNOT}"
+                ));
+                return None;
+            }
+            Err(_) => {
+                line(no_answer(&copy_words));
+                return None;
+            }
+            Ok(Err(e)) => {
+                line(format!(
+                    "{copy_words} could not be read; {CANNOT}: {}",
+                    scrub_detail(&e)
+                ));
+                return None;
+            }
+        }
+    } else {
+        version?
+    };
+    line(format!(
+        "this session started from copy {count} of session {session}; {} took {} ms",
+        if final_bundle {
+            "the two reads"
+        } else {
+            "the read"
+        },
+        reads_began.elapsed().as_millis()
+    ));
+    Some(storage_watch::CopyRef {
+        session,
+        count,
+        at,
+        head_sha: restored.restore_head.clone(),
+        version_id,
+    })
 }
 
 /// The number of the newest copy the run saved before the session of `req` (0 for a run that saved none). The copies of a run are
@@ -2861,16 +3189,32 @@ impl Copies {
         let mut snapshotter = Snapshotter::new(agent_data, &wt.repo, base).await?;
         // The tree was read once while the repository was made, before the engine starts, so that the first look of the copy
         // task does not read every file in front of a tool call. A reading that was given up fails nothing: that look reads the files.
+        // What git's check of a kept pack cost the start of the turn is said in the same line.
+        let check = snapshotter
+            .take_kept_check()
+            .map(|(bytes, took)| {
+                format!(
+                    "; git's check of the kept pack of {bytes} bytes took {} ms",
+                    took.as_millis()
+                )
+            })
+            .unwrap_or_default();
         match snapshotter.take_prime_note() {
             Some(Ok(took)) => app.log.line(&format!(
-                "direct turn copies: the first reading of the tree took {} ms",
+                "direct turn copies: the first reading of the tree took {} ms{check}",
                 took.as_millis()
             )),
             Some(Err(e)) => app.log.line(&format!(
-                "direct turn copies: the first reading of the tree was given up: {}",
+                "direct turn copies: the first reading of the tree was given up: {}{check}",
                 scrub_detail(&e)
             )),
             None => {}
+        }
+        // The pack an earlier worker kept is adopted only after git's own check of it has passed. One that did not pass
+        // is gone, and this is the line that says so.
+        if let Some(why) = snapshotter.take_kept_note() {
+            app.log
+                .line(&format!("direct turn copy keep: {}", scrub_detail(&why)));
         }
         let bucket = s3::split_uri(&req.request.uri)
             .map(|(b, _)| b.to_string())
@@ -2879,6 +3223,7 @@ impl Copies {
         // own header names commits this repository can read. With no such commit, for any reason, the copies of the session are whole.
         let form = app.cfg.direct.copy_form;
         snapshotter.set_form(form);
+        snapshotter.set_keep_commits(app.cfg.direct.keep_commits);
         if form == BundleForm::AboveFloor {
             match floors_of_the_base(app, req, &bucket, base_header, &snapshotter).await {
                 Ok(floors) => snapshotter.set_floors(floors),
@@ -2927,6 +3272,7 @@ impl Copies {
             marker_root: app.cfg.workspace_root.clone(),
             marker_failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             storage,
+            keep_line: Arc::default(),
         })
     }
 
@@ -3075,6 +3421,9 @@ impl Copies {
     /// what came of it ([`Copies::stop_done`]).
     fn look_failed(&self, bound: &LookBound, e: &str) -> Looked {
         self.count_failed("snapshot", e);
+        // The look's own line: which step failed, and what the steps before it took.
+        let line = bound.line(false);
+        self.log.line(&line.text("0", line.kept));
         if !bound.was_asked_to_end() {
             self.tell_failed(COPY_NOT_SAVED);
         }
@@ -3126,23 +3475,45 @@ impl Copies {
     }
 
     async fn look_within(&self, bound: &LookBound) -> Looked {
+        // The line of the look before this one, when the keep that was to follow it never started.
+        self.keep_line_now("0");
+        bound.note(|n| {
+            n.began = Some(std::time::Instant::now());
+            n.for_a_stop = bound.was_asked_to_end();
+            n.step = "tree";
+        });
         // A tree whose file system does not answer is named as that within seconds, before any git is started on it.
         if let Err(e) = self.tree.answers(TREE_ANSWER_LIMIT).await {
             bound.tree_is_silent();
             return self.look_failed(bound, &e);
         }
+        bound.note(|n| n.step = "lock");
         let Some(mut snapshotter) = bound.git.run(self.snapshotter.lock()).await else {
             return self.look_failed(bound, "the copy before it had not ended");
         };
+        // A keep that was in flight was cut by what started this look (`Snapshotter::keep_cut`).
+        snapshotter.keep_cut(bound.by == LookBy::Timer && !bound.was_asked_to_end());
+        bound.note(|n| n.step = "git");
         // What the spacing counts of a look that fails starts here: a look that never got this far ran no git.
         bound.git_starts();
         let looked = snapshotter.snapshot_until(&bound.git).await;
         self.log_tidy(&mut snapshotter);
+        let (steps, kept) = (snapshotter.take_look_steps(), snapshotter.kept_bytes());
+        bound.note(|n| {
+            n.steps = steps;
+            n.kept = kept;
+        });
         let mut made = match looked {
             Ok(Some(made)) => made,
             Ok(None) => return Looked::Same,
             Err(e) => return self.look_failed(bound, &e),
         };
+        bound.note(|n| {
+            n.n = made.count;
+            n.bytes = made.bundle_bytes;
+            n.step = "hash";
+        });
+        let hash_began = std::time::Instant::now();
         // The hash of the bundle is processor time of the copy, so it is part of the look's work: made within the look's limit
         // and before that work ends, where the spacing counts it. The upload sends the bundle under this hash and does not hash again.
         if let Err(e) = crate::direct::snapshot::hash_bundle(&mut made, &bound.git).await {
@@ -3150,6 +3521,10 @@ impl Copies {
             snapshotter.forget_last();
             return self.look_failed(bound, &e);
         }
+        bound.note(|n| {
+            n.hash = hash_began.elapsed();
+            n.step = "store";
+        });
         // What the spacing counts ends here: the uploads cost the engine nothing, and one that hangs must not hold the next look back.
         let git_ended = std::time::Instant::now();
         bound.git_has_ended();
@@ -3163,8 +3538,10 @@ impl Copies {
             .stop
             .run(tokio::time::timeout(limit, self.store(&made, Some(limit))))
             .await;
+        bound.note(|n| n.store = git_ended.elapsed());
         let e = match stored {
             Some(Ok(Ok(()))) => {
+                self.stored_line(bound, &snapshotter);
                 return Looked::Stored {
                     bytes: made.bundle_bytes,
                     git_ended,
@@ -3232,6 +3609,76 @@ impl Copies {
             .line("direct turn session ending: a copy of the work is saved at once");
         bound.asked_to_end(self.ends_after_copy.then_some(at));
         Stop { n, at }
+    }
+
+    /// The worker's log line of a look that stored its copy. When a keep follows the look (the timer started the look,
+    /// agentd was not asked to end while it ran, and the keep is due, `Snapshotter::keep_is_due`), the line waits for what comes of
+    /// the keep ([`Self::keep_between_looks`]); else it is written now.
+    fn stored_line(&self, bound: &LookBound, snapshotter: &Snapshotter) {
+        let line = bound.line(true);
+        if bound.by == LookBy::Timer && !bound.was_asked_to_end() && snapshotter.keep_is_due() {
+            *self.keep_line.lock().unwrap_or_else(|p| p.into_inner()) = Some(line);
+        } else {
+            self.log.line(&line.text("0", line.kept));
+        }
+    }
+
+    /// Writes the line of a look that still waits for its keep, with `keep` as what came of the keep.
+    fn keep_line_now(&self, keep: &str) {
+        let line = self
+            .keep_line
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(line) = line {
+            self.log.line(&line.text(keep, line.kept));
+        }
+    }
+
+    /// The keep of the run's commits (`Snapshotter::keep_commits`), as an arm of the copy task's wait for its next look
+    /// ([`start_snapshots`]). It never ends that wait. When the look before it asked for a keep, the keep runs here, after that
+    /// look has stored its copy and after the task has counted the look: nothing of a keep is part of a look, of its limits, of
+    /// its late notice or of the spacing of the looks. The tick of the timer, a tool call's wake and a request to end are arms of
+    /// the same wait, as in release 5.25: the one that comes drops this future, which ends the keep's git with its group and
+    /// removes what it wrote, and the look it starts takes the private repository at once. The task yields once before the keep
+    /// takes the repository, so an event that is already there (a wake that came during the look) is taken first and no git of a
+    /// keep is started. The copy of the end begins after the copy task was aborted, which drops a keep in flight the same way.
+    ///
+    /// What came of the keep goes into the look's log line; why a keep was missed is logged once, in a line of its own.
+    async fn keep_between_looks(&self) -> std::convert::Infallible {
+        let line = self
+            .keep_line
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(line) = line {
+            let mut ending = KeepEnding {
+                log: self.log.clone(),
+                line: Some(line),
+                started: false,
+            };
+            tokio::task::yield_now().await;
+            let mut snapshotter = self.snapshotter.lock().await;
+            ending.started = true;
+            let began = std::time::Instant::now();
+            let give_up = GiveUp::at(Some(Instant::now() + crate::direct::snapshot::KEEP_LIMIT));
+            let keep = snapshotter.keep_commits(&give_up).await;
+            let took = began.elapsed().as_millis().max(1).to_string();
+            let word = match &keep {
+                crate::direct::snapshot::Keep::Kept { .. }
+                | crate::direct::snapshot::Keep::Nothing => took.as_str(),
+                crate::direct::snapshot::Keep::NotDue => "0",
+                crate::direct::snapshot::Keep::Missed(why) => {
+                    self.log.line(&format!(
+                        "direct turn copy keep missed: {}",
+                        scrub_detail(why)
+                    ));
+                    "missed"
+                }
+            };
+            ending.done(word, snapshotter.kept_bytes());
+        }
+        std::future::pending().await
     }
 
     /// What the copy that a request to end asked for came to: logged, and when no copy could be saved the run is told
@@ -3312,6 +3759,8 @@ impl Copies {
         head: Option<&str>,
         request: Option<Duration>,
     ) -> Option<String> {
+        // The line of the last look, when the copy task ended before the keep that was to follow it started.
+        self.keep_line_now("0");
         let mut snapshotter = self.snapshotter.lock().await;
         let made = match snapshotter.final_copy(head).await {
             Ok(made) => Ok(made),
@@ -3443,6 +3892,11 @@ async fn watched_look(
 ///
 /// No look is waited for without a limit ([`Copies::look`], [`watched_look`]): a look that does not return is given up, said to the run,
 /// and the next tick looks again. The git work of a look has `snapshot::git_limit`, which follows the last stored copy.
+///
+/// Between two looks the task keeps the run's commits, when the look before it asks for that
+/// ([`Copies::keep_between_looks`]). The keep is one more arm of the wait for the next look and never ends that wait: the tick of
+/// the timer, a tool call's wake and a request to end are taken as before, and each of them drops the keep, which ends its git. A
+/// keep never stands between a look and its copy, and a look counts nothing of it.
 fn start_snapshots(
     app: &App,
     req: &DirectInvocationRequest,
@@ -3484,6 +3938,8 @@ fn start_snapshots(
                 () = tick => Why::Timer,
                 () = wake.notified(), if cadence.wakes_now(&clock, trying_again) => Why::ToolCall,
                 n = ending.asked() => Why::Ending(n),
+                // The keep of the run's commits runs while the task waits. It never ends the wait: what does drops it.
+                never = copies.keep_between_looks() => match never {},
             };
             // A look that a request to end asked for has no floor and no spacing, and neither has a look that tries its copy again: only
             // the retry tick and a request to end start one then, no tool call (`Cadence::wakes_now`).
@@ -3507,6 +3963,11 @@ fn start_snapshots(
             timer.look_starts(look_started, asked_first);
             // The bound of the look that ran last: what the copy clock counts of a look that failed ends with it.
             let mut bound = copies.bound(&git);
+            bound.by = match why {
+                Why::ToolCall => LookBy::Tool,
+                Why::Timer if trying_again => LookBy::Retry,
+                Why::Timer | Why::Ending(_) => LookBy::Timer,
+            };
             let late = late_after(copies.limits.late, last_took);
             let mut stop = match why {
                 Why::Ending(n) => Some(copies.stop_asked(n, &bound)),

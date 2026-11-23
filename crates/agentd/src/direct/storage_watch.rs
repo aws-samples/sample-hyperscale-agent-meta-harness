@@ -37,6 +37,13 @@
 //!   and hands it the copy with the version the bucket gave its bundle ([`CopyRef`]). The newest copy of this session whose marker
 //!   write the storage took before the session's first refusal is frozen at that refusal, and every notice of the session names it. A
 //!   copy marked later is never named, and neither is a copy the bucket gave no version: a later copy replaces it at its key.
+//! * **The copy a session started from**. A session after the first that restored a saved copy of an earlier session, or
+//!   the final bundle of one whose copy of the end is of the same commit, hands the watch that copy with the marker of its
+//!   start ([`Marked::StartFrom`]): the session that saved it, its number and time from the copy's own record, its commit, and
+//!   the version the bucket answered for it. When the session had saved no copy of its own before ham first saw a refusal, every
+//!   notice of that session names the copy the session started from. It is named in the same member and with the same command.
+//!   The choice is made at the session's first refusal and holds for the session's later notices, also after the session stored
+//!   copies of its own. A session's own copy from before its first refusal comes first.
 //! * **The event.** A `turn.progress` event of kind `notify` with the reason [`REASON`] and a `storage` member, recorded with an id made
 //!   at the append so that its text names its own id. It goes to the event log only: no module of the seam is told (no ladder event), so
 //!   nothing can turn it into a prompt for the engine.
@@ -261,6 +268,11 @@ impl CopyRef {
 pub enum Marked {
     /// The marker of a session's start: it names no copy of this session.
     Start,
+    /// The marker of the start of a session that restored a saved copy of an earlier session, or the final bundle of one
+    /// whose copy of the end is of the same commit, with the version the bucket answered for that copy. It names no copy of
+    /// this session. When the session had stored no copy of its own before its first refusal, every notice of the session names
+    /// the copy it started from.
+    StartFrom(CopyRef),
     /// The marker of a stored copy whose bundle the bucket gave a version.
     Copy(CopyRef),
     /// The marker of a stored copy whose bundle the bucket gave no version: it cannot be named once a newer copy replaced it, and the
@@ -390,6 +402,9 @@ struct State {
     first_id: Option<String>,
     /// The newest copy whose marker write the storage took, until the session's first refusal.
     candidate: Option<CopyRef>,
+    /// The copy this session started from ([`Marked::StartFrom`]). A notice names it when the session had stored no copy
+    /// of its own before its first refusal.
+    started_from: Option<CopyRef>,
     /// The session saw a refusal: the candidate is frozen and no later copy replaces it.
     refusal_seen: bool,
     /// The test switch has made its one answer.
@@ -541,12 +556,16 @@ impl StorageWatch {
     pub async fn marker_write_for(&self, bytes: Vec<u8>, marked: Marked) -> Result<(), WriteError> {
         let inner = &self.inner;
         // The marker of a session's start is no copy's marker, and a notice says so with a word of its own.
-        let seen = if marked == Marked::Start {
+        let seen = if matches!(marked, Marked::Start | Marked::StartFrom(_)) {
             Seen::StartMarker
         } else {
             Seen::CopyMarker
         };
         let mut st = inner.state.lock().await;
+        // What the session restored is a fact of its start, whatever the storage answers to this write.
+        if let Marked::StartFrom(copy) = &marked {
+            st.started_from = Some(copy.clone());
+        }
         let (writes, dir) = (inner.setup.writes.clone(), inner.setup.run_dir.clone());
         let work = tokio::task::spawn_blocking(move || writes.marker(&dir, &bytes));
         let answer = match tokio::time::timeout(TREE_ANSWER_LIMIT, work).await {
@@ -564,9 +583,14 @@ impl StorageWatch {
             Ok(()) => {
                 if !st.refusal_seen {
                     match marked {
-                        Marked::Start => {}
+                        Marked::Start | Marked::StartFrom(_) => {}
                         Marked::Copy(copy) => st.candidate = Some(copy),
-                        Marked::Unnamed => st.candidate = None,
+                        Marked::Unnamed => {
+                            st.candidate = None;
+                            // The session stored a copy of its own, so the copy it started from is no longer the last
+                            // one saved.
+                            st.started_from = None;
+                        }
                     }
                 }
                 StorageWrite::Took
@@ -837,6 +861,12 @@ impl Inner {
     ) -> String {
         let setup = &self.setup;
         let copy = st.candidate.clone();
+        // A session that had stored no copy of its own names the copy it started from.
+        let from = if copy.is_none() {
+            st.started_from.clone()
+        } else {
+            None
+        };
         let first = st.first_id.clone();
         self.setup
             .rec
@@ -854,7 +884,7 @@ impl Inner {
                 if let Some(first) = &first {
                     storage["first"] = json!(first);
                 }
-                if let Some(copy) = &copy {
+                if let Some(copy) = copy.as_ref().or(from.as_ref()) {
                     storage["copyBefore"] = copy.to_value();
                 }
                 if by_switch {
@@ -868,9 +898,10 @@ impl Inner {
                         named,
                         size.unwrap_or((None, false)),
                         copy.as_ref(),
+                        from.as_ref(),
                     )
                 } else {
-                    short_words(&setup.run_id, named, n, copy.as_ref())
+                    short_words(&setup.run_id, named, n, copy.as_ref(), from.as_ref())
                 };
                 let detail = if by_switch {
                     format!("{detail} {TEST_SWITCH_SENTENCE}")
@@ -896,12 +927,25 @@ fn newest_words(run: &str) -> String {
     )
 }
 
-/// The words of the first notice of a session.
+/// The sentence of the copy a session started from, with the command that downloads it. `id` is the id of the session's
+/// first notice.
+fn started_from_words(run: &str, id: &str, from: &CopyRef) -> String {
+    format!(
+        "Copy {} of session {} ({}) is the copy this session started from: ham pull {run} --before-refusal {id} downloads it.",
+        from.count,
+        from.session,
+        from.minute()
+    )
+}
+
+/// The words of the first notice of a session. `copy` is the session's own newest copy from before its first refusal; without
+/// one, `from` is the copy the session started from.
 pub fn full_words(
     run: &str,
     id: &str,
     (used, partial): (Option<u64>, bool),
     copy: Option<&CopyRef>,
+    from: Option<&CopyRef>,
 ) -> String {
     let first = match used {
         Some(used) => format!(
@@ -918,7 +962,13 @@ pub fn full_words(
             c.count,
             c.minute()
         ),
-        None => "This session had saved no copy before ham first saw this.".to_string(),
+        None => match from {
+            Some(f) => format!(
+                "This session had saved no copy before ham first saw this. {}",
+                started_from_words(run, id, f)
+            ),
+            None => "This session had saved no copy before ham first saw this.".to_string(),
+        },
     };
     format!(
         "{first} {KNOWN} A file that a command wrote meanwhile can be empty; ham does not know which. {copy} {}",
@@ -927,14 +977,26 @@ pub fn full_words(
 }
 
 /// The words of a later notice of a session: the count and the same commands.
-pub fn short_words(run: &str, first_id: &str, n: u32, copy: Option<&CopyRef>) -> String {
+pub fn short_words(
+    run: &str,
+    first_id: &str,
+    n: u32,
+    copy: Option<&CopyRef>,
+    from: Option<&CopyRef>,
+) -> String {
     let copy = match copy {
         Some(c) => format!(
             "Copy {} ({}) is still the last copy saved before ham first saw it: ham pull {run} --before-refusal {first_id} downloads it.",
             c.count,
             c.minute()
         ),
-        None => "This session had saved no copy before ham first saw it.".to_string(),
+        None => match from {
+            Some(f) => format!(
+                "This session had saved no copy before ham first saw it. {}",
+                started_from_words(run, first_id, f)
+            ),
+            None => "This session had saved no copy before ham first saw it.".to_string(),
+        },
     };
     format!(
         "The session's storage refused a write again ({NO_SPACE}); ham has seen this {n} times in this session. {copy} {}",

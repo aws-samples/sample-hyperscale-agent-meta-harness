@@ -220,6 +220,20 @@ impl S3Objects {
         creds: &ProcessCredentials,
         dest: &Path,
     ) -> Result<(), String> {
+        self.get_to_file_with_version(uri, creds, dest)
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Self::get_to_file`], and the version of the object that was read: the `x-amz-version-id` of the answer, which a
+    /// bucket that keeps versions gives a GET as it gives a PUT. The header is in the answer that is read anyway; no other
+    /// request is made. `None` for a bucket that keeps no versions.
+    pub async fn get_to_file_with_version(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        dest: &Path,
+    ) -> Result<Option<String>, String> {
         let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
         let resp = self
             .http
@@ -241,7 +255,10 @@ impl S3Objects {
         if resp.status != 200 {
             return Err(s3_error("GET", uri, resp.status, &resp.body));
         }
-        Ok(())
+        Ok(resp
+            .header("x-amz-version-id")
+            .filter(|v| !v.is_empty())
+            .map(str::to_string))
     }
 
     /// The first bytes of the object at `uri`, at most `max_bytes` of them: one GET with `range: bytes=0-<max_bytes - 1>`
@@ -254,6 +271,19 @@ impl S3Objects {
         creds: &ProcessCredentials,
         max_bytes: u64,
     ) -> Result<Vec<u8>, String> {
+        self.get_prefix_with_version(uri, creds, max_bytes)
+            .await
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// [`Self::get_prefix`], and the version of the object whose first bytes were read: the `x-amz-version-id` of that
+    /// answer, so the bytes and the version are of one object. `None` for a bucket that keeps no versions.
+    pub async fn get_prefix_with_version(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, Option<String>), String> {
         let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
         let range = format!("bytes=0-{}", max_bytes.max(1) - 1);
         let resp = self
@@ -275,9 +305,13 @@ impl S3Objects {
         if resp.status != 200 && resp.status != 206 {
             return Err(s3_error("GET", uri, resp.status, &resp.body));
         }
+        let version = resp
+            .header("x-amz-version-id")
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
         let mut body = resp.body;
         body.truncate(usize::try_from(max_bytes).unwrap_or(usize::MAX));
-        Ok(body)
+        Ok((body, version))
     }
 
     pub async fn put_file(

@@ -363,14 +363,31 @@ pub(crate) async fn git_with_env_until(
     envs: &[(&str, &Path)],
     give_up: &crate::direct::snapshot::GiveUp,
 ) -> Result<String, WsError> {
-    use tokio::io::AsyncReadExt;
+    git_with_env_until_input(dir, args, envs, None, give_up).await
+}
+
+/// [`git_with_env_until`] with `input` written to git's standard input, which is closed after it (the commits a
+/// `git pack-objects --revs` packs). The same process group, the same give-up, and the same end of the whole group when the call is
+/// dropped before git has ended.
+pub(crate) async fn git_with_env_until_input(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+    input: Option<&[u8]>,
+    give_up: &crate::direct::snapshot::GiveUp,
+) -> Result<String, WsError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let what = args.first().copied().unwrap_or("");
     let mut cmd = git_command_outside(dir, args);
     cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
         .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
         .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
         .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
-        .stdin(std::process::Stdio::null())
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .process_group(0)
@@ -385,6 +402,7 @@ pub(crate) async fn git_with_env_until(
     let mut guard = KillGroup::of(&child);
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
+    let mut stdin = child.stdin.take();
     let ended = {
         let run = async {
             let mut out = Vec::new();
@@ -399,7 +417,13 @@ pub(crate) async fn git_with_env_until(
                     let _ = pipe.read_to_end(&mut err).await;
                 }
             };
-            let ((), (), status) = tokio::join!(read_out, read_err, child.wait());
+            let write_in = async {
+                if let (Some(bytes), Some(mut pipe)) = (input, stdin.take()) {
+                    let _ = pipe.write_all(bytes).await;
+                    let _ = pipe.shutdown().await;
+                }
+            };
+            let ((), (), (), status) = tokio::join!(write_in, read_out, read_err, child.wait());
             (status, out, err)
         };
         give_up.run(run).await

@@ -149,6 +149,7 @@ fn b881_the_command_the_notice_prints_is_the_one_the_parser_takes() {
             ts: "2026-11-21T00:39:02Z".to_string(),
             session: 1,
             has_copy: true,
+            started_from: None,
         }),
         recent: Vec::new(),
         test_switch: false,

@@ -46,7 +46,8 @@ builds the payloads of all three.
 - Change record: when `validate` passes a delivery it writes `runs/<run>/deliverable/changes.json` (`changes_key`) beside the verified bundle, from the same `base..head` changes it checked (`diff-tree --no-renames`: a rename is a deletion and an addition): `{schemaVersion: 1, runId, headSha, base: {kind: "commit", sha} | {kind: "empty-tree"}, total, omitted, files: [{path, status A|M|D|T}]}`. At most `MAX_FILES` (200) paths are listed, in path order; a path longer than `MAX_PATH_BYTES` (1,024) or holding a NUL is counted in `omitted` with the rest, and `total` counts every changed path (an empty delivery is `total` 0 with no files, not a missing record). The record is an aid to the follow-up digest and never part of the verdict: it is written after the checks, only for a pass, with the content type application/json and its SHA-256, and a write that fails (the role has no grant, a throttle) is logged and ignored. `control-api`'s head route reads it and uses it only when it names the run and the delivered head (`ham_core::head::ChangeList::from_record`); `crates/ham-core/tests/fixtures/changes/changes-v1.json` is the file both sides are tested against (this crate does not depend on `ham-core`, and so no `Cargo.lock` edge or image key moves). The role's grant is `WriteChangeRecord` in `infra/lib/stacks/delivery.ts`.
 - Pushes: only `refs/heads/harness/<runId>` (`HarnessRef` is built from a ULID run id only), never
   forced; any other requested ref is refused before any read.
-- Git sandbox: empty environment plus `PATH`, a scratch `HOME`, no system or global config, no hooks
+- Git sandbox: empty environment plus `PATH`, a scratch `HOME`, the zone UTC (`TZ=UTC0`, the form that needs no zone data: git writes
+  local times in some outputs, `git archive` among them, and none may follow the machine's zone), no system or global config, no hooks
   or fsmonitor, no prompts, no redirects. The CodeCommit credential (git-remote-codecommit's SigV4
   scheme from the role's current credentials, `credential.rs`) reaches git only through a one-shot
   credential helper reading two variables of that child.
@@ -156,7 +157,8 @@ builds the payloads of all three.
   as written: a plain file has none, so it has no mode and reads as 100644, and an executable keeps its mode).
   A link's MANIFEST.sha256 line covers the link text, which is the entry's content (read the zip, not an extracted tree: `sha256sum -c`
   follows links); a link target that is not UTF-8 is refused. `ham clone` compares `src/` with the bundle's tree
-  by path, blob id and mode. Entries carry the head's commit time, so reruns are byte-identical and the artifact id
+  by path, blob id and mode. Entries carry the head's commit time in UTC on a machine in any time zone,
+  so reruns are byte-identical and the artifact id
   `zip-<sha256[..20]>` is stable; a tree with no link and no attribute keeps `git archive`'s entry names, bytes, times and execute bits (tested). The zip is
   at `s3::deliverable_key` (artifact kind `zip`). Every package also writes the evidence archive
   (`<top>-evidence/`: EVIDENCE.md, `evidence/`, MANIFEST.sha256) at `s3::evidence_archive_key`
@@ -191,6 +193,8 @@ builds the payloads of all three.
   recorded HTTP exchanges (`StaticReplayClient`); the credential signature against the botocore
   vector in `tests/credential.rs`. AKIA-format test keys are built at runtime, never committed.
 - Tests need `git` and `gitleaks` on `PATH`.
+- The fixture git (`tests/common/mod.rs`, `git`) runs in UTC (`TZ=UTC0`), so no fixture and no reference archive follows the time zone of
+  the machine or of the shell that runs the tests. A test needs no zone and passes under any.
 
 ## Verification
 
