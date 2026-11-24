@@ -135,19 +135,41 @@ pub fn plugin_folder() -> PathBuf {
 /// day. A test that needs a commit with another date runs git itself.
 pub const FIXTURE_DATE: &str = "@1767225600 +0000";
 
+/// How often [`git`] starts the program again when the kernel refuses the start with "Text file busy", and how long it waits
+/// between two starts.
+const BUSY_STARTS: u32 = 100;
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Runs git in `dir` as the author and committer of the fixtures, with [`FIXTURE_DATE`] as both dates of a commit it makes.
+///
+/// A start that the kernel refuses with "Text file busy" is made again, [`BUSY_STARTS`] times at the most. A test that
+/// writes a stand-in for git leads the search path with it; when several tests of one file run as threads of one process, a
+/// program that another thread starts in the moment of that write holds the written file open until it has become its own
+/// program, and a `git` that is started in that moment is refused. Under the repository's runner every test is a process of its
+/// own, so this happens only when a test program is started directly.
 pub fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@example.com")
-        .env("GIT_AUTHOR_DATE", FIXTURE_DATE)
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@example.com")
-        .env("GIT_COMMITTER_DATE", FIXTURE_DATE)
-        .output()
-        .unwrap();
+    let mut starts = 0;
+    let out = loop {
+        starts += 1;
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_AUTHOR_DATE", FIXTURE_DATE)
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_DATE", FIXTURE_DATE)
+            .output();
+        match out {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && starts < BUSY_STARTS =>
+            {
+                std::thread::sleep(BUSY_WAIT);
+            }
+            out => break out.unwrap(),
+        }
+    };
     assert!(
         out.status.success(),
         "git {args:?}: {}",

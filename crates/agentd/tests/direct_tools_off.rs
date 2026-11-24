@@ -138,6 +138,19 @@ impl Norm {
             .to_string()
     }
 
+    /// A line of agentd's log: [`Self::text`], and the times in milliseconds and sizes in bytes of the worker's save line, as
+    /// the golden streams normalize them.
+    fn log(&self, s: &str) -> String {
+        let t = self.text(s);
+        if t.contains("direct turn copy look n=") {
+            let save =
+                Regex::new(r"\b(total|tidy|tree|head|commit|bundle|hash|store|bytes|kept)=\d+")
+                    .unwrap();
+            return save.replace_all(&t, "$1=<n>").to_string();
+        }
+        t
+    }
+
     fn value(&self, key: &str, v: &Value) -> Value {
         let variable = key.ends_with('S')
             || key.ends_with("Bytes")
@@ -197,7 +210,7 @@ fn record(d: &Direct) -> Value {
         .unwrap()
         .lines()
         .filter_map(|l| l.strip_prefix("agentd: "))
-        .map(|l| n.text(l))
+        .map(|l| n.log(l))
         // the numbers of durations and byte counts differ between runs
         .map(|l| {
             Regex::new(r"\b\d+(\.\d+)? ?(s|ms)\b")

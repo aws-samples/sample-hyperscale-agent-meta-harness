@@ -1,5 +1,6 @@
 //! What the tests of the kept pack share: the folders of the private repository, the engine's commits, a look that must make
-//! a copy, a stand-in for git that can hold, fail, starve or disturb the keep's own `pack-objects`, fail the reading of the tree,
+//! a copy, a stand-in for git that can hold, fail, starve or disturb the keep's own `pack-objects`, fail or hold the reading of
+//! the tree,
 //! hold git's check of a kept pack and write down what the folders of the keep held at each call, and the second process whose
 //! search path leads with that stand-in.
 #![allow(dead_code, clippy::unwrap_used)]
@@ -188,6 +189,8 @@ pub fn fetched_into_the_base(l: &Lab, name: &str, copy: &Path) -> PathBuf {
 /// else: what the folder of the kept pack and the folder a keep writes into held when the call started ([`kept_seen`]). Two more
 /// files in `dir` steer calls in such a repository:
 /// - `add-fail`: every `add` fails at once, so a look fails in the step that reads the tree;
+/// - `add-hold`: an `add` writes its process id into `add-running` and waits for as long as `add-hold` is there: the git work of
+///   a look takes as long as a test holds it;
 /// - `check-hold`: an `index-pack` (git's check of a kept pack when a worker starts) writes its process id into `check-running`
 ///   and waits for as long as `check-hold` is there: a check that does not end.
 ///
@@ -229,6 +232,10 @@ case "$GIT_DIR" in
     ) >> '{dir}/kept-seen.log'
     for a in "$@"; do
       if [ "$a" = add ] && [ -e '{dir}/add-fail' ]; then echo 'the test fails this add' >&2; exit 1; fi
+      if [ "$a" = add ] && [ -e '{dir}/add-hold' ]; then
+        echo $$ > '{dir}/add-running'
+        while [ -e '{dir}/add-hold' ]; do sleep 0.05; done
+      fi
       if [ "$a" = index-pack ] && [ -e '{dir}/check-hold' ]; then
         echo $$ > '{dir}/check-running'
         while [ -e '{dir}/check-hold' ]; do sleep 0.05; done

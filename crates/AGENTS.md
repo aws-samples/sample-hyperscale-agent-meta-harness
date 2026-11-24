@@ -34,7 +34,7 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
 - A test with a time bound of its own that fails only beside the other tests of a full run gets a row in `.config/nextest.toml` that gives it every test thread of the run
   (`threads-required = 'num-test-threads'`), one row with one term for each test. Its bound stays as it is. Besides the stress test of the fake engine, four tests have such a
   row: `five_thousand_agents_draw_in_bounded_time` of `ham/tests/tui_w2.rs`, `b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer` of
-  `agentd/tests/b823_copies_run.rs`, and `b823_a_git_that_hangs_on_the_work_tree_is_said_and_ended_and_the_next_look_copies` and
+  `agentd/tests/b823_copies_run.rs`, and `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and
   `b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more` of `agentd/tests/b823_stop_copy.rs`. The three worker tests wait for copies that git
   processes make. A row is not free: it waits for the tests in flight and then holds every test thread, and the four rows add about a third to the length of a full run of the
   workspace's tests; add one only for a test that failed a first pass beside the other tests and passed alone. The note stands here and not in the agentd crate because every file
@@ -49,6 +49,17 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   from the process id is new among the processes that run now, not over time: the kernel hands an id out again, nextest starts one process for each
   test, and the tests leave their folders in the scratch directory, so a later run can be handed a folder that holds another test's files and fail on
   them. `tmp()` of `ham-core/tests/skills_namespace.rs` is the pattern, beside the test that plants such folders.
+- A test that prints what it measured keeps those lines in the log of a full run through a row in `.config/nextest.toml` with `success-output =
+  'immediate'`: nextest shows the output of a test that passed only when a row asks for it. One row names the thirty-one tests of a look of the copy task
+  that hangs in `agentd/tests/b823_stop_copy.rs`. Three run a real worker:
+  `b823_a_look_that_hangs_in_git_add_is_said_late_and_copies_when_the_tree_answers_again`,
+  `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and
+  `b823_a_look_is_given_up_when_the_file_system_of_the_tree_no_longer_answers`; their lines begin with `STATED` (what a late line of the worker states).
+  Twenty-eight drive the clock (their names begin with `b893_`); their lines begin with `DRIVEN` (the durations the test imposed, the moment on that clock
+  at which it saw the look said late or given up, the numbers of the worker's late line, and what the run had been told). A second row keeps the `DRIVEN`
+  lines of the tests in `agentd/tests/b923_tree_question.rs` (when the copy task asks the file system of the work tree, the order in which it takes the end
+  of a look, its late line, a request to end and the question, and the late limit of the look that follows a look which a request to end overtook), and the
+  same test fails when it does not name one of them.
 
 ## Verification
 

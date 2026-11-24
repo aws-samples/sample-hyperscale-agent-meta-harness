@@ -93,7 +93,16 @@ impl Norm {
         let t = secs.replace_all(&t, "<n>s").to_string();
         // counts of dropped or buffered bytes and pids vary; the test only needs the shape of the line
         let pid = Regex::new(r"\b(pid|owner_uid)[= ]\d+").unwrap();
-        pid.replace_all(&t, "$1=<n>").to_string()
+        let t = pid.replace_all(&t, "$1=<n>").to_string();
+        // The worker's save line (here the one of the copy of the end) names times in milliseconds and sizes in bytes; the
+        // copy's number, what started the save, what it found of the engine's head and what came of the keep stay.
+        if t.contains("direct turn copy look n=") {
+            let save =
+                Regex::new(r"\b(total|tidy|tree|head|commit|bundle|hash|store|bytes|kept)=\d+")
+                    .unwrap();
+            return save.replace_all(&t, "$1=<n>").to_string();
+        }
+        t
     }
 
     fn value(&self, key: &str, v: &Value) -> Value {

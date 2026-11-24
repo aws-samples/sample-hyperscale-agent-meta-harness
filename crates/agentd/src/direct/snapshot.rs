@@ -2344,6 +2344,10 @@ impl Snapshotter {
     /// It starts with the clean-up a look left due ([`Self::tidy_if_due`]), after the lock files are cleared. Before
     /// both, a kept pack gives way on a short disk ([`Self::keep_gives_way`]).
     pub async fn final_copy(&mut self, head: Option<&str>) -> Result<SnapshotMade, String> {
+        // The copy of the end times its steps as a look does, for the worker's save line ([`Self::take_look_steps`]); it reads no
+        // head of the engine, so `head` stays 0.
+        self.steps = LookSteps::default();
+        let at = Instant::now();
         // The copy of the end has its caller's budget; a look that was aborted in the middle must not leave its own limit behind.
         self.scratch.give_up = None;
         // Root invariant 9 over the keep comes first: on a short disk the bytes of a kept pack are the copy's.
@@ -2352,6 +2356,7 @@ impl Snapshotter {
         // The copy of the end reads no kept pack and keeps none: nothing is in front of it, and a delivery is planned from it.
         self.keep.use_kept = false;
         self.tidy_if_due().await;
+        self.steps.tidy = at.elapsed();
         let made = self.final_copy_kept(head).await;
         self.tidy_due = true;
         made
@@ -2362,13 +2367,16 @@ impl Snapshotter {
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let n = self.count + 1;
         let read_unix = now_unix();
+        let at = Instant::now();
+        let tree = match head {
+            Some(head) => self.scratch.tree_of(head).await?,
+            None => self.current_tree().await?,
+        };
+        self.steps.tree = at.elapsed();
+        let at = Instant::now();
         let (commit, tree) = match head {
-            Some(head) => {
-                let tree = self.scratch.tree_of(head).await?;
-                (head.to_string(), tree)
-            }
+            Some(head) => (head.to_string(), tree),
             None => {
-                let tree = self.current_tree().await?;
                 let parent = self
                     .last_parent
                     .clone()
@@ -2384,7 +2392,10 @@ impl Snapshotter {
             )
             .await
             .map_err(ws)?;
+        self.steps.commit = at.elapsed();
+        let at = Instant::now();
         let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
+        self.steps.bundle = at.elapsed();
         self.last_tree = tree;
         self.count = n;
         Ok(SnapshotMade {

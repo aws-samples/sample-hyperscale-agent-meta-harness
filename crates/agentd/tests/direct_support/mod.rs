@@ -13,7 +13,7 @@ use agentd::server::{App, serve};
 use agentd::time::{format_rfc3339, now_unix};
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{ConnectInfo, Path as AxPath, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -37,6 +37,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// How long a test waits, in real time, for real work it knows to be under way. The start of a real `agentd serve` is such work
+/// ([`Direct::start`]): a crowded machine starts a debug build slowly. It is a wait and no bound of a rule: no test measures a start
+/// against it, and the cost test reads its own figure ([`Process::start_took`]).
+pub const REAL_WORK_WITHIN: Duration = Duration::from_secs(60);
 
 pub const BUCKET: &str = "hamh-direct-harness-111111111111";
 pub const RUN: &str = "01M4XTESTRUNDIRECT00000001";
@@ -202,6 +207,9 @@ pub struct AwsState {
     put_body_held: std::sync::atomic::AtomicBool,
     /// The PUT that is held may go on (`FakeAws::release_put_body`).
     put_body_released: std::sync::atomic::AtomicBool,
+    /// Every PUT the store answered 200 on a connection that it keeps open, in order: its `bucket/key`, and whether the
+    /// client has since closed that connection (`FakeAws::put_answers`).
+    put_answers: Mutex<Vec<(String, Arc<std::sync::atomic::AtomicBool>)>>,
 }
 
 /// Picks the event a control rule waits for.
@@ -299,6 +307,34 @@ pub struct FakeAws {
 
 type Shared = Arc<AwsState>;
 
+/// One connection of a client to the fake, from the moment the fake accepts it to the end of the task that serves it. The
+/// fake keeps a connection of HTTP/1.1 open after an answer of 200 unless the request asked to close it, so that task ends when
+/// the client has closed the connection.
+#[derive(Clone)]
+struct Connection(Arc<ConnectionOpen>);
+
+/// What a [`Connection`] leaves behind: `closed` is set when its last holder is gone, and that is the task that served it.
+struct ConnectionOpen {
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for ConnectionOpen {
+    fn drop(&mut self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A connection the fake has accepted, as `axum::serve` hands it to the service of that connection.
+type Accepted<'a> = axum::serve::IncomingStream<'a, tokio::net::TcpListener>;
+
+impl axum::extract::connect_info::Connected<Accepted<'_>> for Connection {
+    fn connect_info(_: Accepted<'_>) -> Self {
+        Self(Arc::new(ConnectionOpen {
+            closed: Arc::default(),
+        }))
+    }
+}
+
 /// `t<k>-` for a key in the folder of session `k` of a run (`.../turns/<k>/...`) when `k` is 2 or more, else nothing.
 fn later_session_of(full: &str) -> String {
     let parts: Vec<&str> = full.split('/').collect();
@@ -386,6 +422,8 @@ async fn put_body(
 async fn s3_put(
     State(s): State<Shared>,
     AxPath((bucket, key)): AxPath<(String, String)>,
+    ConnectInfo(connection): ConnectInfo<Connection>,
+    version: axum::http::Version,
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> axum::response::Response {
@@ -503,6 +541,20 @@ async fn s3_put(
             s.checksums.lock().unwrap().remove(&full);
         }
         return failure_response(how).await;
+    }
+    // The object is stored and this PUT is answered 200 on this connection. Nothing was awaited since the object was stored,
+    // so whoever sees the object in the store finds this entry too. An answer on a connection that the fake ends itself after the
+    // answer (the request asked for that, or it is not HTTP/1.1) is not entered: the end of that connection would not tell that
+    // the client has read the answer.
+    let asks_to_close = headers
+        .get(axum::http::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("close"));
+    if version == axum::http::Version::HTTP_11 && !asks_to_close {
+        s.put_answers
+            .lock()
+            .unwrap()
+            .push((full.clone(), connection.0.closed.clone()));
     }
     let mut resp = StatusCode::OK.into_response();
     if !*s.no_version_ids.lock().unwrap() {
@@ -931,6 +983,8 @@ impl FakeAws {
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // Every request carries the connection it came on, so the store can tell when a client has closed one.
+        let app = app.into_make_service_with_connect_info::<Connection>();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         Self {
             base: format!("http://{addr}"),
@@ -1162,6 +1216,21 @@ impl FakeAws {
         self.state
             .put_body_released
             .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// `(given, read)` for the answers of 200 this store gave to PUTs whose bucket/key contains `substring`: how many it
+    /// gave, and how many of them the client has read, as far as a store can tell: the client has closed the connection the
+    /// answer went out on. The worker makes a client for every store of a copy and drops it when that store has returned
+    /// (`Copies::store`), and a closed connection delivers nothing more: an answer that is read is not on its way to the worker
+    /// any more, and the call that waited for it has returned. A client that gave its request up has closed the connection as
+    /// well; what came of a request is read elsewhere.
+    pub fn put_answers(&self, substring: &str) -> (usize, usize) {
+        let answers = self.state.put_answers.lock().unwrap();
+        let of_key = answers.iter().filter(|(key, _)| key.contains(substring));
+        of_key.fold((0, 0), |(given, read), (_, closed)| {
+            let closed = closed.load(std::sync::atomic::Ordering::SeqCst);
+            (given + 1, read + usize::from(closed))
+        })
     }
 
     pub fn delay_puts(&self, substring: &str, pause: Duration) {
@@ -2072,7 +2141,7 @@ impl Direct {
                 log_file,
                 start_took: Duration::ZERO,
             });
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + REAL_WORK_WITHIN;
             // A first process is looked for every 5 ms, so that the cost test can tell two starts apart; every other test keeps
             // its 50 ms.
             let pause = Duration::from_millis(if opts.first_process { 5 } else { 50 });

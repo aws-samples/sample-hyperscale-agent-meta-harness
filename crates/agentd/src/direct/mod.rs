@@ -2617,9 +2617,8 @@ impl LookBound {
         change(&mut self.note.lock().unwrap_or_else(|p| p.into_inner()));
     }
 
-    /// The worker's log line of this look up to its store: `stored`, or `failed` with the step that failed as `why`, what
-    /// started the look, what it found of the engine's head, the wall time up to now and the times of its steps in milliseconds.
-    /// What came of the keep, the bytes of the bundle and the bytes of the kept pack follow it ([`KeepLine::text`]).
+    /// The worker's log line of this look up to its store ([`save_line`]), with what started the look and what it found of the
+    /// engine's head.
     fn line(&self, stored: bool) -> KeepLine {
         let note = self.note.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let by = match self.by {
@@ -2628,29 +2627,7 @@ impl LookBound {
             LookBy::Tool => "tool",
             LookBy::Retry => "retry",
         };
-        let outcome = if stored {
-            "stored".to_string()
-        } else {
-            format!("failed why={}", note.step)
-        };
-        KeepLine {
-            head: format!(
-                "direct turn copy look n={} {outcome} by={by} engine={} ms total={} tidy={} tree={} head={} commit={} bundle={} \
-                 hash={} store={}",
-                note.n,
-                note.steps.engine.word(),
-                note.began.map_or(0, |began| began.elapsed().as_millis()),
-                note.steps.tidy.as_millis(),
-                note.steps.tree.as_millis(),
-                note.steps.head.as_millis(),
-                note.steps.commit.as_millis(),
-                note.steps.bundle.as_millis(),
-                note.hash.as_millis(),
-                note.store.as_millis(),
-            ),
-            bytes: note.bytes,
-            kept: note.kept,
-        }
+        save_line(&note, by, note.steps.engine.word(), stored)
     }
 
     /// The git work of this look starts now.
@@ -2709,6 +2686,35 @@ impl LookBound {
     }
 }
 
+/// The worker's save line of a look of the copy task, and of a copy of the end, up to its store: `stored`, or `failed`
+/// with the step that failed as `why`, what started the save as `by`, what it found of the engine's head as `engine`, the wall time up
+/// to now and the times of its steps in milliseconds. What came of the keep, the bytes of the bundle and the bytes of the kept pack
+/// follow it ([`KeepLine::text`]).
+fn save_line(note: &LookNote, by: &str, engine: &str, stored: bool) -> KeepLine {
+    let outcome = if stored {
+        "stored".to_string()
+    } else {
+        format!("failed why={}", note.step)
+    };
+    KeepLine {
+        head: format!(
+            "direct turn copy look n={} {outcome} by={by} engine={engine} ms total={} tidy={} tree={} head={} commit={} bundle={} \
+             hash={} store={}",
+            note.n,
+            note.began.map_or(0, |began| began.elapsed().as_millis()),
+            note.steps.tidy.as_millis(),
+            note.steps.tree.as_millis(),
+            note.steps.head.as_millis(),
+            note.steps.commit.as_millis(),
+            note.steps.bundle.as_millis(),
+            note.hash.as_millis(),
+            note.store.as_millis(),
+        ),
+        bytes: note.bytes,
+        kept: note.kept,
+    }
+}
+
 /// What started a look of the copy task, for the worker's log line of the look. A look that a request to end asked for is
 /// told by the request itself ([`LookBound::was_asked_to_end`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2743,6 +2749,8 @@ struct LookNote {
     bytes: u64,
     /// The bytes of the kept pack when the git work of the look had ended.
     kept: u64,
+    /// When the store of a copy of the end began, for the line of one that was given up in its store; looks leave it unset.
+    store_began: Option<std::time::Instant>,
 }
 
 /// The worker's log line of one look that stored a copy or failed, without what came of the keep that may follow the look:
@@ -3560,14 +3568,23 @@ impl Copies {
     /// the run is told, once until a copy is stored again and not after a failure was said. Nothing is counted: the look goes on and may
     /// still store its copy, which the run then sees as the copy's `savedCopy` event. The late notice has a flag of its own
     /// (`late_said`): when the look is given up after all, the run is told that the copy could not be saved.
-    fn late(&self) {
+    ///
+    /// The line states the worker's own numbers: how long the look had taken when its late timer fired (`taken`), the
+    /// limit that was applied, the limit that was set, and what the last look that stored a copy took when the limit was made (`limit`).
+    fn late(&self, taken: Duration, limit: LateLimit) {
         let (what, sentence) = match self.step.load(std::sync::atomic::Ordering::SeqCst) {
             STEP_STORE => ("storing the copy", COPY_LATE_STORE),
             _ => ("reading the work tree", COPY_LATE_TREE),
         };
+        let last = limit.last.map_or_else(
+            || "no copy was stored before".to_string(),
+            |took| format!("the last stored copy took {:.3} s", took.as_secs_f64()),
+        );
         self.log.line(&format!(
-            "direct turn snapshot late: {what} has taken {} s so far",
-            self.limits.late.as_secs_f32()
+            "direct turn snapshot late: {what} has taken {:.3} s so far; its limit was {:.3} s (the set limit is {:.3} s, {last})",
+            taken.as_secs_f64(),
+            limit.after.as_secs_f64(),
+            self.limits.late.as_secs_f64()
         ));
         if !self.failing.load(std::sync::atomic::Ordering::SeqCst)
             && !self
@@ -3601,8 +3618,9 @@ impl Copies {
     }
 
     /// agentd was asked to end, request `n`: logged before the copy is made. `bound` is the look that runs or starts now. In a
-    /// process that ends after the copy, nothing of it runs after the time the copy has (`CopyLimits::stop`); the first process of its
-    /// machine runs on, so a look of it keeps its own limits: a copy that needs longer than that time is still stored.
+    /// process that ends after the copy, nothing of it runs after the time the copy has (`CopyLimits::stop`), counted from now, but
+    /// for `snapshot::TREE_ANSWER_LIMIT` at the most while a question to the tree is under way then ([`watched_look`]); the first
+    /// process of its machine runs on, so a look of it keeps its own limits: a copy that needs longer than that time is still stored.
     fn stop_asked(&self, n: u64, bound: &LookBound) -> Stop {
         let at = Instant::now() + self.limits.stop;
         self.log
@@ -3737,31 +3755,63 @@ impl Copies {
         self.tell_failed(END_COPY_NOT_SAVED);
     }
 
+    /// A try of the copy of the end within `final_budget`. Each try that stored a copy or failed writes the worker's save line
+    /// ([`Self::end_line`]), also a try that was given up at the budget, with the step it was in as `why`.
     async fn save_final_within(
         &self,
         head: Option<&str>,
         request: Option<Duration>,
     ) -> Option<String> {
-        match tokio::time::timeout(self.final_budget, self.save_final_unbounded(head, request))
-            .await
+        let note = Mutex::new(LookNote {
+            began: Some(std::time::Instant::now()),
+            step: "lock",
+            ..LookNote::default()
+        });
+        match tokio::time::timeout(
+            self.final_budget,
+            self.save_final_unbounded(head, request, &note),
+        )
+        .await
         {
             Ok(said) => said,
             Err(_) => {
                 let e = format!("not confirmed within {} s", self.final_budget.as_secs_f32());
                 self.count_failed("final copy", &e);
+                {
+                    let mut n = note.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(began) = n.store_began {
+                        n.store = began.elapsed();
+                    }
+                }
+                self.end_line(&note, false);
                 Some(format!("final copy: {e}"))
             }
         }
+    }
+
+    /// The worker's save line of a try of the copy of the end, as a look writes its own ([`save_line`]): `by=final`, the save
+    /// whose record says `"final": true`, and `engine=unread`, because the copy of the end reads no head of the engine. Its store hashes
+    /// the bundle, so `hash` is 0, and no keep follows it. A try that failed also has the line that names its error
+    /// (`direct turn final copy failed: ...`, [`Self::count_failed`]).
+    fn end_line(&self, note: &Mutex<LookNote>, stored: bool) {
+        let note = note.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let line = save_line(&note, "final", "unread", stored);
+        self.log.line(&line.text("0", line.kept));
     }
 
     async fn save_final_unbounded(
         &self,
         head: Option<&str>,
         request: Option<Duration>,
+        note: &Mutex<LookNote>,
     ) -> Option<String> {
+        fn set(note: &Mutex<LookNote>, change: impl FnOnce(&mut LookNote)) {
+            change(&mut note.lock().unwrap_or_else(|p| p.into_inner()));
+        }
         // The line of the last look, when the copy task ended before the keep that was to follow it started.
         self.keep_line_now("0");
         let mut snapshotter = self.snapshotter.lock().await;
+        set(note, |n| n.step = "git");
         let made = match snapshotter.final_copy(head).await {
             Ok(made) => Ok(made),
             Err(e) if head.is_some() => {
@@ -3775,14 +3825,34 @@ impl Copies {
             Err(e) => Err(e),
         };
         self.log_tidy(&mut snapshotter);
+        let (steps, kept) = (snapshotter.take_look_steps(), snapshotter.kept_bytes());
+        set(note, |n| {
+            n.steps = steps;
+            n.kept = kept;
+        });
         let stored = match made {
-            Ok(made) => self.store(&made, request).await,
+            Ok(made) => {
+                let store_began = std::time::Instant::now();
+                set(note, |n| {
+                    n.n = made.count;
+                    n.bytes = made.bundle_bytes;
+                    n.step = "store";
+                    n.store_began = Some(store_began);
+                });
+                let stored = self.store(&made, request).await;
+                set(note, |n| n.store = store_began.elapsed());
+                stored
+            }
             Err(e) => Err(e),
         };
         match stored {
-            Ok(()) => None,
+            Ok(()) => {
+                self.end_line(note, true);
+                None
+            }
             Err(e) => {
                 self.count_failed("final copy", &e);
+                self.end_line(note, false);
                 Some(format!("final copy: {}", scrub_detail(&e)))
             }
         }
@@ -3841,36 +3911,69 @@ fn note_git(git: &mut GitBudget, started: std::time::Instant, bound: &LookBound,
     }
 }
 
-/// One look of the copy task, watched while it runs. The run is told when the look has run for `late` ([`Copies::late`],
+/// The late limit of one look and what it came from: `after` is `snapshot::late_after` of the set limit and of `last`,
+/// what the last look that stored a copy took when the limit was made. The worker's late line states both ([`Copies::late`]).
+#[derive(Clone, Copy)]
+struct LateLimit {
+    after: Duration,
+    last: Option<Duration>,
+}
+
+impl LateLimit {
+    /// The late limit of a look that starts now, made from the set limit `set` and from what the last look that stored a copy took
+    /// (`last`). Every look makes its own: the look that follows a look which a request to end overtook too, after the copy
+    /// that look may have stored.
+    fn made(set: Duration, last: Option<Duration>) -> Self {
+        Self {
+            after: late_after(set, last),
+            last,
+        }
+    }
+}
+
+/// One look of the copy task, watched while it runs. The run is told when the look has run for `limit.after` ([`Copies::late`],
 /// `snapshot::late_after`). While its git works, the file system of the work tree is asked every `snapshot::TREE_ASK_EVERY` whether it
-/// still answers, and the look is given up when it does not ([`Copies::tree_check`]). A request to end that comes while the look runs is
-/// taken up ([`Copies::stop_asked`]): `stop` then holds it. Only in a process that ends after the copy does it bring the end of the look
-/// forward.
+/// still answers, from the first period on and whatever the late limit, and the look is given up when it does not
+/// ([`Copies::tree_check`]). The question is waited for, `snapshot::TREE_ANSWER_LIMIT` at the most, and the late line, a request to end
+/// and the end of the look wait with it. A request to end that comes while the look runs is taken up ([`Copies::stop_asked`]): `stop`
+/// then holds it. Only in a process that ends after the copy does it bring the end of the look forward.
 async fn watched_look(
     copies: &Copies,
     bound: &LookBound,
-    late: Duration,
+    limit: LateLimit,
     ending: &mut EndingWatch,
     stop: &mut Option<Stop>,
 ) -> Looked {
+    // The clock of the late line starts before the late timer is armed: the time the line states is never below the limit.
+    let began = Instant::now();
     let look = copies.look(bound);
     tokio::pin!(look);
-    let late = tokio::time::sleep(late);
+    let late = tokio::time::sleep(limit.after);
     tokio::pin!(late);
     let mut said = false;
     let period = copies.limits.ask_every;
     let mut check = tokio::time::interval_at(Instant::now() + period, period);
     check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        // The arms are polled in this order: the end of the look, its late line, a request to end, the question to the tree; at a
+        // late limit equal to the period of the question the late line comes first. The question's arm is on from the first pass and
+        // asks only while the look reads the tree: a condition of the arm is read before the look is first polled, when it reads nothing
+        // yet, so the arm stayed off until the late timer or a request to end woke the loop. The arm waits for the answer, for
+        // `snapshot::TREE_ANSWER_LIMIT` at the most, and the late line, a request to end and the end of the look wait with it.
         tokio::select! {
+            biased;
             looked = &mut look => return looked,
             () = &mut late, if !said => {
                 said = true;
-                copies.late();
+                copies.late(began.elapsed(), limit);
             }
-            _ = check.tick(), if copies.reads_tree() => copies.tree_check(bound).await,
             n = ending.asked(), if stop.is_none() => {
                 *stop = Some(copies.stop_asked(n, bound));
+            }
+            _ = check.tick() => {
+                if copies.reads_tree() {
+                    copies.tree_check(bound).await;
+                }
             }
         }
     }
@@ -3883,7 +3986,10 @@ async fn watched_look(
 ///
 /// When agentd is asked to end (`server::Ending`) the task saves a copy at once, with no floor and no spacing, whatever the timer: a look
 /// that is in flight ends first, because its copy may be all but stored, and one more look follows it, because the look in flight read
-/// the tree before the request came. In a process that ends after the copy, both end within `snapshot::STOP_COPY_BUDGET` of the request:
+/// the tree before the request came; that look makes its late limit from the last stored copy, as every look does ([`LateLimit::made`]).
+/// In a process that ends after the copy, both end within `snapshot::STOP_COPY_BUDGET` of the request, later by
+/// `snapshot::TREE_ANSWER_LIMIT` at the most for each question to the tree that is under way when the request comes or when that
+/// time is up, because a request to end and the end of a look wait for the question ([`watched_look`]):
 /// what is not stored by then is lost with the process. The first process of its machine runs on, so there the request cuts nothing
 /// short: the look in flight keeps its own limits, the look that follows it has the limits of any look, and when it could not be saved
 /// the task looks again every `snapshot::STOP_COPY_RETRY` until a copy is stored. A look that a request to end asked for leaves the tick
@@ -3920,7 +4026,9 @@ fn start_snapshots(
         // The cadence counts in real time (`std`); the sleeps are tokio's.
         let mut clock = CopyClock::default();
         let mut timer = CopyTimer::new(every, Instant::now());
-        // What the last look that stored a copy took, git and uploads: a look is late against it.
+        // What the last look that stored a copy took, git and uploads: a look is late against it. It is read on the clock of the
+        // runtime (`look_started`), the clock that times the late limit and the limits that give a look up: the late rule
+        // rests on one clock, and a test that pauses that clock drives all of it.
         let mut last_took: Option<Duration> = None;
         // What the git work of the last stored copy took: the git work of a look is given up against it.
         let mut git = GitBudget::default();
@@ -3968,7 +4076,7 @@ fn start_snapshots(
                 Why::Timer if trying_again => LookBy::Retry,
                 Why::Timer | Why::Ending(_) => LookBy::Timer,
             };
-            let late = late_after(copies.limits.late, last_took);
+            let late = LateLimit::made(copies.limits.late, last_took);
             let mut stop = match why {
                 Why::Ending(n) => Some(copies.stop_asked(n, &bound)),
                 Why::Timer | Why::ToolCall => None,
@@ -3976,7 +4084,7 @@ fn start_snapshots(
             let mut looked = watched_look(&copies, &bound, late, &mut ending, &mut stop).await;
             note_git(&mut git, started, &bound, &looked);
             if matches!(looked, Looked::Stored { .. }) {
-                last_took = Some(started.elapsed());
+                last_took = Some(look_started.elapsed());
             }
             if let (false, Some(asked)) = (asked_first, stop)
                 && (!copies.ends_after_copy || Instant::now() < asked.at)
@@ -3987,10 +4095,11 @@ fn start_snapshots(
                 look_started = Instant::now();
                 bound = copies.bound(&git);
                 bound.asked_to_end(copies.ends_after_copy.then_some(asked.at));
+                let late = LateLimit::made(copies.limits.late, last_took);
                 looked = watched_look(&copies, &bound, late, &mut ending, &mut stop).await;
                 note_git(&mut git, started, &bound, &looked);
                 if matches!(looked, Looked::Stored { .. }) {
-                    last_took = Some(started.elapsed());
+                    last_took = Some(look_started.elapsed());
                 }
             }
             if let Some(asked) = stop {

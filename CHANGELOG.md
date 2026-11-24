@@ -6,6 +6,17 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.29] - 2026-11-24
+
+### Changed
+
+- The worker's log line for a copy that is taking long states how long the look has taken, the limit that applied, the set limit and how long the last stored copy took. It named only the set limit before.
+
+### Fixed
+
+- The worker asks the storage under the work tree whether it still answers every 20 seconds from the start of a copy of the work, so a copy that hangs is reported as not saved sooner when earlier copies took long. The copy made when a session is asked to end says it is taking long by the same rule as any other copy.
+- The worker now writes its save line for each attempt to save the copy of the work at the end of a session, stored or failed, as it does for its other saves. The line names it as the final copy.
+
 ## [5.28] - 2026-11-23
 
 ### Changed

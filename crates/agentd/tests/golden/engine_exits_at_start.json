@@ -9,6 +9,7 @@
     "direct turn copies: the first reading of the tree took <n>s",
     "direct turn engine starting",
     "direct turn automatic recovery on, no answer window",
+    "direct turn copy look n=1 stored by=final engine=unread ms total=<n> tidy=<n> tree=<n> head=<n> commit=<n> bundle=<n> hash=<n> store=<n> keep=0 bytes=<n> kept=<n>",
     "direct turn ended: run=01M4XTESTRUNDIRECT00000001 outcome=stopped_setup_failed label=\"Cline did not start\"",
     "direct transcript: last chunk 0 entries 0",
     "direct messages: the control plane cannot serve message control for this run (no-route: /internal/message-seal is not served: /internal/message-seal returned 405 (final)); the module stayed out of it"

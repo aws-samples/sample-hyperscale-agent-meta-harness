@@ -12,6 +12,7 @@
     "direct turn automatic recovery on, no answer window",
     "direct turn disk reading: workspace 0 MiB used",
     "direct messages: the control plane cannot serve message control for this run (no-route: /internal/message-session is not served: /internal/message-session returned 405 (final)); the module stayed out of it",
+    "direct turn copy look n=1 stored by=final engine=unread ms total=<n> tidy=<n> tree=<n> head=<n> commit=<n> bundle=<n> hash=<n> store=<n> keep=0 bytes=<n> kept=<n>",
     "direct report uploaded: status=NotRun steps=0",
     "direct turn ended: run=01M4XTESTRUNDIRECT00000001 outcome=stopped_provider_error label=\"Cline stopped: the model provider failed\"",
     "direct transcript: last chunk 1 entries 0"

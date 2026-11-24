@@ -11,17 +11,21 @@
 //! - a request to end while the keep's git runs stores its copy inside the time a stop has, and one right after a commit starts no keep;
 //! - a worker that is killed inside the keep leaves this look's copy in the bucket, restorable through its record;
 //! - a worker that starts on a kept pack with wrong bytes says once that the pack is gone, and its first copy restores;
-//! - the line of the first reading of the tree names what git's check of a kept pack cost the start of the turn.
+//! - the line of the first reading of the tree names what git's check of a kept pack cost the start of the turn;
+//! - a look of the timer whose keep had not started when the engine ended its turn has its line once, with `keep=0`, and
+//!   the line of the copy of the end follows it.
 //!
 //! The worker's log line of a look is read here too: one line per look that stored a copy or failed, with what started the look,
-//! the times of its steps, and what came of the store and of the keep.
+//! the times of its steps, and what came of the store and of the keep; and the line of the copy of the end, `by=final`.
 //!
-//! No test here fails because the machine is crowded. A keep follows a look that the timer started, and all tests but one bring
+//! No test here fails because the machine is crowded. A keep follows a look that the timer started, and all tests but two bring
 //! that look about without waiting for a tick of a short timer that a slow step could miss: the timer is ten minutes, the looks
 //! before it are the ones tool calls ask for, the bucket refuses one copy, and the tick that tries a refused copy again
 //! (`AGENTD_DIRECT_SNAPSHOT_RETRY_MS`) is the timer's. What a test waits for has two minutes, and what it asserts is which work a
-//! copy holds and what started its look, which a slow machine does not change. The one test with a short timer asserts that a
-//! copy comes at all while the keep's git is held without end.
+//! copy holds and what started its look, which a slow machine does not change. Of the two tests with a short timer, one asserts
+//! that a copy comes at all while the keep's git is held without end. The other needs the copy task to take a wake that
+//! is pending before it turns to the keep, which the runtime chooses one time in two: it runs turns until one shows that, and a
+//! turn that does not is left, never failed.
 #![allow(clippy::unwrap_used)]
 
 mod b860_kept_support;
@@ -42,10 +46,19 @@ use std::time::{Duration, Instant};
 const LONG: Duration = Duration::from_secs(120);
 /// A timer of the copies that no test waits out: ten minutes.
 const NO_TICK_MS: u64 = 600_000;
-/// The timer of the one test whose looks are the timer's: 3 s.
+/// The timer of the two tests whose looks are the timer's: 3 s.
 const DUE_EVERY_MS: u64 = 3_000;
 /// What the worker gives a git that it has ended to be gone (`GIT_END_LIMIT` in the worker's `workspace.rs`): 2 s.
 const GIT_END: Duration = Duration::from_secs(2);
+/// How many turns the test of the line that waits for its keep runs at most to see its trigger. A turn shows it one time
+/// in two, so all of them miss it one time in a million.
+const PENDING_TURNS: u32 = 20;
+/// How long that test holds the `git add` of the look a keep follows. The spacing after a look is nine times its git work,
+/// at most five periods of a timer that a test set: 15 s after a look held this long.
+const ADD_HELD: Duration = Duration::from_secs(2);
+/// How long that test waits for the line of a look whose copy is stored before it takes the line to wait for its keep. A
+/// line that the copy task's wait wrote is in the log the moment the store has answered.
+const PENDING_GRACE: Duration = Duration::from_secs(2);
 
 /// Waits until `seen` holds, at most `limit`; `false` when it never did.
 async fn wait_for(limit: Duration, mut seen: impl FnMut() -> bool) -> bool {
@@ -355,6 +368,17 @@ impl Run {
     fn hold_the_keep(&self) {
         let _ = std::fs::remove_file(self.dir.join("keep-running"));
         std::fs::write(self.dir.join("keep-hold"), "").unwrap();
+    }
+
+    /// The stand-in holds the `git add` of the next look from now on; `add-running` is there once it does.
+    fn hold_the_add(&self) {
+        let _ = std::fs::remove_file(self.dir.join("add-running"));
+        std::fs::write(self.dir.join("add-hold"), "").unwrap();
+    }
+
+    /// The held `git add` goes on.
+    fn let_the_add_go(&self) {
+        let _ = std::fs::remove_file(self.dir.join("add-hold"));
     }
 
     /// Waits for the held `pack-objects` of the keep that follows the stored copy with index `index`. The copy of that look was
@@ -1008,8 +1032,8 @@ async fn b860_kept_a_session_cut_in_the_keep_loses_nothing() {
 
 /// A whole turn inside the test's own process: the engine commits, the looks of the timer find its head twice, and a pack is
 /// kept; the worker's log says so in the line of that look, and the folder of the private repository holds the one pack. Then the
-/// engine ends its turn: the copy of the end is stored as the last record, a checkout that has only the bundle the run started
-/// from beside it holds the work, and the copy of the end has built no pack and removed none. The test waits for what it asserts
+/// engine ends its turn: the copy of the end is stored as the last record and has its save line, a checkout that has only
+/// the bundle the run started from beside it holds the work, and the copy of the end has built no pack and removed none. The test waits for what it asserts
 /// and holds no time.
 #[tokio::test(flavor = "multi_thread")]
 async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
@@ -1106,6 +1130,29 @@ async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
         serde_json::json!(true),
         "the copy of the end: {end}"
     );
+    // The copy of the end writes the save line the looks write, with `by=final` and the number its record has. Before, it
+    // wrote none, and the changelog of release 5.28 says that the worker logs one line for each save that stored a copy or failed.
+    let end_lines: Vec<String> = look_lines()
+        .into_iter()
+        .filter(|l| field(l, "by") == Some("final"))
+        .collect();
+    assert_eq!(
+        end_lines.len(),
+        1,
+        "the copy of the end has its save line; lines:\n{}",
+        look_lines().join("\n")
+    );
+    assert!(
+        end_lines[0].contains(" stored by=final "),
+        "{}",
+        end_lines[0]
+    );
+    assert_eq!(
+        field(&end_lines[0], "n"),
+        Some(end["count"].to_string().as_str()),
+        "the line names the number of the copy of the end: {}",
+        end_lines[0]
+    );
     let bundle = d.aws.get(&keys::snapshot_bundle_key(RUN)).unwrap();
     let checkout = checkout_of_copy_bytes(&d.aws, &dir, &bundle, "the-end");
     assert_eq!(
@@ -1129,6 +1176,167 @@ async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
     assert!(
         look_lines().iter().all(|l| !l.contains("cpu_ms")),
         "no line of a look names processor time"
+    );
+}
+
+/// A look of the timer whose keep had not started when the engine ended its turn has its save line once, with `keep=0`,
+/// and the line of the copy of the end follows it, once.
+///
+/// The line of a look that a keep follows waits for what comes of the keep. The wait of the copy task takes the line up when it
+/// turns to the keep. When it takes a tool call's wake that is already pending first, the line stays where it is while the task
+/// waits out the spacing of the looks; an engine that ends its turn then ends the copy task there, and the copy of the end writes
+/// the look's line before its own work. Which of the two the wait takes first is the runtime's choice, one time in two with a
+/// pending wake, so the test runs turns until one shows the trigger, at most [`PENDING_TURNS`]. The trigger is shown when the
+/// record of the look's copy is in the bucket and its line is not in the log [`PENDING_GRACE`] later, and when the copy of the
+/// end is stored before the spacing after that look has run out, so that no later look wrote the line. The spacing is long
+/// without a clock: the stand-in holds the `git add` of that look for [`ADD_HELD`], and the spacing is nine times the git work
+/// of the look, at most five periods of the timer.
+///
+/// A turn that does not show the trigger is left and the next one starts: no turn fails because the machine is crowded.
+#[tokio::test(flavor = "multi_thread")]
+async fn b930_a_line_that_waits_for_its_keep_at_the_engines_end_comes_once_before_the_end_copys() {
+    let spacing = Duration::from_millis(5 * DUE_EVERY_MS);
+    let mut left = Vec::new();
+    for turn in 1..=PENDING_TURNS {
+        let run = Run::start(&format!("b930-pending-{turn}"), DUE_EVERY_MS, Vec::new()).await;
+        assert!(
+            wait_for(LONG, || run.stored() >= 1).await,
+            "the copy of the session's start is stored; log:\n{}",
+            run.log()
+        );
+        // A look has just ended when its copy is seen: the commit and the write after it fall before the same next look.
+        assert!(
+            run.write_and_wait("a.txt", "written to stand right behind a look\n", LONG)
+                .await
+                .is_some()
+        );
+        run.commit(1);
+        assert!(
+            run.write_and_wait("a.txt", "first\n", LONG).await.is_some(),
+            "the look that finds the engine's new head stores its copy; log:\n{}",
+            run.log()
+        );
+        // The second look of the same head, which a keep follows: the stand-in holds its `git add`.
+        run.hold_the_add();
+        let from = run.bundles().len();
+        run.write("a.txt", "second\n");
+        assert!(
+            wait_for(LONG, || run.dir.join("add-running").exists()).await,
+            "TRIGGER PRESENT is not shown: no look read the tree after the write; log:\n{}",
+            run.log()
+        );
+        // A tool call ends while that look works: its wake is pending when the look ends.
+        run.tool_call_ends().await;
+        tokio::time::sleep(ADD_HELD).await;
+        let let_go = Instant::now();
+        run.let_the_add_go();
+        let index = run
+            .wait_copy(from, "a.txt", "second\n", LONG)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "the look whose `git add` was held stores its copy; log:\n{}",
+                    run.log()
+                )
+            });
+        // The bucket has the bundle of a copy before it has the record, and the line of a look is found by the number its
+        // record has: the record of this copy is waited for before its line is read.
+        assert!(
+            wait_for(LONG, || run.stored() > index).await,
+            "the look whose `git add` was held stores the record of its copy; log:\n{}",
+            run.log()
+        );
+        // A line that the wait of the copy task wrote is in the log at once; a line that still waits for its keep is not.
+        if wait_for(PENDING_GRACE, || !run.line_of(index).is_empty()).await {
+            left.push(format!(
+                "turn {turn}: the wait turned to the keep first: {}",
+                run.line_of(index)
+            ));
+            continue;
+        }
+
+        // The engine ends its turn while the line waits: the copy of the end is the last record.
+        std::fs::write(&run.steps, "1000000\n").unwrap();
+        let ended = wait_for(LONG, || {
+            run.records().last().is_some_and(|r| r["final"] == true)
+        })
+        .await;
+        let took = let_go.elapsed();
+        assert!(
+            ended,
+            "the engine's turn ends with the copy of the end; log:\n{}",
+            run.log()
+        );
+        if took >= spacing {
+            left.push(format!(
+                "turn {turn}: the copy of the end was stored {took:?} after the look's `git add` was let go, and the spacing after \
+                 that look is {spacing:?}: a later look may have written the line"
+            ));
+            continue;
+        }
+        assert!(
+            wait_for(LONG, || run
+                .look_lines()
+                .iter()
+                .any(|l| field(l, "by") == Some("final")))
+            .await,
+            "the copy of the end writes its save line; lines:\n{}",
+            run.look_lines().join("\n")
+        );
+        let records = run.records();
+        let n = records[index]["count"].to_string();
+        let end_n = records.last().unwrap()["count"].to_string();
+        let lines = run.look_lines();
+        let of_the_look: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| field(l, "n") == Some(n.as_str()))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            of_the_look.len(),
+            1,
+            "TRIGGER PRESENT: the look of the timer that stored copy {n}, whose keep had not started when the engine ended its \
+             turn, has {} save lines; lines:\n{}",
+            of_the_look.len(),
+            lines.join("\n")
+        );
+        let line = &lines[of_the_look[0]];
+        assert!(line.contains(" stored by=timer "), "{line}");
+        assert_eq!(
+            field(line, "keep"),
+            Some("0"),
+            "no keep had started after that look: {line}"
+        );
+        let after = &lines[of_the_look[0] + 1..];
+        assert_eq!(
+            after.len(),
+            1,
+            "one save line follows the line of that look, the line of the copy of the end; lines:\n{}",
+            lines.join("\n")
+        );
+        assert!(after[0].contains(" stored by=final "), "{}", after[0]);
+        assert_eq!(
+            field(&after[0], "n"),
+            Some(end_n.as_str()),
+            "the line names the number of the copy of the end: {}",
+            after[0]
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| field(l, "by") == Some("final"))
+                .count(),
+            1,
+            "the copy of the end has one save line; lines:\n{}",
+            lines.join("\n")
+        );
+        return;
+    }
+    panic!(
+        "TRIGGER PRESENT is not shown: in {PENDING_TURNS} turns no look of the timer still waited for its keep when the engine \
+         ended its turn:\n{}",
+        left.join("\n")
     );
 }
 
