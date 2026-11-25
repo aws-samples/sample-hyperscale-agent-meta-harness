@@ -182,7 +182,15 @@ record decides: the live value is read only to show a change and to ask for cons
 - HAMH_KEEP_TAG: the stack tags of every stack of the stage but hamh-<stage>-network, which never carries it (KEEP_TAG_EXCEPTION_STACKS; DescribeStacks): on when
   they carry auto-delete=no, off when they do not (stacks that differ are ambiguous);
 - HAMH_STAGE_KIND: HAMH_STAGE_KIND of the functions hamh-<stage>-research-api and hamh-<stage>-research-job in the control template (no research function: none,
-  so the role's word; a function without the variable, or two values, is ambiguous). tools_mode_state's stageKind is the resolved kind.
+  so the role's word; a function without the variable, or two values, is ambiguous). tools_mode_state's stageKind is the resolved kind;
+- HAMH_TEST_STORAGE_REFUSAL: AGENTD_TEST_STORAGE_REFUSAL of the worker runtime version the live endpoint serves (GetAgentRuntime, the read `current_tools_mode`
+  makes): on when it carries the variable with 1, off when it does not, none when the stage has no runtime. The reader looks for the variable under its one name.
+The test switch of the storage notice. HAMH_TEST_STORAGE_REFUSAL=on is taken only when this deploy states the kind test for the stage: the exported
+HAMH_STAGE_KIND, else the kind the settings record keeps (`stated_kind`). The live read of a stage without a record, the role of the account entry and the word
+`default` state no kind, and on is then refused (`test-switch`) right after the settings are resolved. off, default and no word are never refused by it. The row
+is not kept: a deploy without the word hands the CDK app none, so the runtime it asks for has no variable. A word other than a live worker runtime's makes a new
+runtime version: `test_switch_state` compares the word with every live worker runtime, a `deploy:` line names each one that differs, and the deploy guard is asked
+before the Lambda build. The deploy record keeps the state as `inputs.testStorageRefusal`.
 Consent (C12): a change of class replace, decrease (a lower value) or remove (to no value or off) whose source is not explicit (a kept value that differs from
 the live stage) is refused (`consent`); so is a synthesized capacity provider whose
 name differs from the live one while no Instances machine setting (INSTANCES_SETTINGS) is consented to. A new code default that would need consent is not taken:
@@ -256,7 +264,7 @@ holds by then is left alone, and a `deploy:` line says so.
 
 Refusals: a Fail of a step in REFUSALS raised before the first stack change prints exactly one line, `DEPLOY-REFUSED reason=<step> wait=<yes|no>
 stage=unchanged :: <detail and action>`, and exits 3: guard and lock (wait=yes), instances-off, owner, caller, account, azs, vpc-cidr, bootstrap,
-fork-pointer, settings-read, record-downgrade, consent, new-runs (wait=no). Every other failure, and any failure after the first stack change, keeps
+fork-pointer, settings-read, record-downgrade, consent, new-runs, test-switch (wait=no). Every other failure, and any failure after the first stack change, keeps
 `DEPLOY-FAIL <step> <detail>` and exit 1; a failure before the first stack change prints `DEPLOY-STAGE unchanged` on the line before its DEPLOY-FAIL line.
 
 `--print-settings` runs the settings resolution alone and writes nothing (`print_settings` names its read calls): the DEPLOY-SETTING lines and exit 0,
@@ -382,6 +390,10 @@ DEFAULT_TOOLS_MODE = "off"
 # U+001C to U+001F, U+0085 and U+FEFF, so neither resolver uses them and both accept the same words.
 TOOLS_SPACE = " \t\n\r\f\v"
 TOOLS_MODE_VAR = "AGENTD_TOOLS_MODE"
+# The test switch of the storage notice. The stage setting is a row of the registry that no settings record keeps; the variable is what a worker runtime
+# carries, with the value 1, while the switch is on (infra/lib/config.ts TEST_STORAGE_REFUSAL_VAR).
+TEST_SWITCH_SETTING = "HAMH_TEST_STORAGE_REFUSAL"
+TEST_SWITCH_VAR = "AGENTD_TEST_STORAGE_REFUSAL"
 # The Instances compute type's stage setting: infra/lib/config.ts COMPUTE_INSTANCES_MODES and DEFAULT_COMPUTE_INSTANCES, pinned together with the words of
 # infra/test/fixtures/compute-instances.json by scripts/tests/test_deploy_direct.py. It trims the same ASCII whitespace as the tool layer's setting.
 COMPUTE_INSTANCES_MODES = ("off", "on")
@@ -518,7 +530,7 @@ INSTANCES_SETTINGS = ("HAMH_INSTANCES_TYPES", "HAMH_INSTANCES_ROOT_FREE_GIB", "H
 NUMBER_SETTINGS = (*INSTANCES_SETTINGS[1:], "HAMH_TAVILY_KEY_MAX_AGE_DAYS", "HAMH_LOG_RETENTION_DAYS", "HAMH_PR_CHECK_MINUTES", "HAMH_PROVIDER_SILENCE_S",
                    "HAMH_SLICE_DEADLINE_S")
 LOWER_SETTINGS = ("HAMH_COMPUTE_INSTANCES", "HAMH_TOOLS_MODE", "HAMH_TAVILY_ALARMS", "HAMH_PR_CHECK_COMPUTE", "HAMH_UTILITY_MODEL", "HAMH_UTILITY_PURPOSES",
-                  "HAMH_KEEP_TAG", "HAMH_STAGE_KIND")
+                  "HAMH_KEEP_TAG", "HAMH_STAGE_KIND", "HAMH_TEST_STORAGE_REFUSAL")
 # Addendum 3 (A3.1): the keep tag and the stage kind default to what the role of the selected account entry gives (infra/lib/config.ts KEEP_TAG_OF_ROLE and
 # STAGE_KIND_OF_ROLE; scripts/tests/test_setup_deploy_settings.py pins both tables to it), so a stage keeps the words it was deployed with when the account file of
 # an update gives its entry another role. The keep tag is infra/lib/keep-tag.ts KEEP_TAG; the network stack never carries it (config.ts KEEP_TAG_EXCEPTIONS).
@@ -538,7 +550,7 @@ TAVILY_PROVIDERS = ("tavily", "auto")
 # The steps whose failure before the first stack change is a refusal (DEPLOY-REFUSED, exit 3), with whether waiting cures it.
 # Waiting cures the first two (wait=yes); the others need an action (wait=no).
 REFUSAL_STEPS = ("guard", "lock", "instances-off", "owner", "caller", "account", "azs", "vpc-cidr", "bootstrap", "fork-pointer", "settings-read",
-                 "record-downgrade", "consent", "not-deployed", "new-runs")
+                 "record-downgrade", "consent", "not-deployed", "new-runs", "test-switch")
 WAIT_CURES = ("guard", "lock")
 REFUSALS = {step: "yes" if step in WAIT_CURES else "no" for step in REFUSAL_STEPS}
 
@@ -1541,6 +1553,50 @@ class Deployer:
             parts = [(f"no {var}" if d["live"] is None else f"{var}={shown(d['live'])}") + f" (wants {shown(d['want'])})" for var, d in sorted(bad.items())]
             say(f"isolation words: the live {name} runtime has {', '.join(parts)}, so this deploy changes its environment and makes a new runtime version")
 
+    def stated_kind(self) -> str | None:
+        """The kind this deploy states for the stage: the exported HAMH_STAGE_KIND, else the kind the stage's settings record keeps (the sources `explicit`
+        and `kept` of the resolved setting). The live read of a stage without a record, the role of the account entry and the word `default` state no kind."""
+        got = self.settings_state.get("HAMH_STAGE_KIND") or {}
+        value = got.get("value")
+        return value if got.get("source") in ("explicit", "kept") and value in ("official", "test") else None
+
+    def refuse_test_switch(self) -> None:
+        """HAMH_TEST_STORAGE_REFUSAL=on is for a test stage. It is taken only when this deploy states the kind test (`stated_kind`); a stated official and no
+        stated kind refuse it (`test-switch`), right after the settings are resolved: before the guard, before anything is built and before the record is written.
+        off, default and no word are never refused here."""
+        if (self.settings_state.get(TEST_SWITCH_SETTING) or {}).get("new") != "on":
+            return
+        kind = self.stated_kind()
+        if kind != "test":
+            raise Fail("test-switch", f"{TEST_SWITCH_SETTING}=on is for a test stage, and stage {self.stage} is not one (its kind: {kind or 'not stated'}).",
+                       action=f"Unset {TEST_SWITCH_SETTING}, then deploy again.")
+
+    def test_switch_state(self) -> dict:
+        """The test switch of the storage notice against every live worker runtime, before anything is built. `live`: for each worker runtime with a live
+        version, the value of AGENTD_TEST_STORAGE_REFUSAL it carries (None: no such variable). A runtime differs when the wanted word is on and it has not the
+        variable with 1, or the wanted word is off and it has the variable at all. `change`: a runtime differs, so this deploy makes a new runtime version (the
+        environment is part of it) and meets the deploy guard. A stage without a live runtime has nothing to differ from. The deploy record keeps the state as
+        `inputs.testStorageRefusal`."""
+        word = (self.settings_state.get(TEST_SWITCH_SETTING) or {}).get("new") or "off"
+        live = {name: (runtime.get("environmentVariables") or {}).get(TEST_SWITCH_VAR) for name, runtime in sorted(self.current_runtimes.items())
+                if name in RUNTIME_WORDS}
+        differs = [name for name, value in live.items() if (value != "1" if word == "on" else value is not None)]
+        return {"setting": self.explicit.get(TEST_SWITCH_SETTING), "word": word, "stageKind": self.stated_kind(), "live": live, "differs": differs,
+                "change": bool(differs)}
+
+    def say_test_switch(self, st: dict) -> None:
+        """One line for each live worker runtime whose environment this deploy changes; with the word on and nothing to change, one line that says so. A deploy
+        without the word on a stage whose runtimes carry no variable says nothing."""
+        how = self.setting_how(TEST_SWITCH_SETTING, st["setting"])
+        for name in st["differs"]:
+            value = st["live"][name]
+            had = f"no {TEST_SWITCH_VAR}" if value is None else f"{TEST_SWITCH_VAR}={value!r}" if value == "" else f"{TEST_SWITCH_VAR}={value}"
+            say(f"test switch {st['word']} ({how}); the live {name} runtime has {had}, so this deploy changes its environment and makes a new runtime version")
+        if st["word"] == "on" and not st["differs"]:
+            after = (f"every live worker runtime has {TEST_SWITCH_VAR}=1, so this deploy does not change it" if st["live"]
+                     else "the stage has no live runtime yet")
+            say(f"test switch on ({how}); {after}")
+
     def provider_replacement(self) -> tuple[str, str] | None:
         """(live name, synthesized name) of the Instances capacity provider when they differ, else None. The provider's name ends in a hash of its configuration
         (infra/lib/config.ts `instancesProviderShape`), and AgentCore edits nothing of a provider but its description, so a different name is a replacement:
@@ -1906,6 +1962,7 @@ class Deployer:
         stack, and every stack but the network stack for the keep tag), and bedrock-agentcore-control get-agent-runtime-endpoint and get-agent-runtime (the live worker runtime, for the tool layer)."""
         self.check_account(operator=False)
         consent = self.settle_settings()
+        self.refuse_test_switch()
         self.refuse_instances_off(self.compute_instances_state())
         self.require_consent(consent)
 
@@ -2094,6 +2151,11 @@ class Deployer:
             if len(set(kinds.values())) > 1:
                 raise LiveUnknown("the research functions of the stage have different kinds (" + ", ".join(f"{f} {k}" for f, k in kinds.items()) + ")")
             return next(iter(kinds.values()), None)
+        if name == TEST_SWITCH_SETTING:
+            runtime = self.current_runtimes.get(WORKER_IMAGE.runtime)
+            if runtime is None:
+                return None
+            return "on" if (runtime.get("environmentVariables") or {}).get(TEST_SWITCH_VAR) == "1" else "off"
         raise ValueError(f"no live reader for {name}")
 
     def utility_catalog(self) -> dict:
@@ -2878,6 +2940,8 @@ class Deployer:
             say(f"worker revision {self.revision}{' (bumped from %d)' % current if self.bump else ''}")
             # Every stage setting resolved (explicit, kept, live, default) and handed to the cdk calls, before anything is built.
             consent = self.settle_settings()
+            # The test switch of the storage notice is for a test stage; on at any other stage is refused here, before the guard and before anything is built.
+            self.refuse_test_switch()
             # The Instances part is never removed by a deploy. Said and refused first, before the guard and before anything is built: waiting for the runs to end would not help.
             self.instances_state = self.compute_instances_state()
             self.say_compute_instances(self.instances_state)
@@ -2898,6 +2962,13 @@ class Deployer:
             self.isolation = self.isolation_state()
             self.say_isolation(self.isolation)
             if self.isolation["change"] and not guarded:
+                self.guard()
+                guarded = True
+            # The test switch is a word of each worker runtime's environment. A word other than a live runtime's makes a new runtime version, so it is said
+            # and meets the same guard, before the Lambda build.
+            self.test_switch = self.test_switch_state()
+            self.say_test_switch(self.test_switch)
+            if self.test_switch["change"] and not guarded:
                 self.guard()
                 guarded = True
             # Adding the Instances part changes the runtimes, so it meets the same guard, before the Lambda build.
@@ -2974,6 +3045,7 @@ class Deployer:
                 "criteriaSha256": hashlib.sha256(crit.read_bytes()).hexdigest() if crit.is_file() else None,
                 "result": "pass", "inputs": {"target": self.target.core(), "stacks": order, "imageTag": tag, "image": image,
                                              "workerRevision": self.revision, "toolsMode": self.tools_state, "computeInstances": self.instances_state, "isolationWords": self.isolation,
+                                             "testStorageRefusal": self.test_switch,
                                              "stageSettings": {n: {k: v for k, v in st.items() if k != "live"} for n, st in self.settings_state.items()},
                                              "deliveryImageTag": delivery_tag, "deliveryImage": self.delivery_image},
                 "measurements": {"runtimes": checks, "versionEndpoints": endpoints, "templateHashes": hashes, "aslVersions": asl,

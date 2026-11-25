@@ -148,6 +148,7 @@ def record(name, extra=None):
             "HAMH_AWS_PROFILE", "CAH_AWS_PROFILE", "CAH_ACCOUNTS_FILE",  # COMPAT-CAH: the earlier spellings of the two selectors
             "HAMH_COMPUTE_INSTANCES", "HAMH_DEPLOY_LOCK_TOKEN", "SETUP_EXPLICIT_SETTINGS",  # an explicit setting and the deploy lock's token reach deploy.sh
             "HAMH_LOG_RETENTION_DAYS", "HAMH_TOOLS_MODE", "HAMH_UTILITY_MODEL",
+            "HAMH_TEST_STORAGE_REFUSAL", "HAMH_STAGE_KIND",  # the test switch of the storage notice and the kind word, as explicit settings
             "HAMH_SOURCE_COMMIT")  # the commit the user asked for, for the record deploy.py writes
     doc = {"name": name, "argv": sys.argv[1:], "cwd": os.getcwd(), "env": {k: os.environ.get(k) for k in keys}}
     doc.update(extra or {})

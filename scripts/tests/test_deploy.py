@@ -468,6 +468,9 @@ if args[:2] == ["cdk", "deploy"]:
             env = {} if os.environ.get("FAKE_RUNTIME_ENV") == "nosandbox" else {"AGENTD_ENGINE_SANDBOX": os.environ.get("FAKE_SANDBOX", "uid")}
             if os.environ.get("FAKE_RUNTIME_ENV") != "legacy":
                 env["AGENTD_TOOLS_MODE"] = os.environ.get("HAMH_TOOLS_MODE") or "off"
+            # The CDK app gives the worker runtimes the variable of the test switch when it gets the word on, and no such variable otherwise.
+            if (os.environ.get("HAMH_TEST_STORAGE_REFUSAL") or "").strip().lower() == "on":
+                env["AGENTD_TEST_STORAGE_REFUSAL"] = "1"
             json.dump({"image": image, "environmentVariables": env}, open(os.path.join(st, "runtime-" + rid), "w"))
     if name == f"{p}-runtimes" and os.environ.get("HAMH_COMPUTE_INSTANCES") == "on":
         # The capacity provider exists in both phases; the second runtime only with the image, on the provider, with no network configuration.
@@ -481,6 +484,8 @@ if args[:2] == ["cdk", "deploy"]:
             # FAKE_INSTANCES_ENGINE_USER=<user> sets another one, `absent` leaves the variable out (the image's "agent" would apply).
             if os.environ.get("FAKE_INSTANCES_ENGINE_USER", "") != "absent":
                 ienv["AGENTD_ENGINE_USER"] = os.environ.get("FAKE_INSTANCES_ENGINE_USER", "")
+            if (os.environ.get("HAMH_TEST_STORAGE_REFUSAL") or "").strip().lower() == "on":
+                ienv["AGENTD_TEST_STORAGE_REFUSAL"] = "1"
             json.dump({"image": image, "environmentVariables": ienv,
                        **({} if os.environ.get("FAKE_INSTANCES_NO_PROVIDER") else {"capacityProviderArn": provider})},
                       open(os.path.join(st, "runtime-" + irid), "w"))

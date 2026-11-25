@@ -57,6 +57,24 @@ pub const REASON_NO_ANSWER: &str = "no-answer";
 /// How often the PUT of the copy is tried again after the first try.
 const PUT_RETRIES: u32 = 2;
 
+/// What the log says first of a copy that failed once its give-up had come: the read's time ended.
+const COPY_OUT_OF_TIME: &str = "the read's time ended before it was made";
+
+/// The log's words for a copy that failed once its give-up had come, made from what the ended call said (`ended`). First that the
+/// read's time ended. Then the step that was in flight, in the call's own words, and with it what a git call says when its process
+/// was still there 2 s after it was ended (`workspace::git_with_env_until_input`): a git that was left behind is what a reader of
+/// the log has to see. A file call that the give-up ends also says that the work tree did not answer; that is left out, because
+/// the tree is not at fault when the time has ended.
+pub fn copy_out_of_time(ended: &str) -> String {
+    let said = ended.strip_prefix("snapshot: ").unwrap_or(ended);
+    let said = said.strip_prefix("git: ").unwrap_or(said);
+    let step = match said.split_once("; ") {
+        Some((of_the_tree, step)) if of_the_tree.starts_with("the work tree ") => step,
+        _ => said,
+    };
+    format!("{COPY_OUT_OF_TIME}; {step}")
+}
+
 /// Where the private repository of one read is: on the machine's own disk, never on the storage.
 pub fn private_dir(data_root: &Path, run: &str, attempt: &str) -> PathBuf {
     data_root.join(run).join("recover").join(attempt)
@@ -271,13 +289,15 @@ async fn read(
         .read_back(&req.start_head, req.session, give_up)
         .await
         .map_err(|e| {
-            log("the copy", &e);
             // Every call of the copy ends when the copy's give-up comes, and that is the end of the read's time. A copy that fails from
             // then on failed because the time ended: the answer is the one the limit of the whole read gives, whichever of the two
-            // was noticed first.
+            // was noticed first. The log says the same first, and then the step that the ended call names and whether its git was
+            // left behind (`copy_out_of_time`).
             if give_up.has_come() {
+                log("the copy", &copy_out_of_time(&e));
                 REASON_BUDGET
             } else {
+                log("the copy", &e);
                 REASON_TREE_UNREADABLE
             }
         })?;

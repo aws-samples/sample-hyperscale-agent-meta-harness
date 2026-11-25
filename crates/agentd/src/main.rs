@@ -5,7 +5,7 @@
 //! exits 1 (fail closed). `agentd sandbox-exec --policy-json <json> -- <program> [args]`: the engine's launcher in the
 //! `landlock` mode. `agentd --version`.
 
-use agentd::config::{Config, open_files_cap};
+use agentd::config::{Config, open_files_cap, test_switch_start_line};
 use agentd::creds_socket::fetch_credentials;
 use agentd::first;
 use agentd::logging::StderrLog;
@@ -131,6 +131,10 @@ fn serve_cmd(args: &[String]) -> ExitCode {
             }
         };
         eprintln!("agentd: listening on {}", cfg.listen);
+        // A worker whose own environment switches the live test row of the storage notice on says so once, at its start.
+        if let Some(line) = test_switch_start_line(&cfg.direct) {
+            eprintln!("{line}");
+        }
         let app = App::new(cfg, Arc::new(StderrLog));
         // A signal that asks agentd to end is answered with a copy of the work first.
         tokio::spawn(end_on_signals(app.clone(), stops));

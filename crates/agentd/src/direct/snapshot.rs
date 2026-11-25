@@ -527,7 +527,8 @@ impl GiveUp {
         });
     }
 
-    /// Whether the time to give up has come; never while there is none.
+    /// Whether the time to give up has come; never while there is none. The answer is for this instant and is given at once. The
+    /// copy task asks the same of its look by waiting no time for [`Self::reached`] (`ScratchRepo::given_up`).
     pub fn has_come(&self) -> bool {
         let at = *self.at.borrow();
         at.is_some_and(|at| tokio::time::Instant::now() >= at)

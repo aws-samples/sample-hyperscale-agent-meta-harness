@@ -1016,16 +1016,43 @@ mod repo_tests {
         std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("."), PathBuf::from)
     }
 
+    /// The counter in the names of this process's test folders.
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    /// The name of a test folder: the label, the process id and a counter. The id is unique among the processes that run now, not over
+    /// time: the kernel hands an id out again and nextest starts one process for each test, so a later run can ask for a name that an
+    /// earlier run used.
+    fn folder_name(label: &str, n: u32) -> String {
+        format!("dox-unit-{label}-{}-{n}", std::process::id())
+    }
+
+    /// A new, empty folder below `root` for one test, named by the counter `next`. `create_dir` refuses a folder that exists, so a folder
+    /// that an earlier process with this process id left behind (these tests remove nothing) is passed over and never handed to a test
+    /// with its old repository.
+    fn new_dir_in(root: &Path, label: &str, next: &AtomicU32) -> PathBuf {
+        loop {
+            let dir = root.join(folder_name(label, next.fetch_add(1, Ordering::SeqCst)));
+            let made = std::fs::create_dir(&dir);
+            if made
+                .as_ref()
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+            {
+                continue;
+            }
+            made.unwrap();
+            return dir;
+        }
+    }
+
     /// A repository of one commit at a fixed time, checked out on the run's branch, and a private folder for agentd's own files.
     fn repo(label: &str, files: &[(&str, &str)]) -> (Worktree, PathBuf) {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let base = scratch_root().join(format!(
-            "dox-unit-{label}-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::SeqCst)
-        ));
+        filled(new_dir_in(&scratch_root(), label, &NEXT), files)
+    }
+
+    /// The repository and the private folder in `base`, as a test of this module leaves them behind.
+    fn filled(base: PathBuf, files: &[(&str, &str)]) -> (Worktree, PathBuf) {
         let repo = base.join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir(&repo).unwrap();
         git_in(&repo, &["init", "-q", "-b", "main"]);
         for (path, text) in files {
             let file = repo.join(path);
@@ -1036,7 +1063,7 @@ mod repo_tests {
         git_in(&repo, &["commit", "-q", "-m", "base"]);
         git_in(&repo, &["checkout", "-q", "-B", BRANCH]);
         let data = base.join("data");
-        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir(&data).unwrap();
         (
             Worktree {
                 root: base,
@@ -1059,6 +1086,43 @@ mod repo_tests {
         tracked_and_decide(wt, &starter(), "", origin)
             .await
             .unwrap()
+    }
+
+    /// A test process is handed the process id of an earlier one, and that one's repository still stands under the name the
+    /// fixture asks for first. The same files are committed there, so `git commit` has nothing to commit and a test fails in its fixture.
+    #[test]
+    fn b947_a_repository_is_new_even_when_an_earlier_process_with_this_id_left_one() {
+        let files = [
+            ("AGENTS.md", "# Development lifecycle\nsteps\n"),
+            ("THIRD-PARTY-NOTICES.md", "Left pad, MIT.\n"),
+        ];
+        // What a reused process id finds: nextest starts one process for each test, so the fixture asks for the counter 0 in every test,
+        // and under that name stands the repository an earlier process with this id left: the files committed, the run's branch checked
+        // out. The next name is taken as well, by a folder that holds nothing. Both are planted in a base of this test's own and asked for
+        // with a counter of this test's own, so no other test of this binary is handed one or takes a name between them.
+        let base = new_dir_in(&scratch_root(), "left", &NEXT);
+        let own = AtomicU32::new(0);
+        let left = base.join(folder_name("moved", 0));
+        std::fs::create_dir(&left).unwrap();
+        filled(left, &files);
+        std::fs::create_dir(base.join(folder_name("moved", 1))).unwrap();
+        let (wt, data) = filled(new_dir_in(&base, "moved", &own), &files);
+        // the trigger: the two names the fixture asked for first were taken, and it was handed the third
+        assert_eq!(
+            wt.root,
+            base.join(folder_name("moved", 2)),
+            "a test was handed the folder of an earlier run"
+        );
+        // the repository is the fixture's own: its one commit on the run's branch, nothing to commit, and a private folder that holds nothing
+        assert_eq!(git_in(&wt.repo, &["rev-list", "--count", "HEAD"]), "1");
+        assert_eq!(
+            git_in(&wt.repo, &["symbolic-ref", "--short", "HEAD"]),
+            BRANCH
+        );
+        assert_eq!(git_in(&wt.repo, &["status", "--porcelain"]), "");
+        assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0);
+        // The base is this test's own and new: its planted folders do not stay behind.
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

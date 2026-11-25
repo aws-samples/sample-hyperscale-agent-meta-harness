@@ -6,6 +6,12 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.32] - 2026-11-25
+
+### Changed
+
+- `HAMH_TEST_STORAGE_REFUSAL=on` is now a setting of a test stage that `./setup.sh --update` passes on; `HAMH_TEST_STORAGE_REFUSAL=off ./setup.sh --update` takes it off.
+
 ## [5.31] - 2026-11-24
 
 ### Fixed

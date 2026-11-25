@@ -314,6 +314,40 @@ class B812RowsCase(ScenarioBase):
         self.assertEqual(got.get("HAMH_UTILITY_MODEL"), "off")
         self.assertIn("HAMH_TOOLS_MODE=on (explicit", self.plan(p))
 
+    # ----: other names of the family TEST -----------------------------------------------------------------------------------------------------------
+    def test_b909_other_exported_names_of_the_test_family_are_neither_refused_nor_handed_on(self) -> None:
+        """With the row of the test switch of the storage notice, the names whose first word after the prefix is TEST are a family of the registry. This repository's own scripts and tests read other
+        names that begin so, and a shell that exports them must still be able to run setup: such a name is no look-alike of a setting. It is not refused, and it
+        is not handed on as a setting. A look-alike of another family is refused as before."""
+        self.with_registry(REAL_REGISTRY.read_text())
+        registry = (self.repo / "scripts" / "lib" / "stage-settings.tsv").read_text()
+        for name in ("HAMH_TEST_STORAGE_REFUSAL", "HAMH_STAGE_KIND"):
+            self.assertIn(f"\n{name}|", registry, f"TRIGGER PRESENT: the registry that setup reads holds the row of {name}")
+        self.deployed()
+        self.commit_more()
+        self.seed_record()
+        dry = ("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
+        plain = self.run_full(*dry)
+        self.assertEqual(plain.returncode, 0, self.out(plain))
+        others = {"HAMH_TEST_WAIT_SCALE": "1", "HAMH_TEST_REQUIRE_PROCESS_1": "1", "HAMH_TEST_SKIP_RECORD": "/nonexistent/skips", "HAMH_TEST_PANIC_AFTER_KEYS": "3"}
+        p = self.run_full(*dry, **others)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.plan(p), self.plan(plain), "the plan is the one setup prints without them")
+        # the update itself: none of the four names is among the settings the build is given
+        builds = self.count_calls("codebuild", "start-build")
+        p = self.run_full(*self.UPDATE, **others)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.count_calls("codebuild", "start-build"), builds + 1, "TRIGGER PRESENT: the update started its build")
+        env = self.start_build_env(builds)
+        given = base64.b64decode(env.get("SETUP_EXPLICIT_SETTINGS", "")).decode()
+        for name in others:
+            self.assertNotIn(name, given, "no setting of the build")
+            self.assertNotIn(name, env, "no variable of the build")
+        # a look-alike of another family is refused as before
+        p = self.run_full(*dry, HAMH_INSTANCES_TYPE="m7g.large", **others)
+        self.assertEqual(p.returncode, 2, self.out(p))
+        self.assertIn("HAMH_INSTANCES_TYPES", p.stderr)
+
     # ---- Addendum 3, A3.1: the keep tag and the kind of the stage ------------------------------------------------------------------------------------------
     def test_b812_the_keep_tag_and_the_stage_kind_are_kept_and_checked_like_every_setting(self) -> None:
         """Setup's half of A3.1, with the two rows of the real registry: a record's value is shown as kept, an exported change names its class, and a value
@@ -1088,6 +1122,25 @@ class A45EarlierSpellingCase(ScenarioBase):
     OLD = "CAH_LOG_RETENTION_DAYS"  # COMPAT-CAH: the earlier spelling of a setting that names.sh never folded
     DRY = ("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
 
+    def test_b909_s8_the_earlier_spelling_of_the_test_switch_is_judged_as_the_current_name(self) -> None:
+        old = "CAH_TEST_STORAGE_REFUSAL"  # COMPAT-CAH: the earlier spelling of the test switch of the storage notice
+        real = [ln for ln in REAL_REGISTRY.read_text().splitlines() if ln.startswith(("HAMH_TEST_STORAGE_REFUSAL|", "HAMH_STAGE_KIND|"))]
+        self.assertEqual(len(real), 2, "TRIGGER PRESENT: the registry has the rows of the test switch and of the stage kind")
+        self.with_registry(REGISTRY + "".join(ln + "\n" for ln in real))
+        self.deployed()
+        self.commit_more()
+        self.seed_record(HAMH_STAGE_KIND="official")
+        before = len(self.mutations())
+        p = self.run_full(*self.DRY, **{old: "on"})
+        self.assertEqual(p.returncode, 7, self.out(p))
+        self.assertIn("HAMH_TEST_STORAGE_REFUSAL=on is exported, and the stage direct is not a test stage: its kind is official", " ".join(p.stderr.split()))
+        self.assertEqual(len(self.mutations()), before, "nothing is created or changed")
+        self.seed_record(HAMH_STAGE_KIND="test")
+        p = self.run_full(*self.DRY, **{old: "on"})
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertIn("HAMH_TEST_STORAGE_REFUSAL=on (explicit", self.plan(p))
+        self.assertIn(f"{old} is the previous name of HAMH_TEST_STORAGE_REFUSAL", p.stderr)
+
     def test_b812_fix_the_earlier_spelling_of_a_stage_setting_is_checked_shown_and_carried_to_the_build(self) -> None:
         self.with_registry()
         self.deployed()
@@ -1409,6 +1462,197 @@ class B833DefaultChangeCase(ScenarioBase):
         self.assertEqual(sorted(unread), sorted(pinned))
         for name in unread:
             self.assertEqual(d.SETTING_DEFAULTS[name], pinned[name], f"{name}: a new default of a setting the plan cannot read needs a reader in pf_live_get first")
+
+
+class B909TestSwitchCase(ScenarioBase):
+    """Setup's half of the test switch of the storage notice, `HAMH_TEST_STORAGE_REFUSAL`, with the settings registry of this checkout.
+
+    `on` is taken only when the update states the kind test for the stage: the exported `HAMH_STAGE_KIND`, else the kind the stage's settings record keeps. A new
+    stage without the kind word, a stage without a record and the word `default` state no kind, and setup then ends with exit 7 before anything is created or
+    changed. `off` and `default` are never refused. An exported word of this setting, which the stage does not keep, always deploys.
+    These cases show what setup asks for. They do not show that a runtime gets or loses the variable: the stand-in build deploys nothing real."""
+
+    WORD = "HAMH_TEST_STORAGE_REFUSAL"
+    KIND = "HAMH_STAGE_KIND"
+    DRY = ("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
+    NEW_DRY = ("--full", "--profile", "work", "--region", "us-east-1", "--dry-run")
+    OFFICIAL = "its kind is official"
+    UNSTATED = "no kind is stated for it, so it is official"
+    NO_RECORD = "no kind is stated for it"
+
+    def real_registry(self) -> None:
+        self.with_registry(REAL_REGISTRY.read_text())
+        registry = (self.repo / "scripts" / "lib" / "stage-settings.tsv").read_text()
+        for name in (self.WORD, self.KIND):
+            self.assertIn(f"\n{name}|", registry, f"TRIGGER PRESENT: the registry that setup reads holds the row of {name}")
+
+    def keep_kind(self, kind: str | None) -> None:
+        """The stage's record keeps `kind`; None: the record has no line of the kind."""
+        w = self.open_world()
+        lines = [ln for ln in w.w["params"][SETTINGS_PARAM].splitlines() if not ln.startswith(f"set.{self.KIND}=")]
+        if kind:
+            lines.append(f"set.{self.KIND}={kind}")
+        w.w["params"][SETTINGS_PARAM] = "\n".join(lines)
+        w.save()
+
+    def a_stage(self, kind: str | None) -> None:
+        """A stage that a full setup of this release deployed (the build wrote the record), whose record keeps `kind`."""
+        self.set_scenario(nine_stacks=True)
+        self.real_registry()
+        self.deployed()
+        self.assertIn(SETTINGS_PARAM, self.world()["params"], "TRIGGER PRESENT: the deploy wrote the stage's record")
+        self.keep_kind(kind)
+
+    def last_start(self) -> dict:
+        return self.start_build_env(self.count_calls("codebuild", "start-build") - 1)
+
+    def given(self, env: dict) -> dict:
+        """The explicit settings a build was given."""
+        text = base64.b64decode(env.get("SETUP_EXPLICIT_SETTINGS", "")).decode()
+        return dict(ln.split("=", 1) for ln in text.splitlines() if ln)
+
+    def deploys(self) -> int:
+        return self.world().get("n_deploys", 0)
+
+    def assert_refused(self, p, why: str, before: int) -> None:
+        self.assertEqual(p.returncode, 7, self.out(p))
+        flat = " ".join(p.stderr.split())
+        self.assertIn(f"{self.WORD}=on is exported, and the stage direct is not a test stage: {why}", flat)
+        if why == self.NO_RECORD:
+            self.assertNotIn("so it is official", flat, "a stage without a record is not called official: the deploy keeps the kind it runs")
+        self.assertIn("The setting is for tests of the storage notice: the worker then answers one test write of each session and the first write "
+                      "of the git settings at a session's end, once, with a refusal, without touching the storage. "
+                      "Only a stage of the kind test takes it.", flat)
+        self.assertIn(f"Unset {self.WORD}, then run setup.sh again.", flat)
+        self.assertIn("Nothing was changed.", flat)
+        self.assertNotIn("account entry", flat, "the refusal names the kind, which a person who uses setup can act on")
+        self.assertEqual(len(self.mutations()), before, "nothing is created or changed")
+
+    def assert_deploys(self, p, deploys: int, given: dict) -> None:
+        self.assertEqual(p.returncode, 0, self.out(p))
+        env = self.last_start()
+        self.assertNotIn("SETUP_CLIENT_ONLY", env, "a deploy build, not the client-only path")
+        self.assertEqual(self.given(env), given)
+        self.assertEqual(self.deploys(), deploys + 1)
+
+    # ---- S1 ----
+    def test_b909_s1_a_new_stage_refuses_on_without_the_kind_test_before_anything_is_created(self) -> None:
+        self.real_registry()
+        for args in (self.ARGS, self.NEW_DRY):
+            for env, why in (({}, self.UNSTATED), ({self.KIND: "official"}, self.OFFICIAL), ({self.KIND: "default"}, self.UNSTATED)):
+                with self.subTest(args=args[-1], env=env):
+                    p = self.run_full(*args, **{self.WORD: "on"}, **env)
+                    self.assert_refused(p, why, 0)
+        self.assertEqual(self.count_calls("codebuild", "start-build"), 0, "no build was started")
+        self.assertEqual(self.mutations(), [], "nothing was created in the account")
+
+    # ---- S2 ----
+    def test_b909_s2_a_new_stage_with_the_kind_word_test_takes_on(self) -> None:
+        self.set_scenario(nine_stacks=True)
+        self.real_registry()
+        env = {self.WORD: "On", self.KIND: "test"}
+        dry = self.run_full(*self.NEW_DRY, **env)
+        self.assertEqual(dry.returncode, 0, self.out(dry))
+        plan = self.plan(dry)
+        self.assertIn(f"{self.WORD}=on (explicit", plan)
+        self.assertIn(f"{self.KIND}=test (explicit", plan)
+        self.assertEqual(self.mutations(), [], "a dry run creates nothing")
+        p = self.run_full(*self.ARGS, **env)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.given(self.last_start()), {self.WORD: "on", self.KIND: "test"})
+
+    # ---- S3, S6, S7 ----
+    def test_b909_s3_s6_s7_a_test_stage_takes_the_word_and_every_exported_word_deploys(self) -> None:
+        self.a_stage("test")
+        # without the word an update at the same commit deploys nothing
+        deploys = self.deploys()
+        p = self.run_full(*self.UPDATE)
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.last_start().get("SETUP_CLIENT_ONLY"), "1", "TRIGGER PRESENT: the stage runs this commit, so an update without the word deploys nothing")
+        self.assertEqual(self.deploys(), deploys)
+        # S7: the dry run shows the setting and writes nothing
+        self.keep_kind("test")
+        before = len(self.mutations())
+        dry = self.run_full(*self.DRY, **{self.WORD: "on"})
+        self.assertEqual(dry.returncode, 0, self.out(dry))
+        self.assertIn(f"setting: {self.WORD}=on (explicit: exported in this shell)", self.plan(dry))
+        self.assertEqual(len(self.mutations()), before)
+        # S3 and S6: on, off and default each start a deploy build although the stage runs the commit
+        for word in ("on", "off", "OFF", "default"):
+            with self.subTest(word=word):
+                self.keep_kind("test")
+                deploys = self.deploys()
+                p = self.run_full(*self.UPDATE, **{self.WORD: word})
+                self.assert_deploys(p, deploys, {self.WORD: word.lower()})
+                self.assertNotIn("the stage already runs this commit", p.stdout)
+
+    # ---- S4, S5 (to the kind test), S6, S11 ----
+    def test_b909_s4_s5_s6_s11_an_official_stage_refuses_on_and_takes_off(self) -> None:
+        self.a_stage("official")
+        before, builds = len(self.mutations()), self.count_calls("codebuild", "start-build")
+        for args in (self.UPDATE, self.DRY):
+            with self.subTest(args=args[-1]):
+                self.assert_refused(self.run_full(*args, **{self.WORD: "on"}), self.OFFICIAL, before)
+        self.assertEqual(self.count_calls("codebuild", "start-build"), builds, "no build was started")
+        # S11: a word the row does not take ends the run with exit 2 and the row's note
+        p = self.run_full(*self.UPDATE, **{self.WORD: "1"})
+        self.assertEqual(p.returncode, 2, self.out(p))
+        flat = " ".join(p.stderr.split())
+        self.assertIn(f"{self.WORD}=1 is not a value this setting takes", flat)
+        self.assertIn("The test switch of the storage notice on a test stage, on or off", flat)
+        self.assertEqual(len(self.mutations()), before)
+        # S6: off is never refused, and it deploys
+        deploys = self.deploys()
+        self.assert_deploys(self.run_full(*self.UPDATE, **{self.WORD: "off"}), deploys, {self.WORD: "off"})
+        # S5: the kind word test and on in one update go ahead
+        self.keep_kind("official")
+        deploys = self.deploys()
+        self.assert_deploys(self.run_full(*self.UPDATE, **{self.WORD: "on", self.KIND: "test"}), deploys, {self.WORD: "on", self.KIND: "test"})
+
+    # ---- S5 (to the kind official) ----
+    def test_b909_s5_a_move_to_the_kind_official_refuses_on_and_deploys_without_it(self) -> None:
+        self.a_stage("test")
+        before = len(self.mutations())
+        for kind_word, why in (("official", self.OFFICIAL), ("default", self.UNSTATED)):
+            with self.subTest(kind=kind_word):
+                self.assert_refused(self.run_full(*self.UPDATE, **{self.WORD: "on", self.KIND: kind_word}), why, before)
+        deploys = self.deploys()
+        self.assert_deploys(self.run_full(*self.UPDATE, **{self.KIND: "official"}), deploys, {self.KIND: "official"})
+
+    # ---- S9 ----
+    def test_b909_s9_a_stage_without_a_record_needs_the_kind_word(self) -> None:
+        self.a_stage(None)
+        self.drop_record()
+        before = len(self.mutations())
+        self.assert_refused(self.run_full(*self.UPDATE, **{self.WORD: "on"}), self.NO_RECORD, before)
+        self.assert_refused(self.run_full(*self.UPDATE, **{self.WORD: "on", self.KIND: "default"}), self.NO_RECORD, before)
+        p = self.run_full(*self.UPDATE, **{self.WORD: "on", self.KIND: "test"})
+        self.assertEqual(p.returncode, 0, self.out(p))
+        self.assertEqual(self.given(self.last_start()), {self.WORD: "on", self.KIND: "test"})
+
+    # ---- the letter case of the word ----
+    def test_b909_the_word_on_in_upper_and_mixed_case_is_refused_on_an_official_stage(self) -> None:
+        """Setup judges the word in the form the deploy writes, lower case: `ON`, `On` and `oN` are the word `on`, and an official stage refuses each
+        before anything is changed."""
+        self.a_stage("official")
+        before, builds = len(self.mutations()), self.count_calls("codebuild", "start-build")
+        for word in ("ON", "On", "oN"):
+            with self.subTest(word=word):
+                self.assert_refused(self.run_full(*self.UPDATE, **{self.WORD: word}), self.OFFICIAL, before)
+        self.assertEqual(self.count_calls("codebuild", "start-build"), builds, "no build was started")
+
+    # ---- S10 ----
+    def test_b909_s10_the_route_of_ham_update_refuses_and_takes_the_word_as_setup_does(self) -> None:
+        """`ham update` runs `setup.sh --update --prefix <prefix> --yes` with the environment it was started in, so an exported word reaches setup that way too."""
+        self.a_stage("official")
+        route = ("--update", "--prefix", str(self.prefix), "--yes")
+        where = {"AWS_PROFILE": "work", "AWS_REGION": "us-east-1"}
+        before, builds = len(self.mutations()), self.count_calls("codebuild", "start-build")
+        self.assert_refused(self.run_full(*route, **where, **{self.WORD: "on"}), self.OFFICIAL, before)
+        self.assertEqual(self.count_calls("codebuild", "start-build"), builds, "no build was started")
+        self.keep_kind("test")
+        deploys = self.deploys()
+        self.assert_deploys(self.run_full(*route, **where, **{self.WORD: "on"}), deploys, {self.WORD: "on"})
 
 
 class B838OldHistoryCase(ScenarioBase):

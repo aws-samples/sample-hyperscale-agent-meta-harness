@@ -74,6 +74,8 @@ CONTRACT_ROWS = {
     "HAMH_TAVILY_KEY_MAX_AGE_DAYS": ("yes", "free"), "HAMH_LOG_RETENTION_DAYS": ("yes", "decrease"),
     "HAMH_PR_CHECK_MINUTES": ("yes", "free"), "HAMH_PR_CHECK_COMPUTE": ("yes", "free"),
     "HAMH_AGENTCORE_STORAGE_ACCOUNTS": ("yes", "remove"), "HAMH_PROVIDER_SILENCE_S": ("yes", "free"), "HAMH_SLICE_DEADLINE_S": ("no", "free"),
+    # The test switch of the storage notice, the second setting a stage does not keep.
+    "HAMH_TEST_STORAGE_REFUSAL": ("no", "free"),
     # Addendum 3 (A3.1): the keep tag and the kind of the stage, which the role of the account entry gave until a stage could keep them.
     "HAMH_KEEP_TAG": ("yes", "remove"), "HAMH_STAGE_KIND": ("yes", "free"),
 }
@@ -487,6 +489,7 @@ class CodeModel:
         self.storage = re.compile(re.search(r"const m = /(.+)/\.exec\(part\)", net).group(1))
         self.keep_words = ts_words(ts_const("KEEP_TAG_WORDS", cfg))
         self.kinds = ts_words(ts_const("STAGE_KINDS", cfg))
+        self.switch_words = ts_words(ts_const("TEST_STORAGE_REFUSAL_WORDS", cfg))
         doc = json.loads(CATALOG.read_text())
         self.model_ids = [m["id"] for m in doc["models"]]
         self.model_aliases = [m["alias"] for m in doc["models"]]
@@ -533,6 +536,8 @@ class CodeModel:
             return self.number(v, *self.silence)
         if name == "HAMH_SLICE_DEADLINE_S":
             return self.number(v, *self.slice, shape=r"[0-9]+")
+        if name == "HAMH_TEST_STORAGE_REFUSAL":
+            return v.lower() in self.switch_words
         if name == "HAMH_KEEP_TAG":
             return v.lower() in self.keep_words
         if name == "HAMH_STAGE_KIND":
@@ -590,6 +595,8 @@ class CodeModel:
             return bad + nums(*self.silence)
         if name == "HAMH_SLICE_DEADLINE_S":
             return bad + nums(*self.slice) + ["0060", "000000300", "028800", "028801"]
+        if name == "HAMH_TEST_STORAGE_REFUSAL":
+            return bad + ["on", "off", "ON", "Off", "oN", "of", "onn", "o n", "1", "true", "yes", "no", "0n", "test"]
         if name == "HAMH_KEEP_TAG":
             return bad + ["on", "off", "ON", "Off", "oN", "of", "onn", "o n", "true", "yes", "no", "auto-delete", "0n"]
         if name == "HAMH_STAGE_KIND":
@@ -634,6 +641,31 @@ class RegistryCase(unittest.TestCase):
         got = [dict(zip(("name", "kept", "change", "pattern", "note"), line.split("\t"))) for line in bash(BASH_PARSE, stdin=REGISTRY.read_text()).splitlines()]
         self.assertEqual(got, registry_rows())
 
+    def test_b909_the_registry_row_of_the_test_switch_of_the_storage_notice(self) -> None:
+        """The test switch is a row of the registry for a setting the stage does not keep. Its words are off and on in any letter case, after the
+        trim that the deploy and setup apply; no other word passes; `default` is the deploy's own word and needs no pattern."""
+        import deploy  # noqa: PLC0415
+        names = [r["name"] for r in registry_rows()]
+        self.assertIn("HAMH_TEST_STORAGE_REFUSAL", names, "the registry has the row of the test switch")
+        r = row("HAMH_TEST_STORAGE_REFUSAL")
+        self.assertEqual((r["kept"], r["change"]), ("no", "free"), "a setting the stage does not keep")
+        self.assertEqual(names[names.index("HAMH_TEST_STORAGE_REFUSAL") - 1], "HAMH_SLICE_DEADLINE_S", "beside the other setting a stage does not keep")
+        self.assertIn("test stage", r["note"])
+        self.assertIn("test switch of the storage notice", row("HAMH_STAGE_KIND")["note"], "the note of the kind names what only a test stage takes")
+        takes = ["on", "off", "ON", "OFF", "On", "oFf"]
+        refuses = ["1", "0", "true", "yes", "no", "onn", "on off", "x", "default ", "enabled"]
+        samples = takes + refuses
+        py = [bool(re.fullmatch(r["pattern"], s)) for s in samples]
+        sh = [w == "1" for w in bash(BASH_MATCH, r["pattern"], stdin="".join(s + "\n" for s in samples)).split()]
+        self.assertEqual(py, [True] * len(takes) + [False] * len(refuses))
+        self.assertEqual(sh, py, "bash and Python give the same answer")
+        # The trim comes first, and the word reaches the CDK app in lower case.
+        self.assertTrue(re.fullmatch(r["pattern"], " on ".strip(deploy.TOOLS_SPACE)))
+        self.assertIn("HAMH_TEST_STORAGE_REFUSAL", deploy.LOWER_SETTINGS)
+        self.assertEqual(deploy.canonical("HAMH_TEST_STORAGE_REFUSAL", "ON"), "on")
+        self.assertEqual(deploy.SETTING_DEFAULTS["HAMH_TEST_STORAGE_REFUSAL"], "off")
+        self.assertIsNone(re.fullmatch(r["pattern"], "default"), "`default` is the deploy's word, not a value of the app")
+
     def test_b812_no_pattern_repeats_more_than_255_times(self) -> None:
         # bash 3.2 on macOS compiles its patterns with the BSD regex library, whose limit is 255: `^a{1,256}$` is no pattern there.
         for r in registry_rows():
@@ -677,6 +709,7 @@ class RegistryCase(unittest.TestCase):
             "HAMH_TAVILY_KEY_MAX_AGE_DAYS": ts_const("DEFAULT_TAVILY_KEY_MAX_AGE_DAYS", cfg), "HAMH_LOG_RETENTION_DAYS": ts_const("DEFAULT_LOG_RETENTION_DAYS", cfg),
             "HAMH_PR_CHECK_MINUTES": ts_const("DEFAULT_PR_CHECK_MINUTES", cfg), "HAMH_PR_CHECK_COMPUTE": ts_words(ts_const("DEFAULT_PR_CHECK_COMPUTE", cfg))[0],
             "HAMH_AGENTCORE_STORAGE_ACCOUNTS": "", "HAMH_PROVIDER_SILENCE_S": "", "HAMH_SLICE_DEADLINE_S": "",
+            "HAMH_TEST_STORAGE_REFUSAL": ts_words(ts_const("TEST_STORAGE_REFUSAL_WORDS", cfg))[0],
         }
         inst = re.search(r"instances: \{\s*instanceTypes: \[\.\.\.DEFAULT_INSTANCE_TYPES\], vcpus: [0-9]+, rootFreeGiB: ([0-9_]+), workspaceGiB: ([0-9_]+),[^}]*?"
                          r"maxLifetimeS: ([0-9_]+), idleInstanceTimeoutS: ([0-9_]+)", cfg)
@@ -951,6 +984,21 @@ class KeepCase(SettingsBase):
         self.assertTrue(all("HAMH_AGENTCORE_STORAGE_ACCOUNTS" not in c for c in self.cdk_calls(mark)))
         statement = self.resource("network", "S3Endpoint")["Properties"]["PolicyDocument"]["Statement"][1]
         self.assertEqual(statement["Condition"]["StringEquals"], {"aws:PrincipalServiceName": "bedrock-agentcore.amazonaws.com"})
+
+    def test_b909_e7_the_earlier_spelling_of_the_test_switch_is_judged_as_the_current_name(self) -> None:
+        """The earlier spelling of the test switch of the storage notice counts as an explicit value, reaches the cdk calls under the current name
+        only, and meets the kind rule as the current name does (the other cases: test_b909_deploy_test_switch.py)."""
+        self.ok()
+        self.assertEqual(self.record()["set.HAMH_STAGE_KIND"], "test", "TRIGGER PRESENT: the record keeps the kind test")
+        mark = self.mark()
+        proc = self.ok(CAH_TEST_STORAGE_REFUSAL="on")  # COMPAT-CAH: the earlier spelling of the test switch
+        self.assertEqual(self.settings(proc)["HAMH_TEST_STORAGE_REFUSAL"], {"value": "on", "source": "explicit", "old": "off", "new": "on", "class": "free"})
+        calls = self.cdk_calls(mark)
+        self.assertTrue(calls and all(c.get("HAMH_TEST_STORAGE_REFUSAL") == "on" and "CAH_TEST_STORAGE_REFUSAL" not in c for c in calls), calls)  # COMPAT-CAH
+        self.ok(HAMH_STAGE_KIND="official")
+        reason, wait, text = self.refused(self.deploy(CAH_TEST_STORAGE_REFUSAL="on"))  # COMPAT-CAH
+        self.assertEqual((reason, wait), ("test-switch", "no"), text)
+        self.assertIn("HAMH_TEST_STORAGE_REFUSAL=on is for a test stage, and stage direct is not one (its kind: official).", text)
 
     def test_b812_update_keeps_provider_silence_and_names_the_slice_deadline_reset(self) -> None:
         self.ok(HAMH_PROVIDER_SILENCE_S="1800")

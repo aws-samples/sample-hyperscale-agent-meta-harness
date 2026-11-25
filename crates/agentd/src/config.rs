@@ -130,9 +130,10 @@ pub struct DirectConfig {
     /// [`STORAGE_TEST_REFUSAL_VAR`]: the watch of the session's storage answers one test write that a
     /// tool result asked for with "no space left on device", once per session, without touching the storage; the worker's log and the
     /// notice event say that the switch made the answer. The first write of the git settings at the session's end is answered
-    /// the same way, once, and the log says so; the worker repeats that write as after a refusal of the storage. Read only by a worker built for an `accounts.json` entry with the role `test`
-    /// ([`storage_test_refusal`]): in a build for any other entry the variable does nothing. It is a variable of the worker's own
-    /// process, which the stage's deploy sets; no request member, no user setting and no file of a work tree sets it.
+    /// the same way, once, and the log says so; the worker repeats that write as after a refusal of the storage. Read only by a worker built for an `accounts.json` entry with the role `active` or
+    /// `test` ([`storage_test_refusal`]): a build for the role `history` or for an unknown role ignores the variable. It is a
+    /// variable of the worker's own process, which the stage's deploy sets, and the deploy sets it for a test stage alone: the worker
+    /// never learns the stage's kind. No request member, no user setting and no file of a work tree sets it.
     pub storage_test_refusal: bool,
 }
 
@@ -149,10 +150,22 @@ pub fn built_for_role() -> &'static str {
         .map_or("", |(_, _, _, role)| role)
 }
 
-/// Whether the switch of the live test row is on for a worker built for an entry with the role `role`: only the role `test`
-/// reads the variable, and only the value `1` switches it on.
+/// Whether the switch of the live test row is on for a worker built for an entry with the role `role`: the roles `active`
+/// and `test` read the variable of the worker's own environment, `history` and an unknown role ignore it, and only the value `1`
+/// switches it on.
 pub fn storage_test_refusal(get: &impl Fn(&str) -> Option<String>, role: &str) -> bool {
-    role == "test" && get(STORAGE_TEST_REFUSAL_VAR).is_some_and(|v| v.trim() == "1")
+    matches!(role, "active" | "test")
+        && get(STORAGE_TEST_REFUSAL_VAR).is_some_and(|v| v.trim() == "1")
+}
+
+/// The line the worker writes on its log at its start when the switch of the live test row is on, so that the log of a stage
+/// that carries the switch says so before any session works. `None` when the switch is off.
+pub fn test_switch_start_line(direct: &DirectConfig) -> Option<String> {
+    direct.storage_test_refusal.then(|| {
+        format!(
+            "agentd: the stage's test switch is on ({STORAGE_TEST_REFUSAL_VAR}=1): one test write of each session and the first write of the git settings at a session's end, once, are answered with a refusal, without touching the storage"
+        )
+    })
 }
 
 impl DirectConfig {

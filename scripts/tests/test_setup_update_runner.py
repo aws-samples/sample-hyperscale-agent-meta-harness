@@ -325,6 +325,28 @@ class U2InstancesCase(RunnerUpdateBase):
         self.assertNotIn("instances-off", self.out(q))
 
 
+class B909RunnerCase(unittest.TestCase):
+    """The runner's half for the test switch of the storage notice, with the settings registry of this checkout."""
+
+    def test_b909_the_runner_hands_the_test_switch_of_this_checkouts_registry_to_the_deploy(self) -> None:
+        real = (Path(__file__).resolve().parents[2] / "scripts" / "lib" / "stage-settings.tsv").read_text()
+        rig = rb.Rig(self)
+        (rig.tree / "scripts/lib/stage-settings.tsv").write_text(real)
+        rig.put_source()
+        proc = rig.run(SETUP_EXPLICIT_SETTINGS=b64_lines("HAMH_STAGE_KIND=test", "HAMH_TEST_STORAGE_REFUSAL=on"))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        deploy_env = rig.calls("deploy")[0]["env"]
+        self.assertEqual((deploy_env.get("HAMH_TEST_STORAGE_REFUSAL"), deploy_env.get("HAMH_STAGE_KIND")), ("on", "test"),
+                         "the word and the kind word are in the environment of deploy.sh")
+        refused = rb.Rig(self)
+        (refused.tree / "scripts/lib/stage-settings.tsv").write_text(real)
+        refused.put_source()
+        proc = refused.run(SETUP_EXPLICIT_SETTINGS=b64_lines("HAMH_TEST_STORAGE_REFUSAL=1"))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(refused.result()["failedPhase"], "inputs", "a value the row's pattern refuses stops the build before the deploy")
+        self.assertEqual(refused.calls("deploy"), [], "deploy.sh did not run")
+
+
 class U16ActiveRunsCase(RunnerUpdateBase):
     """U16 [ok]: active runs stop the update before the runner is installed; with --allow-active-runs the build's own guard decides."""
 

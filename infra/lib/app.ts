@@ -1,7 +1,7 @@
 import { App, Stack, Tags } from "aws-cdk-lib";
 import {
-  ACCOUNT, checkResearchProvider, DEFAULT_RESEARCH_PROVIDER, KEEP_TAG_EXCEPTIONS, KEEP_TAGS, OWNER, PROJECT, REGION, type ResearchProvider, resolveComputeInstances, resolveTestStorageRefusal, resolveToolsMode, TARGET, resolveUtilityModel,
-  resolveResearchAlarms, resolveStageSettings, resolveUtilityPurposes, STAGE_KIND, type Stage, type StageSettingsRaw, stageConfig,
+  ACCOUNT, checkResearchProvider, DEFAULT_RESEARCH_PROVIDER, KEEP_TAG_EXCEPTIONS, KEEP_TAGS, OWNER, PROJECT, REGION, type ResearchProvider, resolveComputeInstances, resolveTestStorageRefusal, resolveToolsMode, resolveUtilityModel,
+  resolveResearchAlarms, resolveStageSettings, resolveUtilityPurposes, STAGE_KIND, statedStageKind, type Stage, type StageSettingsRaw, stageConfig,
 } from "./config.ts";
 import { ControlStack } from "./stacks/control.ts";
 import { DataStack } from "./stacks/data.ts";
@@ -54,7 +54,8 @@ export interface BuildOptions {
   computeInstances?: string;
   /**
    * The switch of the live test row of the storage notice, as `HAMH_TEST_STORAGE_REFUSAL` states it: `off` or `on` in any letter case. Unset or blank means `off`.
-   * `on` is for an account entry with the role `test` and throws for any other; any other word throws (lib/config.ts `resolveTestStorageRefusal`).
+   * `on` is for a stage whose stated kind is `test` and throws for any other; any other word throws (lib/config.ts
+   * `resolveTestStorageRefusal`).
    */
   testStorageRefusal?: string;
   /**
@@ -86,8 +87,8 @@ export function buildApp(opts: BuildOptions): App {
   const toolsMode = resolveToolsMode(opts.toolsMode);
   // The Instances compute type's stage setting, resolved before any stack exists for the same reason.
   const computeInstances = resolveComputeInstances(opts.computeInstances) === "on";
-  // The switch of the live test row, resolved before any stack exists: `on` stops the synth for an entry that has not the role test.
-  const testStorageRefusal = resolveTestStorageRefusal(opts.testStorageRefusal, TARGET.role);
+  // The switch of the live test row, resolved before any stack exists: `on` stops the synth unless the kind test is stated for the stage (HAMH_STAGE_KIND).
+  const testStorageRefusal = resolveTestStorageRefusal(opts.testStorageRefusal, statedStageKind());
   const app = new App(opts.outdir ? { outdir: opts.outdir } : {});
   const env = { account: ACCOUNT, region: REGION };
   const stack = (name: string) => ({ env, stackName: `${cfg.prefix}-${name}`, cfg });

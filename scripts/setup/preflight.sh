@@ -89,10 +89,14 @@ COMMIT_ORDER_NOTE=""
 # scripts/tests/test_setup_update_scenarios.py keeps these three lists equal to them): whole numbers without leading zeros, case-free words in lower case, comma lists without
 # the spaces around their commas and without empty items. pf_canonical gives that form, so setup shows, sends and compares the value the stage's record holds (A4.8).
 PF_NUMBER_SETTINGS="HAMH_INSTANCES_ROOT_FREE_GIB HAMH_INSTANCES_WORKSPACE_GIB HAMH_INSTANCES_LIFETIME_S HAMH_INSTANCES_IDLE_S HAMH_TAVILY_KEY_MAX_AGE_DAYS HAMH_LOG_RETENTION_DAYS HAMH_PR_CHECK_MINUTES HAMH_PROVIDER_SILENCE_S HAMH_SLICE_DEADLINE_S"
-PF_LOWER_SETTINGS="HAMH_COMPUTE_INSTANCES HAMH_TOOLS_MODE HAMH_TAVILY_ALARMS HAMH_PR_CHECK_COMPUTE HAMH_UTILITY_MODEL HAMH_UTILITY_PURPOSES HAMH_KEEP_TAG HAMH_STAGE_KIND"
+PF_LOWER_SETTINGS="HAMH_COMPUTE_INSTANCES HAMH_TOOLS_MODE HAMH_TAVILY_ALARMS HAMH_PR_CHECK_COMPUTE HAMH_UTILITY_MODEL HAMH_UTILITY_PURPOSES HAMH_KEEP_TAG HAMH_STAGE_KIND HAMH_TEST_STORAGE_REFUSAL"
 PF_LIST_SETTINGS="HAMH_INSTANCES_TYPES HAMH_UTILITY_PURPOSES HAMH_AGENTCORE_STORAGE_ACCOUNTS"
 # Variables of the registry's families that are no stage setting but documented controls of the worker or the client: an exported one is not refused.
 PF_CONTROLS="HAMH_RESEARCH_URL HAMH_RESEARCH_WAIT_S HAMH_TOOLS_URL HAMH_TOOLS_SERVER_BIN"
+# Families of the registry in which only the registry's exact names are stage settings, each named by the first word after HAMH_ with the underscores around it. The
+# test hooks of this repository's own scripts and tests begin with the same word as the one stage setting of the family TEST, so another exported name of that family is no
+# look-alike of a setting: it is left alone, neither refused nor handed on.
+PF_OPEN_FAMILIES="_TEST_"
 # The settings whose live value the plan can read (pf_live_get: the capacity provider of the runtimes stack, one read). A setting of a consent class without a
 # reader here gets no plan line when a release changes its default; scripts/tests/test_setup_update_scenarios.py pins the defaults of those settings, so such a
 # change fails the tests until it has a reader.
@@ -399,6 +403,7 @@ pf_explicit_settings() {
     [ -n "$(printenv "$_e" 2>/dev/null || true)" ] || continue
     _rest=${_e#HAMH_}
     _fam=HAMH_${_rest%%_*}_
+    case " $PF_OPEN_FAMILIES " in *" ${_fam#HAMH} "*) continue ;; esac
     _known=$(printf '%s\n' "$_names" | awk -v f="$_fam" 'index($0, f) == 1 { printf "%s%s", (n++ ? ", " : ""), $0 }')
     [ -n "$_known" ] || continue
     setup_exit 2 "$_e is exported, and it is no setting of the stage: the deploy would not read it" \
@@ -614,6 +619,32 @@ pf_settings_refuse() {
       "Unset $_name (the update keeps the part) or export $_name=on, then run setup.sh again." "Nothing was changed."
   done
   return 0
+}
+
+# pf_test_switch_refuse: HAMH_TEST_STORAGE_REFUSAL=on, the test switch of the storage notice, is for a test stage. The kind this run states for the stage is the exported
+# HAMH_STAGE_KIND, else (for an update) the kind the stage's settings record keeps. A new stage without the word, a stage without a record and the word `default` state no
+# kind: a new stage and a stage with a record are then official, and of a stage without a record the message says only that no kind is stated (the deploy keeps the
+# kind such a stage runs). The role of the account entry is not asked. With `on` and any stated kind but test the run ends here with exit 7 and nothing created
+# or changed. `off` and `default` are never refused. The deploy engine and the CDK app hold the same rule.
+pf_test_switch_refuse() {
+  local _kind _why
+  [ "$(pf_explicit_get HAMH_TEST_STORAGE_REFUSAL)" = on ] || return 0
+  _kind=$(pf_explicit_get HAMH_STAGE_KIND)
+  [ -n "$_kind" ] || _kind=$(pf_rec_get set.HAMH_STAGE_KIND)
+  case $_kind in
+    test) return 0 ;;
+    official) _why="its kind is official" ;;
+    *)
+      # A new stage is official when no kind is stated. A stage without a settings record keeps the kind it runs, which this run does not read.
+      if [ "${STAGE_STATE:-none}" != none ] && [ "${REC_HAVE:-0}" != 1 ]; then
+        _why="no kind is stated for it"
+      else
+        _why="no kind is stated for it, so it is official"
+      fi ;;
+  esac
+  setup_exit 7 "HAMH_TEST_STORAGE_REFUSAL=on is exported, and the stage $STAGE is not a test stage: $_why" \
+    "The setting is for tests of the storage notice: the worker then answers one test write of each session and the first write of the git settings at a session's end, once, with a refusal, without touching the storage. Only a stage of the kind test takes it." \
+    "Unset HAMH_TEST_STORAGE_REFUSAL, then run setup.sh again." "Nothing was changed."
 }
 
 # pf_principal <ARN>: PR_ACCOUNT, PR_KIND (role or user) and PR_NAME of an IAM role or user ARN (a path is dropped); returns 1 for any other text.

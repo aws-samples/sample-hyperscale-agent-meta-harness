@@ -1,10 +1,11 @@
-//! The switch of the live test row and its limits (the lead's ruling 2).
+//! The switch of the live test row and its limits.
 //!
 //! A real refusal of the session's storage cannot be made on demand, so one switch makes the worker answer one test write with
-//! errno 28. Its limits: only a worker built for an account entry with the role `test` reads it; in a build for any other entry the
-//! same variable does nothing; no request member, no user setting and no file of a work tree reaches it; it answers one test write and
-//! never again in that session; the log and the notice event say that the switch made the answer. The last two are held by
-//! `b881_storage_watch.rs` and `b881_whole_run.rs`.
+//! errno 28. Its limits: only a worker built for an account entry with the role `active` or `test` reads it, from its own
+//! environment, which only the stage's deploy sets, and the deploy sets it for a test stage alone (`b909_switch_role.rs`); in a
+//! build for the role `history` or for an unknown role the same variable does nothing; no request member, no user setting and no
+//! file of a work tree reaches it; it answers one test write and never again in that session; the log and the notice event say
+//! that the switch made the answer. The last two are held by `b881_storage_watch.rs` and `b881_whole_run.rs`.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -23,7 +24,7 @@ fn var(value: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
 }
 
 #[test]
-fn b881_only_a_worker_built_for_a_test_entry_reads_the_switch() {
+fn b881_a_worker_built_for_a_test_entry_reads_the_switch_only_with_the_value_1() {
     assert_eq!(STORAGE_TEST_REFUSAL_VAR, "AGENTD_TEST_STORAGE_REFUSAL");
     assert!(storage_test_refusal(&var(Some("1")), "test"));
     assert!(storage_test_refusal(&var(Some(" 1 ")), "test"));
@@ -42,15 +43,15 @@ fn b881_only_a_worker_built_for_a_test_entry_reads_the_switch() {
 }
 
 #[test]
-fn b881_in_a_build_for_any_other_entry_the_same_variable_does_nothing() {
-    for role in ["active", "history", "", "Test", "official"] {
+fn b881_in_a_build_for_a_history_or_unknown_entry_the_same_variable_does_nothing() {
+    for role in ["history", "", "Test", "official"] {
         assert!(!storage_test_refusal(&var(Some("1")), role), "{role:?}");
     }
     // The binary of this test run carries its own selection: the config follows it and nothing else.
     let role = built_for_role();
     assert!(["active", "history", "test"].contains(&role), "{role:?}");
     let on = DirectConfig::from_vars(&var(Some("1")));
-    assert_eq!(on.storage_test_refusal, role == "test");
+    assert_eq!(on.storage_test_refusal, role == "active" || role == "test");
     // Without the variable it is off in every build.
     assert!(!DirectConfig::from_vars(&var(None)).storage_test_refusal);
     assert!(!DirectConfig::default().storage_test_refusal);

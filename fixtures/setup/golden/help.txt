@@ -61,6 +61,8 @@ Later life of the system (they read or change this deployment only; --profile, -
   --force-deploy       with --update: deploy even when the stage already runs this commit
                   An update keeps the stage's settings, its operator, its zone and its Instances part. A stage setting you export (HAMH_TOOLS_MODE=on, for example)
                   is checked before the question, shown in the plan and passed to the deploy on both routes; NAME=default returns it to the default.
+                  A setting the stage does not keep (HAMH_SLICE_DEADLINE_S, and HAMH_TEST_STORAGE_REFUSAL, which only a test stage takes) goes with the next
+                  update that deploys without it; an update with it exported, with any value, always deploys.
   --teardown      delete the stage and the runner; --yes --acknowledge-teardown --account-id ID skips the question. AgentCore network interfaces that hold
                   the network stack are retained and listed as RETAINED, never counted as zero resources; AWS frees them up to 8 hours later. When only those
                   are left, the run ends with exit 9 and prints the command that runs it again.

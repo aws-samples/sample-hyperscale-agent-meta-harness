@@ -1352,6 +1352,7 @@ full_run() {
       pf_owner_check
       pf_instances_part
       pf_settings_refuse
+      pf_test_switch_refuse
       if [ "$action" = update ]; then
         # the stage already runs this commit with these settings: nothing is deployed, so no run is stopped or asked about, and only the client is fetched (SETUP_CLIENT_ONLY).
         # It is found first (C7): the order of the commits (C8) is a question only for an update that deploys another source tree.

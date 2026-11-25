@@ -338,7 +338,7 @@ pub struct WatchSetup {
     /// The disk rule's two numbers: a notice needs room below [`Limits::storage_warn_mb`].
     pub limits: Limits,
     /// The switch of the live test row (`crate::config::STORAGE_TEST_REFUSAL_VAR`, read only by a worker built for an account entry with
-    /// the role `test`): the first test write that a tool result asks for after a copy of the session was marked is answered with
+    /// the role `active` or `test`, from its own environment): the first test write that a tool result asks for after a copy of the session was marked is answered with
     /// errno 28, once in the session, without touching the storage. The log line and the event say that the switch made the answer.
     /// The first write of the git settings at the session's end is answered the same way, once
     /// ([`StorageWatch::settings_calls`]).

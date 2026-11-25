@@ -301,6 +301,15 @@ export function stageKind(target: Pick<Target, "role">, env: Record<string, stri
 export const STAGE_KIND: StageKind = stageKind(TARGET);
 
 /**
+ * The kind that is stated for the stage: the word of `HAMH_STAGE_KIND` in `env` when it is set, else none. The role of the account entry gives a stage its kind
+ * (`stageKind`) and states none. The deploy engine hands the app the word it resolved from the export or from the stage's settings record.
+ */
+export function statedStageKind(env: Record<string, string | undefined> = process.env): StageKind | undefined {
+  const word = trimSetting(lookupEnv(env, "STAGE_KIND") ?? "");
+  return word === "" ? undefined : resolveStageKind(word, "active");
+}
+
+/**
  * The search providers of the research route, chosen by the stage and never by a caller. `agentcore` searches AWS's own
  * web index through an AgentCore Gateway with the Web Search Tool connector: it needs no key and a query stays inside AWS. `auto`
  * builds both backends, the gateway and the Tavily secret, and research-api chooses for every request: Tavily when a key is stored in the stage's
@@ -418,23 +427,23 @@ export function resolveToolsMode(setting: string | undefined): ToolsMode {
 
 /**
  * The switch of the live test row of the storage notice: `HAMH_TEST_STORAGE_REFUSAL=on` makes the worker runtime carry `AGENTD_TEST_STORAGE_REFUSAL=1`. A worker
- * built for an account entry with the role `test` then answers one test write of a session with "no space left on device" without touching the storage, and its log line
- * and its notice say that the switch made the answer (crates/agentd/src/direct/storage_watch.rs). The word is an input of one deploy: it is kept by no settings record, so
- * the next deploy without it takes the variable out of the runtime again. It is for a test stage only: `on` for an entry of any other role throws, so a synth stops, and
- * the worker of such a stage ignores the variable in any case. Unset, empty, blank and `off` leave the runtime as it was.
+ * built for an account entry with the role `active` or `test` then answers one test write of a session with "no space left on device" without touching the storage, and
+ * its log line and its notice say that the switch made the answer (crates/agentd/src/direct/storage_watch.rs). The word is an input of one deploy: it is kept by no
+ * settings record, so the next deploy without it takes the variable out of the runtime again. It is for a test stage only: `on` throws, so a synth stops, unless
+ * the kind `test` is stated for the stage (`statedStageKind`); the role of the account entry states no kind. Unset, empty, blank and `off` leave the runtime as it was.
  */
 export const TEST_STORAGE_REFUSAL_VAR = "AGENTD_TEST_STORAGE_REFUSAL";
 export const TEST_STORAGE_REFUSAL_WORDS = ["off", "on"] as const;
 
-/** Resolves `HAMH_TEST_STORAGE_REFUSAL` for an entry of role `role`: whether the worker runtime carries the variable. */
-export function resolveTestStorageRefusal(setting: string | undefined, role: Target["role"]): boolean {
+/** Resolves `HAMH_TEST_STORAGE_REFUSAL` for a stage whose stated kind is `stated` (`statedStageKind`): whether the worker runtime carries the variable. */
+export function resolveTestStorageRefusal(setting: string | undefined, stated: StageKind | undefined): boolean {
   const word = trimSetting(setting ?? "").toLowerCase();
   if (word === "" || word === "off") return false;
   if (word !== "on") {
     throw new Error(`HAMH_TEST_STORAGE_REFUSAL="${setting}" is not one of ${TEST_STORAGE_REFUSAL_WORDS.join(", ")} (unset or empty means off)`);
   }
-  if (role !== "test") {
-    throw new Error(`HAMH_TEST_STORAGE_REFUSAL=on is for an account entry with the role test: it makes a worker answer one write with a test answer. The selected entry has the role ${role}`);
+  if (stated !== "test") {
+    throw new Error(`HAMH_TEST_STORAGE_REFUSAL=on is for a stage of the kind test: it makes a worker answer one write with a test answer. The kind stated for this stage is ${stated ?? "none"} (HAMH_STAGE_KIND)`);
   }
   return true;
 }

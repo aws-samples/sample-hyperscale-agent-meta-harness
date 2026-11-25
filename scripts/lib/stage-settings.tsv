@@ -31,5 +31,6 @@ HAMH_PR_CHECK_COMPUTE|yes|free|^([Ss][Mm][Aa][Ll][Ll]|[Mm][Ee][Dd][Ii][Uu][Mm]|[
 HAMH_AGENTCORE_STORAGE_ACCOUNTS|yes|remove|^[ ,]*(us-east-1|us-west-2)=[0-9]{12}(\+[0-9]{12})*( *,[ ,]*(us-east-1|us-west-2)=[0-9]{12}(\+[0-9]{12})*)*[ ,]*$|The accounts that own the AgentCore session storage buckets, region=account or region=account+account, comma separated; default returns to the service rule.
 HAMH_PROVIDER_SILENCE_S|yes|free|^([6-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$|How long Cline may stay silent before the harness cancels the prompt, 60 to 3600 seconds.
 HAMH_SLICE_DEADLINE_S|no|free|^0*([6-9][0-9]|[1-9][0-9]{2,3}|1[0-9]{4}|2[0-7][0-9]{3}|28[0-7][0-9]{2}|28800)$|A test override that shortens every slice of a run, 60 to 28800 seconds; an update removes it unless it is set again.
+HAMH_TEST_STORAGE_REFUSAL|no|free|^([Oo][Nn]|[Oo][Ff][Ff])$|The test switch of the storage notice on a test stage, on or off; a deploy without it takes it off.
 HAMH_KEEP_TAG|yes|remove|^([Oo][Nn]|[Oo][Ff][Ff])$|The tag auto-delete=no on every resource of the stage, on or off; off takes the tag off the resources.
-HAMH_STAGE_KIND|yes|free|^([Oo][Ff][Ff][Ii][Cc][Ii][Aa][Ll]|[Tt][Ee][Ss][Tt])$|The kind of the stage, official or test; only a test stage takes the fixture research provider.
+HAMH_STAGE_KIND|yes|free|^([Oo][Ff][Ff][Ii][Cc][Ii][Aa][Ll]|[Tt][Ee][Ss][Tt])$|The kind of the stage, official or test; only a test stage takes the fixture research provider and the test switch of the storage notice.

@@ -4209,6 +4209,53 @@ async fn b823_work_is_given_up_at_the_time_named_and_the_time_only_moves_forward
     );
 }
 
+/// The question whether the time to give up has come (`GiveUp::has_come`), asked on a clock that stands. The copy of a read
+/// answers `budget` from the instant its give-up has come (`recover.rs`), so the answer is for this instant: a time that is now has
+/// come, a time that the clock has not reached has not, by the one millisecond that is the grain of the clock, and a give-up
+/// without a time never comes. The test of the read's moment (`b854_recover.rs`) names a time 1 ms behind its stopped clock, so a
+/// question that lags by 1 ms passes there; here it does not.
+#[tokio::test(start_paused = true)]
+async fn b945_whether_the_give_up_has_come_is_answered_for_this_instant() {
+    let now = tokio::time::Instant::now();
+    let grain = Duration::from_millis(1);
+    let at_now = GiveUp::at(Some(now));
+    let ahead = GiveUp::at(Some(now + grain));
+    let never = GiveUp::at(None);
+    assert!(at_now.has_come(), "a time that is now has come");
+    assert!(!ahead.has_come(), "a time 1 ms ahead has not come");
+    assert!(!never.has_come(), "no time named has not come");
+    assert_eq!(
+        tokio::time::Instant::now(),
+        now,
+        "TRIGGER PRESENT: the clock stood still while the three were asked"
+    );
+
+    // The clock moves on by that millisecond: the time ahead has come, and no time still has not.
+    tokio::time::advance(grain).await;
+    assert_eq!(
+        tokio::time::Instant::now(),
+        now + grain,
+        "TRIGGER PRESENT: the clock stands 1 ms later"
+    );
+    assert!(
+        at_now.has_come() && ahead.has_come(),
+        "a time that the clock has reached has come"
+    );
+    assert!(!never.has_come(), "no time named never comes");
+
+    // A time named for a look that had none (`no_later_than`): 1 ms ahead of the clock it has not come, at the clock's now it has.
+    never.no_later_than(now + grain + grain);
+    assert!(
+        !never.has_come(),
+        "a time named afterwards, 1 ms ahead, has not come"
+    );
+    never.no_later_than(now + grain);
+    assert!(
+        never.has_come(),
+        "a time named afterwards that is now has come"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn b823_who_asks_agentd_to_end_waits_for_the_copy_and_for_nothing_when_no_turn_works() {
     let ending = std::sync::Arc::new(Ending::default());

@@ -8,6 +8,17 @@
 //! The stand-in (`b854_support`): session 1 of a run works in one agentd (the old machine) and ends; a file is then written and
 //! closed in its work tree, after the last stored copy. A second agentd with a disk of its own and the same storage root is the new
 //! machine.
+//!
+//! The word of a read whose time ended. Two things end such a read: the limit of the whole read, and the give-up of the copy's
+//! own calls, which `handle` sets to the same end. Either may be noticed first, and the answer is `budget` both times. Three tests
+//! hold that: a real `agentd serve` whose git does not return, a copy whose give-up had come before it began, and a copy whose
+//! give-up comes while it runs, with the clock of the read stopped at that instant. Two changes of the product no test of the read
+//! can hold, because no caller gets another answer. A give-up without a time that counts as come: `handle` always names a time, so
+//! no request reaches a copy that fails under a give-up without one. A `handle` that names no give-up at all: the limit of the whole
+//! read then ends the read and every git it started, at the same moment and with the same answer. The first of the two is held at
+//! the question's own contract, where `GiveUp::has_come` is asked directly on a stopped clock
+//! (`b945_whether_the_give_up_has_come_is_answered_for_this_instant` in `b823_stop_copy.rs`), and so is a question that lags by
+//! the one millisecond that the test of the moment lets pass.
 #![allow(clippy::unwrap_used)]
 
 mod b854_support;
@@ -977,7 +988,7 @@ async fn b854_a_git_that_does_not_return_ends_at_the_budget_and_no_git_is_left_b
 /// comes first by construction: it has come when the read starts, 30 s before the limit. The read's time ended, so the answer is
 /// `budget`, as it is when the limit is noticed first, and never that the tree could not be read. A machine whose give-up does not
 /// come reads the same storage whole, so nothing but the give-up ended the first read. A copy that fails while its give-up has not
-/// come (a file of the tree cannot be read) is `tree-unreadable` as before.
+/// come (git cannot add a folder of the tree, whoever runs the test) is `tree-unreadable` as before.
 #[tokio::test(flavor = "multi_thread")]
 async fn b854_a_copy_its_own_give_up_ended_answers_budget_and_a_failed_one_tree_unreadable() {
     let s = stopped_session().await;
@@ -1008,17 +1019,16 @@ async fn b854_a_copy_its_own_give_up_ended_answers_budget_and_a_failed_one_tree_
         "nothing is in the bucket, and nothing was sent"
     );
 
-    // A copy that fails while its give-up has not come: a file of the tree cannot be read.
-    let closed = s.d.worktree().join("closed.txt");
-    std::fs::write(&closed, "nobody may read this\n").unwrap();
-    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // A copy that fails while its give-up has not come: git cannot add a folder of the tree, because the folder is a repository
+    // without a commit. That fails for every user. A file that nobody may read does not: root reads it, and the copy is made.
+    let unborn = s.d.worktree().join("unborn");
+    git(&s.d.worktree(), &["init", "-q", "unborn"]);
     let (app, log) = machine_app(&s, "not-the-limit");
     let later = GiveUp::at(Some(tokio::time::Instant::now() + Duration::from_secs(300)));
     let asked = Instant::now();
     let answer = recover::handle_until(&app, &req, &later).await;
     let took = asked.elapsed();
-    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o644)).unwrap();
-    std::fs::remove_file(&closed).unwrap();
+    std::fs::remove_dir_all(&unborn).unwrap();
     let said = log.lines().join("\n");
     assert!(
         took < limit / 2 && said.contains(copy_failed),
@@ -1042,4 +1052,261 @@ async fn b854_a_copy_its_own_give_up_ended_answers_budget_and_a_failed_one_tree_
         "the storage can be read whole: {answer:?}\n{}",
         log.lines().join("\n")
     );
+}
+
+/// What the worker's log says first of a copy that failed once the read's time had ended.
+const COPY_OUT_OF_TIME: &str =
+    "direct recover session 1: the copy: the read's time ended before it was made";
+
+/// What that line says next when the call that was ended was the copy's `git add` and git went when it was ended: the step that
+/// was in flight, in the words of the call (`workspace::git_with_env_until_input`).
+const ADD_GIVEN_UP: &str = "git add: given up before it had ended";
+
+/// What that line says next when the call that was ended was the tree's write after the copy's `git add` (`git write-tree`, the
+/// second half of the copy's reading of the tree) and git went when it was ended: the same call's words for that step.
+const WRITE_TREE_GIVEN_UP: &str = "git write-tree: given up before it had ended";
+
+/// The lines of a worker's log that speak of the copy of a read.
+fn lines_of_the_copy(said: &str) -> Vec<&str> {
+    said.lines()
+        .filter(|line| line.contains(": the copy: "))
+        .collect()
+}
+
+/// The `git add` calls on the work tree `tree` that this process started and that still run: their process ids.
+fn adds_in_flight(tree: &Path) -> Vec<u32> {
+    use std::os::unix::ffi::OsStrExt;
+    let out = std::process::Command::new("pgrep")
+        .args(["-P", &std::process::id().to_string(), "git"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|pid| pid.parse::<u32>().ok())
+        .filter(|pid| {
+            let line = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+            let words: Vec<&[u8]> = line.split(|byte| *byte == 0).collect();
+            words
+                .iter()
+                .any(|word| Path::new(std::ffi::OsStr::from_bytes(word)) == tree)
+                && words.iter().any(|word| *word == b"add")
+        })
+        .collect()
+}
+
+/// The moment of the question. `handle` names a give-up that comes while the copy runs: the end of the request's time. Here
+/// it comes while the copy runs too, at an instant the test chooses. The read begins with no time to give up. The tree holds a file
+/// that git cannot have read, so the copy stays in its `git add`. When the test sees that `git add` run, it stops the clock of the
+/// read's runtime and names a time that this clock has just passed, by one millisecond, the grain of the clock. The clock stands
+/// still until the read has answered. So the question whether the give-up has come has one right moment: when the copy has failed.
+/// Asked before the copy began, no time was named. Asked with a lag of 2 ms or more, the stopped clock never gets there: the time
+/// named is 1 ms behind it. Either would answer `tree-unreadable` for a read whose time ended, as every release from 5.23 to 5.30
+/// could. A lag of 1 ms passes here. It is held where the question itself is asked on a stopped clock
+/// (`b945_whether_the_give_up_has_come_is_answered_for_this_instant` in `b823_stop_copy.rs`).
+#[test]
+fn b945_a_copy_that_its_give_up_ends_while_it_runs_answers_budget_at_that_instant() {
+    // The stopped session and its stand-ins run on a runtime of their own, with threads, as in every other test of this file.
+    let sessions = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _in_sessions = sessions.enter();
+    let s = sessions.block_on(stopped_session());
+    let mut req = s.request(ATTEMPT);
+    req.budget_s = 300;
+    let limit = Duration::from_secs(u64::from(req.budget_s));
+    let tree = s.d.worktree();
+    let large = tree.join("large.bin");
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(8 << 30)
+        .unwrap();
+
+    // The read runs on one thread: only such a runtime lets a test stop its clock.
+    let reads = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let asked = Instant::now();
+    let (answer, said, moved, left) = reads.block_on(async {
+        let (app, log) = machine_app(&s, "give-up-in-flight");
+        let give_up = GiveUp::at(None);
+        let read = recover::handle_until(&app, &req, &give_up);
+        tokio::pin!(read);
+
+        // 1. No time to give up is named. The read runs until its copy is in `git add`.
+        while adds_in_flight(&tree).is_empty() {
+            assert!(
+                asked.elapsed() < limit / 4,
+                "TRIGGER PRESENT: the copy of the read came to its `git add`: none was seen in {:?}\n{}",
+                asked.elapsed(),
+                log.lines().join("\n")
+            );
+            tokio::select! {
+                biased;
+                answer = &mut read => panic!(
+                    "TRIGGER PRESENT: the read was still at work when its give-up was named: it had answered {answer:?}\n{}",
+                    log.lines().join("\n")
+                ),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+
+        // 2. The clock stops, and the give-up comes: its time is one millisecond behind the stopped clock. A task on a thread of its
+        //    own keeps the stopped clock from being moved on to the next timer, and ends the wait after a minute of real time.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let mut hold = tokio::task::spawn_blocking(move || {
+            let _ = held.recv_timeout(Duration::from_secs(60));
+        });
+        tokio::time::pause();
+        let stopped = tokio::time::Instant::now();
+        give_up.no_later_than(stopped - Duration::from_millis(1));
+        let answer = tokio::select! {
+            biased;
+            answer = &mut read => answer,
+            _ = &mut hold => panic!(
+                "TRIGGER PRESENT: the give-up ended the read: it had not answered a minute after its give-up came\n{}",
+                log.lines().join("\n")
+            ),
+        };
+        let moved = tokio::time::Instant::now() - stopped;
+        drop(release);
+        let _ = hold.await;
+        tokio::time::resume();
+        (answer, log.lines().join("\n"), moved, adds_in_flight(&tree))
+    });
+    let took = asked.elapsed();
+    std::fs::File::create(&large).unwrap().set_len(0).unwrap();
+
+    assert!(
+        moved.is_zero(),
+        "TRIGGER PRESENT: the clock of the read stood still from the instant its give-up came until it answered: it moved by {moved:?}"
+    );
+    assert!(
+        left.is_empty() && said.contains("direct recover session 1: the copy: "),
+        "TRIGGER PRESENT: the give-up ended the copy's `git add` (still running: {left:?}), and the copy failed: {answer:?}\n{said}"
+    );
+    assert!(
+        took < limit / 2,
+        "TRIGGER PRESENT: the read answered long before its limit of {limit:?} was noticed: {took:?}"
+    );
+    assert_eq!(
+        (answer.recovered, answer.reason.as_deref()),
+        (false, Some("budget")),
+        "the read's time ended while its copy ran: {answer:?}\n{said}"
+    );
+    assert_eq!((answer.copy, answer.comparison), (None, None));
+    assert_eq!(
+        lines_of_the_copy(&said),
+        [format!("{COPY_OUT_OF_TIME}; {ADD_GIVEN_UP}")],
+        "the one line about the copy says first that the read's time ended, then the step that was in flight, the `git add` that \
+         was ended, and nothing of a process that stayed: git went when it was ended, on a clock that stood\n{said}"
+    );
+    assert!(
+        s.d.aws.get(&s.key()).is_none() && s.d.aws.put_attempts(&s.key()) == 0,
+        "nothing is in the bucket, and nothing was sent"
+    );
+}
+
+/// What the worker's log says of a copy that failed. Once the read's time has ended (the copy's give-up has come), the line
+/// says that first, and then what the ended call said: the step that was in flight and, when git could not be ended, that its
+/// process was still there 2 s after it was ended. A git that was left behind is what a reader of the log has to see. One thing
+/// the ended call says is left out. A file call that the give-up ends says that the work tree did not answer, and that is not so
+/// for a tree that answered every call it got: here the give-up has come when the read starts, so the tree is not even asked. A
+/// copy that fails while its give-up has not come keeps its own words.
+///
+/// No read of this file leaves a git that is still there 2 s after it was ended. The worker ends git with a signal that git
+/// cannot catch, and what keeps a process after that is the machine, which a test does not hold. So the last part is a stand-in:
+/// it gives the line the words such a call says (`workspace::git_with_env_until_input`) and asks what the log would say.
+#[tokio::test(flavor = "multi_thread")]
+async fn b945_the_log_of_a_copy_that_ran_out_of_time_says_so_and_never_blames_the_work_tree() {
+    let s = stopped_session().await;
+    let mut req = s.request(ATTEMPT);
+    req.budget_s = 30;
+
+    // The give-up has come when the read starts: the first file call of the copy is ended at once.
+    let (app, log) = machine_app(&s, "log-out-of-time");
+    let come = GiveUp::at(Some(tokio::time::Instant::now()));
+    let answer = recover::handle_until(&app, &req, &come).await;
+    let said = log.lines().join("\n");
+    assert_eq!(
+        (answer.recovered, answer.reason.as_deref()),
+        (false, Some("budget")),
+        "TRIGGER PRESENT: the read's time ended before its copy was made: {answer:?}\n{said}"
+    );
+    // The step that was in flight is the first call of the copy's reading of the tree that had not answered when the copy waited
+    // for it, which the give-up ends at once (a call that has answered counts as answered, `GiveUp::run`): the reading of the
+    // tree's ignore rules; the `git add` after it, when that file had answered; or the tree's write after that (`git
+    // write-tree`), when the `git add` had ended as well. A right product can end at each of the three on a crowded machine.
+    let of_the_copy = lines_of_the_copy(&said);
+    let steps = [
+        "its ignore rules was not read",
+        ADD_GIVEN_UP,
+        WRITE_TREE_GIVEN_UP,
+    ];
+    assert!(
+        of_the_copy.len() == 1
+            && steps
+                .iter()
+                .any(|step| of_the_copy[0] == format!("{COPY_OUT_OF_TIME}; {step}")),
+        "the one line about the copy says first that the read's time ended, then the step that was in flight (one of {steps:?})\n{said}"
+    );
+    assert!(
+        !said.contains("work tree"),
+        "no line of the log blames the work tree:\n{said}"
+    );
+
+    // A copy that fails while its give-up has not come (git cannot add a folder of the tree): the copy's own words stay.
+    let unborn = s.d.worktree().join("unborn");
+    git(&s.d.worktree(), &["init", "-q", "unborn"]);
+    let (app, log) = machine_app(&s, "log-not-the-limit");
+    let later = GiveUp::at(Some(tokio::time::Instant::now() + Duration::from_secs(300)));
+    let answer = recover::handle_until(&app, &req, &later).await;
+    std::fs::remove_dir_all(&unborn).unwrap();
+    let said = log.lines().join("\n");
+    assert_eq!(
+        (answer.recovered, answer.reason.as_deref()),
+        (false, Some("tree-unreadable")),
+        "TRIGGER PRESENT: the copy failed while the read's time had not ended: {answer:?}\n{said}"
+    );
+    let of_the_copy = lines_of_the_copy(&said);
+    assert!(
+        of_the_copy.len() == 1
+            && of_the_copy[0].starts_with("direct recover session 1: the copy: snapshot: ")
+            && of_the_copy[0].contains("unborn")
+            && !said.contains(COPY_OUT_OF_TIME),
+        "the one line about the copy carries what git said of the folder, and no word of the time:\n{said}"
+    );
+
+    // A git that could not be ended, by a stand-in: the words of its call are given to the line. The step and the process that
+    // stayed are in it. The forms after it are the ones the reads of this file log, asked the same way.
+    for (ended, line) in [
+        (
+            "snapshot: git: git bundle: given up before it had ended; the process was still there 2 s after it was ended",
+            "the read's time ended before it was made; git bundle: given up before it had ended; the process was still there 2 s \
+             after it was ended",
+        ),
+        (
+            "snapshot: git: git add: given up before it had ended",
+            "the read's time ended before it was made; git add: given up before it had ended",
+        ),
+        (
+            "snapshot: git: git write-tree: given up before it had ended",
+            "the read's time ended before it was made; git write-tree: given up before it had ended",
+        ),
+        (
+            "snapshot: the work tree did not answer; its ignore rules was not read",
+            "the read's time ended before it was made; its ignore rules was not read",
+        ),
+        (
+            "snapshot: the work tree has not answered an earlier call; its ignore rules was not read",
+            "the read's time ended before it was made; its ignore rules was not read",
+        ),
+    ] {
+        assert_eq!(
+            recover::copy_out_of_time(ended),
+            line,
+            "what the log says of a copy that ran out of time when its ended call said: {ended}"
+        );
+    }
 }
