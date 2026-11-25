@@ -437,10 +437,10 @@ full_plan() {
     [ "${SETUP_CLIENT_ONLY:-0}" = 1 ] || case ${IMG_PLAN:-unknown} in
       none|image)
         say "  image:         $IMG_TEXT"
-        say "  duration:      about 20 to 25 minutes" ;;
+        say "  duration:      about 30 minutes" ;;
       fork)
         say "  image:         $IMG_TEXT"
-        say "  duration:      about 41 to 52 minutes (about 21 to 27 of them to rebuild the Cline binary)" ;;
+        say "  duration:      about 51 to 57 minutes (about 21 to 27 of them to rebuild the Cline binary)" ;;
       *)
         # A4.14: without a record the stage names no commit, so the pins of the two commits cannot be compared and the order of the commits is not known
         if [ "${REC_HAVE:-0}" != 1 ]; then
@@ -449,7 +449,7 @@ full_plan() {
           # The recorded commit is not in this clone, so its pins cannot be read (the VERSION rule of pf_commit_order let the update go ahead)
           say "  image:         $IMG_TEXT"
         fi
-        say "  duration:      about 20 to 25 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt" ;;
+        say "  duration:      about 30 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt" ;;
     esac
     [ "${FORCE_DEPLOY:-0}" != 1 ] || say "  deploy:        --force-deploy: the deploy runs even when the stage already runs this commit"
     if [ "${ALLOW_ACTIVE_RUNS:-0}" = 1 ]; then

@@ -39,9 +39,10 @@ pub const REASON_ENDING: &str = "ending";
 pub const REASON_NOT_MOUNTED: &str = "not-mounted";
 /// The run's folder, the engine's folder or the repository is missing or is a link.
 pub const REASON_NO_TREE: &str = "no-tree";
-/// The tree could not be read into a copy.
+/// The tree could not be read into a copy, and the read's time had not ended.
 pub const REASON_TREE_UNREADABLE: &str = "tree-unreadable";
-/// The request's time ended before the copy was stored; as the reason of a comparison, before the comparison was made.
+/// The request's time ended before the copy was stored, whichever noticed it first: the limit of the whole read, or the give-up of the
+/// copy's own calls. As the reason of a comparison: before the comparison was made.
 pub const REASON_BUDGET: &str = "budget";
 /// The copy was made and could not be stored.
 pub const REASON_UPLOAD_FAILED: &str = "upload-failed";
@@ -108,12 +109,25 @@ pub fn no_answer(req: &RecoveryInvocationRequest) -> RecoveryAnswer {
 /// never ran a turn (`server`). The answer always comes: with the stored copy and what the comparison found, or with the one word
 /// that says why no copy is stored.
 pub async fn handle(app: &Arc<App>, req: &RecoveryInvocationRequest) -> RecoveryAnswer {
+    let budget = Duration::from_secs(u64::from(req.budget_s));
+    let give_up = GiveUp::at(Some(tokio::time::Instant::now() + budget));
+    handle_until(app, req, &give_up).await
+}
+
+/// [`handle`] with the give-up of the copy named by the caller: the time at which every git call and every file call of the copy ends
+/// ([`Snapshotter::read_back`]). `handle` names the end of the request's `budgetS`, which is the limit of the whole read as well, so
+/// the two come at the same moment and either may be noticed first: a copy that failed once this give-up had come answers `budget`,
+/// as the limit does. A test names an earlier give-up.
+pub async fn handle_until(
+    app: &Arc<App>,
+    req: &RecoveryInvocationRequest,
+    give_up: &GiveUp,
+) -> RecoveryAnswer {
     let started = Instant::now();
     let budget = Duration::from_secs(u64::from(req.budget_s));
     // What is stored already when the time ends: from then on the answer names it, whatever else happens.
     let stored: Arc<Mutex<Option<RecoveredCopy>>> = Arc::new(Mutex::new(None));
-    let give_up = GiveUp::at(Some(tokio::time::Instant::now() + budget));
-    let read = read(app, req, &stored, &give_up);
+    let read = read(app, req, &stored, give_up);
     let outcome = match tokio::time::timeout(budget, read).await {
         Ok(outcome) => outcome,
         // The read is dropped here, and every git it started ends with it.
@@ -258,7 +272,14 @@ async fn read(
         .await
         .map_err(|e| {
             log("the copy", &e);
-            REASON_TREE_UNREADABLE
+            // Every call of the copy ends when the copy's give-up comes, and that is the end of the read's time. A copy that fails from
+            // then on failed because the time ended: the answer is the one the limit of the whole read gives, whichever of the two
+            // was noticed first.
+            if give_up.has_come() {
+                REASON_BUDGET
+            } else {
+                REASON_TREE_UNREADABLE
+            }
         })?;
     let (files, bytes) = snapshotter.totals(&made.tree).await.unwrap_or_else(|e| {
         log("the size of the tree", &e);

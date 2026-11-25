@@ -110,7 +110,7 @@ const DEPLOYS: &str = "\
   source:        commit 2a49dc96c4adf8a45ec1459a91852029c0c2ee12 (clean clone)
   update:        the stage keeps its resources and gets the new revision; the runner is installed again for the build and removed afterwards
   image:         the worker image is reused
-  duration:      about 20 to 25 minutes
+  duration:      about 30 minutes
   guard:         the update takes the stage's deploy lock, so the stage starts no new runs, and waits up to 60 minutes for the active runs to end (--wait-for-runs). No run is cancelled.
                  The build also refuses worker runtime changes while runs are active.
   active runs:   1 running run(s): 01M7CEBG372JG65RYY55770FJM. The update waits up to 60 minutes for them to end; new runs are refused meanwhile. No run is cancelled.

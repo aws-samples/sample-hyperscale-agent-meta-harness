@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import setup_runner_support as sup
-from setup_waits import limit
+from setup_waits import GroupProcess, limit, wait_for
 
 RUST = "1.98.1"
 GO = "1.27.1"
@@ -47,6 +47,17 @@ elif args[0] == "list":
 elif args[0] == "install":
     dest = args[args.index("--dest") + 1]
     os.makedirs(dest + "/bin", exist_ok=True)
+    gate = os.environ.get("FAKE_INSTALL_GATE")
+    if gate:
+        # a download that lasts until the test opens the gate: the line of its start is out, the installer is not done
+        import time
+        print("TOOL GET zig __ZIG__", flush=True)
+        end = time.monotonic() + float(os.environ["FAKE_INSTALL_GATE_LIMIT"])
+        while not os.path.exists(gate):
+            if time.monotonic() > end:
+                sys.exit(9)
+            time.sleep(0.05)
+        print("TOOL OK zig __ZIG__ 9.9s from mirror.example", flush=True)
     if os.environ.get("FAKE_INSTALL") == "fail":
         print("TOOL FAIL zig sha256 want=aa got=bb")
         sys.exit(4)
@@ -181,6 +192,26 @@ class InstallCase(Base):
         self.assertEqual(install["argv"][install["argv"].index("--lock") + 1], str(rig.tree / "tools.lock"))
         self.assertEqual(install["roots"], str(rig.tools), "tools_lock.py installs only below the tools folder")
 
+    def test_b941_the_installers_lines_show_while_it_still_runs(self) -> None:
+        """A slow download must show in the build log while it lasts: the log that setup follows then holds a time for each tool. The stand-in installer prints the line of a
+        download's start and waits for a file this test makes; the line must be in the script's output before that."""
+        rig = Rig(self)
+        gate = rig.tmp / "gate"
+        run = GroupProcess(["bash", str(rig.tree / "scripts/setup/runner-toolchain.sh"), str(rig.tools)], cwd=str(rig.tree), case=self, name="runner-toolchain.sh",
+                           env=rig.env(FAKE_INSTALL_GATE=str(gate), FAKE_INSTALL_GATE_LIMIT=str(limit(120))))
+        run.wait_ready(lambda: f"TOOL GET zig {ZIG}\n" in run.text(), 30, "the line of the download's start in the script's output")
+        self.assertFalse(gate.exists(), "TRIGGER PRESENT: the installer still waits in its download")
+        self.assertIsNone(run.status(), "TRIGGER PRESENT: the script has not ended")
+        self.assertNotIn("TOOL OK", run.text())
+        gate.write_text("")
+        wait_for(lambda: run.status() is not None, 120, "runner-toolchain.sh to end")
+        wait_for(lambda: "TOOLCHAIN PASS" in run.text(), 10, "the last line of runner-toolchain.sh")
+        text = run.text()
+        self.assertEqual(run.status(), 0, text)
+        for line in (f"TOOL GET zig {ZIG}", f"TOOL OK zig {ZIG} 9.9s from mirror.example", "TOOL OK rustup-init 1.29.1"):
+            self.assertEqual(text.splitlines().count(line), 1, f"{line!r} stands once in the output:\n{text}")
+        self.assertIn(f"TOOL OK zig {ZIG} 9.9s from mirror.example", (rig.tools / "tools.log").read_text(), "tools.log keeps a copy of the lines")
+
     def test_rustup_gets_the_toolchain_components_and_targets_of_the_lock(self) -> None:
         rig = Rig(self)
         rig.run()
@@ -296,6 +327,7 @@ class FailureCase(Base):
         self.assertEqual(proc.returncode, 1)
         self.assertTrue(last_line(proc).startswith("TOOLCHAIN FAIL tools "), proc.stdout)
         self.assertIn("sha256", last_line(proc))
+        self.assertEqual(proc.stdout.splitlines().count("TOOL FAIL zig sha256 want=aa got=bb"), 1, "the installer's own line stands once before the last line")
 
     def test_an_aws_cli_of_another_version(self) -> None:
         rig = Rig(self)

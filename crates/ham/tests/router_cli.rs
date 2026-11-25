@@ -2,7 +2,11 @@
 //! through the router (`ham_core::router`) to the parser the shell uses, and runs in-process through `ham::cli::run_captured`, which
 //! returns the text it wrote as data. The shell form is the compiled binary against the same stand-in `/v1` API (the real control-api
 //! handler over an in-memory store). Their text is compared after the stated normalization: the home directory and the run id are
-//! masked; a download link keeps its URL out of the panel; doctor compares check names and levels.
+//! masked, and so is the clock of a presigned link (the second it was made in and the time it expires, `mask_clock`), because the
+//! two sides are two calls; a download link keeps its URL out of the panel; doctor compares check names and levels. The answer of
+//! a cancel has a comparison of its own (`same_cancel`): the two sides cancel two runs, so the second in which the service
+//! recorded the cancel is not compared between them; each side is checked against the stand-in's record of its own run, which it
+//! names once on standard output and never on standard error (`names_its_own_record`).
 //!
 #![allow(clippy::unwrap_used)]
 
@@ -562,6 +566,174 @@ async fn through_the_box(
     (outcome, Some(ran))
 }
 
+/// The second in which the stand-in recorded the cancel of `run`, as `ham cancel` prints it: `2026-11-16T07:05:22Z` as
+/// `2026-11-16 07:05:22 UTC`.
+fn recorded_second(fake: &Fake, run: &str) -> String {
+    let at = fake.mem.inner.lock().unwrap().runs[run]
+        .cancel_requested_at
+        .clone()
+        .expect("the stand-in recorded the cancel");
+    format!("{} UTC", at.replace('T', " ").trim_end_matches('Z'))
+}
+
+/// The words that stand before the second in which the service recorded a cancel: `The cancel is recorded (2026-11-16 07:05:22 UTC).`
+const CANCEL_RECORD: &str = "The cancel is recorded (";
+
+/// What one side printed for a cancel: it names the second `at` of its own run's record, once on standard output and never on
+/// standard error.
+fn names_its_own_record(printed: &Printed, at: &str) {
+    assert!(
+        printed.out.contains(&format!("{CANCEL_RECORD}{at}).")),
+        "the text names the second the service recorded this cancel in ({at}): {printed:?}"
+    );
+    assert_eq!(
+        printed.out.matches(CANCEL_RECORD).count(),
+        1,
+        "standard output names the record once: {printed:?}"
+    );
+    assert!(
+        !printed.err.contains(CANCEL_RECORD),
+        "standard error does not name the record: {printed:?}"
+    );
+}
+
+/// `t` with the second of a cancel's record masked: the 23 characters after the first `CANCEL_RECORD`. A record that follows it
+/// stays as it is.
+fn mask_cancel_record(t: &str) -> String {
+    let Some(at) = t.find(CANCEL_RECORD) else {
+        return t.to_string();
+    };
+    let end = at + CANCEL_RECORD.len();
+    let skip: usize = t[end..].chars().take(23).map(char::len_utf8).sum();
+    format!("{}<TIME>{}", &t[..end], &t[end + skip..])
+}
+
+/// `same` for the answer of a cancel, and for nothing else. The shell cancels one run and the chat box another, in two calls, so a
+/// second can pass between the service's two records: standard output is compared with the second of the record masked. The exit
+/// code and standard error are compared as `same` compares them. The caller checks each side's second against the stand-in's
+/// record of that side's run (`names_its_own_record`).
+fn same_cancel(what: &str, sh: &Printed, pn: &Printed, sides: &[&Side], runs: &[&str]) {
+    assert_eq!(
+        sh.code, pn.code,
+        "{what}: exit code\nshell stderr: {}\npanel stderr: {}",
+        sh.err, pn.err
+    );
+    assert_eq!(
+        mask_cancel_record(&norm(&sh.out, sides, runs)),
+        mask_cancel_record(&norm(&pn.out, sides, runs)),
+        "{what}: standard output"
+    );
+    assert_eq!(
+        norm(&sh.err, sides, runs),
+        norm(&pn.err, sides, runs),
+        "{what}: standard error"
+    );
+}
+
+/// The texts of two cancels that the service recorded in two neighbouring seconds: the shell's and the chat box's.
+const CANCEL_AT_48: &str = "run r active\nThe cancel is recorded (2026-11-24 22:35:48 UTC). The run's session is asked to stop and the work so far is kept: the run delivers what exists.\n";
+const CANCEL_AT_49: &str = "run r active\nThe cancel is recorded (2026-11-24 22:35:49 UTC). The run's session is asked to stop and the work so far is kept: the run delivers what exists.\n";
+/// The second that `CANCEL_AT_48` names.
+const AT_48: &str = "2026-11-24 22:35:48 UTC";
+
+/// What a command printed, for the tests of the comparisons themselves.
+fn printed(out: &str, err: &str) -> Printed {
+    Printed {
+        code: 0,
+        out: out.to_string(),
+        err: err.to_string(),
+    }
+}
+
+#[test]
+fn the_second_a_cancel_was_recorded_in_is_masked_and_nothing_else() {
+    let (a, b) = (CANCEL_AT_48, CANCEL_AT_49);
+    assert_ne!(a, b);
+    assert_eq!(mask_cancel_record(a), mask_cancel_record(b));
+    assert_eq!(
+        mask_cancel_record(a),
+        "run r active\nThe cancel is recorded (<TIME>). The run's session is asked to stop and the work so far is kept: the run delivers what exists.\n"
+    );
+    assert_eq!(mask_cancel_record("no record here"), "no record here");
+    // Another sentence after the time stays different, and so does a time anywhere else.
+    assert_ne!(
+        mask_cancel_record(
+            "The cancel is recorded (2026-11-24 22:35:48 UTC). The run is already delivering what exists."
+        ),
+        mask_cancel_record(
+            "The cancel is recorded (2026-11-24 22:35:48 UTC). The run has no session that answers."
+        )
+    );
+    assert_ne!(
+        mask_cancel_record("saved 2026-11-24 22:35:48 UTC"),
+        mask_cancel_record("saved 2026-11-24 22:35:49 UTC")
+    );
+    // One record is masked: the second of a record that follows it stays.
+    assert_ne!(
+        mask_cancel_record(&format!("{a}{a}")),
+        mask_cancel_record(&format!("{a}{b}"))
+    );
+    // The mask of a link's clock, which every `same` applies, leaves the record as it is.
+    assert_eq!(mask_clock(a), a);
+    assert_ne!(mask_clock(a), mask_clock(b));
+}
+
+/// `same`, the comparison of every other command, compares the second of a cancel's record like every other character.
+#[test]
+#[should_panic(expected = "unit: standard output")]
+fn same_compares_the_second_a_cancel_was_recorded_in() {
+    let (sh, pn) = (printed(CANCEL_AT_48, ""), printed(CANCEL_AT_49, ""));
+    same("unit", &sh, &pn, &[], &[]);
+}
+
+#[test]
+fn same_cancel_takes_two_texts_that_differ_only_in_the_second_of_the_record() {
+    let (sh, pn) = (printed(CANCEL_AT_48, ""), printed(CANCEL_AT_49, ""));
+    same_cancel("unit", &sh, &pn, &[], &[]);
+}
+
+/// A record that follows the first one on standard output is compared in full.
+#[test]
+#[should_panic(expected = "unit: standard output")]
+fn same_cancel_compares_a_second_record_on_standard_output() {
+    let sh = printed(&format!("{CANCEL_AT_48}{CANCEL_AT_48}"), "");
+    let pn = printed(&format!("{CANCEL_AT_48}{CANCEL_AT_49}"), "");
+    same_cancel("unit", &sh, &pn, &[], &[]);
+}
+
+/// Standard error is compared in full.
+#[test]
+#[should_panic(expected = "unit: standard error")]
+fn same_cancel_compares_a_record_on_standard_error() {
+    let sh = printed(CANCEL_AT_48, CANCEL_AT_48);
+    let pn = printed(CANCEL_AT_48, CANCEL_AT_49);
+    same_cancel("unit", &sh, &pn, &[], &[]);
+}
+
+#[test]
+fn a_side_that_names_its_own_record_once_on_standard_output_is_taken() {
+    names_its_own_record(&printed(CANCEL_AT_48, ""), AT_48);
+}
+
+#[test]
+#[should_panic(expected = "the text names the second the service recorded this cancel in")]
+fn a_side_that_names_another_second_is_refused() {
+    names_its_own_record(&printed(CANCEL_AT_49, ""), AT_48);
+}
+
+#[test]
+#[should_panic(expected = "standard output names the record once")]
+fn a_side_that_names_the_record_twice_is_refused() {
+    let twice = format!("{CANCEL_AT_48}{CANCEL_AT_49}");
+    names_its_own_record(&printed(&twice, ""), AT_48);
+}
+
+#[test]
+#[should_panic(expected = "standard error does not name the record")]
+fn a_side_that_names_the_record_on_standard_error_is_refused() {
+    names_its_own_record(&printed(CANCEL_AT_48, CANCEL_AT_49), AT_48);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_asks_for_a_second_enter_and_then_prints_the_shell_text() {
     let fake = Fake::start().await;
@@ -593,7 +765,21 @@ async fn cancel_asks_for_a_second_enter_and_then_prints_the_shell_text() {
     let s = shell(&sh, &["cancel", &r_shell]).await;
     let (_, p) = through_the_box(&fake, &pn, "/cancel", &ctx).await;
     let p = p.expect("the command ran after the second Enter");
-    same("cancel", &s, &p, &[&sh, &pn], &[&r_shell, &r_panel]);
+    same_cancel("cancel", &s, &p, &[&sh, &pn], &[&r_shell, &r_panel]);
+    // The two cancels are two calls on two runs, so `same_cancel` does not compare the second each was recorded in. Each side names
+    // the second of its own run's record, once on standard output and never on standard error.
+    let (at_shell, at_panel) = (
+        recorded_second(&fake, &r_shell),
+        recorded_second(&fake, &r_panel),
+    );
+    if at_shell != at_panel {
+        println!(
+            "TRIGGER PRESENT: the two cancels were recorded in two seconds ({at_shell}, {at_panel})"
+        );
+    }
+    for (printed, at) in [(&s, &at_shell), (&p, &at_panel)] {
+        names_its_own_record(printed, at);
+    }
     assert_eq!(s.code, 0, "{s:?}");
     assert_eq!(fake.mem.controls_of(&r_shell).len(), 1);
     assert_eq!(

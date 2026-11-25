@@ -276,6 +276,8 @@ After confirmation, setup asks no further questions.
    Setup starts the build and follows it phase by phase.
    The nine phases are `inputs`, `fetch`, `toolchain`, `account-file`, `deploy`, `gomod`, `scanner-rules`, `client`, and `outputs`.
    The build installs the pinned toolchain from `tools.lock`.
+   It fetches its tools from pinned sources and checks each one against a pinned checksum.
+   A slow source of the zig toolchain is left after 60 seconds for another.
    It deploys with:
 
    ```bash
@@ -428,8 +430,8 @@ A second run, after AWS releases the interfaces, removes them.
   and goes on to make the client, also when setup has stopped following it. Setup then prints `the deploy has finished: the stage starts runs again while the build goes on`. The build fills the Go module store after the deploy. A release that adds Go modules to the store uploads them then, which takes some minutes: a run that starts before the build has ended and asks for one of them does not find it. If the build cannot write that, the stage starts runs
   again when setup sees the build end (the next `./setup.sh --update` after setup has stopped following it), or 30 minutes after the last write of the lock. Add `--allow-active-runs` to `./setup.sh --update` to skip the early active-run check. With active runs, the build refuses only an update that changes the worker runtime. Add `--allow-new-runs` as well to let the stage keep starting runs while the update deploys. Such an update keeps the worker runtime:
   one that would change it stops with nothing deployed, and `--wait-for-runs MINUTES` is the way to run it. If such an update stops while its build runs, `./setup.sh --update` attaches to that build with or without the two options, and the stage keeps starting runs while the build deploys. When the deploy of such an update has finished, setup prints `the deploy has finished: the stage kept starting runs (--allow-new-runs), and the build goes on`. A run that
-  starts during the update runs under it like the active runs, and `ham pull <runId> --snapshot` downloads the latest saved copy of its work. This option belongs to `--update`; any other command stops with exit 2. Active runs keep the worker runtime version they started on. A second machine needs `--update` to obtain a client. When the stage already runs the commit of that clone, the update only gets the client. An update takes about 20 to 25 minutes when
-  it reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt. `--update` and `--full` exit 7 before they create anything when the stage was deployed under the earlier names; the earlier stage keeps running. See [Moving from the earlier command name](#moving-from-the-earlier-command-name).
+  starts during the update runs under it like the active runs, and `ham pull <runId> --snapshot` downloads the latest saved copy of its work. This option belongs to `--update`; any other command stops with exit 2. Active runs keep the worker runtime version they started on. A second machine needs `--update` to obtain a client. When the stage already runs the commit of that clone, the update only gets the client. An update takes about 30 minutes when it
+  reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt. `--update` and `--full` exit 7 before they create anything when the stage was deployed under the earlier names; the earlier stage keeps running. See [Moving from the earlier command name](#moving-from-the-earlier-command-name).
 
 - **Teardown:** Run `./setup.sh --teardown` to delete the stage and runner.
   It runs on your machine with your own AWS credentials.
@@ -7737,7 +7739,7 @@ Clone the repository on that computer and run `./setup.sh --update` to build and
 When the stage already runs the commit of that clone, the update only gets the client.
 A clone older than the stage's commit stops the update with exit 7, and the message names `git pull`.
 When the stage records a commit that your clone does not hold, a lower recorded `VERSION` goes ahead, and any other answer stops the update with exit 7 and names a new clone or `git pull` when your clone is older than the stage, and `--revision` when it is not.
-An update takes about 20 to 25 minutes when it reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt.
+An update takes about 30 minutes when it reuses the Cline binary from the earlier build, and about 21 to 27 minutes more when the Cline binary must be rebuilt.
 The receipt, setup's local record on the first computer, is a cache.
 AWS holds the state.
 If you have `ham` installed, run `./setup.sh --client-only --endpoint <stage-URL>` to configure it for your stage. If you need `ham`, run `./setup.sh --client-only --build --endpoint <stage-URL>` or replace `--build` with `--from <directory>` for a directory that holds `ham` and `SHA256SUMS`.

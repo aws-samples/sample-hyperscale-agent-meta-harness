@@ -850,16 +850,19 @@ class B812RowsCase(ScenarioBase):
         self.write_commit({"engine/policy/image-key.pin": pin.format("a" * 64), "engine/lock.toml": lock.format("b" * 64, "c" * 64)}, "pins")
         deployed = self.deployed()
         self.seed_record(commit=deployed)
-        cases = (("no new image", {"docs.md": "words\n"}, "no new worker image"),
-                 ("new image", {"engine/policy/image-key.pin": pin.format("d" * 64)}, "a new worker image"),
-                 ("fork rebuild", {"engine/lock.toml": lock.format("e" * 64, "c" * 64)}, "the Cline binary is rebuilt"))
-        for name, files, needle in cases:
+        # The durations are the measured ones. An update that reuses the Cline binary takes about 30 minutes; a rebuild of the binary adds 21 to 27.
+        reused, rebuilt = "duration: about 30 minutes guard:", "duration: about 51 to 57 minutes (about 21 to 27 of them to rebuild the Cline binary) guard:"
+        cases = (("no new image", {"docs.md": "words\n"}, "no new worker image", reused),
+                 ("new image", {"engine/policy/image-key.pin": pin.format("d" * 64)}, "a new worker image", reused),
+                 ("fork rebuild", {"engine/lock.toml": lock.format("e" * 64, "c" * 64)}, "the Cline binary is rebuilt", rebuilt))
+        for name, files, needle, duration in cases:
             with self.subTest(case=name):
                 self.git("checkout", "-q", deployed)
                 self.write_commit(files, name)
                 p = self.run_full("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
                 self.assertEqual(p.returncode, 0, self.out(p))
                 self.assertIn(needle, self.plan(p))
+                self.assertIn(duration, self.plan(p))
                 self.assertNotIn("plus about 21 to 27 minutes when the binary must be rebuilt", self.plan(p), "the plan knows which case applies")
         # with --allow-active-runs, a new image is refused before the build: the build's guard would refuse it after the long Lambda build
         self.git("checkout", "-q", deployed)
@@ -876,7 +879,7 @@ class B812RowsCase(ScenarioBase):
         w.save()
         self.set_scenario(executions={})
         p = self.run_full("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
-        self.assertIn("plus about 21 to 27 minutes when the binary must be rebuilt", self.plan(p))
+        self.assertIn("duration: about 30 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt", self.plan(p))
 
 
 class A410ClientFolderCase(ScenarioBase):

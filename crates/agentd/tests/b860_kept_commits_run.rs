@@ -2719,6 +2719,104 @@ async fn b932_a_look_that_is_slow_for_another_reason_costs_two_git_calls() {
     ends_as_asked(&mut run).await;
 }
 
+/// A keep at once that found nothing to pack leaves the mark of ruling 43 (b) as it was,
+/// so a burst that nothing packs still gets its keep at once. The engine packs its store, a look that is slow for another
+/// reason leaves the timer on a moved head, and the keep at once that follows it finds nothing to pack: two git calls
+/// (`b932_a_look_that_is_slow_for_another_reason_costs_two_git_calls`). Then the engine commits five times and nothing packs
+/// those commits. The first look after that burst leaves the timer on the new head and reads no kept pack: the keep follows
+/// it at once and stands on its line, and the two looks after it read the kept pack. After the burst exactly one look runs
+/// its bundle step without a kept pack. Before, the keep that found nothing to pack set the mark: no keep at once followed
+/// the first look after the burst, the keep came after the second look of that head, and two looks ran their bundle step
+/// without a kept pack, as in release 5.28.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_burst_after_a_keep_at_once_that_found_nothing_to_pack_gets_its_keep_at_once() {
+    let mut run = Run::start("b932-after-nothing", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 3);
+    git(&run.d.worktree(), &["repack", "-a", "-d", "-q"]);
+    let first = run
+        .held_look(
+            "a.txt",
+            "first, after the engine packed its store\n",
+            SLOW,
+            |_| {},
+        )
+        .await;
+    let line1 = run.line_when_stored(first).await;
+    left_the_timer(&line1);
+    assert_eq!(
+        field(&line1, "engine"),
+        Some("moved"),
+        "TRIGGER PRESENT is not shown: {line1}"
+    );
+    assert!(
+        keep_ran(&line1) && field(&line1, "kept") == Some("0"),
+        "TRIGGER PRESENT is not shown: the keep at once after the first look did not find nothing to pack: {line1}"
+    );
+    println!("TRIGGER PRESENT: a keep at once found nothing to pack: {line1}");
+    let before = run.bundle_steps().len();
+    run.burst(4, 5);
+    let second = run
+        .held_look(
+            "a.txt",
+            "second, after a burst that nothing packed\n",
+            SLOW,
+            |_| {},
+        )
+        .await;
+    let line2 = run.line_when_stored(second).await;
+    let third = run
+        .write_and_wait("a.txt", "third, of the same head\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the second look after the burst stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line3 = run.line_when_stored(third).await;
+    let fourth = run
+        .write_and_wait("a.txt", "fourth, of the same head\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the third look after the burst stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line4 = run.line_when_stored(fourth).await;
+    let steps = run.bundle_steps()[before..].to_vec();
+    println!(
+        "line 2: {line2}\nline 3: {line3}\nline 4: {line4}\nkeeps started: {}; bundle steps after the burst (true: read a \
+         kept pack): {steps:?}",
+        keeps_started(&run.dir)
+    );
+    left_the_timer(&line2);
+    assert_eq!(
+        field(&line2, "engine"),
+        Some("moved"),
+        "TRIGGER PRESENT is not shown: {line2}"
+    );
+    assert!(
+        keep_ran(&line2) && names_a_kept_pack(&line2),
+        "the keep follows the first look after the burst at once and stands on its line (keep= its milliseconds, kept= the \
+         bytes of the pack), also after a keep at once that found nothing to pack: {line2}; the looks after it: {line3}; \
+         {line4}"
+    );
+    assert_eq!(
+        steps,
+        vec![false, true, true],
+        "after the burst exactly one look runs its bundle step without a kept pack; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(
+        keeps_started(&run.dir),
+        2,
+        "two keeps in the turn: the one that found nothing to pack, and the one after the burst"
+    );
+    ends_as_asked(&mut run).await;
+}
+
 /// Steady commits get one keep, for their first burst. The keep at once follows a look only
 /// when that look read no kept pack. After the keep that follows the first slow look, the engine commits once before each of
 /// three more looks of the timer; each of them finds a moved head, leaves the timer (its bundle step is held, which stands for
@@ -2919,6 +3017,11 @@ fn refused_or_failed(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// The longest a worker of these tests takes to end after a request to end that comes
+/// while a keep runs through the wait for the spacing: 8 s. The spacing has more than 6 s to run then, and a worker that
+/// waited for it would also have its last look and its end in front of it.
+const END_WITHIN: Duration = Duration::from_secs(8);
+
 /// A request to end ends the wait that a
 /// keep runs through. The bundle step of the first look after a burst is held for 2 s, so the spacing holds the look after
 /// it for 15 s, five periods of the 3 s timer, and the stand-in holds the `pack-objects` of the keep at once that follows
@@ -2928,9 +3031,10 @@ fn refused_or_failed(log: &str) -> Vec<String> {
 ///
 /// The worker ends as the signal asks while the spacing still has seconds to run, the copy that the request asked for
 /// holds the work written right before it, no look fails, and the held git is gone. A wait that did not take the request
-/// would end with the spacing: the worker would end after it, and what the test asserts is that order, not a number of
-/// seconds of its own. The spacing ends no sooner than 15 s after the held bundle step was let go, because the git work of
-/// that look ends after that moment.
+/// would end with the spacing: the worker would end after it. The test asserts that order, and beside it a bound of its
+/// own (ruling 45 (b) of the lead): the worker ends within [`END_WITHIN`], 8 s, of the request; a review measured 307 to
+/// 309 ms. The spacing ends no sooner than 15 s after the held bundle step was let go, because the git work of that look
+/// ends after that moment.
 async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: bool) {
     let mut run = Run::start(label, BURST_EVERY_MS, Vec::new()).await;
     run.behind_a_look("a.txt").await;
@@ -3011,6 +3115,12 @@ async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: b
         Some(Some(143)),
         "the worker ends as the signal asks; log:\n{}",
         run.log()
+    );
+    assert!(
+        took < END_WITHIN,
+        "a request to end ends the wait that a keep runs through within {} s: the worker ended {} ms after the request",
+        END_WITHIN.as_secs(),
+        took.as_millis()
     );
     assert!(
         took + Duration::from_secs(2) < left,
@@ -3174,6 +3284,102 @@ async fn b932_a_burst_whose_first_look_is_a_tool_calls_gets_its_keep_at_once() {
         vec![false, true],
         "after the burst one look runs its bundle step without a kept pack, the tool call's, and the next look reads the \
          kept pack; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(keeps_started(&run.dir), 1, "one keep for the head");
+    ends_as_asked(&mut run).await;
+}
+
+/// A tool call that ends while the slow look of a tool
+/// call runs does not cost that look its keep at once. A burst of commits ends while the copy task waits for its tick, so the
+/// first look after it is a tool call's; its bundle step is held, and a second tool call ends while it runs. The wake of that
+/// second tool call is there when the look ends, and the copy task takes it before it turns to the keep. The keep at once
+/// starts all the same, in the wait for the floor and the spacing that follows the taken wake: it stands on the first tool
+/// call's own line with its milliseconds and the bytes of the pack, the look that the second tool call asked for is the tool
+/// call's, and its bundle step reads the kept pack. After the burst exactly one look runs its bundle step without a kept
+/// pack. A copy task that notes the wait for a keep at once only after a look of the timer leaves that keep unstarted
+/// (`keep=0`); the rule of the second look follows no look of a tool call, so the look of the second tool call then runs its
+/// bundle step without a kept pack again, as in release 5.28.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_tool_call_that_ends_while_a_tool_calls_slow_look_runs_does_not_cost_its_keep() {
+    let mut run = Run::start_for_a_tool_calls_look("b932-tool-wake", Vec::new()).await;
+    let before = run.bundle_steps().len();
+    run.burst(1, 5);
+    run.hold_the_bundle();
+    let from = run.bundles().len();
+    run.write("a.txt", "first after the burst\n");
+    run.tool_call_ends().await;
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step after the tool call ended; log:\n{}",
+        run.log()
+    );
+    run.tool_call_ends().await;
+    assert_eq!(
+        run.bundles().len(),
+        from,
+        "TRIGGER PRESENT is not shown: the look of the first tool call had stored its copy when the second tool call ended; \
+         log:\n{}",
+        run.log()
+    );
+    println!(
+        "TRIGGER PRESENT: a second tool call ended while the bundle step of the first tool call's look was held: its wake is \
+         there when the look ends"
+    );
+    tokio::time::sleep(TOOL_SLOW).await;
+    run.let_the_bundle_go();
+    let first = run
+        .wait_copy(from, "a.txt", "first after the burst\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the tool call's look whose bundle step was held stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let second = run
+        .write_and_wait(
+            "a.txt",
+            "second, for the look the second tool call asked for\n",
+            LONG,
+        )
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look that the second tool call asked for stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line = run.line_when_stored(first).await;
+    let next = run.line_when_stored(second).await;
+    a_tool_calls_look_left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    assert_eq!(
+        field(&next, "by"),
+        Some("tool"),
+        "TRIGGER PRESENT is not shown: the look after the held one was not the second tool call's, so the copy task did not \
+         take its wake before it turned to the keep: {next}"
+    );
+    println!(
+        "TRIGGER PRESENT: the copy task took the second tool call's wake after the first tool call's slow look, on a head and \
+         packs that stood still: {line}\nthe look the second tool call asked for: {next}"
+    );
+    let steps = run.bundle_steps()[before..].to_vec();
+    println!(
+        "keeps started: {}; bundle steps after the burst (true: read a kept pack): {steps:?}",
+        keeps_started(&run.dir)
+    );
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "a keep follows the tool call's slow look at once, also when a second tool call's wake was taken first, and stands on \
+         the tool call's own line (keep= its milliseconds, kept= the bytes of the pack): {line}; the look the second tool \
+         call asked for: {next}"
+    );
+    assert_eq!(
+        steps,
+        vec![false, true],
+        "after the burst exactly one look runs its bundle step without a kept pack, the first tool call's, and the look of \
+         the second tool call reads the kept pack; lines:\n{}",
         run.look_lines().join("\n")
     );
     assert_eq!(keeps_started(&run.dir), 1, "one keep for the head");

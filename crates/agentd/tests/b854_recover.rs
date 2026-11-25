@@ -14,9 +14,10 @@ mod b854_support;
 mod common;
 mod direct_support;
 
+use agentd::direct::recover;
 use agentd::direct::snapshot::{GiveUp, Snapshotter};
 use b854_support::{
-    ATTEMPT, LATE_FILE, LATE_TEXT, OTHER_ATTEMPT, Stopped, machine_at, new_machine,
+    ATTEMPT, LATE_FILE, LATE_TEXT, OTHER_ATTEMPT, Stopped, machine_app, machine_at, new_machine,
     process_machine, recover_on, stopped_session,
 };
 use common::{git, python_calc, scratch};
@@ -968,5 +969,77 @@ async fn b854_a_git_that_does_not_return_ends_at_the_budget_and_no_git_is_left_b
         no_git_left(pid).await,
         "a git of the read still runs after the read ended: {}",
         held_children(pid)
+    );
+}
+
+/// The git calls and the file calls of the copy end at a give-up of their own. `handle` sets it to the end of the request's time, which
+/// is the limit of the whole read as well, so the two come at the same moment and either may be noticed first. Here the copy's give-up
+/// comes first by construction: it has come when the read starts, 30 s before the limit. The read's time ended, so the answer is
+/// `budget`, as it is when the limit is noticed first, and never that the tree could not be read. A machine whose give-up does not
+/// come reads the same storage whole, so nothing but the give-up ended the first read. A copy that fails while its give-up has not
+/// come (a file of the tree cannot be read) is `tree-unreadable` as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn b854_a_copy_its_own_give_up_ended_answers_budget_and_a_failed_one_tree_unreadable() {
+    let s = stopped_session().await;
+    let mut req = s.request(ATTEMPT);
+    req.budget_s = 30;
+    let limit = Duration::from_secs(u64::from(req.budget_s));
+    let copy_failed = "direct recover session 1: the copy: ";
+
+    // The give-up of the copy first.
+    let (app, log) = machine_app(&s, "give-up-first");
+    let come = GiveUp::at(Some(tokio::time::Instant::now()));
+    let asked = Instant::now();
+    let answer = recover::handle_until(&app, &req, &come).await;
+    let took = asked.elapsed();
+    let said = log.lines().join("\n");
+    assert!(
+        took < limit / 2 && said.contains(copy_failed),
+        "TRIGGER PRESENT: the copy's own give-up ended the copy, and the read answered long before its limit of {limit:?} was noticed: {took:?}; {answer:?}\n{said}"
+    );
+    assert_eq!(
+        (answer.recovered, answer.reason.as_deref()),
+        (false, Some("budget")),
+        "the read's time ended: {answer:?}\n{said}"
+    );
+    assert_eq!((answer.copy, answer.comparison), (None, None));
+    assert!(
+        s.d.aws.get(&s.key()).is_none() && s.d.aws.put_attempts(&s.key()) == 0,
+        "nothing is in the bucket, and nothing was sent"
+    );
+
+    // A copy that fails while its give-up has not come: a file of the tree cannot be read.
+    let closed = s.d.worktree().join("closed.txt");
+    std::fs::write(&closed, "nobody may read this\n").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (app, log) = machine_app(&s, "not-the-limit");
+    let later = GiveUp::at(Some(tokio::time::Instant::now() + Duration::from_secs(300)));
+    let asked = Instant::now();
+    let answer = recover::handle_until(&app, &req, &later).await;
+    let took = asked.elapsed();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::remove_file(&closed).unwrap();
+    let said = log.lines().join("\n");
+    assert!(
+        took < limit / 2 && said.contains(copy_failed),
+        "TRIGGER PRESENT: the copy failed, and neither its give-up nor the limit of the read had come: {took:?}; {answer:?}\n{said}"
+    );
+    assert_eq!(
+        (answer.recovered, answer.reason.as_deref()),
+        (false, Some("tree-unreadable")),
+        "{answer:?}\n{said}"
+    );
+    assert!(
+        s.d.aws.get(&s.key()).is_none() && s.d.aws.put_attempts(&s.key()) == 0,
+        "nothing is in the bucket, and nothing was sent"
+    );
+
+    // The same storage and a give-up that does not come: the copy is stored.
+    let (app, log) = machine_app(&s, "no-give-up");
+    let answer = recover::handle_until(&app, &req, &GiveUp::at(None)).await;
+    assert!(
+        answer.recovered && s.d.aws.get(&s.key()).is_some(),
+        "the storage can be read whole: {answer:?}\n{}",
+        log.lines().join("\n")
     );
 }

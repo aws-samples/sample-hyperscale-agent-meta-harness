@@ -98,7 +98,7 @@ class HelpWordsCase(SetupBase):
         text = self.help_text()
         start = text.index("--update build and deploy")
         about = text[start : text.index("--revision ID", start)]
-        for want in ("Active runs stop ./setup.sh --update with exit 7", "before anything is installed or built", "about 20 to 25 minutes", "about 21 to 27 minutes more"):
+        for want in ("Active runs stop ./setup.sh --update with exit 7", "before anything is installed or built", "An update takes about 30 minutes", "about 21 to 27 minutes more"):
             self.assertIn(want, about)
         self.assertNotIn("keeps the guard", about)
         self.assertNotIn("do not block", about)

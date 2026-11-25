@@ -41,6 +41,7 @@ RN_LOG_TS=0
 RN_LOG_SKIP=0
 RN_LOG_RESOLVED=0
 RN_LAST_PHASE=""
+RN_RUNNER_PHASE=""
 RN_STARTED_AT=0
 RN_LAST_SAID=0
 RN_ACTION=""
@@ -1549,10 +1550,27 @@ rn_stopped_following() {
   exit 6
 }
 
+# rn_note_phase <line of the build log>: the runner says `setup-runner: phase <name>` when one of its phases starts and `setup-runner: phase <name>: <how it ended>`
+# when it ends. RN_RUNNER_PHASE keeps the name of the phase that is working, for the waiting line; it is empty between two phases. No call is made for it: the
+# lines are the ones this run reads anyway.
+rn_note_phase() {
+  local name
+  case $1 in
+    "setup-runner: phase "*": "*) RN_RUNNER_PHASE="" ;;
+    "setup-runner: phase "*)
+      name=${1#setup-runner: phase }
+      case $name in
+        '' | *[!a-z-]*) ;;
+        *) RN_RUNNER_PHASE=$name ;;
+      esac ;;
+  esac
+}
+
 # rn_show_log <message>: one line of the build log goes to the log of this run; the marker lines of the runner (SETUP-, DEPLOY-) and
 # every line with --verbose go to the screen too.
 rn_show_log() {
   log_line "build: $1"
+  rn_note_phase "$1"
   case $1 in
     SETUP-*|DEPLOY-*) say "  $1" ;;
     *) [ "${VERBOSE:-0}" != 1 ] || say "  $1" ;;
@@ -1637,13 +1655,15 @@ EOF
   rn_logs
 }
 
-# rn_heartbeat <CodeBuild phase>: a line every two minutes in which nothing else was said, so a long compile does not look like a hang.
+# rn_heartbeat <CodeBuild phase>: a line every two minutes in which nothing else was said, so a long compile does not look like a hang. It names the runner's
+# phase that is working when the build log has said one (rn_note_phase), because CodeBuild's own phase is BUILD for almost the whole build.
 rn_heartbeat() {
-  local now
+  local now working=""
   now=$(setup_epoch)
   if [ $((now - RN_LAST_SAID)) -ge 120 ]; then
     RN_LAST_SAID=$now
-    say_log "  still running: CodeBuild phase $1, $(((now - RN_STARTED_AT) / 60)) minutes since you started following it"
+    [ -z "$RN_RUNNER_PHASE" ] || working=", the runner's phase $RN_RUNNER_PHASE"
+    say_log "  still running: CodeBuild phase $1$working, $(((now - RN_STARTED_AT) / 60)) minutes since you started following it"
   fi
 }
 
@@ -1659,6 +1679,7 @@ rn_follow() {
   RN_LOG_STREAM=$uuid
   RN_LOG_RESOLVED=0
   RN_LAST_PHASE=""
+  RN_RUNNER_PHASE=""
   RN_STARTED_AT=$(setup_epoch)
   RN_LAST_SAID=$RN_STARTED_AT
   trap rn_interrupted INT TERM

@@ -66,9 +66,28 @@ bin = ["cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild"]
 
 [[tool]]
 # 0.16.0 is the stable zig in the cargo-zigbuild CI matrix.
+# ziglang.org promises no speed or uptime and asks automated downloads to use its community mirrors, with itself as
+# the last source (https://ziglang.org/download/community-mirrors/). `mirrors` are further sources of the same archive:
+# for each install the installer draws their order at random, as that page asks, so that no one mirror carries every
+# build, tries at most two of them before `url` and checks every download against the sha256, so a mirror cannot
+# change what is installed. These are hosts of https://ziglang.org/download/community-mirrors.txt as read on
+# 2026-11-24; each delivered the archive with this sha256 from two networks on 2026-11-24. The list is checked
+# again whenever zig's pin changes: every mirror must deliver the pinned bytes through the installer's own Python
+# from two networks. No signature is read, because the pinned sha256 equals the one that ziglang.org's own index
+# publishes and is checked for every source. The list is not fetched at install time, because that would bring
+# back the one slow server. `source` names the requester, as the mirror list asks.
 name = "zig"
 version = "0.16.0"
 url = "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
+mirrors = [
+  "https://zig.squirl.dev/zig-x86_64-linux-0.16.0.tar.xz?source=hyperscale-agent-meta-harness",
+  "https://zigmirror.com/zig-x86_64-linux-0.16.0.tar.xz?source=hyperscale-agent-meta-harness",
+  "https://zig.vortan.dev/zig/zig-x86_64-linux-0.16.0.tar.xz?source=hyperscale-agent-meta-harness",
+  "https://zig.bcr.ist/zig-x86_64-linux-0.16.0.tar.xz?source=hyperscale-agent-meta-harness",
+]
+# The archive's size in bytes, which a tool with `mirrors` must name: a mirror that sends more is given up at once.
+# The key is read only for a tool whose `mirrors` names a source.
+size = 55478392
 sha256 = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 kind = "tar.xz"
 bin = ["zig-x86_64-linux-0.16.0/zig"]

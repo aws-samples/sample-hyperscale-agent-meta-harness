@@ -6,6 +6,13 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.31] - 2026-11-24
+
+### Fixed
+
+- A slow download of the zig toolchain no longer holds a setup or an update for minutes: the build takes it from another source of the same archive.
+- A read of a stopped session's storage that runs out of time is now always reported as not finished within its time limit. Before, `ham` sometimes said that the storage could not be read back whole.
+
 ## [5.30] - 2026-11-24
 
 ### Changed

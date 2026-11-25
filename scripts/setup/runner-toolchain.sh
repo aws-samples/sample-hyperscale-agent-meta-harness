@@ -15,7 +15,8 @@
 # pnpm and the CDK CLI are installed by scripts/node.sh itself, inside the container, against the integrity values of tools.lock.
 # RUNNER_TOOLCHAIN_ONLY=template (the build that prints the CDK bootstrap template, SETUP_ACTION=bootstrap-template of runner-build.sh) installs the pinned AWS CLI and
 # starts the Docker daemon, and nothing else: no Rust, no Go, no zig; env.sh then holds HAMH_TOOLS and PATH only and the last line is `TOOLCHAIN PASS awscli=<v>`.
-# Writes <tools folder>/env.sh (HAMH_TOOLS, RUSTUP_HOME, CARGO_HOME and PATH) for the caller to source. Prints TOOL and step lines, then the last line
+# Writes <tools folder>/env.sh (HAMH_TOOLS, RUSTUP_HOME, CARGO_HOME and PATH) for the caller to source. Prints TOOL lines as the installer writes them
+# (`TOOL GET <tool> <version>` at a download's start, `TOOL OK <tool> <version> <seconds>s from <host>` at its end) and step lines, then the last line
 #   TOOLCHAIN PASS rust=<v> zig=<v> cargo-zigbuild=<v> cargo-lambda=<v> go=<v> awscli=<v>      (exit 0)
 #   TOOLCHAIN FAIL <step> <detail>                                                    (exit 1)
 # A usage error exits 2. Python 3.11 or later is needed (HAMH_PYTHON, or the interpreter scripts/lib/python.sh picks).
@@ -51,11 +52,11 @@ toolver() { lock list --lock "$LOCK" | awk -v n="$1" '$1 == n { print $2 }'; }
 export TOOLS_LOCK_ROOTS="$TOOLS"
 tools_wanted=rustup-init,cargo-lambda,cargo-zigbuild,zig,awscli
 [ "$only" != template ] || tools_wanted=awscli
-if ! lock install --lock "$LOCK" --dest "$TOOLS" --only "$tools_wanted" >"$TOOLS/tools.log" 2>&1; then
-  cat "$TOOLS/tools.log"
+# The installer's lines go out as they come, with a copy in tools.log: a line when a tool's download starts, a line for a source that was given up, and the tool's
+# line with its seconds and its source. The build log that setup follows then holds a time for each tool, so a slow download shows while it lasts.
+if ! lock install --lock "$LOCK" --dest "$TOOLS" --only "$tools_wanted" 2>&1 | tee "$TOOLS/tools.log"; then
   tfail tools "$(grep -m1 '^TOOL FAIL' "$TOOLS/tools.log" || tail -n 1 "$TOOLS/tools.log" | cut -c1-300)"
 fi
-cat "$TOOLS/tools.log"
 
 # ---- awscli ----
 aws_v=$(toolver awscli)

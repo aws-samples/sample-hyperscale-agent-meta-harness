@@ -239,7 +239,9 @@ Owned by `crates/AGENTS.md`.
   copies, o opens" and carries the URL apart in `CmdOutput::bearer`, so no panel, log or history holds it. `rules edit` and the git
   prompts of `push` use the real terminal; the caller must have handed it over,
   and git's own lines go to the process's standard error, not to the captured text. Tests: `tests/router_cli.rs` (the typed line through `ham_core::router`, the
-  compiled binary and `run_captured` against the same stand-in, compared after masking the home directory and run ids).
+  compiled binary and `run_captured` against the same stand-in, compared after masking the home directory, run ids and the clock of a presigned link
+  (the second it was made in and the time it expires); the answer of a cancel is compared without the second in which the service recorded it, and
+  each side must name the record of its own run, once on standard output and never on standard error).
 - Shell constants live in `shell.rs` and `ws.rs`. The `ham shell` command is not part of the binary. The AgentCore command shell's constants remain. These are `SERVICE` `bedrock-agentcore` and `SUBPROTOCOL` `v1.command.agentcore.aws.dev`. The URL segment encoder also remains. The endpoint rule uses `https://bedrock-agentcore.<region>.amazonaws.com` or `HAMH_SHELL_ENDPOINT`. The latter allows https, or http to a loopback host. RFC 6455 framing with the channel bytes also remains. This includes `ws::encode`, `Decoder`, `shell_frame` and `shell_status`. The `ham-e2e` crate imports these parts. `Sec-WebSocket-Accept` is not checked. The workspace has no SHA-1. Tests are in `tests/ws.rs`.
 
 - Reads of the full-history view and the search: `Api::transcript_page(run, &TranscriptQuery)` asks one page of

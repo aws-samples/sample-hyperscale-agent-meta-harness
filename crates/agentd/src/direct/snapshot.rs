@@ -527,6 +527,12 @@ impl GiveUp {
         });
     }
 
+    /// Whether the time to give up has come; never while there is none.
+    pub fn has_come(&self) -> bool {
+        let at = *self.at.borrow();
+        at.is_some_and(|at| tokio::time::Instant::now() >= at)
+    }
+
     /// Returns when the time to give up has come; never while there is none.
     pub async fn reached(&self) {
         let mut seen = self.at.subscribe();
@@ -2680,9 +2686,10 @@ struct KeepState {
     due_at_once: bool,
     /// A keep at once was started and no keep has ended as kept since. While the mark
     /// stands, no keep at once follows any look ([`Snapshotter::keep_at_once_may_follow`]): a keep at once that was missed,
-    /// was cut or found nothing to pack is tried once and not again until a keep is kept. The keep after a second look of
-    /// the same head does not ask the mark, and when it ends as kept it clears it. So between two kept packs at most one
-    /// keep at once is not kept.
+    /// was cut or was refused for a short disk is tried once and not again until a keep is kept. The keep after a second
+    /// look of the same head does not ask the mark, and when it ends as kept it clears it. So between two kept packs at most
+    /// one keep at once is missed, cut or refused. Ruling 45 (c) of the lead: a keep that found nothing to pack leaves the
+    /// mark as it was before that keep; it read no loose object of the run, and costs two git calls.
     at_once_spent: bool,
     /// The look that starts next is one that a keep at once may follow: the timer or a tool call started it, and
     /// agentd was not asked to end before ([`Snapshotter::look_is_spaced`]); taken when the look starts.
@@ -3176,7 +3183,8 @@ impl Snapshotter {
 
     /// Whether a keep at once may follow the look that just stored its copy ([`Self::keep_at_once`]): the look left the
     /// timer, it read the engine's head and its packs when it started, it read no kept pack (ruling 37 (c) of the lead), no
-    /// keep at once has gone unkept since the last kept pack (ruling 43 (b), the mark `at_once_spent`), no keep is due by the
+    /// keep at once was missed, cut or refused since the last kept pack (rulings 43 (b) and 45 (c), the mark
+    /// `at_once_spent`; one that found nothing to pack does not count), no keep is due by the
     /// rule of the second look, and a keep is wanted for that head. No git call and no file call is made for the answer.
     ///
     /// A look that read the kept pack is followed by no keep at once, whatever made it slow: the rule adds one earlier keep
@@ -3221,9 +3229,10 @@ impl Snapshotter {
     /// The rule only adds an earlier keep. Nothing is read when the keep is already due by the rule of the second look, when
     /// the look was not announced as the timer's or a tool call's ([`Self::look_is_spaced`]), when it stayed on the timer, or when no keep
     /// is wanted for the head ([`Self::keep_at_once_may_follow`]). A keep at once that does not end as kept (missed, cut,
-    /// nothing to pack) leaves the head unmarked, so the keep after a second look of the same head follows as it always did,
-    /// once. It leaves the mark of ruling 43 (b) behind ([`Self::keep_commits`]): no keep at once follows any look until a
-    /// keep has ended as kept.
+    /// refused for a short disk, nothing to pack) leaves the head unmarked, so the keep after a second look of the same
+    /// head follows as it always did, once. One that was missed, was cut or was refused for a short disk leaves the mark
+    /// of ruling 43 (b) behind ([`Self::keep_commits`]): no keep at once follows any look until a keep has ended as kept.
+    /// One that found nothing to pack leaves the mark as it was (ruling 45 (c)).
     pub async fn keep_at_once(&mut self, give_up: &GiveUp) {
         let may = self.keep_at_once_may_follow();
         self.keep.left_timer = false;
@@ -3361,6 +3370,13 @@ impl Snapshotter {
     /// look, clears it. While it stands no keep at once follows any look ([`Self::keep_at_once_may_follow`]); the keep after
     /// a second look of the same head never asks it.
     ///
+    /// Ruling 45 (c) of the lead: a keep that found nothing to pack leaves the mark as it was before that keep. The mark
+    /// bounds the keeps at once that can read every loose object of the run before they fail; one that finds nothing has
+    /// read none and costs two git calls. So a keep at once in a store that the engine has packed does not take the keep
+    /// at once from a later burst that nothing packs
+    /// (`b932_a_burst_after_a_keep_at_once_that_found_nothing_to_pack_gets_its_keep_at_once`), and nothing to pack never
+    /// clears a mark that stands (`b932_a_keep_that_found_nothing_to_pack_leaves_a_mark_that_stands`).
+    ///
     /// Ruling 43 (e) of the lead: a keep whose first read of the engine's packs is refused because an earlier read has not
     /// returned ([`ScratchRepo::off_the_looks_flag`]) is no try. No git ran and the storage was not asked again, so both
     /// marks are set back to what they were: the head stays unmarked, and the keep after the next look of the timer that
@@ -3402,6 +3418,8 @@ impl Snapshotter {
             }
             Ok(None) => {
                 self.drop_kept();
+                // Ruling 45 (c) of the lead: nothing to pack leaves the mark as it was.
+                self.keep.at_once_spent = marks.1;
                 Keep::Nothing
             }
             Err(e) => {

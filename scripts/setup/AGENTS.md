@@ -170,6 +170,10 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
   other tagged parameters of the stage. The local receipt `~/.config/<config dir>/setup/<account>/<region>/<stage>.json`
   (mode 0600) caches identifiers and holds no credential; a fresh machine recovers from the lock alone. A per-run log sits beside it in a logs folder. Interrupting setup (Ctrl-C) or
   losing the connection (`HAMH_SETUP_POLL_RETRIES` failed looks in a row, 20 by default) exits 6 and never cancels the build. `HAMH_SETUP_POLL_SECONDS` (15) sets the pause between looks.
+- `rn_heartbeat` prints the waiting line every two minutes in which nothing else was said. It names the runner's phase that is working when the build log has said one:
+  `runner-build.sh` says `setup-runner: phase <name>` at a phase's start and `setup-runner: phase <name>: <how it ended>` at its end, `rn_show_log` hands every build log line to `rn_note_phase`,
+  and the line reads `still running: CodeBuild phase BUILD, the runner's phase <name>, <n> minutes since you started following it`. Between two phases it is the line without the phase. No call is
+  made for it. `scripts/tests/test_setup_b941_waiting_line.py` holds it, and the words of `runner-build.sh` that it reads.
 - `rn_report_failure` prints the failed build's phase, reason, build log location, and at most 15 log lines. `rn_failure_excerpt` selects the lines; `rn_failure_kind` names the excerpt kind.
   The excerpt normally shows the lines before the build's first `SETUP-FAIL` or `DEPLOY-FAIL` line, which contain the cause. If none of the last 15 lines looks like an error and one of the preceding
   45 does, the window starts at that line. CodeBuild's closing lines follow the failure line and are excluded. A build with no failure line or no output before it shows its last log lines.
@@ -491,7 +495,9 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
 - The runner role cannot write the Bedrock invocation-logging setting, so the `account-file` phase refuses an accounts file whose `invocationLogging` is `enable-and-restore`.
 - `runner-toolchain.sh <tools folder>` installs, with SHA-256 checks, the `tools.lock` tools the deploy builds with (rustup-init, cargo-lambda, cargo-zigbuild, zig and the pinned AWS CLI, put first on
   PATH), the Rust toolchain (a re-run installs the pinned toolchain, components and targets again, so an interrupted install is completed), the Go toolchain of `images/tools/lang/lang.lock` and a
-  running Docker daemon, and writes `<tools folder>/env.sh`. Last line `TOOLCHAIN PASS ...` or `TOOLCHAIN FAIL <step> <detail>`. With `RUNNER_TOOLCHAIN_ONLY=template` it installs the AWS CLI and
+  running Docker daemon, and writes `<tools folder>/env.sh`. It passes the installer's TOOL lines on as they come and keeps a copy in `<tools folder>/tools.log`, so the build log holds a time for
+  each tool: `TOOL GET <tool> <version>`, a `TOOL SOURCE ... given up` line for a source of `tools.lock` `mirrors` that was left, `TOOL OK <tool> <version> <seconds>s from <host>`.
+  Last line `TOOLCHAIN PASS ...` or `TOOLCHAIN FAIL <step> <detail>`. With `RUNNER_TOOLCHAIN_ONLY=template` it installs the AWS CLI and
   starts the daemon and nothing else (last line `TOOLCHAIN PASS awscli=<v>`).
 - Every AWS CLI call of the scripts that run with the runner role's credentials is listed in `infra/setup-runner-policy.json` with the IAM actions it needs;
   `scripts/tests/test_setup_runner_policy.py` scans the scripts and fails on a call the file lacks. A new call is added there first. `scripts/teardown.sh` and `scripts/lib/teardown.py` are not in that

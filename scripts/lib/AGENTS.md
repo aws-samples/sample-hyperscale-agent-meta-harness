@@ -40,8 +40,13 @@ Owned by `scripts/AGENTS.md`, which documents each wrapper's user-facing contrac
   `node.sh` uses it for `HAMH_ACCOUNTS_FILE`. A script that determines whether a path containing `..` or a link is inside or outside a directory calls it and never matches the path text.
   `<checkout>/../work/accounts.json` begins with the checkout's path and lies outside it. `../tests/test_path_canon.py` checks it against `os.path.realpath` and the paths of a failed runner build.
 - `tools_lock.py`: `tools.lock` reader and installer (`install`, `check`, `gate-tools`, `get <table.key>`,
-  `list`); `load()` raises `LockError`. `gate-tools` builds the gate tool set from the
+  `list`); `load()` raises `LockError` and reads an entry's `size` only where its `mirrors` names a source. `gate-tools` builds the gate tool set from the
   `[gate_tools]` table (contract in `scripts/AGENTS.md`). `dest_roots` lists the directories a destination may be in: the working directory and `TMPDIR`, or `TOOLS_LOCK_ROOTS` alone when it is set. Requires Python 3.11+ (`tomllib`).
+  `download` takes a tool's archive from its sources, at most `SOURCE_TRIES` (2) of the `mirrors` of its entry and then its `url`: `draw_sources` draws the mirrors' order at random for each install
+  (`install(..., draw=)` is the parameter by which the tests fix the order), `fetch_within` runs a mirror's download in a daemon thread, leaves it at `limit_s` seconds with the reason `not complete after <limit> s` (any download failure when the limit is over gets the same reason, including the download's own socket timeout of the same length)
+  (`SOURCE_LIMIT_S`, 60; `install(..., limit_s=)` is the parameter the tests shorten) and at once when it sends more than the entry's `size` bytes, and `download` removes the file of a mirror it gave up
+  before it asks the next source. No environment variable changes the limit, the number of tries or the draw. `one_line()` makes the reason of a mirror that was given up one line of at most
+  `REASON_MOST` (300) characters of printable ASCII (every other character becomes a blank). `fetch()` is the last source's download as it always was. `say()` prints a TOOL line flushed.
 - `gomod_store.py`: implementation of `scripts/gomod-store.sh`: the pure parts (Go path escaping, semver order, pseudo-versions, `latest`, `merge_list`, the module-list reader and the refusals), `GoTool` (the fetch environment and the lock step's environment), the
   consumer resolve, the harvest and checksum-database check, the staged tree, the offline check, and `Aws`/`Bucket` (the aws CLI, assumed-role credentials in the child environment only, create-only and compare-and-swap puts). Python 3.8+, standard library only.
 - `engine_source.py`, `engine_fetch.py`, `engine_recipes.py`: implementation of `scripts/engine-fetch` (contract and exit codes in `scripts/AGENTS.md`; the source files in `engine/sources/AGENTS.md`).

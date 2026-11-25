@@ -428,7 +428,7 @@ class UpdateCase(StateBase):
         p = self.run_full("--update", "--profile", "work", "--region", "us-east-1", "--dry-run")
         self.assertEqual(p.returncode, 0, self.out(p))
         plan = " ".join(p.stdout.split())
-        self.assertIn("duration: about 20 to 25 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt", plan)
+        self.assertIn("duration: about 30 minutes with a reused Cline binary, plus about 21 to 27 minutes when the binary must be rebuilt", plan)
         self.assertIn("guard: Active runs stop ./setup.sh --update with exit 7 before anything is installed or built.", plan)
         self.assertIn("The build also refuses worker runtime changes while runs are active.", plan)
         self.assertNotIn("Active runs do not block", plan)

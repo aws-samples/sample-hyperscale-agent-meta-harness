@@ -2821,15 +2821,28 @@ async fn b932_a_keep_at_once_that_was_dropped_after_its_questions_is_no_mark_for
     assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
 }
 
+/// How the keep at once of [`a_keep_at_once_that_was_not_kept_is_not_tried_again`] ends other than as kept.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NotKept {
+    /// The storage fails the keep's read of the engine's packs.
+    Missed,
+    /// That read is held, and what starts the next look drops the keep while it packs.
+    Cut,
+    /// The disk of the private repository is short of the keep's rule: the keep is refused before any git runs.
+    ShortDisk,
+}
+
 /// A keep at once that did not end as kept is tried once and not again until a keep is
-/// kept. A look of the timer leaves the timer on a new head, and the keep at once that follows it is missed (`cut` false: the
-/// storage fails its read of the engine's packs) or is dropped while it packs (`cut` true: that read is held, and what
-/// starts the next look drops the keep). The head moves, and the next look leaves the timer on the new head and reads no
+/// kept. A look of the timer leaves the timer on a new head, and the keep at once that follows it is missed
+/// ([`NotKept::Missed`]: the storage fails its read of the engine's packs), is dropped while it packs ([`NotKept::Cut`]:
+/// that read is held, and what starts the next look drops the keep) or is refused for a short disk
+/// ([`NotKept::ShortDisk`], ruling 45 (b): the disk of the private repository has no room for a pack, and no git runs).
+/// The head moves, and the next look leaves the timer on the new head and reads no
 /// kept pack: no keep at once may follow it. Before the mark, every such look started one more `pack-objects` over every
 /// unpacked object of the run. The rule of the second look does not ask the mark: the second look of that head is followed
 /// by its keep. That keep is kept, which clears the mark: once the engine's packs have changed and the head has moved, a look
 /// that leaves the timer is followed by a keep at once again.
-async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, cut: bool) {
+async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, how: NotKept) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let l = lab(label);
@@ -2850,7 +2863,7 @@ async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, cut: b
         "TRIGGER PRESENT is not shown: the questions of the keep at once did not make the keep due"
     );
 
-    if cut {
+    if how == NotKept::Cut {
         // The keep at once is dropped while it packs: its read of the engine's packs is held until the test lets it go.
         let answers = Arc::new(AtomicBool::new(false));
         let asked = Arc::new(AtomicUsize::new(0));
@@ -2898,6 +2911,17 @@ async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, cut: b
         answers.store(true, Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(300)).await;
         println!("TRIGGER PRESENT: a keep at once was dropped while it packed");
+    } else if how == NotKept::ShortDisk {
+        // The disk of the private repository has no room for a pack: the keep's rule refuses the keep at once before
+        // any git runs. The disk is read again afterwards.
+        copies.set_keep_free_bytes(Some(0));
+        let missed = copies.keep_commits(&limit()).await;
+        assert!(
+            matches!(&missed, Keep::Missed(why) if why.contains("bytes free")),
+            "TRIGGER PRESENT is not shown: the keep at once was not refused for a short disk: {missed:?}"
+        );
+        copies.set_keep_free_bytes(None);
+        println!("TRIGGER PRESENT: a keep at once was refused for a short disk: {missed:?}");
     } else {
         copies.set_engine_packs_reader(Arc::new(|_: &Path| -> Result<String, String> {
             Err("the storage of the test does not answer".to_string())
@@ -2962,14 +2986,213 @@ async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, cut: b
 /// ([`a_keep_at_once_that_was_not_kept_is_not_tried_again`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn b932_a_keep_at_once_that_was_missed_is_not_tried_again_until_a_keep_is_kept() {
-    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-missed", false).await;
+    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-missed", NotKept::Missed).await;
 }
 
 /// A keep at once that was dropped while it packed is not tried again until a keep is kept
 /// ([`a_keep_at_once_that_was_not_kept_is_not_tried_again`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn b932_a_keep_at_once_that_was_cut_is_not_tried_again_until_a_keep_is_kept() {
-    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-cut", true).await;
+    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-cut", NotKept::Cut).await;
+}
+
+/// A keep at once that the keep's rule refused for a short disk is not tried again until a
+/// keep is kept ([`a_keep_at_once_that_was_not_kept_is_not_tried_again`]). No git ran for it; the mark is set all the same,
+/// before the question of the disk, so that a disk that stays short costs a run one such question and not one after every
+/// look that left the timer on a new head.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_refused_for_a_short_disk_is_not_tried_again_until_a_keep_is_kept() {
+    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-short-disk", NotKept::ShortDisk)
+        .await;
+}
+
+/// A keep after a second look of the same head that was
+/// missed sets no mark. The mark belongs to the keep at once; the keep of release 5.28 never sets it, whatever its end. A
+/// look of the timer finds a new head and stays on the timer, the second look of that head is followed by its keep, and the
+/// storage fails that keep's read of the engine's packs. The head moves, and the next look leaves the timer on the new head
+/// and reads no kept pack: a keep at once follows it and is kept. A keep after a second look that set the mark would take
+/// the keep at once from the first burst after any such miss.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_after_a_second_look_that_was_missed_sets_no_mark() {
+    use std::sync::Arc;
+    let l = lab("b932-second-missed-no-mark");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // The first look of the head stays on the timer: no keep at once. The second look of that head is followed by the keep
+    // of release 5.28, which the storage fails.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: no keep is due after the second look of the same head"
+    );
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| -> Result<String, String> {
+        Err("the storage of the test does not answer".to_string())
+    }));
+    let missed = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(missed, Keep::Missed(_)),
+        "TRIGGER PRESENT is not shown: the keep after the second look was not missed: {missed:?}"
+    );
+    println!("TRIGGER PRESENT: a keep after a second look of the same head was missed: {missed:?}");
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| Ok("the packs of the test".to_string())));
+
+    // The head moves. The next look of the timer leaves the timer on the new head and reads no kept pack.
+    engine_commits(&l.repo, 10, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "a keep after a second look that was missed sets no mark: a keep at once may follow the next look that left the \
+         timer on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    let kept = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(kept, Keep::Kept { .. }),
+        "the keep at once after a keep of the second look that was missed: {kept:?}"
+    );
+}
+
+/// A keep at once that found nothing to pack does not set the mark of ruling 43 (b); it
+/// leaves the mark as it was. The mark bounds the keeps at once that can read every loose object of the run before they
+/// fail: one that was missed, was cut or was refused for a short disk sets it
+/// (`b932_a_keep_at_once_that_was_missed_is_not_tried_again_until_a_keep_is_kept`,
+/// `b932_a_keep_at_once_that_was_cut_is_not_tried_again_until_a_keep_is_kept`,
+/// `b932_a_keep_at_once_refused_for_a_short_disk_is_not_tried_again_until_a_keep_is_kept`). One that finds nothing
+/// costs two git calls. Here the engine has packed its store; a look of the timer leaves the timer on a new head, and the
+/// keep at once that follows it finds nothing to pack. Then the engine commits five times and nothing packs those commits:
+/// the next look leaves the timer on the new head and reads no kept pack, and a keep at once follows it and is kept. Before,
+/// the keep that found nothing to pack set the mark, and the burst this rule exists for got no keep at once.
+///
+/// Ruling 46 (a) of the lead: that keep at once never marked its head either. Before the burst, the second look of the same
+/// head is followed by the keep of release 5.28, once: the keep is due, and in the packed store it finds nothing to pack
+/// too. A keep at once that marked its head when it found nothing to pack would take the keep after the second look away.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_found_nothing_to_pack_sets_no_mark() {
+    let l = lab("b932-nothing-no-mark");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+
+    // A look of the timer finds a new head and leaves the timer; the keep at once that follows it finds nothing to pack.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    let nothing = copies.keep_commits(&limit()).await;
+    assert_eq!(
+        nothing,
+        Keep::Nothing,
+        "TRIGGER PRESENT is not shown: the keep at once did not find nothing to pack"
+    );
+    println!(
+        "TRIGGER PRESENT: a keep at once found nothing to pack: the engine had packed its store"
+    );
+
+    // Ruling 46 (a) of the lead: that keep at once never marked the head. The second look of the same head is followed by
+    // the keep of release 5.28, once; the engine's store is still packed, so that keep finds nothing to pack too.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    assert!(
+        copies.keep_is_due(),
+        "a keep at once that found nothing to pack marks no head: the keep after the second look of that head is due"
+    );
+    let second = copies.keep_commits(&limit()).await;
+    assert_eq!(
+        second,
+        Keep::Nothing,
+        "the keep after the second look of a head whose keep at once found nothing to pack"
+    );
+
+    // A burst that nothing packs. The next look of the timer leaves the timer on the new head and reads no kept pack.
+    engine_commits(&l.repo, 10, 5);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "a keep at once that found nothing to pack sets no mark: a keep at once may follow the first look after a burst \
+         that nothing packed"
+    );
+    copies.keep_at_once(&limit()).await;
+    let kept = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(kept, Keep::Kept { .. }),
+        "the keep at once after the burst: {kept:?}"
+    );
+}
+
+/// Nothing to pack never clears a mark that stands. A
+/// keep at once is missed, which sets the mark. The engine packs its store, and the second look of that head is followed by
+/// the keep of release 5.28, which finds nothing to pack. Only a keep that ends as kept clears the mark (ruling 43 (b)): the
+/// head moves, the next look leaves the timer on the new head and reads no kept pack, and no keep at once may follow it. A
+/// keep that cleared the mark whenever it found nothing to pack would let a keep at once that fails follow each time the
+/// engine packs its store.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_that_found_nothing_to_pack_leaves_a_mark_that_stands() {
+    use std::sync::Arc;
+    let l = lab("b932-nothing-leaves-the-mark");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // A look of the timer finds a new head and leaves the timer; the keep at once that follows it is missed: the mark.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| -> Result<String, String> {
+        Err("the storage of the test does not answer".to_string())
+    }));
+    let missed = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(missed, Keep::Missed(_)),
+        "TRIGGER PRESENT is not shown: the keep at once was not missed: {missed:?}"
+    );
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| Ok("the packs of the test".to_string())));
+
+    // The engine packs its store. The second look of that head is followed by its keep, which finds nothing to pack.
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: no keep is due after the second look of the same head"
+    );
+    let nothing = copies.keep_commits(&limit()).await;
+    assert_eq!(
+        nothing,
+        Keep::Nothing,
+        "TRIGGER PRESENT is not shown: the keep after the second look did not find nothing to pack"
+    );
+    println!(
+        "TRIGGER PRESENT: a keep at once was missed, and the keep after the second look of that head found nothing to pack"
+    );
+
+    // The head moves. The next look of the timer leaves the timer on the new head and reads no kept pack: the mark stands.
+    engine_commits(&l.repo, 10, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        !copies.keep_at_once_may_follow(),
+        "a keep that found nothing to pack leaves the mark as it was: after a keep at once that was missed, no keep at once \
+         may follow a look until a keep has ended as kept"
+    );
+    copies.keep_at_once(&limit()).await;
+    assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
 }
 
 /// A keep whose first read of the engine's packs is

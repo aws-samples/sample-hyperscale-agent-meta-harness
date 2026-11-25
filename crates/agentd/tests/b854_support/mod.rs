@@ -3,7 +3,8 @@
 //!
 //! Session 1 of a run works in one agentd (the old machine) and ends; a file is then written and closed in its work tree, after the
 //! last stored copy ([`stopped_session`]). A second agentd with a disk of its own and the same storage root is the new machine the
-//! platform starts for the stopped session's id: in the test's process ([`new_machine`], [`machine_at`]) or as a real
+//! platform starts for the stopped session's id: in the test's process ([`new_machine`], [`machine_at`]; [`machine_app`] without a
+//! server, for a test that calls the read itself) or as a real
 //! `agentd serve` process whose search path a test can lead with a stand-in program ([`process_machine`]).
 #![allow(dead_code, clippy::unwrap_used)]
 
@@ -152,6 +153,18 @@ pub async fn machine_for(s: &Stopped, label: &str, storage: &Path, marker_owner:
         data,
         runtime,
     }
+}
+
+/// A new machine that sees the stopped session's storage, without a server: the application and its log, for a test that calls the
+/// read itself (`recover::handle_until`).
+pub fn machine_app(s: &Stopped, label: &str) -> (Arc<App>, Arc<MemoryLog>) {
+    let mut cfg = s.d.app.cfg.clone();
+    cfg.workspace_root = s.storage();
+    cfg.data_root = s.d.dir.join(format!("var-lib-{label}"));
+    cfg.runtime_dir = s.d.dir.join(format!("run-{label}"));
+    cfg.direct.marker_owner = storage_owner(s);
+    let log = MemoryLog::new();
+    (App::new(cfg, log.clone()), log)
 }
 
 pub async fn machine_at(s: &Stopped, label: &str, storage: &Path) -> Machine {
