@@ -2517,6 +2517,13 @@ struct Copies {
     /// The log line of a look whose keep has not ended; it is written with what came of the keep
     /// ([`Copies::keep_between_looks`]).
     keep_line: Arc<Mutex<Option<KeepLine>>>,
+    /// A keep has the private repository and has not ended: it is in flight ([`Copies::keep_between_looks`]).
+    keep_in_flight: Arc<std::sync::atomic::AtomicBool>,
+    /// The line of the look that stored its copy last waits for a keep at once
+    /// (`Snapshotter::keep_at_once_may_follow`): that keep starts also in the wait that follows a taken wake of a tool call
+    /// ([`start_snapshots`]). Every look that stores a copy sets it with its line ([`Copies::stored_line`]), so it says what
+    /// the line that waits is for; without such a line no keep starts, whatever it says.
+    keep_at_once_waits: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Writes `marker` as the marker of `run`: through the watch of the session's storage when the session has one
@@ -2592,6 +2599,10 @@ struct LookBound {
     by: LookBy,
     /// What the look did so far, for that line ([`LookNote`]).
     note: Arc<Mutex<LookNote>>,
+    /// For a look that the timer or a tool call started (ruling 43 (d) of the lead), the rule of the looks and when
+    /// this look started, as the copy clock will count it ([`Self::leaves_the_timer`]); `None` for every other look: the
+    /// look that a request to end asks for, and a look that tries the copy of a stop again.
+    spaced: Option<(Cadence, std::time::Instant)>,
 }
 
 impl LookBound {
@@ -2609,7 +2620,24 @@ impl LookBound {
             git_ended_at: Arc::default(),
             by: LookBy::Timer,
             note: Arc::default(),
+            spaced: None,
         }
+    }
+
+    /// Whether this look is one a keep at once may follow, as far as the copy task knows: the timer or a tool call
+    /// started it and agentd was not asked to end before now.
+    fn is_spaced(&self) -> bool {
+        self.spaced.is_some() && !self.was_asked_to_end()
+    }
+
+    /// Whether the spacing holds the look after this one past its tick, when the git work of this look ended at
+    /// `git_ended` (`Cadence::holds_past_tick`); `false` for a look that is neither the timer's nor a tool call's
+    /// ([`Self::is_spaced`]). The tick is the timer's next one: every look arms the timer again when it starts.
+    fn leaves_the_timer(&self, git_ended: std::time::Instant) -> bool {
+        !self.was_asked_to_end()
+            && self
+                .spaced
+                .is_some_and(|(cadence, started)| cadence.holds_past_tick(started, git_ended))
     }
 
     /// Changes what the worker's log line of this look will say.
@@ -2774,17 +2802,28 @@ impl KeepLine {
 }
 
 /// The line of a look whose keep is in flight. It is written when the keep ends ([`Self::done`]); when the keep is dropped
-/// first (the next look is due, a tool call ended, agentd was asked to end, the copy task is over), it is written here, and says
+/// first (the next look started, agentd was asked to end, the copy task is over), it is written here, and says
 /// that the keep was ended, or that none started.
 struct KeepEnding {
     log: Arc<dyn crate::logging::LogSink>,
     line: Option<KeepLine>,
     /// The keep has the private repository and may have started its git.
     started: bool,
+    /// Set while the keep has the private repository and has not ended (`Copies::keep_in_flight`).
+    in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl KeepEnding {
+    /// The keep has the private repository.
+    fn starts(&mut self) {
+        self.started = true;
+        self.in_flight
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn done(&mut self, keep: &str, kept: u64) {
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(line) = self.line.take() {
             self.log.line(&line.text(keep, kept));
         }
@@ -2793,6 +2832,8 @@ impl KeepEnding {
 
 impl Drop for KeepEnding {
     fn drop(&mut self) {
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(line) = self.line.take() {
             self.log
                 .line(&line.text(if self.started { "ended" } else { "0" }, line.kept));
@@ -3281,6 +3322,8 @@ impl Copies {
             marker_failing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             storage,
             keep_line: Arc::default(),
+            keep_in_flight: Arc::default(),
+            keep_at_once_waits: Arc::default(),
         })
     }
 
@@ -3501,6 +3544,8 @@ impl Copies {
         };
         // A keep that was in flight was cut by what started this look (`Snapshotter::keep_cut`).
         snapshotter.keep_cut(bound.by == LookBy::Timer && !bound.was_asked_to_end());
+        // Only a look of the timer or of a tool call reads what a keep at once asks about.
+        snapshotter.look_is_spaced(bound.is_spaced());
         bound.note(|n| n.step = "git");
         // What the spacing counts of a look that fails starts here: a look that never got this far ran no git.
         bound.git_starts();
@@ -3549,6 +3594,10 @@ impl Copies {
         bound.note(|n| n.store = git_ended.elapsed());
         let e = match stored {
             Some(Ok(Ok(()))) => {
+                // The copy is stored. A look of the timer or of a tool call whose git work puts the next look past
+                // its tick has left the timer; the keep that may follow it at once asks its questions in the wait that
+                // follows, never here.
+                snapshotter.look_left_the_timer(bound.leaves_the_timer(git_ended));
                 self.stored_line(bound, &snapshotter);
                 return Looked::Stored {
                     bytes: made.bundle_bytes,
@@ -3629,12 +3678,20 @@ impl Copies {
         Stop { n, at }
     }
 
-    /// The worker's log line of a look that stored its copy. When a keep follows the look (the timer started the look,
-    /// agentd was not asked to end while it ran, and the keep is due, `Snapshotter::keep_is_due`), the line waits for what comes of
-    /// the keep ([`Self::keep_between_looks`]); else it is written now.
+    /// The worker's log line of a look that stored its copy. When a keep follows the look, the line waits for what
+    /// comes of the keep ([`Self::keep_between_looks`]); else it is written now. A keep follows a look that the timer started,
+    /// while agentd was not asked to end, when the keep is due by the rule of the second look (`Snapshotter::keep_is_due`).
+    /// A keep at once follows a look that the timer or a tool call started (ruling 43 (d) of the lead), while agentd
+    /// was not asked to end, when it may (`Snapshotter::keep_at_once_may_follow`). The rule of the second look follows no
+    /// look of a tool call, as before.
     fn stored_line(&self, bound: &LookBound, snapshotter: &Snapshotter) {
         let line = bound.line(true);
-        if bound.by == LookBy::Timer && !bound.was_asked_to_end() && snapshotter.keep_is_due() {
+        let by_timer = bound.by == LookBy::Timer && !bound.was_asked_to_end();
+        // Whether the line waits for a keep at once, which starts also after a taken wake.
+        let at_once = bound.is_spaced() && snapshotter.keep_at_once_may_follow();
+        self.keep_at_once_waits
+            .store(at_once, std::sync::atomic::Ordering::SeqCst);
+        if (by_timer && snapshotter.keep_is_due()) || at_once {
             *self.keep_line.lock().unwrap_or_else(|p| p.into_inner()) = Some(line);
         } else {
             self.log.line(&line.text("0", line.kept));
@@ -3657,10 +3714,17 @@ impl Copies {
     /// ([`start_snapshots`]). It never ends that wait. When the look before it asked for a keep, the keep runs here, after that
     /// look has stored its copy and after the task has counted the look: nothing of a keep is part of a look, of its limits, of
     /// its late notice or of the spacing of the looks. The tick of the timer, a tool call's wake and a request to end are arms of
-    /// the same wait, as in release 5.25: the one that comes drops this future, which ends the keep's git with its group and
-    /// removes what it wrote, and the look it starts takes the private repository at once. The task yields once before the keep
-    /// takes the repository, so an event that is already there (a wake that came during the look) is taken first and no git of a
-    /// keep is started. The copy of the end begins after the copy task was aborted, which drops a keep in flight the same way.
+    /// the same wait, as in release 5.25, and the task takes each of them when it comes. What ends a keep is the start of
+    /// the next look. The task drops this future when that look starts, after it has waited out the floor and the spacing with
+    /// the keep still running; the drop ends the keep's git with its group and removes what it wrote, and the look takes the
+    /// private repository at once. A request to end starts its look at once, so it ends a keep at once. The task yields once
+    /// before the keep takes the repository, so a tool call's wake that is already there (it came during the look) is taken
+    /// first. After a taken wake the task goes on with this future only for a keep that is in flight
+    /// ([`Self::keep_is_in_flight`]) and for a keep at once ([`Self::keep_at_once_is_waiting`], ruling 37 (b) of the lead),
+    /// which then starts in the wait for the floor and the spacing: a keep by the rule of the second look that is not in
+    /// flight when a wake is taken is not started, as before. The look that the wake asked for starts when it would start
+    /// without a keep, and its start ends the keep.
+    /// The copy of the end begins after the copy task was aborted, which drops a keep in flight the same way.
     ///
     /// What came of the keep goes into the look's log line; why a keep was missed is logged once, in a line of its own.
     async fn keep_between_looks(&self) -> std::convert::Infallible {
@@ -3674,12 +3738,17 @@ impl Copies {
                 log: self.log.clone(),
                 line: Some(line),
                 started: false,
+                in_flight: self.keep_in_flight.clone(),
             };
             tokio::task::yield_now().await;
             let mut snapshotter = self.snapshotter.lock().await;
-            ending.started = true;
             let began = std::time::Instant::now();
             let give_up = GiveUp::at(Some(Instant::now() + crate::direct::snapshot::KEEP_LIMIT));
+            // The two questions of a keep at once (the engine's head and its packs, once more) are asked here, after
+            // the copy of the look is stored and the look is counted. They end with this future, and until they are answered
+            // no keep has started: a look that starts then finds none in flight.
+            snapshotter.keep_at_once(&give_up).await;
+            ending.starts();
             let keep = snapshotter.keep_commits(&give_up).await;
             let took = began.elapsed().as_millis().max(1).to_string();
             let word = match &keep {
@@ -3697,6 +3766,19 @@ impl Copies {
             ending.done(word, snapshotter.kept_bytes());
         }
         std::future::pending().await
+    }
+
+    /// Whether a keep has the private repository and has not ended.
+    fn keep_is_in_flight(&self) -> bool {
+        self.keep_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether the line of the look that stored its copy last waits, or waited, for a keep
+    /// at once. While that line waits, its keep has not ended: it has not started, it asks its questions, or it runs.
+    fn keep_at_once_is_waiting(&self) -> bool {
+        self.keep_at_once_waits
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// What the copy that a request to end asked for came to: logged, and when no copy could be saved the run is told
@@ -4001,8 +4083,14 @@ async fn watched_look(
 ///
 /// Between two looks the task keeps the run's commits, when the look before it asks for that
 /// ([`Copies::keep_between_looks`]). The keep is one more arm of the wait for the next look and never ends that wait: the tick of
-/// the timer, a tool call's wake and a request to end are taken as before, and each of them drops the keep, which ends its git. A
-/// keep never stands between a look and its copy, and a look counts nothing of it.
+/// the timer, a tool call's wake and a request to end are taken as before. The start of the next look ends the keep, not
+/// the tick and not a wake: the keep runs on while the task waits out the floor and the spacing, and the look starts when it
+/// would start without a keep. A keep never stands between a look and its copy, and a look counts nothing of it.
+///
+/// A keep follows a look of the timer that stored its copy and found the head of the look before, and it follows a look
+/// of the timer or of a tool call at once when the spacing holds the next look past its tick while the engine's head and packs
+/// stood still during the look (`Snapshotter::keep_at_once`). After a burst of commits that nothing packed, one look pays for
+/// the loose objects, not two, whichever of the two starts the first look after the burst.
 fn start_snapshots(
     app: &App,
     req: &DirectInvocationRequest,
@@ -4042,26 +4130,53 @@ fn start_snapshots(
                     None => std::future::pending().await,
                 }
             };
-            let mut why = tokio::select! {
-                () = tick => Why::Timer,
-                () = wake.notified(), if cadence.wakes_now(&clock, trying_again) => Why::ToolCall,
-                n = ending.asked() => Why::Ending(n),
-                // The keep of the run's commits runs while the task waits. It never ends the wait: what does drops it.
-                never = copies.keep_between_looks() => match never {},
-            };
-            // A look that a request to end asked for has no floor and no spacing, and neither has a look that tries its copy again: only
-            // the retry tick and a request to end start one then, no tool call (`Cadence::wakes_now`).
-            if !matches!(why, Why::Ending(_)) && !trying_again {
-                let wait = cadence.delay(
-                    &clock,
-                    matches!(why, Why::ToolCall),
-                    std::time::Instant::now(),
-                );
-                if !wait.is_zero() {
-                    tokio::select! {
-                        () = tokio::time::sleep(wait) => {}
-                        n = ending.asked() => why = Why::Ending(n),
+            // The keep of the run's commits runs while the task waits for its next look. It never ends that wait,
+            // and what ends it is the start of the look: the future lives through the wait for what starts a look and through
+            // the floor and the spacing that follow, and it is dropped where this block ends.
+            let (mut why, wait) = {
+                let keep = copies.keep_between_looks();
+                tokio::pin!(keep);
+                let mut why = tokio::select! {
+                    () = tick => Why::Timer,
+                    () = wake.notified(), if cadence.wakes_now(&clock, trying_again) => Why::ToolCall,
+                    n = ending.asked() => Why::Ending(n),
+                    never = &mut keep => match never {},
+                };
+                // A look that a request to end asked for has no floor and no spacing, and neither has a look that tries its copy
+                // again: only the retry tick and a request to end start one then, no tool call (`Cadence::wakes_now`).
+                let mut wait = Duration::ZERO;
+                if !matches!(why, Why::Ending(_)) && !trying_again {
+                    wait = cadence.delay(
+                        &clock,
+                        matches!(why, Why::ToolCall),
+                        std::time::Instant::now(),
+                    );
+                    // The tick does not end a keep, and neither does a tool call's wake: the keep runs on while the task
+                    // waits out the floor and the spacing, and a keep that is due after a look that outlasted its tick starts
+                    // here. So does a keep at once after a taken wake (ruling 37 (b) of the lead): a tool call that ended
+                    // while the slow look ran leaves its wake behind, and the keep that follows that look is not lost to it.
+                    // A keep by the rule of the second look that is not in flight when a tool call's wake is taken is not
+                    // started, as before: the wait below is then the task's alone. Either way the look starts when this
+                    // wait is over, as it would without a keep, and its start ends the keep.
+                    if !wait.is_zero()
+                        && (matches!(why, Why::Timer)
+                            || copies.keep_is_in_flight()
+                            || copies.keep_at_once_is_waiting())
+                    {
+                        tokio::select! {
+                            () = tokio::time::sleep(wait) => {}
+                            n = ending.asked() => why = Why::Ending(n),
+                            never = &mut keep => match never {},
+                        }
+                        wait = Duration::ZERO;
                     }
+                }
+                (why, wait)
+            };
+            if !wait.is_zero() {
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {}
+                    n = ending.asked() => why = Why::Ending(n),
                 }
             }
             let mut started = std::time::Instant::now();
@@ -4076,6 +4191,10 @@ fn start_snapshots(
                 Why::Timer if trying_again => LookBy::Retry,
                 Why::Timer | Why::Ending(_) => LookBy::Timer,
             };
+            if matches!(why, Why::Timer | Why::ToolCall) && !trying_again {
+                // A look of the timer or of a tool call knows the rule that places the look after it.
+                bound.spaced = Some((cadence, started));
+            }
             let late = LateLimit::made(copies.limits.late, last_took);
             let mut stop = match why {
                 Why::Ending(n) => Some(copies.stop_asked(n, &bound)),

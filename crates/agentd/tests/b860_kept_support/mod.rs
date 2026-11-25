@@ -192,7 +192,10 @@ pub fn fetched_into_the_base(l: &Lab, name: &str, copy: &Path) -> PathBuf {
 /// - `add-hold`: an `add` writes its process id into `add-running` and waits for as long as `add-hold` is there: the git work of
 ///   a look takes as long as a test holds it;
 /// - `check-hold`: an `index-pack` (git's check of a kept pack when a worker starts) writes its process id into `check-running`
-///   and waits for as long as `check-hold` is there: a check that does not end.
+///   and waits for as long as `check-hold` is there: a check that does not end;
+/// - `bundle-hold`: a `bundle` (the bundle step of a look) writes its process id into `bundle-running` and waits for as
+///   long as `bundle-hold` is there, before git writes the bundle: the engine's head and the engine's store have been read by
+///   then, so a test can change them while the look runs, and the git work of the look takes as long as the test holds it.
 ///
 /// For every `git init` of a private repository of the copies, the first thing a worker that starts writes into it, the stand-in
 /// writes one line into `dir/init-seen.log` before it does anything else: what the folder of the kept pack held then
@@ -239,6 +242,10 @@ case "$GIT_DIR" in
       if [ "$a" = index-pack ] && [ -e '{dir}/check-hold' ]; then
         echo $$ > '{dir}/check-running'
         while [ -e '{dir}/check-hold' ]; do sleep 0.05; done
+      fi
+      if [ "$a" = bundle ] && [ -e '{dir}/bundle-hold' ]; then
+        echo $$ > '{dir}/bundle-running'
+        while [ -e '{dir}/bundle-hold' ]; do sleep 0.05; done
       fi
     done ;;
 esac

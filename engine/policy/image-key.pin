@@ -1,4 +1,4 @@
 # Worker image key pin. The image-key check compares it with the key
 # computed from the committed tree. A commit that changes the key on purpose also runs
 # `scripts/image-key-guard.sh --update`. Never edit by hand.
-247c1fd081fe35dbc63a2b2e37d8e554c497878b59f7427def7608a0dd5d2a18
+c85a4c4493f16cad73a9ec9cfe40843d3c6f393e657827221fe0f99153811509

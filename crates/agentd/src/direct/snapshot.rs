@@ -570,6 +570,11 @@ pub const COPY_FLOOR: Duration = Duration::from_secs(15);
 /// After a look whose git work took D the next one starts no sooner than this many times D after that work ended, so that the
 /// looks take a tenth of the session's time at the most ([`Cadence::delay`] has the formula and its numbers). The uploads are not counted
 /// ([`CopyClock::looked`]); a look that failed counts with the time its git work took ([`CopyClock::failed`]).
+///
+/// A look of the timer or of a tool call whose git work makes this spacing hold the next look past its tick has left
+/// the timer ([`Cadence::holds_past_tick`]). The spacing itself is unchanged: the looks after such a look come when it says. A keep of the
+/// run's commits may follow that look at once ([`Snapshotter::keep_at_once`]), and a keep in flight runs on through the wait for
+/// this spacing, until the next look starts.
 pub const COPY_SPACING: u32 = 9;
 /// A timer that a test set (`AGENTD_DIRECT_SNAPSHOT_EVERY_MS`) caps the spacing at this many of its own periods
 /// ([`Cadence::with_space_max`]), as every timer did while the default timer was one minute, so that the whole-turn tests keep their
@@ -728,6 +733,20 @@ impl Cadence {
         let spaced = ended + space;
         let floored = if wake { started + self.floor } else { started };
         spaced.max(floored).saturating_duration_since(now)
+    }
+
+    /// Whether the spacing holds the look after a look of the timer or of a tool call past its tick: the look started at
+    /// `started`, its git work ended at `git_ended`, and at the tick, one period of the timer after `started` (every look arms
+    /// the timer again when it starts), [`Cadence::delay`] still asks for a
+    /// wait. No number of its own: the timer and the spacing decide. At the default timer of 15 s it is a look whose git work
+    /// took more than 1.5 s, whatever made it slow. `false` when the copies are off.
+    pub fn holds_past_tick(&self, started: Instant, git_ended: Instant) -> bool {
+        let Some(every) = self.period(false) else {
+            return false;
+        };
+        let mut clock = CopyClock::default();
+        clock.looked(started, git_ended, None);
+        !self.delay(&clock, false, started + every).is_zero()
     }
 }
 
@@ -962,6 +981,9 @@ pub struct ScratchRepo {
     packs_reader: PacksQuestion,
     /// A read of the engine's packs has not returned ([`Self::engine_packs`]); the thread that makes the read clears it.
     packs_busy: Arc<AtomicBool>,
+    /// Answers whether `.git` of the engine's repository is the repository's own directory: [`git_dir_is_own`], or what a
+    /// test set ([`Snapshotter::set_git_dir_reader`]).
+    git_dir_reader: GitDirQuestion,
 }
 
 impl ScratchRepo {
@@ -1056,6 +1078,7 @@ impl ScratchRepo {
             disk_low: AtomicBool::new(false),
             packs_reader: PacksQuestion(Arc::new(engine_packs_of)),
             packs_busy: Arc::new(AtomicBool::new(false)),
+            git_dir_reader: GitDirQuestion(Arc::new(git_dir_is_own)),
         })
     }
 
@@ -1873,23 +1896,28 @@ impl Snapshotter {
     /// The engine's `HEAD`, while `.git` is the repository's own directory ([`git_dir_problem`]) and this repository can read that commit.
     /// `None` when the engine removed or replaced `.git`: agentd then runs no git in the engine's repository.
     async fn engine_head(&self) -> Option<String> {
-        let repo = self.repo.clone();
+        let (repo, is_own) = (self.repo.clone(), self.scratch.git_dir_reader.0.clone());
         let own = self
             .scratch
-            .on_tree("its git directory", move || {
-                git_dir_problem(&repo).is_none()
-            })
+            .on_tree("its git directory", move || is_own(&repo))
             .await
             .ok()?;
         if !own {
             return None;
         }
-        let head = self
-            .scratch
+        let head = self.engine_head_id().await?;
+        self.scratch.has_commit(&head).await.then_some(head)
+    }
+
+    /// What the engine's `HEAD` names: one `git rev-parse` in the engine's repository and no file call of agentd. The caller has
+    /// asked whether `.git` is the repository's own directory: a look under the flag of its file calls ([`Self::engine_head`]),
+    /// the keep at once under the flag of the packs' read ([`ScratchRepo::engine_packs_if_own`]). Whether this repository can
+    /// read that commit is not asked.
+    async fn engine_head_id(&self) -> Option<String> {
+        self.scratch
             .git(&self.repo, &["rev-parse", "HEAD"], &[])
             .await
-            .ok()?;
-        self.scratch.has_commit(&head).await.then_some(head)
+            .ok()
     }
 
     /// The commit of copy `n` and its tree: `tree` on `parent` when this repository can read `parent`. Else
@@ -2445,8 +2473,11 @@ impl Snapshotter {
         let at = Instant::now();
         // Root invariant 9 over the keep comes first, before anything is written into the private repository.
         self.keep_gives_way();
+        // What the engine's packs are when a look of the timer starts, for the keep that may follow it at once.
+        let packs_read = self.note_look_packs().await;
         self.tidy_if_due().await;
-        self.steps.tidy = at.elapsed();
+        self.steps.tidy = at.elapsed().saturating_sub(packs_read);
+        self.steps.head = packs_read;
         let made = self.snapshot_kept().await;
         if !matches!(made, Ok(None)) {
             self.tidy_due = true;
@@ -2457,6 +2488,7 @@ impl Snapshotter {
     async fn snapshot_kept(&mut self) -> Result<Option<SnapshotMade>, String> {
         let read_unix = now_unix();
         self.keep.rest_head = None;
+        self.keep.due_at_once = false;
         let at = Instant::now();
         let tree = self.current_tree().await?;
         self.steps.tree = at.elapsed();
@@ -2466,7 +2498,10 @@ impl Snapshotter {
         let gd: &Path = &self.git_dir;
         let at = Instant::now();
         let head = self.engine_head().await;
-        self.steps.head = at.elapsed();
+        self.steps.head += at.elapsed();
+        if self.keep.look_packs.is_some() {
+            self.keep.look_head.clone_from(&head);
+        }
         let parent = head
             .clone()
             .or_else(|| self.last_parent.clone())
@@ -2487,6 +2522,8 @@ impl Snapshotter {
         self.keep_check(head.as_deref()).await;
         let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
         self.steps.bundle = at.elapsed();
+        // A look that read the kept pack is followed by no keep at once.
+        self.keep.look_read_kept = self.keep.use_kept;
         self.steps.engine = self.keep.note_head(head.as_deref(), bundle_bytes);
         self.last_tree = tree;
         if head.is_some() {
@@ -2529,7 +2566,10 @@ impl Snapshotter {
 //   can; a bundle that took the kept pack's whole objects instead would be many times the copy of release 5.25. Which of two
 //   packs git reads first differs between git versions (by the files' times in one, by the order of the object folders in
 //   another), so nothing here rests on it.
-// - The keep runs between two looks, never inside one, and whatever starts the next look ends it (`direct::start_snapshots`).
+// - The keep runs between two looks, never inside one, and the start of the next look ends it.
+// - A keep follows the second look in a row that found the same head, and it follows a look at once when that look left
+//   the timer while the engine's head and packs stood still ([`Snapshotter::keep_at_once`]): after a burst of commits that
+//   nothing packed, one look reads the loose objects, not two.
 
 /// The folder of the private repository of the copies that holds the kept pack, an object folder of its own.
 const KEPT_DIR: &str = "kept";
@@ -2540,6 +2580,10 @@ const KEPT_LINE: &str = "agentd kept ";
 const KEPT_PACKS_LINE: &str = "engine packs ";
 /// The most packs of the engine's store whose names are read ([`ScratchRepo::engine_packs`]); a store with more keeps no pack.
 const ENGINE_PACKS_MAX: usize = 4_096;
+/// What a read of the engine's packs answers while an earlier read has not returned ([`ScratchRepo::off_the_looks_flag`]).
+/// A keep that gets this answer to its first read has tried nothing ([`Snapshotter::keep_commits`]).
+const PACKS_READ_OUTSTANDING: &str =
+    "snapshot: an earlier read of the engine's packs has not returned; they were not read";
 /// The longest the git of one keep may run before it is given up; whatever starts the next look ends it sooner. It is the
 /// least the git work of a look has ([`COPY_GIT_FLOOR`]).
 pub const KEEP_LIMIT: Duration = COPY_GIT_FLOOR;
@@ -2626,9 +2670,35 @@ struct KeepState {
     off: bool,
     /// The engine's head as the last look that read it found it.
     seen_head: Option<String>,
-    /// The engine's head when the look that just made a copy found the head the look before it had found. Two looks that find the
-    /// same head do not show that the engine is at rest: the keep reads the commit it was given, and a read that fails is a miss.
+    /// The engine's head when a keep is due after the look that just made a copy: that look found the head the look before it
+    /// had found, or it is a look of the timer or of a tool call that left the timer and during which neither the
+    /// engine's head nor its packs changed ([`Snapshotter::keep_at_once`]). Neither shows that the engine is at rest: the keep
+    /// reads the commit it was given, and a read that fails is a miss.
     rest_head: Option<String>,
+    /// The keep that is due is a keep at once ([`Snapshotter::keep_at_once`]), not the keep after a second look of the
+    /// same head. It marks the head as tried only when it ends as kept.
+    due_at_once: bool,
+    /// A keep at once was started and no keep has ended as kept since. While the mark
+    /// stands, no keep at once follows any look ([`Snapshotter::keep_at_once_may_follow`]): a keep at once that was missed,
+    /// was cut or found nothing to pack is tried once and not again until a keep is kept. The keep after a second look of
+    /// the same head does not ask the mark, and when it ends as kept it clears it. So between two kept packs at most one
+    /// keep at once is not kept.
+    at_once_spent: bool,
+    /// The look that starts next is one that a keep at once may follow: the timer or a tool call started it, and
+    /// agentd was not asked to end before ([`Snapshotter::look_is_spaced`]); taken when the look starts.
+    spaced_look: bool,
+    /// The look that just stored its copy left the timer: the spacing holds the look after it past its tick
+    /// ([`Snapshotter::look_left_the_timer`]).
+    left_timer: bool,
+    /// What the engine's packs were when the look in progress started, read for a look of the timer or of a tool call
+    /// while a keep is possible at all; unset for every other look and when the folder could not be read.
+    look_packs: Option<String>,
+    /// The engine's head as the look in progress read it, while [`Self::look_packs`] is set.
+    look_head: Option<String>,
+    /// The look that just made a copy read the kept pack at its bundle step. No keep at
+    /// once follows such a look ([`Snapshotter::keep_at_once_may_follow`]): once a pack is kept, the looks keep the rule of
+    /// the second look.
+    look_read_kept: bool,
     /// The pack that is kept.
     kept: Option<KeptPack>,
     /// The head a keep was last tried for: this worker does not try it again until the head has moved. The mark is in
@@ -2740,6 +2810,25 @@ impl std::fmt::Debug for PacksQuestion {
     }
 }
 
+/// Whether `<repo>/.git` is the repository's own plain directory ([`git_dir_problem`] finds nothing): file calls on the work
+/// tree's file system.
+fn git_dir_is_own(repo: &Path) -> bool {
+    git_dir_problem(repo).is_none()
+}
+
+/// What answers whether `.git` of an engine's repository is the repository's own directory, given the repository
+/// ([`git_dir_is_own`]; a test gives a storage that answers slowly, [`Snapshotter::set_git_dir_reader`]).
+pub type GitDirReader = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
+/// A [`GitDirReader`] as a member of [`ScratchRepo`].
+struct GitDirQuestion(GitDirReader);
+
+impl std::fmt::Debug for GitDirQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GitDirQuestion")
+    }
+}
+
 /// What a worker finds when it opens the private repository at `git_dir` that an earlier worker left (ruling 12 of the
 /// lead's rulings on the build brief). Everything in the folder a keep writes into is removed: a keep that was cut before its marker
 /// stood left it. Of the packs whose marker carries the worker's own line, the one with the newest marker that has its pack and its
@@ -2806,22 +2895,52 @@ impl ScratchRepo {
     /// What the engine's store holds as packs now ([`engine_packs_of`]): one read of a folder on the work tree's file
     /// system, made off the runtime's threads and given up with the keep or the look in progress, like the file calls of a look
     /// ([`Self::on_tree`]). A keep makes it before and after it packs, and a look makes it once while a pack is kept
-    /// ([`Snapshotter::keep_check`]). It has a flag of its own. A keep is dropped when the next look is due, and its read may not
+    /// ([`Snapshotter::keep_check`]). A look of the timer or of a tool call makes it once when it starts, and the keep at once makes it once
+    /// more, with its question about the engine's `.git` in the same call ([`Self::engine_packs_if_own`]). It has a flag of its
+    /// own. A keep is dropped when the next look starts, and its read may not
     /// have returned then: under the flag of the look's file calls that look would be refused its own first call and fail, and
     /// the copy of a stop would be lost to a keep. So one read of the packs is outstanding at most, a second one is refused at
     /// once, and a look whose read is refused reads no kept pack. No file call of a look waits for it or is refused because of it.
     async fn engine_packs(&self) -> Result<String, String> {
-        if self.packs_busy.swap(true, Ordering::SeqCst) {
-            return Err(
-                "snapshot: an earlier read of the engine's packs has not returned; they were not read"
-                    .to_string(),
-            );
-        }
-        let busy = self.packs_busy.clone();
         let dir = self.repo.join(".git/objects/pack");
         let read = self.packs_reader.0.clone();
+        self.off_the_looks_flag(move || read(&dir)).await
+    }
+
+    /// [`Self::engine_packs`] for the keep at once, which also asks whether the engine's `.git` is still the repository's
+    /// own directory: both are answered by one call off the runtime's threads, under the flag of the packs' read. `None` when
+    /// `.git` is not the repository's own directory: no git is then run in the engine's repository, and the packs are not read.
+    ///
+    /// The keep at once makes no call under the flag of a look's file calls ([`Self::on_tree`]). Its future is dropped when the
+    /// next look starts, and a call of it that has not returned then would refuse that look its first file call: the look that
+    /// a request to end asks for would fail, and the work written before the request would be in no stored copy.
+    async fn engine_packs_if_own(&self) -> Result<Option<String>, String> {
+        let (repo, dir) = (self.repo.clone(), self.repo.join(".git/objects/pack"));
+        let (is_own, read) = (self.git_dir_reader.0.clone(), self.packs_reader.0.clone());
+        self.off_the_looks_flag(move || {
+            if is_own(&repo) {
+                read(&dir).map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+    }
+
+    /// Runs `call`, file calls of a keep or of a look's question about the engine's packs, on a thread of its own
+    /// under the flag of the packs' read, never under the flag of a look's file calls ([`Self::on_tree`]). It is given up with
+    /// the keep or the look in progress. One such call is outstanding at most: while it has not returned, the next one is
+    /// refused at once.
+    async fn off_the_looks_flag<T: Send + 'static>(
+        &self,
+        call: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        if self.packs_busy.swap(true, Ordering::SeqCst) {
+            return Err(PACKS_READ_OUTSTANDING.to_string());
+        }
+        let busy = self.packs_busy.clone();
         let made = tokio::task::spawn_blocking(move || {
-            let out = read(&dir);
+            let out = call();
             busy.store(false, Ordering::SeqCst);
             out
         });
@@ -2857,6 +2976,11 @@ impl Snapshotter {
     /// Another reader of the engine's packs than [`engine_packs_of`]; tests.
     pub fn set_engine_packs_reader(&mut self, reader: PacksReader) {
         self.scratch.packs_reader = PacksQuestion(reader);
+    }
+
+    /// Another answer to whether the engine's `.git` is the repository's own directory than [`git_dir_is_own`]; tests.
+    pub fn set_git_dir_reader(&mut self, reader: GitDirReader) {
+        self.scratch.git_dir_reader = GitDirQuestion(reader);
     }
 
     /// The bytes of the kept pack; 0 without one.
@@ -2993,9 +3117,10 @@ impl Snapshotter {
     }
 
     /// Whether a keep would start after the look that just made a copy ([`Self::keep_commits`]): that look found the head the
-    /// look before it had found, that head is no commit the run started from (an engine that made no commit has nothing above the
-    /// base), the copies are above a floor, the keep is on (the switch, and no check of a kept pack was given up in this run),
-    /// and no keep was tried for that head. No git call and no file call is made for the answer.
+    /// look before it had found, or a keep at once is due after it ([`Self::keep_at_once`]); that head is no commit the
+    /// run started from (an engine that made no commit has nothing above the base), the copies are above a floor, the keep is on
+    /// (the switch, and no check of a kept pack was given up in this run), and no keep was tried for that head. No git call and
+    /// no file call is made for the answer.
     pub fn keep_is_due(&self) -> bool {
         self.keep
             .rest_head
@@ -3003,18 +3128,132 @@ impl Snapshotter {
             .is_some_and(|head| self.keep_wanted(head))
     }
 
-    fn keep_wanted(&self, head: &str) -> bool {
+    /// Whether this repository keeps a pack at all: the keep is on, and the copies are above a floor.
+    fn keep_possible(&self) -> bool {
         !self.keep.off
             && !self.keep.run_off
             && self.form == BundleForm::AboveFloor
             && !self.floors.is_empty()
+    }
+
+    fn keep_wanted(&self, head: &str) -> bool {
+        self.keep_possible()
             && !self.floors.iter().any(|floor| floor == head)
             && self.keep.tried.as_deref() != Some(head)
+    }
+
+    /// The look that starts next is one that the spacing places (`yes`): the timer or a tool call started it, and
+    /// agentd was not asked to end before. These are the looks a keep at once may follow (ruling 43 (d) of the lead: also the
+    /// look after a tool call; when a burst of commits ends while the copy task waits for its tick, the first look after it
+    /// is the tool call's). The copy task says so before each of its looks; a look that nobody announced is none, and
+    /// neither is the look that a request to end asks for or a look that tries the copy of a stop again.
+    pub fn look_is_spaced(&mut self, yes: bool) {
+        self.keep.spaced_look = yes;
+    }
+
+    /// When the look that starts is a look of the timer or of a tool call ([`Self::look_is_spaced`]) and this
+    /// repository keeps a pack at all, what the engine's packs are now ([`ScratchRepo::engine_packs`], one read of a folder
+    /// on the session's storage): the keep at once asks whether they changed while the look ran ([`Self::keep_at_once`]).
+    /// The answer is the time the read took, which is part of the look's git work; every other look makes no read.
+    async fn note_look_packs(&mut self) -> Duration {
+        self.keep.look_head = None;
+        self.keep.look_packs = None;
+        self.keep.left_timer = false;
+        self.keep.look_read_kept = false;
+        if !std::mem::take(&mut self.keep.spaced_look) || !self.keep_possible() {
+            return Duration::ZERO;
+        }
+        let at = Instant::now();
+        self.keep.look_packs = self.scratch.engine_packs().await.ok();
+        at.elapsed()
+    }
+
+    /// The copy task says whether the look that just stored its copy left the timer: the timer or a tool call started
+    /// it, agentd was not asked to end, and the spacing holds the look after it past its tick ([`Cadence::holds_past_tick`]).
+    pub fn look_left_the_timer(&mut self, left: bool) {
+        self.keep.left_timer = left;
+    }
+
+    /// Whether a keep at once may follow the look that just stored its copy ([`Self::keep_at_once`]): the look left the
+    /// timer, it read the engine's head and its packs when it started, it read no kept pack (ruling 37 (c) of the lead), no
+    /// keep at once has gone unkept since the last kept pack (ruling 43 (b), the mark `at_once_spent`), no keep is due by the
+    /// rule of the second look, and a keep is wanted for that head. No git call and no file call is made for the answer.
+    ///
+    /// A look that read the kept pack is followed by no keep at once, whatever made it slow: the rule adds one earlier keep
+    /// for a burst of commits that no pack holds, and never a keep after every look of the timer. While commits keep coming
+    /// under a kept pack, each such keep would pack every unpacked object of the run again
+    /// (`b932_steady_commits_get_one_keep_for_their_first_burst`); a second burst under a kept pack keeps the rule of the
+    /// second look (`b932_a_second_burst_after_a_kept_pack_keeps_the_rule_of_the_second_look`).
+    ///
+    /// The mark bounds what a keep at once that fails can cost. While commits keep coming and no pack gets kept, each look
+    /// that left the timer on a new head would start one more `pack-objects` over every unpacked object of the run. One is
+    /// tried, and none again until a keep has ended as kept
+    /// (`b932_steady_commits_whose_keeps_at_once_fail_get_one_keep_at_once`).
+    pub fn keep_at_once_may_follow(&self) -> bool {
+        self.keep.left_timer
+            && !self.keep.look_read_kept
+            && !self.keep.at_once_spent
+            && self.keep.rest_head.is_none()
+            && self.keep.look_packs.is_some()
+            && self
+                .keep
+                .look_head
+                .as_deref()
+                .is_some_and(|head| self.keep_wanted(head))
+    }
+
+    /// Rule B of the lead's ruling 32: the keep at once. A look of the timer or of a tool call (ruling 43 (d)) that
+    /// left the timer ([`Self::look_left_the_timer`]) is followed by looks that the spacing holds back, and until a pack is kept every one of
+    /// them reads each loose object of the run's commits again. The copy task calls this in the wait that follows such a look,
+    /// right before [`Self::keep_commits`]: after the copy of the look is stored and the look is counted, never between a copy
+    /// and its store, and it ends with the keep's future. A keep is then due at once when the engine's `.git` is still the
+    /// repository's own directory and its packs, read once more now, are those the look found when it started (git's own `gc`
+    /// in flight changes them), and the engine's head, read once more now (one `git rev-parse`), is the head the look read at
+    /// its start. That shows that no commit landed and nothing was packed while the look ran; it does not show that the engine
+    /// is at rest, and the keep does not need it ([`Self::keep_commits`]).
+    ///
+    /// Ruling 37 (a) of the lead: none of these questions is a call under the flag of a look's file calls
+    /// ([`ScratchRepo::on_tree`]). What `.git` is and what the packs are is one call under the flag of the packs' read
+    /// ([`ScratchRepo::engine_packs_if_own`]), and the head is a git call that ends with this future. So a question that has not
+    /// returned when the next look starts, also the look that a request to end asks for, refuses that look no file call
+    /// (`b932_a_question_of_the_keep_at_once_that_has_not_returned_fails_no_look`).
+    ///
+    /// The rule only adds an earlier keep. Nothing is read when the keep is already due by the rule of the second look, when
+    /// the look was not announced as the timer's or a tool call's ([`Self::look_is_spaced`]), when it stayed on the timer, or when no keep
+    /// is wanted for the head ([`Self::keep_at_once_may_follow`]). A keep at once that does not end as kept (missed, cut,
+    /// nothing to pack) leaves the head unmarked, so the keep after a second look of the same head follows as it always did,
+    /// once. It leaves the mark of ruling 43 (b) behind ([`Self::keep_commits`]): no keep at once follows any look until a
+    /// keep has ended as kept.
+    pub async fn keep_at_once(&mut self, give_up: &GiveUp) {
+        let may = self.keep_at_once_may_follow();
+        self.keep.left_timer = false;
+        let (Some(head), Some(packs)) = (self.keep.look_head.take(), self.keep.look_packs.take())
+        else {
+            return;
+        };
+        if !may {
+            return;
+        }
+        self.scratch.give_up = Some(give_up.clone());
+        // Ruling 37 (a) of the lead: no question of the keep at once is asked under the flag of a look's file calls. What the
+        // engine's `.git` is and what its packs are is one call under the flag of the packs' read; the head is one git call,
+        // which ends with this future.
+        let still = matches!(
+            self.scratch.engine_packs_if_own().await,
+            Ok(Some(now)) if now == packs
+        ) && self.engine_head_id().await.as_deref() == Some(head.as_str());
+        self.scratch.give_up = None;
+        if still {
+            self.keep.rest_head = Some(head);
+            self.keep.due_at_once = true;
+        }
     }
 
     /// A keep that was in flight was cut before the look that starts now. When the timer started that look (`by_timer`),
     /// the keep is not tried again until the head has moved: a keep that does not fit between two looks of the timer is not paid
     /// for at every look. When a tool call or a request to end cut it, it is tried again at the next look that qualifies.
+    /// A keep at once that was cut never marked the head ([`Self::keep_commits`]), so nothing is cleared for it and the
+    /// keep after a second look of the same head follows.
     pub fn keep_cut(&mut self, by_timer: bool) {
         if let Some(head) = self.keep.keeping.take()
             && !by_timer
@@ -3095,12 +3334,15 @@ impl Snapshotter {
     }
 
     /// The keep of the run's commits (decisions 1 to 4 of the build brief, rulings 8 to 13 of the lead). The caller calls it
-    /// after a look that the timer started has stored its copy, never before the store and never inside a look, and drops it when
-    /// the next look is due, a tool call wakes the copy task or agentd is asked to end: the git of a dropped keep is ended with its
+    /// after a look that the timer started has stored its
+    /// copy, never before the store and never inside a look, and drops it when
+    /// the next look starts, which a request to end brings at
+    /// once: the git of a dropped keep is ended with its
     /// group and what it wrote is removed ([`Incoming`]).
     ///
-    /// A keep is due when that look found the head the look before it had found ([`Self::keep_is_due`]). It reads the commit ids it
-    /// was given, the head that look read and the floors, never a ref that can move. One `git pack-objects --revs --unpacked
+    /// A keep is due when that look found the head the look before it had found, or at once after a look that left the
+    /// timer while the engine's head and packs stood still ([`Self::keep_is_due`], [`Self::keep_at_once`]). It reads the commit
+    /// ids it was given, the head that look read and the floors, never a ref that can move. One `git pack-objects --revs --unpacked
     /// --incremental --non-empty` writes the objects of the run's commits that are in no pack into `kept/incoming/`; the marker
     /// (`agentd kept <head>`, and what the engine's packs were) is written beside it; then the marker, the pack, its reverse index
     /// and last its index are renamed into `kept/pack/`, where git sees a pack by its index; then the pack kept before is removed.
@@ -3110,15 +3352,36 @@ impl Snapshotter {
     ///
     /// A keep is tried once for a head: a short disk, a git that failed (an object the engine pruned under it, a
     /// disk that filled in the middle of the write), an engine that repacked while the pack was written, and nothing to pack are
-    /// all the one try, and none of them changes a copy. [`Keep::Missed`] says why, for the caller's log.
+    /// all the one try, and none of them changes a copy. [`Keep::Missed`] says why, for the caller's log. A keep at once
+    /// ([`Self::keep_at_once`]) is not that one try unless it ends as kept: after one that was missed, was cut or found nothing
+    /// to pack, the keep after a second look of the same head is still tried, once.
+    ///
+    /// Ruling 43 (b) of the lead: a keep at once that starts here sets the mark `at_once_spent`, before its first call, so
+    /// that one whose future is dropped in the middle leaves it too. A keep that ends as kept, at once or after a second
+    /// look, clears it. While it stands no keep at once follows any look ([`Self::keep_at_once_may_follow`]); the keep after
+    /// a second look of the same head never asks it.
+    ///
+    /// Ruling 43 (e) of the lead: a keep whose first read of the engine's packs is refused because an earlier read has not
+    /// returned ([`ScratchRepo::off_the_looks_flag`]) is no try. No git ran and the storage was not asked again, so both
+    /// marks are set back to what they were: the head stays unmarked, and the keep after the next look of the timer that
+    /// finds that head is tried. Before, a read that one slow call left outstanding spent the head's one try, and a head
+    /// that rested got no pack in that worker
+    /// (`b932_a_keep_whose_first_read_of_the_packs_is_refused_is_no_try`).
     pub async fn keep_commits(&mut self, give_up: &GiveUp) -> Keep {
+        let at_once = std::mem::take(&mut self.keep.due_at_once);
         let Some(head) = self.keep.rest_head.take() else {
             return Keep::NotDue;
         };
         if !self.keep_wanted(&head) {
             return Keep::NotDue;
         }
-        self.keep.tried = Some(head.clone());
+        // Ruling 43 (e): what the marks were, for a keep that turns out to have tried nothing.
+        let marks = (self.keep.tried.clone(), self.keep.at_once_spent);
+        if at_once {
+            self.keep.at_once_spent = true;
+        } else {
+            self.keep.tried = Some(head.clone());
+        }
         if let Some((free, need)) = self.keep_short_disk(self.keep.last_bundle_bytes) {
             return Keep::Missed(format!(
                 "the disk of the private repository has {free} bytes free; a pack is kept only above {need}"
@@ -3133,13 +3396,22 @@ impl Snapshotter {
             Ok(Some(kept)) => {
                 let bytes = kept.bytes;
                 self.keep.kept = Some(kept);
+                self.keep.tried = Some(head);
+                self.keep.at_once_spent = false;
                 Keep::Kept { bytes }
             }
             Ok(None) => {
                 self.drop_kept();
                 Keep::Nothing
             }
-            Err(e) => Keep::Missed(e),
+            Err(e) => {
+                if e == PACKS_READ_OUTSTANDING {
+                    // The keep's first read of the engine's packs was refused: a read after it cannot be, because one read
+                    // is outstanding at most and the first one had returned. Nothing was tried.
+                    (self.keep.tried, self.keep.at_once_spent) = marks;
+                }
+                Keep::Missed(e)
+            }
         }
     }
 

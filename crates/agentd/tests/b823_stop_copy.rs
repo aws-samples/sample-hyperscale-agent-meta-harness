@@ -90,7 +90,10 @@ use agentd::direct::snapshot::{
     cut_unix, late_after, store_limit,
 };
 use agentd::server::{Ending, ends_after_the_copy};
-use direct_support::{Direct, Opts, RUN, checkout_of_copy, first_process_possible};
+use direct_support::{
+    Direct, Opts, RUN, checkout_of_copy, checkout_of_copy_bytes, first_process_possible,
+};
+use harness_protocol::bundle_header::bundle_head;
 use harness_protocol::direct::s3 as keys;
 use harness_protocol::envelope::EventType;
 use harness_protocol::runtime::TurnOutcome;
@@ -186,6 +189,63 @@ impl CopyWatch {
         clone_of_snapshot(d, &format!("copy-{}", self.clones))
             .join(name)
             .is_file()
+    }
+}
+
+/// A checkout of the copy that the record `record` names, in a folder named `name`: the version of the snapshot bundle in the
+/// bucket whose head is the record's commit (the bucket keeps every version). `None` when the bucket has no such version.
+fn clone_of_record(d: &Direct, record: &serde_json::Value, name: &str) -> Option<PathBuf> {
+    let head = record["headSha"].as_str()?;
+    let (_, copy) = d
+        .aws
+        .versions_of(&keys::snapshot_bundle_key(RUN))
+        .into_iter()
+        .find(|(_, copy)| {
+            bundle_head(&copy[..copy.len().min(65_536)]).is_ok_and(|at| at == head)
+        })?;
+    Some(checkout_of_copy_bytes(&d.aws, &d.dir, &copy, name))
+}
+
+/// When the records of a run's copies came into the bucket, read by a wait that checks no copy out. A wait that checks a copy out
+/// at every new record ([`CopyWatch::new_copy_holds`]) looks at its limit only between two checkouts, and a moment taken behind
+/// it holds the test's own checkouts: seconds on a crowded machine. A moment noted here is the worker's, to the grain of
+/// [`ASKS_EVERY`]; the copies are checked out after the wait ([`Self::first_with`]).
+#[derive(Default)]
+struct Arrivals {
+    /// How many records the bucket had before the first one noted here.
+    from: usize,
+    /// When each record since then was first read in the bucket, oldest first.
+    at: Vec<Instant>,
+}
+
+impl Arrivals {
+    /// For the records that come after the ones the bucket has now.
+    fn after_now(d: &Direct) -> Self {
+        Self {
+            from: records(d).len(),
+            at: Vec::new(),
+        }
+    }
+
+    /// Notes the moment of every record that is new since the last call, and says how many have come.
+    fn read(&mut self, d: &Direct) -> usize {
+        let came = records(d).len().saturating_sub(self.from);
+        while self.at.len() < came {
+            self.at.push(Instant::now());
+        }
+        came
+    }
+
+    /// The first record noted whose copy holds the file `name`: its place among [`records`] and the moment it came. This checks
+    /// copies out, so a test calls it after its wait. A file of these tests stays in the tree once it is written, so every copy
+    /// after that one holds it too.
+    fn first_with(&self, d: &Direct, name: &str) -> Option<(usize, Instant)> {
+        let all = records(d);
+        self.at.iter().enumerate().find_map(|(i, at)| {
+            let place = self.from + i;
+            let clone = clone_of_record(d, all.get(place)?, &format!("record-{place}-for-{name}"))?;
+            clone.join(name).is_file().then_some((place, *at))
+        })
     }
 }
 
@@ -816,16 +876,25 @@ async fn b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_la
     assert!(d.summary().snapshots.failures >= 1);
 }
 
+/// How long the engine of the test of a tree that is gone stays silent, in seconds. The test waits three times after the silence
+/// has begun: 6 s until the run is told, 5 s until the look is given up, and [`REAL_WORK_WITHIN`] for the copy of a later look. The
+/// session must not end inside those waits, or the copy of its end would be the copy the last wait finds, and a worker that makes
+/// no look after the one it gave up would pass. So the silence outlasts the three waits together (the assertion below), and 120 s
+/// leaves room for a slow poll, as the engines of the first-process tests have it.
+const TREE_GONE_SILENCE_S: u64 = 120;
+const _: () = assert!(TREE_GONE_SILENCE_S > 6 + 5 + REAL_WORK_WITHIN.as_secs());
+
 /// The file system of the work tree stops answering while a look reads the tree: here the tree is moved away, so the question agentd asks
 /// the file system fails. The look is given up at that question, not at the long limit of its git work (a minute here, an hour in the
-/// product), so a tree that is gone costs seconds and a repository whose copies take long keeps its copies.
+/// product), so a tree that is gone costs seconds and a repository whose copies take long keeps its copies. A later look then copies
+/// the work while the engine still works: the copy is no copy of the session's end.
 #[tokio::test(flavor = "multi_thread")]
 async fn b823_a_look_is_given_up_when_the_file_system_of_the_tree_no_longer_answers() {
     let scratch = common::scratch("tree-gone");
     let (bin, mark) = hanging_git_behind_the_first_add(&scratch);
     let d = first_look_hangs(
         &mark,
-        "40",
+        &TREE_GONE_SILENCE_S.to_string(),
         vec![
             ("PATH", format!("{}:/usr/bin:/bin", bin.display())),
             ("AGENTD_DIRECT_COPY_LATE_MS", "400".into()),
@@ -892,16 +961,35 @@ async fn b823_a_look_is_given_up_when_the_file_system_of_the_tree_no_longer_answ
         "the log names the file system that did not answer:\n{}",
         log()
     );
-    // A later look stores the file.
-    let mut watch = CopyWatch::default();
-    let copied = wait_for(Duration::from_secs(8), || {
-        watch.new_copy_holds(&d, "late.txt")
-    })
-    .await;
+    // A later look stores the file. That look reads the tree, commits, bundles and stores: real work that is under way once the
+    // tree is back, and a crowded machine gives no bound on how long it takes. So this is the wait for real work
+    // ([`REAL_WORK_WITHIN`]) and no bound of a rule. What the rule bounds is held above: the look that hung is given up while the
+    // tree is gone. The wait ends when the record of a copy is in the bucket and checks nothing out, so its limit is looked at
+    // at every poll; the copy is checked out after it. No copy was stored before the look that hung (`first_look_hangs`) and
+    // that look stored none, so every record of the run came after the tree was back.
+    let mut came = Arrivals::default();
+    let stored = wait_for(REAL_WORK_WITHIN, || came.read(&d) > 0).await;
     assert!(
-        copied,
+        stored,
+        "no copy was stored after the tree was back: {:?}; log:\n{}",
+        records(&d),
+        log()
+    );
+    let copy = came.first_with(&d, "late.txt");
+    assert!(
+        copy.is_some(),
         "no copy held the file after the tree was back: {:?}; log:\n{}",
         records(&d),
+        log()
+    );
+    // That copy came from a look, not from the end of the session. The engine is silent for longer than the waits of this test
+    // together ([`TREE_GONE_SILENCE_S`]), so the session has not ended; and the record of a copy of the end says `"final": true`
+    // on any machine, which this one must not.
+    let record = records(&d).swap_remove(copy.unwrap().0);
+    assert!(
+        record.get("final").is_none(),
+        "the first copy after the tree was back is the copy of the session's end, so no look copied after the look that was \
+         given up: {record}; log:\n{}",
         log()
     );
     // No `sleep` of the stand-in is left behind: the git of the look that was given up at the question to the file system was ended.
@@ -3859,10 +3947,7 @@ async fn b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copie
         return;
     };
     let agentd = d.process.as_ref().unwrap();
-    let mut watch = CopyWatch {
-        seen: records(&d).len(),
-        clones: 0,
-    };
+    let mut came = Arrivals::after_now(&d);
     // The look of the next tick reads `mid.txt`; its upload is answered 5 s after it began.
     look_in_flight_storing(&d, 5, Duration::from_secs(40)).await;
     std::fs::write(
@@ -3872,36 +3957,52 @@ async fn b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copie
     .unwrap();
     let asked = Instant::now();
     agentd.signal("TERM");
-    // The upload in flight is answered about 5 s after it began: its copy is in the bucket well before the next tick, 20 s after the look
-    // began.
-    let mid = wait_for(Duration::from_secs(11), || {
-        watch.new_copy_holds(&d, "mid.txt")
+    // The moments of the copies are the worker's: each is read from the bucket when the record of a copy comes, and the test
+    // checks no copy out while it waits (a checkout is the test's own work, seconds on a crowded machine). The wait ends when the
+    // worker says that the copy the request asked for is stored: it writes that line after the last look of the request has
+    // stored, so every record of the request is in the bucket by then. Without the line it ends when the times of both copies
+    // are over.
+    let stored_line = "direct turn session ending: a copy of the work was stored";
+    wait_for(Duration::from_secs(11) + Duration::from_secs(8), || {
+        // The log is read before the bucket, so the poll that finds the line notes every record that came before the line.
+        let said = agentd.log_text().contains(stored_line);
+        came.read(&d);
+        said
     })
     .await;
-    let mid_took = asked.elapsed();
+    // The upload in flight is answered about 5 s after it began: its copy is in the bucket well before the next tick, 20 s after the look
+    // began.
+    let mid_took = came
+        .first_with(&d, "mid.txt")
+        .map(|(_, at)| at.duration_since(asked));
     assert!(
-        mid,
+        mid_took.is_some_and(|took| took <= Duration::from_secs(11)),
         "TRIGGER PRESENT: process 1 runs on, and the copy that was in flight when it was asked to end was not stored {mid_took:?} after \
          the request; log:\n{}",
         agentd.log_text()
     );
-    // The look that follows it stores what was written before the request.
-    let late = clone_of_snapshot(&d, "after-the-look-in-flight")
-        .join("late.txt")
-        .is_file()
-        || wait_for(Duration::from_secs(8), || {
-            watch.new_copy_holds(&d, "late.txt")
-        })
-        .await;
-    let late_took = asked.elapsed();
+    // The look that follows it stores what was written before the request: its copy comes 8 s after that copy at the most.
+    let late_took = came
+        .first_with(&d, "late.txt")
+        .map(|(_, at)| at.duration_since(asked));
+    let late = late_took
+        .zip(mid_took)
+        .is_some_and(|(late, mid)| late.saturating_sub(mid) <= Duration::from_secs(8));
+    // The worker writes its line about the copy the request asked for when the store has answered that copy's record, after the
+    // record is there. So the test waits for the line before it reads the log, if the wait above ended without it. It is a wait
+    // for real work that is under way and no bound of a rule ([`REAL_WORK_WITHIN`]); every check below reads the log as it
+    // stands after it, and the moments of the copies were taken before it.
+    if late {
+        wait_for(REAL_WORK_WITHIN, || agentd.log_text().contains(stored_line)).await;
+    }
     let log = agentd.log_text();
     assert!(
         late,
-        "TRIGGER PRESENT: no look followed the one in flight; the file written before the request was in no copy {late_took:?} after \
-         it; log:\n{log}"
+        "TRIGGER PRESENT: no look followed the one in flight; the file written before the request was in no copy that came \
+         within 8 s of the copy in flight ({mid_took:?} after the request): {late_took:?} after it; log:\n{log}"
     );
     assert!(
-        late_took < Duration::from_secs(16),
+        late_took.is_some_and(|took| took < Duration::from_secs(16)),
         "the copy came from the look that follows, not from the next tick: {late_took:?}"
     );
     assert!(agentd.alive(), "process 1 runs on; log:\n{log}");
@@ -3909,10 +4010,7 @@ async fn b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copie
         !log.contains("not stored in the time agentd had left"),
         "the look in flight kept its own limits; log:\n{log}"
     );
-    assert!(
-        log.contains("direct turn session ending: a copy of the work was stored"),
-        "{log}"
-    );
+    assert!(log.contains(stored_line), "{log}");
     assert!(copy_notices(&d).is_empty(), "{:?}", copy_notices(&d));
 }
 

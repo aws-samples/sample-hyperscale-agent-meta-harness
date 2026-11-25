@@ -6,6 +6,12 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.30] - 2026-11-24
+
+### Changed
+
+- Saves of a run's work get back to their usual pace sooner after many commits in a row.
+
 ## [5.29] - 2026-11-24
 
 ### Changed

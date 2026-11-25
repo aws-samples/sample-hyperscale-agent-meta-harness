@@ -5,9 +5,9 @@
 //! worker's one test write is answered with errno 28, and the run says so once, and stays the engine's.
 //!
 //! The switch answers the first test write that a tool result asks for once a copy of the session is marked, so the runs that use it
-//! step the engine (`FAKE_ACP_STEP_FILE`): the two edits first, then, once the copy task has stored a copy of them and written its
-//! marker through the watch, the command whose result names no space. The notice then names that copy with the version the bucket
-//! answered for its bundle.
+//! step the engine (`FAKE_ACP_STEP_FILE`): the two edits first, then, once the copy task has stored a copy of them with its record
+//! and written its marker through the watch, the command whose result names no space. The notice then names that copy with the
+//! version the bucket answered for its bundle.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -65,6 +65,16 @@ fn end_copy_stored(d: &Direct) -> bool {
         .is_some_and(|v| v["final"] == true)
 }
 
+/// The records of the copies of the work that the bucket holds for the session, oldest first: every version of `snapshot.json`. A
+/// copy has its record once its store has ended: the bundle is uploaded first, the record last (`Copies::store`).
+fn copy_records(d: &Direct) -> Vec<Value> {
+    d.aws
+        .versions_of(&keys::snapshot_json_key(RUN))
+        .iter()
+        .filter_map(|(_, b)| serde_json::from_slice(b).ok())
+        .collect()
+}
+
 async fn until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + limit;
     loop {
@@ -78,9 +88,22 @@ async fn until(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// One run of `no_space_result` whose engine is stepped: its two edits, then nothing until a copy of the work is stored and its
-/// marker is on the session's storage, then the rest of its reply (the command whose result names no space, and the end of the
-/// turn). `refuse` sets the switch of the live test row.
+/// One run of `no_space_result` whose engine is stepped: its two edits, then nothing until a copy of the work is stored whole (its
+/// bundle and then its record) and its marker is on the session's storage, then the rest of its reply (the command whose result
+/// names no space, and the end of the turn). `refuse` sets the switch of the live test row.
+///
+/// The engine waits for the record of the copy, not only for the marker. A look uploads the bundle, writes the marker and then
+/// hashes and uploads the record (`Copies::store`), and the end of the turn aborts the copy task. An engine that goes on at the
+/// marker can end its turn while that look still stores its record: the look is then cut after the hash of the record and before
+/// the record is in the bucket, and a test that counts what the turn hashed and stored finds one hash more than stored files. The
+/// record is the last thing a look stores, and the bucket is where these tests count, so once the bucket holds it nothing of that
+/// look is left to hash or to store. The worker's line of the look is not waited for: a look that the timer started writes it only
+/// after the keep that follows the look.
+///
+/// A stepped turn has one look and the copy of the end. The first look starts with no wait at the first tool call that ended
+/// (`Cadence::delay`), and the copy timer and the floor of a tool call's look are one hour here, so no second look starts before
+/// the turn ends. The end of the turn can cut a second look at any point of its work, and a run with a cut look does not show the
+/// trigger of the test that counts the hashes, though nothing was hashed twice.
 async fn stepped(refuse: bool, label: &str) -> (Direct, InvocationResponse) {
     let dir = common::scratch(label);
     let steps = dir.join("engine-steps");
@@ -90,23 +113,31 @@ async fn stepped(refuse: bool, label: &str) -> (Direct, InvocationResponse) {
         scenario: "no_space_result",
         engine_env: vec![("FAKE_ACP_STEP_FILE", steps.display().to_string())],
         edit_cfg: Some(Box::new(move |c| {
-            c.direct.snapshot_interval = Some(Duration::from_millis(300));
-            c.direct.snapshot_floor = Some(Duration::from_millis(50));
+            // One hour for both: the first look is the only look of the turn.
+            c.direct.snapshot_interval = Some(Duration::from_secs(3600));
+            c.direct.snapshot_floor = Some(Duration::from_secs(3600));
             c.direct.storage_test_refusal = refuse;
         })),
         ..Opts::default()
     })
     .await;
     let gate = async {
-        let marked = until(Duration::from_secs(90), || marked_copy(&d) >= 1).await;
-        // The engine goes on either way, so that a run that never marked a copy still ends and the assertion below can say so.
+        // A copy is marked, and every copy in the bucket has its record: no look is between its two uploads.
+        let stored = until(Duration::from_secs(90), || {
+            let records = copy_records(&d).len();
+            marked_copy(&d) >= 1
+                && records >= 1
+                && records == d.aws.versions_of(&keys::snapshot_bundle_key(RUN)).len()
+        })
+        .await;
+        // The engine goes on either way, so that a run that never stored a copy still ends and the assertion below can say so.
         std::fs::write(&steps, "1000000\n").unwrap();
-        marked
+        stored
     };
-    let ((_, resp), marked) = tokio::join!(d.invoke(), gate);
+    let ((_, resp), stored) = tokio::join!(d.invoke(), gate);
     assert!(
-        marked,
-        "TRIGGER PRESENT is not shown: no copy was stored and marked before the command ran; log: {:?}",
+        stored,
+        "TRIGGER PRESENT is not shown: no copy was stored with its record and marked before the command ran; log: {:?}",
         d.log.lines()
     );
     (d, resp)
@@ -440,9 +471,24 @@ async fn b884_over_a_whole_run_each_stored_bundle_is_hashed_once() {
         }
     }
     let copies = d.aws.versions_of(&keys::snapshot_bundle_key(RUN)).len();
+    // Every copy the worker made is in the bucket whole: its bundle and its record. The end of the turn aborts the copy task, and a
+    // look that it cuts has hashed a file that it never stored. Such a look leaves the bundle of a copy without that copy's record,
+    // or a copy that was made and is not in the bucket at all, which the number of the copy of the end shows: the worker numbers the
+    // copies as it makes them. A run with such a look cannot say whether a file was hashed twice, so it does not show the trigger.
+    let records = copy_records(&d);
+    let end_is_copy = records
+        .last()
+        .filter(|r| r["final"] == true)
+        .and_then(|r| r["count"].as_u64());
     assert!(
-        copies >= 2 && bundles == copies + 1 && other_files >= 1 && from_memory >= 1,
-        "TRIGGER PRESENT is not shown: {copies} copies, {bundles} bundles, {other_files} other files, {from_memory} transcript parts; keys: {:?}",
+        copies >= 2
+            && bundles == copies + 1
+            && other_files >= 1
+            && from_memory >= 1
+            && records.len() == copies
+            && end_is_copy == u64::try_from(copies).ok(),
+        "TRIGGER PRESENT is not shown: {copies} copies, {} records of copies, the copy of the end is copy {end_is_copy:?}, {bundles} bundles, {other_files} other files, {from_memory} transcript parts; keys: {:?}",
+        records.len(),
         d.aws.keys()
     );
     println!(

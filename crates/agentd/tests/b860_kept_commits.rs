@@ -2609,6 +2609,573 @@ async fn b860_kept_a_read_of_the_keep_that_has_not_returned_fails_no_look() {
     ));
 }
 
+/// A question of the keep at once that has not returned when the keep is dropped fails no
+/// look. Before it packs, the keep at once asks whether the engine's `.git` is still the repository's own directory, what the
+/// engine's head is and what its packs are. The first is a file call on the session's storage. When the storage answers it
+/// slowly and the keep is dropped meanwhile (the next look starts, agentd was asked to end), every copy that follows must be
+/// made: by a look of the timer, by the look that a request to end asks for, and by the copy of the end without a head. Made
+/// under the flag of a look's file calls, that call refused the first file call of each of them: the copy of a request to end was
+/// lost to a keep.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_question_of_the_keep_at_once_that_has_not_returned_fails_no_look() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let l = lab("b932-slow-git-dir");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // What the engine's `.git` is comes at once, but for the one call the test holds until it lets the storage answer.
+    let hold_next = Arc::new(AtomicBool::new(false));
+    let answers = Arc::new(AtomicBool::new(false));
+    let held = Arc::new(AtomicUsize::new(0));
+    // The storage answers when the test ends, also when it fails: the runtime of a test waits for the thread of a held call.
+    struct Answers(Arc<AtomicBool>);
+    impl Drop for Answers {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _answers_at_the_end = Answers(answers.clone());
+    let (hold, gate, count) = (hold_next.clone(), answers.clone(), held.clone());
+    copies.set_git_dir_reader(Arc::new(move |repo: &Path| {
+        if hold.swap(false, Ordering::SeqCst) {
+            count.fetch_add(1, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        repo.join(".git").is_dir()
+    }));
+
+    // A look of the timer finds a new head and leaves the timer: a keep at once may follow it.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+
+    // The keep at once asks about the engine's `.git` and is dropped while the answer is outstanding.
+    hold_next.store(true, Ordering::SeqCst);
+    let far = limit();
+    {
+        let questions = copies.keep_at_once(&far);
+        tokio::pin!(questions);
+        let began = Instant::now();
+        loop {
+            tokio::select! {
+                () = &mut questions => panic!(
+                    "TRIGGER PRESENT is not shown: the questions of the keep at once ended while its file call was held"
+                ),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {
+                    if held.load(Ordering::SeqCst) >= 1 {
+                        break;
+                    }
+                    assert!(
+                        began.elapsed() < Duration::from_secs(30),
+                        "TRIGGER PRESENT is not shown: the keep at once never asked what the engine's .git is"
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "TRIGGER PRESENT: the keep at once was dropped while its question about the engine's .git had not returned"
+    );
+
+    // The look of the timer that starts next makes its copy while that call is still outstanding.
+    copies.keep_cut(true);
+    copies.look_is_spaced(true);
+    edit(&l.repo, 2);
+    let made = copies
+        .snapshot_until(&limit())
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "TRIGGER PRESENT: the look of the timer after a keep at once whose question had not returned failed: {e}"
+            )
+        })
+        .expect("the tree changed, so the look makes a copy");
+    let wt = restored(&l, "slow-git-dir-timer", &made.bundle, &made.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(2)
+    );
+    // That look could not read the engine's packs when it started (one read is outstanding at most), so no keep at once
+    // follows it, whatever its git work took.
+    copies.look_left_the_timer(true);
+    assert!(
+        !copies.keep_at_once_may_follow(),
+        "no second question is asked while the first has not returned"
+    );
+
+    // So does the look that a request to end asks for: the work written before the request is in its copy.
+    copies.keep_cut(false);
+    copies.look_is_spaced(false);
+    edit(&l.repo, 3);
+    let made = copies
+        .snapshot_until(&limit())
+        .await
+        .unwrap_or_else(|e| {
+            panic!("the look that a request to end asked for failed after a keep at once whose question had not returned: {e}")
+        })
+        .expect("the tree changed, so the look makes a copy");
+    let wt = restored(&l, "slow-git-dir-stop", &made.bundle, &made.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(3)
+    );
+
+    // And so does the copy of the end without a head, which reads the tree as it is.
+    edit(&l.repo, 4);
+    let end = copies.final_copy(None).await.unwrap_or_else(|e| {
+        panic!(
+            "the copy of the end failed after a keep at once whose question had not returned: {e}"
+        )
+    });
+    assert!(end.final_copy);
+    let wt = restored(&l, "slow-git-dir-end", &end.bundle, &end.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(4)
+    );
+    assert_eq!(
+        held.load(Ordering::SeqCst),
+        1,
+        "one call was held, and it had not returned when the three copies were made"
+    );
+
+    // The storage answers again: a look of the timer that leaves the timer on a new head is followed by its keep at once.
+    answers.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    engine_commits(&l.repo, 10, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 5).await;
+    copies.look_left_the_timer(true);
+    assert!(copies.keep_at_once_may_follow());
+    copies.keep_at_once(&limit()).await;
+    let kept = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(kept, Keep::Kept { .. }),
+        "the keep at once once the storage answers: {kept:?}"
+    );
+}
+
+/// A keep at once that was dropped after its questions and before its pack leaves nothing
+/// behind for a later keep. The questions of a keep at once made the keep due at once, and the next look started before the
+/// pack was begun. The look that follows is the second of the same head: its keep is the keep of the second look, the one try
+/// for that head, so when it is missed the third look of that head is followed by no keep. A mark "at once" that outlived the
+/// dropped keep would make the keep of the second look count as a keep at once, which marks its head only when it ends as
+/// kept: a keep that is missed would then be tried again after every look of that head.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_was_dropped_after_its_questions_is_no_mark_for_a_later_keep() {
+    use std::sync::Arc;
+    let l = lab("b932-dropped-after-questions");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // A look of the timer finds a new head and leaves the timer; the questions of the keep at once are answered.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: the questions of the keep at once did not make the keep due"
+    );
+    println!(
+        "TRIGGER PRESENT: a keep at once is due, and the next look starts before its pack is begun"
+    );
+
+    // The next look of the timer starts: the keep is dropped here. It finds the same head, so its keep is the keep of the
+    // second look. The storage fails that keep.
+    copies.keep_cut(true);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    assert!(
+        copies.keep_is_due(),
+        "the second look of the same head is followed by a keep"
+    );
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| -> Result<String, String> {
+        Err("the storage of the test does not answer".to_string())
+    }));
+    let missed = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(missed, Keep::Missed(_)),
+        "TRIGGER PRESENT is not shown: the keep of the second look was not missed: {missed:?}"
+    );
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| Ok("the packs of the test".to_string())));
+
+    // The third look of that head: the keep of the second look was the one try for the head.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    assert!(
+        !copies.keep_is_due(),
+        "the keep of the second look was the one try for its head: no keep is due after the third look of that head"
+    );
+    assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
+}
+
+/// A keep at once that did not end as kept is tried once and not again until a keep is
+/// kept. A look of the timer leaves the timer on a new head, and the keep at once that follows it is missed (`cut` false: the
+/// storage fails its read of the engine's packs) or is dropped while it packs (`cut` true: that read is held, and what
+/// starts the next look drops the keep). The head moves, and the next look leaves the timer on the new head and reads no
+/// kept pack: no keep at once may follow it. Before the mark, every such look started one more `pack-objects` over every
+/// unpacked object of the run. The rule of the second look does not ask the mark: the second look of that head is followed
+/// by its keep. That keep is kept, which clears the mark: once the engine's packs have changed and the head has moved, a look
+/// that leaves the timer is followed by a keep at once again.
+async fn a_keep_at_once_that_was_not_kept_is_not_tried_again(label: &str, cut: bool) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let l = lab(label);
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // A look of the timer finds a new head and leaves the timer; the questions of the keep at once are answered.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: the questions of the keep at once did not make the keep due"
+    );
+
+    if cut {
+        // The keep at once is dropped while it packs: its read of the engine's packs is held until the test lets it go.
+        let answers = Arc::new(AtomicBool::new(false));
+        let asked = Arc::new(AtomicUsize::new(0));
+        // The storage answers when the test ends, also when it fails: the runtime of a test waits for the thread of a held call.
+        struct Answers(Arc<AtomicBool>);
+        impl Drop for Answers {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _answers_at_the_end = Answers(answers.clone());
+        let (gate, count) = (answers.clone(), asked.clone());
+        copies.set_engine_packs_reader(Arc::new(move |_: &Path| {
+            count.fetch_add(1, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok("the packs of the test".to_string())
+        }));
+        let far = limit();
+        {
+            let keep = copies.keep_commits(&far);
+            tokio::pin!(keep);
+            let began = Instant::now();
+            loop {
+                tokio::select! {
+                    out = &mut keep => panic!(
+                        "TRIGGER PRESENT is not shown: the keep at once ended while its read was held: {out:?}"
+                    ),
+                    () = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if asked.load(Ordering::SeqCst) >= 1 {
+                            break;
+                        }
+                        assert!(
+                            began.elapsed() < Duration::from_secs(30),
+                            "TRIGGER PRESENT is not shown: the keep at once never read the engine's packs"
+                        );
+                    }
+                }
+            }
+        }
+        // What started the next look cut the keep: a tool call here, which leaves no mark of its own on a head.
+        copies.keep_cut(false);
+        // The storage answers again, so that the looks after this one read the engine's packs.
+        answers.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        println!("TRIGGER PRESENT: a keep at once was dropped while it packed");
+    } else {
+        copies.set_engine_packs_reader(Arc::new(|_: &Path| -> Result<String, String> {
+            Err("the storage of the test does not answer".to_string())
+        }));
+        let missed = copies.keep_commits(&limit()).await;
+        assert!(
+            matches!(missed, Keep::Missed(_)),
+            "TRIGGER PRESENT is not shown: the keep at once was not missed: {missed:?}"
+        );
+        println!("TRIGGER PRESENT: a keep at once was missed: {missed:?}");
+    }
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| Ok("the packs of the test".to_string())));
+
+    // The head moves. The next look of the timer leaves the timer on the new head and reads no kept pack.
+    engine_commits(&l.repo, 10, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        !copies.keep_at_once_may_follow(),
+        "a keep at once that was not kept is not tried again: no keep at once may follow the next look that left the timer \
+         on a new head"
+    );
+    copies.keep_at_once(&limit()).await;
+    assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
+
+    // The rule of the second look does not ask the mark: the second look of that head is followed by a keep, which is kept.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    assert!(
+        copies.keep_is_due(),
+        "the keep after the second look of the same head does not ask the mark"
+    );
+    let kept = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(kept, Keep::Kept { .. }),
+        "the keep after the second look of the same head: {kept:?}"
+    );
+
+    // A keep was kept: the mark is gone. The engine's packs change, so the kept pack goes at the next look and that look
+    // reads none; the head moves; the look leaves the timer. A keep at once follows it again, and it is kept.
+    copies.set_engine_packs_reader(Arc::new(|_: &Path| {
+        Ok("other packs of the test".to_string())
+    }));
+    engine_commits(&l.repo, 11, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 4).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "after a keep that ended as kept, a keep at once may follow a look again"
+    );
+    copies.keep_at_once(&limit()).await;
+    let again = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(again, Keep::Kept { .. }),
+        "the keep at once after a keep was kept: {again:?}"
+    );
+}
+
+/// A keep at once that was missed is not tried again until a keep is kept
+/// ([`a_keep_at_once_that_was_not_kept_is_not_tried_again`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_was_missed_is_not_tried_again_until_a_keep_is_kept() {
+    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-missed", false).await;
+}
+
+/// A keep at once that was dropped while it packed is not tried again until a keep is kept
+/// ([`a_keep_at_once_that_was_not_kept_is_not_tried_again`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_was_cut_is_not_tried_again_until_a_keep_is_kept() {
+    a_keep_at_once_that_was_not_kept_is_not_tried_again("b932-mark-cut", true).await;
+}
+
+/// A keep whose first read of the engine's packs is
+/// refused because an earlier read has not returned is no try. The first question of a keep at once is one call on the
+/// session's storage; it is held here, and the keep at once is dropped while the call is outstanding. The next look of the
+/// timer finds the same head, and its keep, the keep of the second look, is missed at once: one read of the packs is
+/// outstanding at most, so its first read is refused. That keep tried nothing: no git ran, and the storage was not asked
+/// again. Once the call has returned, the third look of that head is followed by the keep, which keeps a pack, and the
+/// fourth by none. Before, the refused read was the head's one try, and a head that rested got no pack in that worker.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_whose_first_read_of_the_packs_is_refused_is_no_try() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let l = lab("b932-refused-read");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // The names of the engine's packs come at once, but for the one read the test holds until it lets the storage answer.
+    let hold_next = Arc::new(AtomicBool::new(false));
+    let answers = Arc::new(AtomicBool::new(false));
+    let held = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(AtomicUsize::new(0));
+    // The storage answers when the test ends, also when it fails: the runtime of a test waits for the thread of a held call.
+    struct Answers(Arc<AtomicBool>);
+    impl Drop for Answers {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _answers_at_the_end = Answers(answers.clone());
+    let (hold, gate, count, all) = (
+        hold_next.clone(),
+        answers.clone(),
+        held.clone(),
+        reads.clone(),
+    );
+    copies.set_engine_packs_reader(Arc::new(move |_: &Path| {
+        all.fetch_add(1, Ordering::SeqCst);
+        if hold.swap(false, Ordering::SeqCst) {
+            count.fetch_add(1, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        Ok("the packs of the test".to_string())
+    }));
+
+    // A look of the timer finds a new head and leaves the timer. The first question of its keep at once is held, and the
+    // keep is dropped while that call is outstanding.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    hold_next.store(true, Ordering::SeqCst);
+    let far = limit();
+    {
+        let questions = copies.keep_at_once(&far);
+        tokio::pin!(questions);
+        let began = Instant::now();
+        loop {
+            tokio::select! {
+                () = &mut questions => panic!(
+                    "TRIGGER PRESENT is not shown: the questions of the keep at once ended while its read was held"
+                ),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {
+                    if held.load(Ordering::SeqCst) >= 1 {
+                        break;
+                    }
+                    assert!(
+                        began.elapsed() < Duration::from_secs(30),
+                        "TRIGGER PRESENT is not shown: the keep at once never read the engine's packs"
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "TRIGGER PRESENT: the keep at once was dropped while its read of the engine's packs had not returned"
+    );
+
+    // The next look of the timer finds the same head: the keep of the second look is due, and its first read is refused.
+    copies.keep_cut(true);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: no keep is due after the second look of the same head"
+    );
+    let before = reads.load(Ordering::SeqCst);
+    let refused = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(&refused, Keep::Missed(why) if why.contains("has not returned")),
+        "TRIGGER PRESENT is not shown: the keep of the second look was not refused its read of the engine's packs: {refused:?}"
+    );
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        before,
+        "no second read of the packs was started while the first had not returned"
+    );
+    println!(
+        "TRIGGER PRESENT: the keep of the second look was refused its first read of the engine's packs: {refused:?}"
+    );
+
+    // The storage answers. The third look of that head is followed by the keep: the refused keep tried nothing.
+    answers.store(true, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 3).await;
+    assert!(
+        copies.keep_is_due(),
+        "a keep whose first read of the engine's packs was refused is no try: a keep is due again after the next look of \
+         the same head"
+    );
+    let kept = copies.keep_commits(&limit()).await;
+    assert!(
+        matches!(kept, Keep::Kept { .. }),
+        "the keep once the earlier read has returned: {kept:?}"
+    );
+
+    // That keep was the one try for the head: the fourth look of that head is followed by none.
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 4).await;
+    assert!(
+        !copies.keep_is_due(),
+        "the keep that kept a pack was the one try for its head"
+    );
+}
+
+/// The keep at once asks what the engine's `.git` is
+/// before it reads anything there. A look leaves the timer on a new head; then the engine's `.git` is no longer the
+/// repository's own directory (the reader of the test says so). The keep at once asks that once, reads no pack names of that
+/// folder and makes no keep due: with a `.git` that is not the repository's own, agentd runs no git in the engine's
+/// repository. The engine's head and its packs are what the look found, so a keep at once that did not ask, or that did not
+/// heed the answer, would be due. With the repository's own `.git` the keep at once of the next such look is due.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_the_keep_at_once_asks_what_the_engines_git_directory_is_before_it_reads_there() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let l = lab("b932-git-dir-first");
+    let mut copies = thin(&l, "data").await;
+    engine_commits(&l.repo, 0, 10);
+
+    // The names of the engine's packs, each read counted.
+    let reads = Arc::new(AtomicUsize::new(0));
+    let count = reads.clone();
+    copies.set_engine_packs_reader(Arc::new(move |_: &Path| {
+        count.fetch_add(1, Ordering::SeqCst);
+        Ok("the packs of the test".to_string())
+    }));
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 1).await;
+    copies.look_left_the_timer(true);
+    assert!(
+        copies.keep_at_once_may_follow(),
+        "TRIGGER PRESENT is not shown: no keep at once may follow a look of the timer that left the timer on a new head"
+    );
+    let before = reads.load(Ordering::SeqCst);
+    assert!(
+        before >= 1,
+        "TRIGGER PRESENT is not shown: the look did not read the engine's packs when it started"
+    );
+
+    // The engine's `.git` is no longer the repository's own directory.
+    let asked = Arc::new(AtomicUsize::new(0));
+    let seen = asked.clone();
+    copies.set_git_dir_reader(Arc::new(move |_: &Path| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        false
+    }));
+    copies.keep_at_once(&limit()).await;
+    println!(
+        "TRIGGER PRESENT: the engine's head and packs are what the look found, and its .git is not the repository's own \
+         directory any more"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the keep at once asks once what the engine's .git is"
+    );
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        before,
+        "the keep at once reads no pack names when the engine's .git is not the repository's own directory"
+    );
+    assert!(
+        !copies.keep_is_due(),
+        "no keep is due at once when the engine's .git is not the repository's own directory"
+    );
+    assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
+
+    // With the repository's own `.git`, the keep at once of the next look that leaves the timer on a new head is due.
+    copies.set_git_dir_reader(Arc::new(|repo: &Path| repo.join(".git").is_dir()));
+    engine_commits(&l.repo, 10, 1);
+    copies.look_is_spaced(true);
+    changed_look(&mut copies, &l.repo, 2).await;
+    copies.look_left_the_timer(true);
+    copies.keep_at_once(&limit()).await;
+    assert!(
+        copies.keep_is_due(),
+        "TRIGGER PRESENT is not shown: with the repository's own .git the keep at once is not due"
+    );
+}
+
 // ---- the engine packs its own commits ----------------------------------------------------------------------------------------------
 
 /// The copy does not grow when the engine packs its own commits under a kept pack. The run rewrites one line of a long text file in

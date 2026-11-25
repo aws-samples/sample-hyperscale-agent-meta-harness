@@ -13,7 +13,17 @@
 //! - a worker that starts on a kept pack with wrong bytes says once that the pack is gone, and its first copy restores;
 //! - the line of the first reading of the tree names what git's check of a kept pack cost the start of the turn;
 //! - a look of the timer whose keep had not started when the engine ended its turn has its line once, with `keep=0`, and
-//!   the line of the copy of the end follows it.
+//!   the line of the copy of the end follows it;
+//! - the keep after a burst of commits: a keep follows the first look of the
+//!   timer after the burst at once when that look left the timer, the engine's head stood still while it ran and the engine's
+//!   packs did not change; a keep that outlasts the tick of the timer is not cut; a tool call that ends while a keep runs does
+//!   not end it; a keep at once that did not end as kept leaves the rule of the second look as it is; a tool call that ended
+//!   while the slow look ran does not cost that look its keep at once, and the tool call's look starts when it would start
+//!   without a keep; and only a look that read no kept pack is followed by a keep at once, so steady commits get one keep for
+//!   their first burst and a second burst keeps the rule of the second look. Ruling 43 of the lead: a keep at once that did not
+//!   end as kept is tried once and not again until a keep is kept; a request to end ends the wait that a keep runs through;
+//!   and the keep at once also follows a tool call's look that left the timer, on the tool call's own line, while the rule
+//!   of the second look follows no look of a tool call, as before.
 //!
 //! The worker's log line of a look is read here too: one line per look that stored a copy or failed, with what started the look,
 //! the times of its steps, and what came of the store and of the keep; and the line of the copy of the end, `by=final`.
@@ -33,7 +43,7 @@ mod b860_thin_support;
 mod common;
 mod direct_support;
 
-use b860_kept_support::{alive, keeps_started, names, stand_in_for_git};
+use b860_kept_support::{alive, git_calls, is_the_keep, keeps_started, names, stand_in_for_git};
 use common::{git, scratch};
 use direct_support::{Direct, Opts, Process, RUN, checkout_of_copy_bytes};
 use harness_protocol::direct::s3 as keys;
@@ -274,8 +284,16 @@ impl Run {
     }
 
     /// The log line of the look that stored the copy with index `index` (from 0): the line that names the number its record has.
+    /// The bucket has the bundle of a copy before it has the record: while the record of that copy is not there, the answer is
+    /// the empty line, as for a look whose line is not written yet.
     fn line_of(&self, index: usize) -> String {
-        let n = self.records()[index]["count"].to_string();
+        let Some(n) = self
+            .records()
+            .get(index)
+            .map(|record| record["count"].to_string())
+        else {
+            return String::new();
+        };
         self.look_lines()
             .into_iter()
             .find(|l| l.contains(" stored ") && field(l, "n") == Some(n.as_str()))
@@ -477,7 +495,7 @@ async fn gone(pid: u32) -> bool {
 /// failed, with every field once.
 #[tokio::test(flavor = "multi_thread")]
 async fn b860_kept_a_look_that_is_due_ends_the_keep_and_its_copy_is_not_later() {
-    // The one test with a short timer: 3 s. Its looks are the timer's.
+    // The one test with a short timer: 3 s. Its looks are the timer's, but for the two that first find a new head.
     let mut run = Run::start("b860-kept-due", DUE_EVERY_MS, Vec::new()).await;
     assert!(
         wait_for(LONG, || run.stored() >= 1).await,
@@ -492,13 +510,13 @@ async fn b860_kept_a_look_that_is_due_ends_the_keep_and_its_copy_is_not_later() 
             .is_some()
     );
     run.commit(1);
-    assert!(
-        run.write_and_wait("a.txt", "first\n", LONG).await.is_some(),
-        "the look that finds the engine's new head stores its copy; log:\n{}",
-        run.log()
-    );
+    // The look that first finds a new head stores no copy here (the bucket refuses it), so that no keep at once is
+    // counted on a crowded machine. The tick that tries the copy again is the timer's: the second look of the same head.
+    let from = run.bundles().len();
+    run.first_look_of_a_head_stores_nothing("a.txt", "second\n")
+        .await;
     let second = run
-        .write_and_wait("a.txt", "second\n", LONG)
+        .wait_copy(from, "a.txt", "second\n", LONG)
         .await
         .unwrap_or_else(|| {
             panic!(
@@ -593,7 +611,17 @@ async fn b860_kept_a_look_that_is_due_ends_the_keep_and_its_copy_is_not_later() 
     // A keep that git fails: the head moves and comes to rest, the stand-in fails the keep's pack-objects, and the log says why.
     std::fs::write(run.dir.join("keep-fail"), "").unwrap();
     run.commit(2);
-    for content in ["sixth\n", "seventh\n", "eighth\n"] {
+    let from = run.bundles().len();
+    run.first_look_of_a_head_stores_nothing("a.txt", "sixth\n")
+        .await;
+    assert!(
+        run.wait_copy(from, "a.txt", "sixth\n", LONG)
+            .await
+            .is_some(),
+        "the tick that tries the refused copy again stores it; log:\n{}",
+        run.log()
+    );
+    for content in ["seventh\n", "eighth\n"] {
         assert!(run.write_and_wait("a.txt", content, LONG).await.is_some());
     }
     assert!(
@@ -919,12 +947,23 @@ async fn b860_kept_a_stop_is_not_held_by_the_keep() {
         "log:\n{}",
         run.log()
     );
-    let record = run.records().pop().unwrap();
+    // The worker has ended, so nothing is under way: the copy of the stop has its record now or never gets it. The record and
+    // the line of that copy are read by its place among the copies, so that place is asked for first.
+    let found = found.unwrap();
+    let records = run.records();
+    assert!(
+        records.len() > found,
+        "the worker ended and the copy of the stop has no record: its bundle is copy {found} of the bucket, which has {} \
+         records; log:\n{}",
+        records.len(),
+        run.log()
+    );
+    let record = &records[records.len() - 1];
     assert!(
         record.get("final").is_none(),
         "the copy of a stop is no copy of the end: {record}"
     );
-    let line = run.line_of(found.unwrap());
+    let line = run.line_of(found);
     assert_eq!(
         field(&line, "by"),
         Some("stop"),
@@ -1198,7 +1237,12 @@ async fn b930_a_line_that_waits_for_its_keep_at_the_engines_end_comes_once_befor
     let spacing = Duration::from_millis(5 * DUE_EVERY_MS);
     let mut left = Vec::new();
     for turn in 1..=PENDING_TURNS {
-        let run = Run::start(&format!("b930-pending-{turn}"), DUE_EVERY_MS, Vec::new()).await;
+        let run = Run::start(
+            &format!("b930-pending-{turn}"),
+            DUE_EVERY_MS,
+            vec![retry_at_the_tick()],
+        )
+        .await;
         assert!(
             wait_for(LONG, || run.stored() >= 1).await,
             "the copy of the session's start is stored; log:\n{}",
@@ -1211,15 +1255,14 @@ async fn b930_a_line_that_waits_for_its_keep_at_the_engines_end_comes_once_befor
                 .is_some()
         );
         run.commit(1);
-        assert!(
-            run.write_and_wait("a.txt", "first\n", LONG).await.is_some(),
-            "the look that finds the engine's new head stores its copy; log:\n{}",
-            run.log()
-        );
-        // The second look of the same head, which a keep follows: the stand-in holds its `git add`.
-        run.hold_the_add();
+        // The look that first finds the new head stores no copy (the bucket refuses it), so that the keep is the one
+        // after the second look, whatever the machine does.
         let from = run.bundles().len();
-        run.write("a.txt", "second\n");
+        run.first_look_of_a_head_stores_nothing("a.txt", "second\n")
+            .await;
+        // The second look of the same head, which a keep follows, is the look of the tick that tries the refused copy again:
+        // the stand-in holds its `git add`.
+        run.hold_the_add();
         assert!(
             wait_for(LONG, || run.dir.join("add-running").exists()).await,
             "TRIGGER PRESENT is not shown: no look read the tree after the write; log:\n{}",
@@ -1609,4 +1652,1895 @@ async fn b860_kept_a_session_cut_between_the_stores_two_writes_restores_through_
     git(&wt, &["fsck", "--no-progress", "--connectivity-only"]);
     // The stand-in bucket ends the request it held: its worker is gone, and everything above was read before this.
     run.d.aws.release_put_body();
+}
+
+// ----: the keep after a burst of commits ---------------------------------------------------------------------------------------
+//
+// Ruling 32 of the lead, two rules built as one change. A: what ends a keep in flight is the start of the next look, not the tick
+// of the timer and not a tool call's wake. B: a keep also follows a look of the timer that stored its copy when the spacing holds
+// the next look past its tick, the engine's head read once more after the bundle step is the head the look read at its start, and
+// the engine's packs did not change while the look ran; a keep at once that did not end as kept leaves the rule of release 5.28
+// (the keep after a second look of the same head, once) as it is for the looks that follow.
+//
+// The looks of these tests are the timer's, at 3 s ([`BURST_EVERY_MS`]): a look leaves that timer when its git work takes more
+// than a tenth of it, 300 ms. The stand-in holds the bundle step of the look that is to leave it for [`SLOW`] or [`HELD`]; each
+// test reads from the look's own line that it did (TRIGGER PRESENT), and no test asserts that a look was fast. A test that needs a
+// look that does not leave the timer has a timer of ten minutes, where no look of these tests can.
+
+/// The timer of the tests of the keep after a burst: 3 s. The spacing holds the look after a look past its tick when the
+/// git work of that look took more than a tenth of the timer: 300 ms.
+const BURST_EVERY_MS: u64 = 3_000;
+/// How long the stand-in holds the bundle step of a look that is to leave the timer: 600 ms, twice the tenth of the timer.
+/// The spacing after such a look is nine times its git work, 5.4 s at the least.
+const SLOW: Duration = Duration::from_millis(600);
+/// How long the stand-in holds the bundle step of a look whose spacing is to be the longest a timer of a test has, five of
+/// its periods (15 s): 2 s, nine times which is 18 s.
+const HELD: Duration = Duration::from_secs(2);
+
+impl Run {
+    /// The stand-in holds the bundle step of the next look from now on; `bundle-running` is there once it does.
+    fn hold_the_bundle(&self) {
+        let _ = std::fs::remove_file(self.dir.join("bundle-running"));
+        std::fs::write(self.dir.join("bundle-hold"), "").unwrap();
+    }
+
+    /// The held bundle step goes on.
+    fn let_the_bundle_go(&self) {
+        let _ = std::fs::remove_file(self.dir.join("bundle-hold"));
+    }
+
+    /// The private repository of the copies of this turn's worker.
+    fn private(&self) -> PathBuf {
+        self.d.agent_data().join("snapshot.git")
+    }
+
+    /// The bundle steps of the looks so far, oldest first: whether each found a kept pack in its folder when it started.
+    fn bundle_steps(&self) -> Vec<bool> {
+        b860_kept_support::kept_seen(&self.dir, &self.private())
+            .iter()
+            .filter(|seen| b860_kept_support::command_of(&seen.call) == "bundle")
+            .map(|seen| seen.pack.iter().any(|name| name.ends_with(".pack")))
+            .collect()
+    }
+
+    /// The engine commits `n` times from round `from` and nothing packs its store: a burst. The answer is its head.
+    fn burst(&self, from: u32, n: u32) -> String {
+        let mut head = String::new();
+        for round in from..from + n {
+            head = self.commit(round);
+        }
+        head
+    }
+
+    /// A look of the timer whose bundle step the stand-in holds for `held`. `content` is written into `file`, the look that
+    /// finds it is held in its bundle step, `during` is called while it is held, and after `held` the step goes on. The answer is
+    /// the index of the copy that look stored.
+    async fn held_look(
+        &self,
+        file: &str,
+        content: &str,
+        held: Duration,
+        during: impl FnOnce(&Self),
+    ) -> usize {
+        self.hold_the_bundle();
+        let from = self.bundles().len();
+        self.write(file, content);
+        assert!(
+            wait_for(LONG, || self.dir.join("bundle-running").exists()).await,
+            "TRIGGER PRESENT is not shown: no look reached its bundle step after the write; log:\n{}",
+            self.log()
+        );
+        during(self);
+        tokio::time::sleep(held).await;
+        self.let_the_bundle_go();
+        self.wait_copy(from, file, content, LONG)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "the look whose bundle step was held stores its copy; log:\n{}",
+                    self.log()
+                )
+            })
+    }
+
+    /// The look that first finds a new head of the engine stores no copy: `content` is written into `file`, and the
+    /// bucket refuses the copy of the look that finds it, the timer's next look, at every try. A look of the timer or of a
+    /// tool call (ruling 43 (d) of the lead) that finds a new head is followed by a keep at once when its git work took more
+    /// than a tenth of the timer, 300 ms at the 3 s timer of these tests, which a look of a crowded machine can take; the keeps
+    /// of a test would then be counted by the machine. No keep follows a look that stored no copy. The tick that tries the copy
+    /// again is the timer's, and its look finds the same head and stores `content`: it is the second look of the head, so the
+    /// one keep of the head is the keep after that look, whatever the machine does. The answer comes once the bucket has
+    /// refused the copy; the look of the tick has not started then: it comes one retry time after the refused look started at
+    /// the earliest. No tool call of the engine is used: a wake that a tick of the timer overtook would start the second look
+    /// of the head, and the rule of the second look follows no look of a tool call.
+    async fn first_look_of_a_head_stores_nothing(&self, file: &str, content: &str) {
+        let key = keys::snapshot_bundle_key(RUN);
+        let attempts = self.d.aws.put_attempts(&key);
+        self.d.aws.fail_puts("snapshot.bundle", 4);
+        self.write(file, content);
+        assert!(
+            wait_for(LONG, || self.d.aws.put_attempts(&key) >= attempts + 4).await,
+            "TRIGGER PRESENT is not shown: the bucket did not refuse the copy of the look that found the write; log:\n{}",
+            self.log()
+        );
+    }
+
+    /// The first copies of a turn of these tests: the copy of the session's start and one more, which is seen right after
+    /// its look ended, so that what the test does next falls before the same next look.
+    async fn behind_a_look(&self, file: &str) {
+        assert!(
+            wait_for(LONG, || self.stored() >= 1).await,
+            "the copy of the session's start is stored; log:\n{}",
+            self.log()
+        );
+        assert!(
+            self.write_and_wait(file, "written to stand right behind a look\n", LONG)
+                .await
+                .is_some(),
+            "log:\n{}",
+            self.log()
+        );
+    }
+}
+
+/// The milliseconds of the field `name` of a look's line.
+fn ms_of(line: &str, name: &str) -> u64 {
+    field(line, name)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("the field {name} of the line: {line}"))
+}
+
+/// What the spacing counts of the look of `line`, in milliseconds: its time up to its store.
+fn git_ms(line: &str) -> u64 {
+    ms_of(line, "total").saturating_sub(ms_of(line, "store"))
+}
+
+/// The look of `line` was the timer's and its git work took more than a tenth of the timer of [`BURST_EVERY_MS`]: the
+/// spacing holds the look after it past its tick. Says so for the record; a look that did not is a test that did not show its
+/// trigger.
+fn left_the_timer(line: &str) {
+    assert_eq!(
+        field(line, "by"),
+        Some("timer"),
+        "TRIGGER PRESENT is not shown: the held look was not the timer's: {line}"
+    );
+    let git = git_ms(line);
+    assert!(
+        git > BURST_EVERY_MS / 10,
+        "TRIGGER PRESENT is not shown: the git work of the held look took {git} ms, no more than a tenth of the timer: {line}"
+    );
+    println!(
+        "TRIGGER PRESENT: a look of the timer of {BURST_EVERY_MS} ms whose git work took {git} ms (more than {} ms): the spacing \
+         holds the next look past its tick: {line}",
+        BURST_EVERY_MS / 10
+    );
+}
+
+/// Whether the field `keep` of `line` is a number of milliseconds above 0: a keep ran to its end.
+fn keep_ran(line: &str) -> bool {
+    field(line, "keep").is_some_and(|v| v.parse::<u64>().is_ok_and(|ms| ms > 0))
+}
+
+/// Whether `line` names a kept pack: `kept=` is a number of bytes above 0.
+fn names_a_kept_pack(line: &str) -> bool {
+    field(line, "kept").is_some_and(|v| v.parse::<u64>().is_ok_and(|bytes| bytes > 0))
+}
+
+/// The worker ends as a signal asks, so that it ends by itself.
+async fn ends_as_asked(run: &mut Run) {
+    run.d.process.as_ref().unwrap().signal("TERM");
+    assert_eq!(
+        exit_of(run, LONG).await,
+        Some(Some(143)),
+        "log:\n{}",
+        run.log()
+    );
+}
+
+/// After a burst of commits and a rest, exactly one look runs its bundle step without a kept pack. The first look of
+/// the timer after the burst finds a moved head, and its git work leaves the timer; the keep follows that look at once, its line
+/// carries what came of the keep, and the bundle step of the next look reads the kept pack. Release 5.28 kept only after a second
+/// look of the same head, so two looks ran the slow step.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_after_a_burst_one_look_runs_its_bundle_step_without_a_kept_pack() {
+    let mut run = Run::start("b932-burst", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    let before = run.bundle_steps().len();
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    println!(
+        "TRIGGER PRESENT: the first look after a burst of 5 commits found a moved head and left the timer; release 5.28 keeps \
+         nothing after it"
+    );
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "the line of the first look after the burst carries the keep that followed it at once (keep= its milliseconds, kept= \
+         the bytes of the pack): {line}"
+    );
+    for content in ["second after the burst\n", "third after the burst\n"] {
+        assert!(
+            run.write_and_wait("a.txt", content, LONG).await.is_some(),
+            "log:\n{}",
+            run.log()
+        );
+    }
+    let steps = run.bundle_steps()[before..].to_vec();
+    assert_eq!(
+        steps,
+        vec![false, true, true],
+        "after the burst, the bundle steps of three looks: only the first runs without a kept pack (release 5.28: the first \
+         two); lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(keeps_started(&run.dir), 1, "one keep for the head");
+    ends_as_asked(&mut run).await;
+}
+
+/// (b), a pin: a head that moved while the look ran gets no keep at once. The engine commits while the stand-in holds the
+/// bundle step of the first look after the burst: the head the look read at its start is not the engine's head after the bundle
+/// step. Release 5.28 keeps nothing after such a look either.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_head_that_moved_while_the_look_ran_gets_no_keep_at_once() {
+    let mut run = Run::start("b932-moved", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |run| {
+            run.commit(99);
+        })
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    println!("TRIGGER PRESENT: the engine committed while the bundle step of that look was held");
+    assert_eq!(
+        (field(&line, "keep"), keeps_started(&run.dir)),
+        (Some("0"), 0),
+        "no keep follows at once a look during which the engine's head moved: {line}"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// (c), a pin: when the engine's packs changed between the look's start and its end, no keep follows at once. The engine's
+/// store is packed (`git repack -a -d`, what git's own `gc` does) while the stand-in holds the bundle step of the first look
+/// after the burst. Release 5.28 keeps nothing after such a look either.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_packs_that_changed_while_the_look_ran_get_no_keep_at_once() {
+    let mut run = Run::start("b932-packs", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let packs = run.d.worktree().join(".git/objects/pack");
+    let before: Vec<String> = names(&packs)
+        .into_iter()
+        .filter(|n| n.ends_with(".pack"))
+        .collect();
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |run| {
+            git(&run.d.worktree(), &["repack", "-a", "-d", "-q"]);
+        })
+        .await;
+    let after: Vec<String> = names(&packs)
+        .into_iter()
+        .filter(|n| n.ends_with(".pack"))
+        .collect();
+    assert_ne!(
+        before, after,
+        "TRIGGER PRESENT is not shown: the repack left the engine's packs as they were"
+    );
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    println!(
+        "TRIGGER PRESENT: the engine's packs changed while the bundle step of that look was held: {before:?} then {after:?}"
+    );
+    assert_eq!(
+        (field(&line, "keep"), keeps_started(&run.dir)),
+        (Some("0"), 0),
+        "no keep follows at once a look during which the engine's packs changed: {line}"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// A keep at once that git failed is followed by the rule of release 5.28. The stand-in fails the keep that follows
+/// the first look after the burst: its line says `missed`. The second look of the same head is then followed by a keep, once, as
+/// in release 5.28, and the third by none: no run is worse than under that rule.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_was_missed_is_followed_by_the_rule_of_the_second_look() {
+    let mut run = Run::start("b932-missed", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    std::fs::write(run.dir.join("keep-fail"), "").unwrap();
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(
+        field(&line, "keep"),
+        Some("missed"),
+        "the keep that followed the first look after the burst at once was missed, and its line says so: {line}"
+    );
+    std::fs::remove_file(run.dir.join("keep-fail")).unwrap();
+    let second = run
+        .write_and_wait("a.txt", "second after the burst\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(second).await;
+    assert!(
+        field(&line, "engine") == Some("same") && keep_ran(&line) && names_a_kept_pack(&line),
+        "the second look of the same head is followed by a keep, as in release 5.28: {line}"
+    );
+    let third = run
+        .write_and_wait("a.txt", "third after the burst\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(third).await;
+    assert_eq!(field(&line, "keep"), Some("0"), "{line}");
+    assert_eq!(
+        keeps_started(&run.dir),
+        2,
+        "the keep at once and the one keep of the second look"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// A keep at once that the next look cut is followed by the rule of release 5.28. The stand-in holds the keep that
+/// follows the first look after the burst until the next look starts: that look ends it, and its line says `ended`. That look is
+/// the second of the same head and is followed by a keep, once, as in release 5.28.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_that_was_cut_is_followed_by_the_rule_of_the_second_look() {
+    let mut run = Run::start("b932-cut", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.hold_the_keep();
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |_| {})
+        .await;
+    let pid = run.the_held_keep(first).await;
+    println!(
+        "TRIGGER PRESENT: a keep followed the first look after the burst at once and its git is held"
+    );
+    let from = run.bundles().len();
+    run.write("a.txt", "second after the burst\n");
+    assert!(
+        gone(pid).await,
+        "the look that started next ended the keep's git; log:\n{}",
+        run.log()
+    );
+    let _ = std::fs::remove_file(run.dir.join("keep-hold"));
+    let second = run
+        .wait_copy(from, "a.txt", "second after the burst\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(
+        field(&line, "keep"),
+        Some("ended"),
+        "the line of the look whose keep the next look cut: {line}"
+    );
+    let line = run.line_when_stored(second).await;
+    assert!(
+        field(&line, "engine") == Some("same") && keep_ran(&line) && names_a_kept_pack(&line),
+        "the second look of the same head is followed by a keep, as in release 5.28: {line}"
+    );
+    assert_eq!(
+        keeps_started(&run.dir),
+        2,
+        "the keep at once and the one keep of the second look"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// A keep that outlasts the tick of the timer is not cut. The second look of a head is the timer's and its bundle step
+/// is held for 2 s, so the spacing holds the look after it for 15 s where the tick comes after 3 s. The stand-in holds the keep
+/// that follows that look until the tick has passed: the keep's git still runs then, and when it is let go the keep runs to its
+/// end. The line of the look names its milliseconds and the bytes of the pack, not `ended`, and the bundle step of the next look
+/// reads the kept pack. Release 5.28 ended the keep at the tick and marked the head as tried: every later look ran the slow step.
+///
+/// The look that first finds the head stores no copy (the bucket refuses it), so that the keep is the one of the second look
+/// under both rules, whatever the machine does: the held look is the look of the tick that tries the refused copy again.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_that_outlasts_the_tick_is_not_cut() {
+    let mut run = Run::start("b932-tick", BURST_EVERY_MS, vec![retry_at_the_tick()]).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 3);
+    run.hold_the_keep();
+    let from = run.bundles().len();
+    run.first_look_of_a_head_stores_nothing("a.txt", "second, of the timer\n")
+        .await;
+    run.hold_the_bundle();
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step; log:\n{}",
+        run.log()
+    );
+    // The look started before its bundle step was seen: its tick comes 3 s after its start, so it has passed 3 s from now.
+    let tick_passed = tokio::time::Instant::now() + Duration::from_millis(BURST_EVERY_MS);
+    tokio::time::sleep(HELD).await;
+    run.let_the_bundle_go();
+    let second = run
+        .wait_copy(from, "a.txt", "second, of the timer\n", LONG)
+        .await
+        .unwrap();
+    let pid = run.the_held_keep(second).await;
+    tokio::time::sleep_until(tick_passed + Duration::from_millis(500)).await;
+    println!(
+        "TRIGGER PRESENT: the keep's git is held, and the tick of the look it follows (3 s after that look's start) passed half \
+         a second ago; the spacing holds the next look for 15 s"
+    );
+    assert!(
+        alive(pid)
+            && !run
+                .look_lines()
+                .iter()
+                .any(|l| field(l, "keep") == Some("ended")),
+        "the tick of the timer does not end a keep: its git still runs after the tick; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    let _ = std::fs::remove_file(run.dir.join("keep-hold"));
+    let line = run.line_when_stored(second).await;
+    left_the_timer(&line);
+    assert!(
+        field(&line, "engine") == Some("same") && keep_ran(&line) && names_a_kept_pack(&line),
+        "the keep that outlasted the tick ran to its end: the line names its milliseconds and the bytes of the pack: {line}"
+    );
+    let before = run.bundle_steps().len();
+    assert!(
+        run.write_and_wait("a.txt", "third\n", LONG).await.is_some(),
+        "log:\n{}",
+        run.log()
+    );
+    assert_eq!(
+        run.bundle_steps()[before..].to_vec(),
+        vec![true],
+        "the bundle step of the look after that keep reads the kept pack"
+    );
+    assert_eq!(keeps_started(&run.dir), 1);
+    ends_as_asked(&mut run).await;
+}
+
+/// What one turn of the tests of a look's start measured ([`next_look_after_a_held_one`]).
+struct NextLook {
+    /// How long after the copy of the held look was seen stored the copy of the look after it was seen stored.
+    took: Duration,
+    /// What the product's own rule allows for that at the most: the spacing after the held look (nine times its git work, between
+    /// one and five periods of the timer), the time the next look's own line names, and the two seconds a git that the worker
+    /// ends has to be gone.
+    allowed: Duration,
+    /// How many milliseconds after the spacing the next look started, as this turn can read it: `took`, less the time the next
+    /// look's own line names (its start), less the spacing computed from the held look's line (nine times its git work, at most
+    /// five periods of the timer). The machine and the test's own readings are in it, the same in a turn with the keep and in one
+    /// without.
+    late_ms: i64,
+    /// The lines of the held look and of the look after it.
+    lines: (String, String),
+}
+
+/// One turn of the tests of a look's start, with the keep on or off. A look of the timer has its bundle step held for
+/// [`SLOW`], so the spacing holds the look after it past its tick. With the keep on, the stand-in holds the keep that follows the
+/// held look without end; the look after the held one ends it.
+///
+/// `wake` false: the held look is the second look of a head, its keep is the keep of the second look, and the look after it
+/// is the timer's. The look that first finds that head stores no copy (the bucket refuses it), so that no keep at once
+/// follows it, whatever the machine does; the held look is the look of the tick that tries the refused copy again. `wake` true
+/// (ruling 37 (b) of the lead): the held look is the first look after a burst, a tool call ends while it runs, its keep is the
+/// keep at once, which starts after the task has taken the tool call's wake, and the look after it is the tool call's.
+async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> NextLook {
+    let mut more = vec![retry_at_the_tick()];
+    if !keep_on {
+        more.push(("AGENTD_DIRECT_KEEP_COMMITS", "0".to_string()));
+    }
+    let mut run = Run::start(label, BURST_EVERY_MS, more).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 3);
+    run.hold_the_keep();
+    let from = run.bundles().len();
+    let held_work = "written for the look whose bundle step is held\n";
+    if wake {
+        run.hold_the_bundle();
+        run.write("a.txt", held_work);
+    } else {
+        run.first_look_of_a_head_stores_nothing("a.txt", held_work)
+            .await;
+        run.hold_the_bundle();
+    }
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step after the write; log:\n{}",
+        run.log()
+    );
+    if wake {
+        run.tool_call_ends().await;
+        println!(
+            "TRIGGER PRESENT: a tool call ended while the bundle step of the first look after the burst was held: its wake is \
+             there when the look ends"
+        );
+    }
+    tokio::time::sleep(SLOW).await;
+    run.let_the_bundle_go();
+    assert!(
+        wait_for(LONG, || run.stored() > from).await,
+        "the look whose bundle step was held stores its copy; log:\n{}",
+        run.log()
+    );
+    let seen = Instant::now();
+    let held = run
+        .wait_copy(from, "a.txt", held_work, LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the copy of the held look holds its work; log:\n{}",
+                run.log()
+            )
+        });
+    if keep_on {
+        run.the_held_keep(held).await;
+    }
+    let from = run.bundles().len();
+    run.write("a.txt", "third, written while the keep's git was held\n");
+    assert!(
+        wait_for(LONG, || run.stored() > from).await,
+        "the copy of the look after the held one is stored; log:\n{}",
+        run.log()
+    );
+    let took = seen.elapsed();
+    assert!(
+        wait_for(LONG, || !run.line_of(from).is_empty()
+            && !run.line_of(held).is_empty())
+        .await,
+        "the worker's log has the lines of both looks; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    let (before, line) = (run.line_of(held), run.line_of(from));
+    left_the_timer(&before);
+    assert_eq!(
+        keeps_started(&run.dir),
+        usize::from(keep_on),
+        "TRIGGER PRESENT is not shown: the keep is {}; lines:\n{}",
+        if keep_on { "on" } else { "off" },
+        run.look_lines().join("\n")
+    );
+    assert_eq!(
+        (field(&before, "keep"), field(&line, "by")),
+        (
+            Some(if keep_on { "ended" } else { "0" }),
+            Some(if wake { "tool" } else { "timer" })
+        ),
+        "the look after the held one is the {} and its start ended the keep that was held; the held look: {before}; the look \
+         after it: {line}",
+        if wake { "tool call's" } else { "timer's" }
+    );
+    let wait = (9 * git_ms(&before)).clamp(BURST_EVERY_MS, 5 * BURST_EVERY_MS);
+    let allowed = Duration::from_millis(wait + ms_of(&line, "total")) + GIT_END;
+    let spacing = (9 * git_ms(&before)).min(5 * BURST_EVERY_MS);
+    let late_ms = i64::try_from(took.as_millis()).unwrap()
+        - i64::try_from(ms_of(&line, "total") + spacing).unwrap();
+    ends_as_asked(&mut run).await;
+    NextLook {
+        took,
+        allowed,
+        late_ms,
+        lines: (before, line),
+    }
+}
+
+/// What two readings of [`NextLook::late_ms`] can differ by with nothing between them: the stand-in sees within
+/// 50 ms that its bundle step is let go and the test sees a stored copy within 20 ms, twice in a turn; the lines name whole
+/// milliseconds, and the git work of the held look counts nine times in the spacing.
+const READING_MS: i64 = 150;
+/// How many pairs of turns, one with the keep and one without, [`the_keep_never_moves_the_start_of_the_next_look`]
+/// runs at most. A machine that is crowded for the length of one turn makes one pair differ; a keep that moves the start of a
+/// look makes every pair differ. So one pair of the five may show the look later with the keep on, and no more (ruling 43 (e)
+/// of the lead).
+const START_PAIRS: u32 = 5;
+
+/// The look after a held one starts at the same moment with the keep on and off. One pair of turns measures how long
+/// after the spacing the next look started ([`NextLook::late_ms`]): with the keep on and its git held without end, and with the
+/// keep off. With the keep on that look may start later than with the keep off by no more than what the turn without the keep
+/// itself shows as its distance from the spacing, or by [`READING_MS`] when that is more. A pair that differs by more shows
+/// the look later with the keep on. The test makes [`START_PAIRS`] pairs at the most and fails when more than one of them
+/// shows the look later with the keep on (ruling 43 (e) of the lead; before, one pair of the five that did not show it was
+/// enough to pass). It stops as soon as that is decided: after four pairs when none showed it, and after the second pair
+/// that shows it. It prints every pair's figures. Each turn also holds the upper bound of the product's own rule
+/// ([`NextLook::allowed`]).
+async fn the_keep_never_moves_the_start_of_the_next_look(label: &str, held: HeldLook) {
+    // Of each pair: the milliseconds after the spacing with the keep on and with the keep off, and whether the pair shows the
+    // look later with the keep on.
+    let mut figures: Vec<(i64, i64, bool)> = Vec::new();
+    for pair in 0..START_PAIRS {
+        let on = held.turn(&format!("{label}-on-{pair}"), true).await;
+        let off = held.turn(&format!("{label}-off-{pair}"), false).await;
+        println!(
+            "pair {pair}: the look after the held one started {} ms after the spacing with the keep on and held (its copy {:?} \
+             after the held look's copy was seen, allowed {:?}), {} ms after it with the keep off ({:?}, allowed {:?})\n\
+             keep on, the held look: {}\nkeep on, the look after it: {}\nkeep off, the held look: {}\nkeep off, the look after \
+             it: {}",
+            on.late_ms,
+            on.took,
+            on.allowed,
+            off.late_ms,
+            off.took,
+            off.allowed,
+            on.lines.0,
+            on.lines.1,
+            off.lines.0,
+            off.lines.1
+        );
+        assert!(
+            on.took <= on.allowed,
+            "with the keep's git held without end the next look's copy was stored {:?} after the held look's copy was seen; the \
+             spacing, the look's own time and the time a git has to end allow {:?}: the keep held the look",
+            on.took,
+            on.allowed
+        );
+        assert!(
+            off.took <= off.allowed,
+            "TRIGGER PRESENT is not shown: with the keep off the next look's copy was stored {:?} after the held look's copy \
+             was seen, more than the {:?} the rule allows: the machine, not a keep, held the look",
+            off.took,
+            off.allowed
+        );
+        let bound = READING_MS.max(off.late_ms);
+        figures.push((on.late_ms, off.late_ms, on.late_ms - off.late_ms > bound));
+        if start_pairs_say(later_of(&figures), pair + 1).is_some() {
+            break;
+        }
+    }
+    let (later, made) = (later_of(&figures), u32::try_from(figures.len()).unwrap());
+    println!(
+        "every pair's figures (milliseconds after the spacing with the keep on, the same with the keep off, whether the pair \
+         shows the look later with the keep on): {figures:?}"
+    );
+    assert_eq!(
+        start_pairs_say(later, made),
+        Some(true),
+        "in {later} of {made} pairs of turns the look after the held one started later with the keep on than with the keep off, \
+         by more than the turn without the keep shows; one pair of {START_PAIRS} may (milliseconds after the spacing with the \
+         keep on, the same with the keep off, whether the pair shows it): {figures:?}: a keep moved the start of a look"
+    );
+}
+
+/// How many of the pairs of turns show the look later with the keep on.
+fn later_of(figures: &[(i64, i64, bool)]) -> u32 {
+    u32::try_from(figures.iter().filter(|pair| pair.2).count()).unwrap()
+}
+
+/// (f), ruling 43 (e) of the lead: what the pairs of turns made so far say, when `later` of the `made` pairs show the
+/// look later with the keep on. `Some(false)`: more than one pair shows it, a keep moved the start of a look. `Some(true)`:
+/// at most one pair shows it, and the pairs still to come of [`START_PAIRS`] cannot change that. `None`: not decided, one
+/// more pair is made.
+fn start_pairs_say(later: u32, made: u32) -> Option<bool> {
+    let to_come = START_PAIRS.saturating_sub(made);
+    if later > 1 {
+        Some(false)
+    } else if later + to_come <= 1 {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// The tests of a look's start fail when more than one pair of five shows the look later
+/// with the keep on. No pair later: decided after four pairs, because the fifth alone cannot fail the test. One pair later:
+/// all five are made, and the test passes. Two pairs later: the test fails at once. Before, the first pair that did not show
+/// the look later passed the test, so four pairs of five could show it.
+#[test]
+fn b932_the_start_tests_fail_when_more_than_one_pair_of_five_shows_the_look_later() {
+    for made in 1..=3 {
+        assert_eq!(start_pairs_say(0, made), None, "no pair later, {made} made");
+    }
+    assert_eq!(start_pairs_say(0, 4), Some(true));
+    for made in 1..=4 {
+        assert_eq!(
+            start_pairs_say(1, made),
+            None,
+            "one pair later, {made} made"
+        );
+    }
+    assert_eq!(start_pairs_say(1, 5), Some(true));
+    for made in 2..=5 {
+        assert_eq!(
+            start_pairs_say(2, made),
+            Some(false),
+            "two pairs later, {made} made"
+        );
+    }
+    assert_eq!(start_pairs_say(5, 5), Some(false));
+}
+
+/// (f), a pin: a keep in flight never moves the start of a look. The look after a look that left the timer starts when the
+/// spacing says, with the keep on and its git held without end, and with the keep off: the start of that look, read from its
+/// own line, lies as far behind the spacing in both turns, and in both its copy is stored within what the product's own rule
+/// allows. Release 5.28 holds this too (its keep ends at the tick, before the spacing has run out).
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_in_flight_never_moves_the_start_of_a_look() {
+    the_keep_never_moves_the_start_of_the_next_look("b932-start", HeldLook::SecondOfTheTimer).await;
+}
+
+/// A keep at once that started after a taken wake never moves the start of the tool call's
+/// look. A tool call ends while the first slow look after a burst runs. The keep at once starts in the wait that follows the
+/// taken wake, and its git is held without end: the look that the tool call asked for starts when the spacing says, as with the
+/// keep off, and its start ends the keep. Before, the taken wake left that keep unstarted.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_after_a_taken_wake_never_moves_the_start_of_the_tool_calls_look() {
+    the_keep_never_moves_the_start_of_the_next_look("b932-start-wake", HeldLook::FirstWithAWake)
+        .await;
+}
+
+/// A tool call that ends while a keep runs does not end it; the look that the tool call starts does. The look a keep
+/// follows had its bundle step held for 2 s, so the look that a tool call asks for is held by the spacing for 18 s. A tool call
+/// ends while the keep's git is held; then the keep is let go: it runs to its end, and the line of its look names its
+/// milliseconds and the bytes of the pack. Release 5.28 ended the keep at the tool call's wake. The copy that the wake asked for
+/// is stored by a look that the tool call started: the wake is not lost. (A request to end ends a keep, as before:
+/// `b860_kept_a_stop_is_not_held_by_the_keep`.)
+///
+/// The timer is ten minutes: the look a keep follows is the timer's by the tick that tries a refused copy again, which comes
+/// 10 s after the refused look started here, so that the test has the time to hold its bundle step.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_tool_call_that_ends_while_a_keep_runs_does_not_end_it() {
+    let mut run = Run::start(
+        "b932-wake",
+        NO_TICK_MS,
+        vec![("AGENTD_DIRECT_SNAPSHOT_RETRY_MS", "10000".to_string())],
+    )
+    .await;
+    run.hold_the_keep();
+    run.commit(1);
+    let from = run.bundles().len();
+    run.write("g.txt", "found by the look of a tool call\n");
+    run.tool_call_ends().await;
+    assert!(
+        run.wait_copy(from, "g.txt", "found by the look of a tool call\n", LONG)
+            .await
+            .is_some(),
+        "log:\n{}",
+        run.log()
+    );
+    // The bucket refuses the copy of the second tool call's look; the tick that tries it again is the timer's, at the same head.
+    let key = keys::snapshot_bundle_key(RUN);
+    let attempts = run.d.aws.put_attempts(&key);
+    let from = run.bundles().len();
+    run.d.aws.fail_puts("snapshot.bundle", 4);
+    let refused = "in the copy the bucket refused, and in the copy of the tick that tried again\n";
+    run.write("g.txt", refused);
+    run.tool_call_ends().await;
+    assert!(
+        wait_for(LONG, || run.d.aws.put_attempts(&key) >= attempts + 4).await,
+        "TRIGGER PRESENT is not shown: the bucket did not refuse the copy of the second tool call's look; log:\n{}",
+        run.log()
+    );
+    run.hold_the_bundle();
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: the tick that tries the copy again did not reach its bundle step; log:\n{}",
+        run.log()
+    );
+    tokio::time::sleep(HELD).await;
+    run.let_the_bundle_go();
+    let index = run
+        .wait_copy(from, "g.txt", refused, LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the tick that tries a refused copy again stores it; log:\n{}",
+                run.log()
+            )
+        });
+    let pid = run.the_held_keep(index).await;
+
+    // A third tool call ends while the keep's git is held: agentd has seen it end, so the copy task was woken.
+    let at_the_call = "written when the third tool call ended\n";
+    let from = run.bundles().len();
+    run.write("g.txt", at_the_call);
+    run.tool_call_ends().await;
+    println!(
+        "TRIGGER PRESENT: a tool call ended while the keep's git (process {pid}) was held; the look it asks for is held by the \
+         spacing for nine times the 2 s of the look before"
+    );
+    let _ = std::fs::remove_file(run.dir.join("keep-hold"));
+    let line = run.line_when_stored(index).await;
+    assert!(
+        git_ms(&line) >= 2_000,
+        "TRIGGER PRESENT is not shown: the look the keep follows took less than the 2 s its bundle step was held: {line}"
+    );
+    assert!(
+        field(&line, "by") == Some("timer") && keep_ran(&line) && names_a_kept_pack(&line),
+        "a tool call that ended while the keep ran did not end it: the keep ran to its end, and the line of its look names its \
+         milliseconds and the bytes of the pack: {line}"
+    );
+    let found = run.wait_copy(from, "g.txt", at_the_call, LONG).await;
+    assert!(
+        found.is_some(),
+        "the copy that the tool call's wake asked for is stored (the timer is ten minutes): the wake is not lost; log:\n{}",
+        run.log()
+    );
+    let line = run.line_when_stored(found.unwrap()).await;
+    assert_eq!(
+        field(&line, "by"),
+        Some("tool"),
+        "the look that stored that copy was the tool call's: {line}"
+    );
+    assert_eq!(keeps_started(&run.dir), 1);
+    ends_as_asked(&mut run).await;
+}
+
+/// A tool call that ends while the first slow look after a burst runs does not cost that look
+/// its keep at once. The wake of the tool call is there when the look ends, and the copy task takes it before it turns to the
+/// keep. The keep at once starts all the same, in the wait for the floor and the spacing that follows the taken wake: the line
+/// of the slow look names the keep's milliseconds and the bytes of the pack, the look that the tool call asked for is the tool
+/// call's, and its bundle step reads the kept pack. Before, a taken wake left that keep unstarted (`keep=0`), and the next look
+/// ran its bundle step without a kept pack again.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_tool_call_that_ends_while_the_slow_look_runs_does_not_cost_the_keep_at_once() {
+    let mut run = Run::start("b932-wake-pending", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    let before = run.bundle_steps().len();
+    run.burst(1, 5);
+    run.hold_the_bundle();
+    let from = run.bundles().len();
+    run.write("a.txt", "first after the burst\n");
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step after the write; log:\n{}",
+        run.log()
+    );
+    run.tool_call_ends().await;
+    println!(
+        "TRIGGER PRESENT: a tool call ended while the bundle step of the first look after the burst was held: its wake is there \
+         when the look ends"
+    );
+    tokio::time::sleep(SLOW).await;
+    run.let_the_bundle_go();
+    let first = run
+        .wait_copy(from, "a.txt", "first after the burst\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look whose bundle step was held stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let second = run
+        .write_and_wait(
+            "a.txt",
+            "second, for the look the tool call asked for\n",
+            LONG,
+        )
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look that the tool call asked for stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line = run.line_when_stored(first).await;
+    let next = run.line_when_stored(second).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    assert_eq!(
+        field(&next, "by"),
+        Some("tool"),
+        "TRIGGER PRESENT is not shown: the look after the held one was not the tool call's, so the copy task did not take the \
+         wake before it turned to the keep: {next}"
+    );
+    println!(
+        "TRIGGER PRESENT: the copy task took the tool call's wake after the first slow look of the timer, on a head and packs \
+         that stood still: {line}\nthe look the tool call asked for: {next}"
+    );
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "a keep follows the first slow look after the burst at once, also when a tool call's wake was taken first (keep= its \
+         milliseconds, kept= the bytes of the pack): {line}; the look the tool call asked for: {next}"
+    );
+    assert_eq!(
+        run.bundle_steps()[before..].to_vec(),
+        vec![false, true],
+        "the bundle step of the tool call's look reads the kept pack; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(keeps_started(&run.dir), 1, "one keep for the head");
+    ends_as_asked(&mut run).await;
+}
+
+/// (h), a pin: a look that the spacing does not hold past its tick keeps the rule of release 5.28. The timer is ten
+/// minutes, so no look of this test leaves it. The first look of the timer that finds the engine's new head is followed by no
+/// keep; the next look of the timer, of the same head, is followed by one.
+///
+/// A look of the timer comes without waiting for the timer: the bucket refuses the copy of a tool call's look, and the tick that
+/// tries it again is the timer's, 10 s after the refused look started here, so that the engine's commit falls before it.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_look_that_stays_on_the_timer_gets_no_keep_at_once() {
+    let mut run = Run::start(
+        "b932-cheap",
+        NO_TICK_MS,
+        vec![("AGENTD_DIRECT_SNAPSHOT_RETRY_MS", "10000".to_string())],
+    )
+    .await;
+    let key = keys::snapshot_bundle_key(RUN);
+    let mut found = Vec::new();
+    for (round, content) in [
+        (1, "refused first, before the engine's commit\n"),
+        (2, "refused again, at the same head\n"),
+    ] {
+        let attempts = run.d.aws.put_attempts(&key);
+        let from = run.bundles().len();
+        run.d.aws.fail_puts("snapshot.bundle", 4);
+        run.write("h.txt", content);
+        run.tool_call_ends().await;
+        assert!(
+            wait_for(LONG, || run.d.aws.put_attempts(&key) >= attempts + 4).await,
+            "TRIGGER PRESENT is not shown: the bucket did not refuse the copy of the tool call's look; log:\n{}",
+            run.log()
+        );
+        if round == 1 {
+            // The refused look read the head the run started from; the look of the tick finds the engine's commit.
+            run.commit(1);
+        }
+        let index = run
+            .wait_copy(from, "h.txt", content, LONG)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "the tick that tries a refused copy again stores it; log:\n{}",
+                    run.log()
+                )
+            });
+        found.push(run.line_when_stored(index).await);
+    }
+    let (first, second) = (&found[0], &found[1]);
+    assert_eq!(
+        (field(first, "by"), field(first, "engine")),
+        (Some("timer"), Some("moved")),
+        "TRIGGER PRESENT is not shown: the first look of the timer did not find the engine's new head: {first}"
+    );
+    println!(
+        "TRIGGER PRESENT: a look of a timer of ten minutes found a moved head; its git work took {} ms, which holds no look \
+         past a tick: {first}",
+        git_ms(first)
+    );
+    assert_eq!(
+        field(first, "keep"),
+        Some("0"),
+        "a look that stays on the timer is followed by no keep at once: {first}"
+    );
+    assert!(
+        (field(second, "by"), field(second, "engine")) == (Some("timer"), Some("same"))
+            && keep_ran(second)
+            && names_a_kept_pack(second),
+        "the second look of the timer of the same head is followed by a keep, as in release 5.28: {second}"
+    );
+    assert_eq!(keeps_started(&run.dir), 1);
+    ends_as_asked(&mut run).await;
+}
+
+/// (i), finding 9 of the challenge: what a short run pays. A run whose engine ends its turn right after the first look
+/// after its burst pays one keep, the one that follows that look at once: one `pack-objects` of the run's commits, whose pack no
+/// later look reads. Release 5.28 paid none in such a run, because its keep waited for a second look. The copy of the end is
+/// stored and holds the work.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_short_run_pays_the_one_keep_after_its_burst() {
+    let run = Run::start("b932-short", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let last = "the last work of a short run\n";
+    let first = run.held_look("a.txt", last, SLOW, |_| {}).await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "the keep followed the one look after the burst at once: {line}"
+    );
+    std::fs::write(&run.steps, "1000000\n").unwrap();
+    assert!(
+        wait_for(LONG, || run
+            .records()
+            .last()
+            .is_some_and(|r| r["final"] == true))
+        .await,
+        "the engine's turn ends with the copy of the end; log:\n{}",
+        run.log()
+    );
+    assert_eq!(
+        keeps_started(&run.dir),
+        1,
+        "a short run pays one keep after its burst: one pack-objects, and no second one"
+    );
+    println!(
+        "a short run paid one keep of {} ms for a pack of {} bytes that no later look read: {line}",
+        field(&line, "keep").unwrap_or_default(),
+        field(&line, "kept").unwrap_or_default()
+    );
+    assert_eq!(
+        run.file_of(run.bundles().len() - 1, "a.txt").as_deref(),
+        Some(last),
+        "the copy of the end holds the work"
+    );
+}
+
+/// (i), finding 10 of the challenge: a look that is slow for another reason than loose commits. The engine's store is
+/// packed before the look (nothing of the run's commits is loose), and the stand-in holds the look's bundle step: the look
+/// leaves the timer all the same, so a keep follows it at once. That keep costs two git calls: the one read of the engine's head
+/// after the bundle step, and one `pack-objects` that finds nothing to pack and writes nothing. Its line names the keep's
+/// milliseconds and no kept pack.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_look_that_is_slow_for_another_reason_costs_two_git_calls() {
+    let mut run = Run::start("b932-other", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 3);
+    git(&run.d.worktree(), &["repack", "-a", "-d", "-q"]);
+    let calls = git_calls(&run.dir).len();
+    let first = run
+        .held_look(
+            "a.txt",
+            "first, after the engine packed its store\n",
+            SLOW,
+            |_| {},
+        )
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    let window = git_calls(&run.dir)[calls..].to_vec();
+    let head_reads = window
+        .iter()
+        .filter(|call| call.ends_with("rev-parse HEAD"))
+        .count();
+    let keeps = window.iter().filter(|call| is_the_keep(call)).count();
+    println!(
+        "the git calls from the write to the look's line: {:?}",
+        window
+            .iter()
+            .map(|call| b860_kept_support::command_of(call))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (head_reads, keeps),
+        (2, 1),
+        "the keep at once after a look that is slow for another reason: one read of the engine's head more than the look's own, \
+         and one pack-objects; calls:\n{}",
+        window.join("\n")
+    );
+    assert!(
+        keep_ran(&line) && field(&line, "kept") == Some("0"),
+        "that keep found nothing to pack: its line names its milliseconds and no kept pack: {line}"
+    );
+    assert!(
+        !names(&run.private().join("kept/pack"))
+            .iter()
+            .any(|n| n.ends_with(".pack")),
+        "no pack is kept"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// Steady commits get one keep, for their first burst. The keep at once follows a look only
+/// when that look read no kept pack. After the keep that follows the first slow look, the engine commits once before each of
+/// three more looks of the timer; each of them finds a moved head, leaves the timer (its bundle step is held, which stands for
+/// any slow step) and reads the kept pack: none is followed by a keep, as in release 5.28. Without the rule a keep followed
+/// every one of them, and each packed every unpacked object of the run again: four keeps where release 5.28 makes one.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_steady_commits_get_one_keep_for_their_first_burst() {
+    let mut run = Run::start("b932-steady", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "TRIGGER PRESENT is not shown: no keep followed the first look after the burst at once: {line}"
+    );
+    let before = run.bundle_steps().len();
+    let mut lines = Vec::new();
+    for round in 0..3u32 {
+        run.commit(100 + round);
+        let index = run
+            .held_look("a.txt", &format!("after commit {round}\n"), SLOW, |_| {})
+            .await;
+        let line = run.line_when_stored(index).await;
+        left_the_timer(&line);
+        assert_eq!(
+            field(&line, "engine"),
+            Some("moved"),
+            "TRIGGER PRESENT is not shown: the look after commit {round} did not find a moved head: {line}"
+        );
+        lines.push(line);
+    }
+    assert_eq!(
+        run.bundle_steps()[before..].to_vec(),
+        vec![true, true, true],
+        "TRIGGER PRESENT is not shown: the three looks on a moved head did not all read the kept pack; lines:\n{}",
+        lines.join("\n")
+    );
+    println!(
+        "TRIGGER PRESENT: three looks of the timer, each on a moved head, each left the timer and read the kept pack; keeps \
+         started: {}; lines:\n{}",
+        keeps_started(&run.dir),
+        lines.join("\n")
+    );
+    let keeps = keeps_started(&run.dir);
+    ends_as_asked(&mut run).await;
+    assert_eq!(
+        keeps,
+        1,
+        "one keep for the first burst; a look on a moved head that read the kept pack is followed by no keep, as in release \
+         5.28; lines:\n{}",
+        lines.join("\n")
+    );
+    for line in &lines {
+        assert_eq!(
+            field(line, "keep"),
+            Some("0"),
+            "no keep follows a look that read the kept pack on a moved head: {line}"
+        );
+    }
+}
+
+/// (ruling 37 (c) of the lead), a pin: a second burst after a kept pack keeps the rule of release 5.28. After the keep
+/// that follows the first slow look, the engine commits five times more. The first look of the timer after that burst finds a
+/// moved head, leaves the timer and reads the kept pack: no keep follows it at once. The second look of that head is followed
+/// by a keep, once, and the third by none: the keep after a second look of the same head, as.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_second_burst_after_a_kept_pack_keeps_the_rule_of_the_second_look() {
+    let mut run = Run::start("b932-second-burst", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the first burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "TRIGGER PRESENT is not shown: no keep followed the first look after the first burst at once: {line}"
+    );
+    let before = run.bundle_steps().len();
+    run.burst(100, 5);
+    let first = run
+        .held_look("a.txt", "first after the second burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+    assert_eq!(
+        run.bundle_steps()[before..].to_vec(),
+        vec![true],
+        "TRIGGER PRESENT is not shown: the first look after the second burst did not read the kept pack: {line}"
+    );
+    println!(
+        "TRIGGER PRESENT: the first look after a second burst found a moved head, left the timer and read the kept pack: {line}"
+    );
+    assert_eq!(
+        (field(&line, "keep"), keeps_started(&run.dir)),
+        (Some("0"), 1),
+        "no keep follows at once a look that read the kept pack: {line}"
+    );
+    let second = run
+        .write_and_wait("a.txt", "second after the second burst\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(second).await;
+    assert!(
+        (field(&line, "by"), field(&line, "engine")) == (Some("timer"), Some("same"))
+            && keep_ran(&line)
+            && names_a_kept_pack(&line),
+        "the second look of the same head is followed by a keep, as in release 5.28: {line}"
+    );
+    let third = run
+        .write_and_wait("a.txt", "third after the second burst\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(third).await;
+    assert_eq!(field(&line, "keep"), Some("0"), "{line}");
+    assert_eq!(
+        keeps_started(&run.dir),
+        2,
+        "the keep at once of the first burst and the one keep of the second look after the second burst"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// A keep at once that did not end as kept is tried once and not again until a keep is
+/// kept. The stand-in fails the `pack-objects` of every keep. The engine commits once before each of four looks of the
+/// timer; each look leaves the timer, finds a moved head and reads no kept pack. The keep at once that follows the first is
+/// missed, and no keep follows the other three. Before the mark each of the four started a `pack-objects` over every
+/// unpacked object of the run, where release 5.28 starts none in this sequence: no head is found twice. Between two kept
+/// packs at most one keep at once is not kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_steady_commits_whose_keeps_at_once_fail_get_one_keep_at_once() {
+    let mut run = Run::start("b932-steady-fail", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    std::fs::write(run.dir.join("keep-fail"), "").unwrap();
+    run.burst(1, 5);
+    let mut lines = Vec::new();
+    for round in 0..4u32 {
+        if round > 0 {
+            run.commit(100 + round);
+        }
+        let index = run
+            .held_look("a.txt", &format!("look {round}\n"), SLOW, |_| {})
+            .await;
+        let line = run.line_when_stored(index).await;
+        left_the_timer(&line);
+        assert_eq!(field(&line, "engine"), Some("moved"), "{line}");
+        lines.push(line);
+    }
+    let keeps = keeps_started(&run.dir);
+    let steps = run.bundle_steps();
+    println!(
+        "keeps started over four moved heads: {keeps}; bundle steps (true: read a kept pack): {steps:?}\nthe lines of the four \
+         looks:\n{}",
+        lines.join("\n")
+    );
+    assert_eq!(
+        field(&lines[0], "keep"),
+        Some("missed"),
+        "TRIGGER PRESENT is not shown: the keep at once after the first look was not missed: {}",
+        lines[0]
+    );
+    assert!(
+        steps.iter().all(|kept| !kept),
+        "TRIGGER PRESENT is not shown: a look read a kept pack; bundle steps {steps:?}"
+    );
+    println!(
+        "TRIGGER PRESENT: four looks of the timer left the timer, each on a moved head and without a kept pack, and the keep \
+         at once after the first was missed"
+    );
+    assert_eq!(
+        keeps,
+        1,
+        "a keep at once that was not kept is tried once and not again until a keep is kept: one keep over four moved heads; \
+         lines:\n{}",
+        lines.join("\n")
+    );
+    for line in &lines[1..] {
+        assert_eq!(
+            field(line, "keep"),
+            Some("0"),
+            "no keep follows the look: {line}"
+        );
+    }
+    ends_as_asked(&mut run).await;
+}
+
+/// The lines of the worker's log that name a refused file call or a look that failed.
+fn refused_or_failed(log: &str) -> Vec<String> {
+    log.lines()
+        .filter(|l| l.contains("has not answered an earlier call") || l.contains(" failed "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A request to end ends the wait that a
+/// keep runs through. The bundle step of the first look after a burst is held for 2 s, so the spacing holds the look after
+/// it for 15 s, five periods of the 3 s timer, and the stand-in holds the `pack-objects` of the keep at once that follows
+/// it. Once the tick of the timer has passed, the copy task is in its second wait, for the floor and the spacing, with the
+/// keep as one arm: the request to end comes there. With `wake` a tool call ended while the slow look ran, so that second
+/// wait is the one after a taken wake (ruling 37 (b)).
+///
+/// The worker ends as the signal asks while the spacing still has seconds to run, the copy that the request asked for
+/// holds the work written right before it, no look fails, and the held git is gone. A wait that did not take the request
+/// would end with the spacing: the worker would end after it, and what the test asserts is that order, not a number of
+/// seconds of its own. The spacing ends no sooner than 15 s after the held bundle step was let go, because the git work of
+/// that look ends after that moment.
+async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: bool) {
+    let mut run = Run::start(label, BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    run.hold_the_keep();
+    run.hold_the_bundle();
+    let from = run.bundles().len();
+    run.write("a.txt", "first after the burst\n");
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step; log:\n{}",
+        run.log()
+    );
+    // The look started before its bundle step was seen: its tick comes 3 s after its start, so it has passed 3 s from now.
+    let tick_passed = tokio::time::Instant::now() + Duration::from_millis(BURST_EVERY_MS);
+    if wake {
+        run.tool_call_ends().await;
+    }
+    tokio::time::sleep(HELD).await;
+    run.let_the_bundle_go();
+    let spacing_ends = Instant::now() + Duration::from_millis(5 * BURST_EVERY_MS);
+    let first = run
+        .wait_copy(from, "a.txt", "first after the burst\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look whose bundle step was held stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let pid = run.the_held_keep(first).await;
+    tokio::time::sleep_until(tick_passed + Duration::from_millis(500)).await;
+    assert!(
+        alive(pid),
+        "TRIGGER PRESENT is not shown: the pack-objects of the keep at once is no longer held; log:\n{}",
+        run.log()
+    );
+    assert_eq!(
+        (run.stored(), run.line_of(first).is_empty()),
+        (first + 1, true),
+        "TRIGGER PRESENT is not shown: a look ran before the request to end, or the held look's line does not wait for its \
+         keep (copies stored, the line still waits); log:\n{}",
+        run.log()
+    );
+    let left = spacing_ends.saturating_duration_since(Instant::now());
+    assert!(
+        left > Duration::from_secs(6),
+        "TRIGGER PRESENT is not shown: the spacing after the slow look had only {left:?} to run when the request to end was \
+         to come"
+    );
+    println!(
+        "TRIGGER PRESENT: the pack-objects of a keep at once (process {pid}) is held, the tick of the timer has passed, and \
+         the spacing of 15 s after the slow look has at least {left:?} to run (a tool call's wake was taken first: {wake})"
+    );
+    let last = "written right before the request to end\n";
+    let from = run.bundles().len();
+    run.write("a.txt", last);
+    let asked = Instant::now();
+    run.d.process.as_ref().unwrap().signal("TERM");
+    let exit = exit_of(&mut run, LONG).await;
+    let took = asked.elapsed();
+    let refused = refused_or_failed(&run.log());
+    let holds =
+        (from..run.bundles().len()).any(|i| run.file_of(i, "a.txt").as_deref() == Some(last));
+    let is_gone = gone(pid).await;
+    println!(
+        "the worker ended ({exit:?}) {} ms after the request, and the spacing had at least {} ms to run then; a stored copy \
+         holds the work written before the request: {holds}; the held pack-objects is gone: {is_gone}; keeps started: {}\n\
+         look lines:\n{}\nrefused or failed:\n{}",
+        took.as_millis(),
+        left.as_millis(),
+        keeps_started(&run.dir),
+        run.look_lines().join("\n"),
+        refused.join("\n")
+    );
+    assert_eq!(
+        exit,
+        Some(Some(143)),
+        "the worker ends as the signal asks; log:\n{}",
+        run.log()
+    );
+    assert!(
+        took + Duration::from_secs(2) < left,
+        "a request to end ends the wait that a keep runs through: the worker ended {} ms after the request, and the spacing \
+         after the slow look had at least {} ms to run then: the wait for the spacing held the request",
+        took.as_millis(),
+        left.as_millis()
+    );
+    assert!(
+        holds,
+        "the copy that the request to end asked for holds the work written before the request"
+    );
+    assert!(
+        refused.is_empty(),
+        "no look fails because of a keep:\n{}",
+        refused.join("\n")
+    );
+    assert!(
+        is_gone,
+        "the git of the keep that the request ended is gone"
+    );
+}
+
+/// A request to end while a keep at once packs, after the tick of the timer has passed,
+/// ends the wait for the spacing ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_request_to_end_ends_the_wait_for_the_spacing_that_a_keep_runs_through() {
+    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-tick", false).await;
+}
+
+/// A request to end while a keep at once packs in the wait that follows a taken wake of a
+/// tool call ends that wait ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_request_to_end_ends_the_wait_after_a_taken_wake_that_a_keep_runs_through() {
+    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-wake", true).await;
+}
+
+// ----, ruling 43 (d) of the lead: rule B also follows the copy after a tool call ----------------------------------------------
+//
+// The first look after a burst is a tool call's when the burst ends while the copy task waits for its tick. The turns of these
+// tests have a timer of 10 s ([`TOOL_EVERY_MS`]), so that no tick comes before the tool call's wake is taken and the burst falls
+// before the first look, whatever the machine does. A look leaves that timer when its git work takes more than a tenth of it,
+// 1 s; the stand-in holds the bundle step of the tool call's look for [`TOOL_SLOW`], and each test reads from the look's own
+// line that it did (TRIGGER PRESENT).
+
+/// The retry time of the turns whose first look of a head stores no copy and whose second look the test holds
+/// ([`Run::first_look_of_a_head_stores_nothing`]): 3 s, the timer of those turns. The tick that tries the refused copy again
+/// then comes 3 s after the refused look started, and the test has that long to place its hold after the bucket's refusal.
+fn retry_at_the_tick() -> (&'static str, String) {
+    ("AGENTD_DIRECT_SNAPSHOT_RETRY_MS", "3000".to_string())
+}
+
+/// The timer of the tests whose first look after a burst is a tool call's: 10 s. The spacing holds the
+/// look after a look past its tick when the git work of that look took more than a tenth of the timer: 1 s.
+const TOOL_EVERY_MS: u64 = 10_000;
+/// How long the stand-in holds the bundle step of a tool call's look that is to leave the timer of
+/// [`TOOL_EVERY_MS`]: 1.5 s. The spacing after such a look is nine times its git work, 13.5 s at the least.
+const TOOL_SLOW: Duration = Duration::from_millis(1_500);
+
+impl Run {
+    /// A tool call's look whose bundle step the stand-in holds for `held`. `content` is written into
+    /// `file`, a tool call of the engine ends, the look it asks for is held in its bundle step, and after `held` the step goes
+    /// on. The answer is the index of the copy that look stored. One tool call of the engine is used.
+    async fn held_look_of_a_tool_call(&self, file: &str, content: &str, held: Duration) -> usize {
+        self.hold_the_bundle();
+        let from = self.bundles().len();
+        self.write(file, content);
+        self.tool_call_ends().await;
+        assert!(
+            wait_for(LONG, || self.dir.join("bundle-running").exists()).await,
+            "TRIGGER PRESENT is not shown: no look reached its bundle step after the tool call ended; log:\n{}",
+            self.log()
+        );
+        tokio::time::sleep(held).await;
+        self.let_the_bundle_go();
+        self.wait_copy(from, file, content, LONG)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "the tool call's look whose bundle step was held stores its copy; log:\n{}",
+                    self.log()
+                )
+            })
+    }
+
+    /// A turn with the timer of [`TOOL_EVERY_MS`], once the copy of the session's start is stored.
+    async fn start_for_a_tool_calls_look(label: &str, more: Vec<(&'static str, String)>) -> Self {
+        let run = Self::start(label, TOOL_EVERY_MS, more).await;
+        assert!(
+            wait_for(LONG, || run.stored() >= 1).await,
+            "the copy of the session's start is stored; log:\n{}",
+            run.log()
+        );
+        run
+    }
+}
+
+/// The look of `line` was a tool call's and its git work took more than a tenth of the timer of
+/// [`TOOL_EVERY_MS`]: the spacing holds the look after it past its tick. Says so for the record; a look that did not is a test
+/// that did not show its trigger.
+fn a_tool_calls_look_left_the_timer(line: &str) {
+    assert_eq!(
+        field(line, "by"),
+        Some("tool"),
+        "TRIGGER PRESENT is not shown: the held look was not the tool call's: {line}"
+    );
+    let git = git_ms(line);
+    assert!(
+        git > TOOL_EVERY_MS / 10,
+        "TRIGGER PRESENT is not shown: the git work of the held look took {git} ms, no more than a tenth of the timer: {line}"
+    );
+    println!(
+        "TRIGGER PRESENT: a tool call's look under a timer of {TOOL_EVERY_MS} ms whose git work took {git} ms (more than {} \
+         ms): the spacing holds the next look past its tick: {line}",
+        TOOL_EVERY_MS / 10
+    );
+}
+
+/// Rule B also follows the copy after a tool call. When a burst of commits ends while the
+/// copy task waits for its tick, the wake of the next tool call is taken first, and the first look after the burst is the
+/// tool call's. Its git work leaves the timer, the engine's head and packs stand still while it runs, and it reads no kept
+/// pack: the keep follows it at once and stands on the tool call's own line, and the bundle step of the next look reads the
+/// kept pack. After the burst exactly one look runs its bundle step without a kept pack. Before, a keep followed only a look
+/// of the timer: no keep followed the tool call's look, and the next look ran its bundle step without a kept pack again, as in
+/// release 5.28.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_burst_whose_first_look_is_a_tool_calls_gets_its_keep_at_once() {
+    let mut run = Run::start_for_a_tool_calls_look("b932-tool-first", Vec::new()).await;
+    run.burst(1, 5);
+    let first = run
+        .held_look_of_a_tool_call("a.txt", "first after the burst\n", TOOL_SLOW)
+        .await;
+    let line1 = run.line_when_stored(first).await;
+    a_tool_calls_look_left_the_timer(&line1);
+    assert_eq!(field(&line1, "engine"), Some("moved"), "{line1}");
+    let second = run
+        .write_and_wait("a.txt", "second, of the same head\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look after the tool call's stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line2 = run.line_when_stored(second).await;
+    // The bundle steps of the looks from the tool call's on: one for each copy stored since, the last ones of the turn.
+    let steps = run.bundle_steps();
+    let after = steps[steps.len() - (run.stored() - first)..].to_vec();
+    println!(
+        "line 1: {line1}\nline 2: {line2}\nkeeps started: {}; bundle steps from the tool call's look on (true: read a kept \
+         pack): {after:?}",
+        keeps_started(&run.dir)
+    );
+    assert!(
+        keep_ran(&line1) && names_a_kept_pack(&line1),
+        "the keep follows the tool call's look at once and stands on its own line (keep= its milliseconds, kept= the bytes \
+         of the pack): {line1}; the look after it: {line2}"
+    );
+    assert_eq!(
+        after,
+        vec![false, true],
+        "after the burst one look runs its bundle step without a kept pack, the tool call's, and the next look reads the \
+         kept pack; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(keeps_started(&run.dir), 1, "one keep for the head");
+    ends_as_asked(&mut run).await;
+}
+
+/// Which look the tests of a look's start hold ([`the_keep_never_moves_the_start_of_the_next_look`]).
+#[derive(Clone, Copy)]
+enum HeldLook {
+    /// The second look of a head, the timer's: its keep is the keep of the second look, and the look after it is the timer's.
+    SecondOfTheTimer,
+    /// The first look after a burst, the timer's, while which a tool call ends: its keep is the keep at once, which starts
+    /// after the task has taken the tool call's wake, and the look after it is the tool call's (ruling 37 (b) of the lead).
+    FirstWithAWake,
+    /// The first look after a burst, a tool call's: its keep is the keep at once, and the look after it is the timer's
+    /// (ruling 43 (d) of the lead).
+    FirstOfAToolCall,
+}
+
+impl HeldLook {
+    /// One turn of the tests of a look's start, with the keep on or off.
+    async fn turn(self, label: &str, keep_on: bool) -> NextLook {
+        match self {
+            HeldLook::SecondOfTheTimer => next_look_after_a_held_one(label, keep_on, false).await,
+            HeldLook::FirstWithAWake => next_look_after_a_held_one(label, keep_on, true).await,
+            HeldLook::FirstOfAToolCall => {
+                next_look_after_a_held_look_of_a_tool_call(label, keep_on).await
+            }
+        }
+    }
+}
+
+/// One turn of the test of a look's start after a tool call's look, with the keep on or off
+/// ([`NextLook`]). The first look after a burst is a tool call's, and its bundle step is held for [`TOOL_SLOW`], so the spacing
+/// holds the look after it past its tick. With the keep on, the stand-in holds the keep at once that follows the tool call's
+/// look without end; the look after it, the timer's, ends it.
+async fn next_look_after_a_held_look_of_a_tool_call(label: &str, keep_on: bool) -> NextLook {
+    let more = if keep_on {
+        Vec::new()
+    } else {
+        vec![("AGENTD_DIRECT_KEEP_COMMITS", "0".to_string())]
+    };
+    let mut run = Run::start_for_a_tool_calls_look(label, more).await;
+    run.burst(1, 3);
+    run.hold_the_keep();
+    run.hold_the_bundle();
+    let from = run.bundles().len();
+    let held_work = "written for the tool call's look whose bundle step is held\n";
+    run.write("a.txt", held_work);
+    run.tool_call_ends().await;
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step after the tool call ended; log:\n{}",
+        run.log()
+    );
+    tokio::time::sleep(TOOL_SLOW).await;
+    run.let_the_bundle_go();
+    assert!(
+        wait_for(LONG, || run.stored() > from).await,
+        "the tool call's look whose bundle step was held stores its copy; log:\n{}",
+        run.log()
+    );
+    let seen = Instant::now();
+    let held = run
+        .wait_copy(from, "a.txt", held_work, LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the copy of the held look holds its work; log:\n{}",
+                run.log()
+            )
+        });
+    if keep_on {
+        run.the_held_keep(held).await;
+    }
+    let from = run.bundles().len();
+    run.write("a.txt", "second, written while the keep's git was held\n");
+    assert!(
+        wait_for(LONG, || run.stored() > from).await,
+        "the copy of the look after the held one is stored; log:\n{}",
+        run.log()
+    );
+    let took = seen.elapsed();
+    // The look after the held one is the timer's and finds the head of the tool call's look again. With the keep on, the keep
+    // by the rule of the second look follows it: the keep at once that its start ended left that head unmarked. The stand-in
+    // holds no keep from here on, so that keep goes to its end and the line of its look is written.
+    let _ = std::fs::remove_file(run.dir.join("keep-hold"));
+    assert!(
+        wait_for(LONG, || !run.line_of(from).is_empty()
+            && !run.line_of(held).is_empty())
+        .await,
+        "the worker's log has the lines of both looks; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    let (before, line) = (run.line_of(held), run.line_of(from));
+    a_tool_calls_look_left_the_timer(&before);
+    assert_eq!(
+        keeps_started(&run.dir),
+        2 * usize::from(keep_on),
+        "TRIGGER PRESENT is not shown: the keep is {} (on: the keep at once that the start of the next look ended, and the \
+         keep by the rule of the second look after that look, which found the same head); lines:\n{}",
+        if keep_on { "on" } else { "off" },
+        run.look_lines().join("\n")
+    );
+    assert_eq!(
+        (field(&before, "keep"), field(&line, "by")),
+        (Some(if keep_on { "ended" } else { "0" }), Some("timer")),
+        "the look after the tool call's is the timer's and its start ended the keep that was held; the held look: {before}; \
+         the look after it: {line}"
+    );
+    let wait = (9 * git_ms(&before)).clamp(TOOL_EVERY_MS, 5 * TOOL_EVERY_MS);
+    let allowed = Duration::from_millis(wait + ms_of(&line, "total")) + GIT_END;
+    let spacing = (9 * git_ms(&before)).min(5 * TOOL_EVERY_MS);
+    let late_ms = i64::try_from(took.as_millis()).unwrap()
+        - i64::try_from(ms_of(&line, "total") + spacing).unwrap();
+    ends_as_asked(&mut run).await;
+    NextLook {
+        took,
+        allowed,
+        late_ms,
+        lines: (before, line),
+    }
+}
+
+/// The keep at once that follows a tool call's look never moves the start of the look after
+/// it. The first look after a burst is a tool call's and leaves the timer; with the keep on, the keep at once that follows it
+/// is held without end. The look after it, the timer's, starts when the spacing says, as with the keep off, and its start ends
+/// the keep.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_keep_at_once_after_a_tool_calls_look_never_moves_the_start_of_the_next_look() {
+    the_keep_never_moves_the_start_of_the_next_look("b932-start-tool", HeldLook::FirstOfAToolCall)
+        .await;
+}
+
+/// A second tool call that ends while the keep at once of a tool call's look runs does not
+/// end it; the look that the second tool call starts does, once the spacing lets it start. That keep at once did not end as
+/// kept: it leaves its head unmarked. The look of the second tool call finds the same head, and the rule of the second look
+/// follows no look of a tool call, in release 5.28 and now: no keep follows it. The next look of the timer finds that head
+/// again and is followed by the keep of release 5.28's rule, once, which keeps a pack. (That a keep at once that was cut is
+/// not tried again until a keep is kept is held by `b932_a_keep_at_once_that_was_cut_is_not_tried_again_until_a_keep_is_kept`.)
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_second_tool_call_ends_the_keep_at_once_when_its_look_starts() {
+    let mut run = Run::start_for_a_tool_calls_look("b932-tool-cut", Vec::new()).await;
+    run.burst(1, 5);
+    run.hold_the_keep();
+    let first = run
+        .held_look_of_a_tool_call("a.txt", "first after the burst\n", TOOL_SLOW)
+        .await;
+    let pid = run.the_held_keep(first).await;
+    println!(
+        "TRIGGER PRESENT: a keep followed the tool call's look at once and its git (process {pid}) is held"
+    );
+    // A second tool call ends while that keep's git is held: the look it asks for waits for the spacing.
+    let work = "second, for the look the second tool call asks for\n";
+    let from = run.bundles().len();
+    run.write("a.txt", work);
+    run.tool_call_ends().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        alive(pid) && run.stored() == first + 1,
+        "a tool call that ends while a keep runs does not end it: a second after the tool call ended the keep's git still \
+         runs and no look has stored a copy; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert!(
+        wait_for(LONG, || !alive(pid)).await,
+        "the look that the second tool call started ended the keep's git; log:\n{}",
+        run.log()
+    );
+    let _ = std::fs::remove_file(run.dir.join("keep-hold"));
+    let second = run
+        .wait_copy(from, "a.txt", work, LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look that the second tool call asked for stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line1 = run.line_when_stored(first).await;
+    let line2 = run.line_when_stored(second).await;
+    a_tool_calls_look_left_the_timer(&line1);
+    assert_eq!(
+        field(&line1, "keep"),
+        Some("ended"),
+        "the line of the tool call's look whose keep at once the next look cut: {line1}"
+    );
+    assert_eq!(
+        (
+            field(&line2, "by"),
+            field(&line2, "engine"),
+            field(&line2, "keep"),
+            keeps_started(&run.dir)
+        ),
+        (Some("tool"), Some("same"), Some("0"), 1),
+        "the look that ended the keep was the second tool call's and found the same head; the rule of the second look \
+         follows no look of a tool call: {line2}"
+    );
+    let third = run
+        .write_and_wait("a.txt", "third, of the timer\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the next look of the timer stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let line3 = run.line_when_stored(third).await;
+    assert!(
+        (field(&line3, "by"), field(&line3, "engine")) == (Some("timer"), Some("same"))
+            && keep_ran(&line3)
+            && names_a_kept_pack(&line3),
+        "the next look of the timer of that head is followed by a keep, as in release 5.28, and it keeps a pack: {line3}"
+    );
+    assert_eq!(
+        keeps_started(&run.dir),
+        2,
+        "the keep at once and the one keep by the rule of the second look"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// (ruling 43 (d) of the lead), a pin: a tool call's look that the spacing does not hold past its tick is followed by no
+/// keep at once. The timer is ten minutes, so no look of this test leaves it. The tool call's look finds the engine's new head
+/// after a burst and is followed by no keep, as in release 5.28.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_tool_calls_look_that_stays_on_the_timer_gets_no_keep_at_once() {
+    // Under a timer of ten minutes no look runs before the first tool call ends: the tool call's look is the turn's first.
+    let mut run = Run::start("b932-tool-cheap", NO_TICK_MS, Vec::new()).await;
+    run.burst(1, 5);
+    let from = run.bundles().len();
+    let work = "found by the look of a tool call\n";
+    run.write("a.txt", work);
+    run.tool_call_ends().await;
+    let first = run
+        .wait_copy(from, "a.txt", work, LONG)
+        .await
+        .unwrap_or_else(|| panic!("the tool call's look stores its copy; log:\n{}", run.log()));
+    let line = run.line_when_stored(first).await;
+    assert_eq!(
+        (field(&line, "by"), field(&line, "engine")),
+        (Some("tool"), Some("moved")),
+        "TRIGGER PRESENT is not shown: the look was not a tool call's on the engine's new head: {line}"
+    );
+    println!(
+        "TRIGGER PRESENT: a tool call's look under a timer of ten minutes found a moved head; its git work took {} ms, which \
+         holds no look past a tick: {line}",
+        git_ms(&line)
+    );
+    assert_eq!(
+        (field(&line, "keep"), keeps_started(&run.dir)),
+        (Some("0"), 0),
+        "a tool call's look that stays on the timer is followed by no keep at once: {line}"
+    );
+    ends_as_asked(&mut run).await;
+}
+
+/// The line of a later look ends the wait for a keep at
+/// once. The first look after a burst is followed by its keep at once: its line waited for that keep. Every look that stores
+/// a copy says anew whether its line waits for a keep at once. So when a later look of the timer is followed by a keep by
+/// the rule of the second look, and a tool call's wake is pending when that look ends, the wake is taken and that keep is
+/// not started, as (`b860_kept_a_wake_that_is_pending_starts_the_next_look_as_before`). A mark "a keep at once
+/// waits" that outlived the look it was set for would start that keep in the wait that follows the taken wake.
+///
+/// That a keep was due then is shown afterwards: the next look of the timer of the same head, with no wake pending, is
+/// followed by one.
+#[tokio::test(flavor = "multi_thread")]
+async fn b932_a_later_looks_line_ends_the_wait_for_a_keep_at_once() {
+    let mut run = Run::start("b932-waits-reset", BURST_EVERY_MS, Vec::new()).await;
+    run.behind_a_look("a.txt").await;
+    run.burst(1, 5);
+    let first = run
+        .held_look("a.txt", "first after the burst\n", SLOW, |_| {})
+        .await;
+    let line = run.line_when_stored(first).await;
+    left_the_timer(&line);
+    assert!(
+        keep_ran(&line) && names_a_kept_pack(&line),
+        "TRIGGER PRESENT is not shown: no keep followed the first look after the burst at once: {line}"
+    );
+    println!(
+        "TRIGGER PRESENT: the line of the first look after the burst waited for its keep at once: {line}"
+    );
+
+    // The head moves under the kept pack. The first look of the new head reads the kept pack and is followed by no keep.
+    run.commit(100);
+    let second = run
+        .write_and_wait("a.txt", "first of the new head\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(second).await;
+    assert_eq!(
+        (field(&line, "engine"), field(&line, "keep")),
+        (Some("moved"), Some("0")),
+        "TRIGGER PRESENT is not shown: the look after the commit did not find a new head, or a keep followed it: {line}"
+    );
+
+    // The second look of the new head, the timer's: a keep by the rule of the second look is due after it. A tool call ends
+    // while its bundle step is held, so its wake is pending when the look ends.
+    run.hold_the_bundle();
+    let from = run.bundles().len();
+    run.write("a.txt", "second of the new head\n");
+    assert!(
+        wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
+        "TRIGGER PRESENT is not shown: no look reached its bundle step after the write; log:\n{}",
+        run.log()
+    );
+    run.tool_call_ends().await;
+    let third = "third, written after the tool call ended\n";
+    run.write("a.txt", third);
+    tokio::time::sleep(SLOW).await;
+    run.let_the_bundle_go();
+    let held = run
+        .wait_copy(from, "a.txt", "second of the new head\n", LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the look whose bundle step was held stores its copy; log:\n{}",
+                run.log()
+            )
+        });
+    let found = run
+        .wait_copy(held + 1, "a.txt", third, LONG)
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the copy that the pending wake asked for is stored; log:\n{}",
+                run.log()
+            )
+        });
+    let held_line = run.line_when_stored(held).await;
+    let next = run.line_when_stored(found).await;
+    assert_eq!(
+        (field(&held_line, "by"), field(&held_line, "engine")),
+        (Some("timer"), Some("same")),
+        "TRIGGER PRESENT is not shown: the held look was not the timer's second look of the new head: {held_line}"
+    );
+    assert_eq!(
+        field(&next, "by"),
+        Some("tool"),
+        "TRIGGER PRESENT is not shown: the look after the held one was not the tool call's, so the copy task did not take \
+         the wake before it turned to the keep: {next}"
+    );
+    println!(
+        "TRIGGER PRESENT: a keep by the rule of the second look was due after a look of the timer, and a tool call's wake \
+         was pending when that look ended: {held_line}\nthe look the tool call asked for: {next}"
+    );
+    assert_eq!(
+        (field(&held_line, "keep"), keeps_started(&run.dir)),
+        (Some("0"), 1),
+        "a keep by the rule of the second look that is not in flight when a wake is taken is not started, also after the \
+         line of an earlier look waited for a keep at once: {held_line}"
+    );
+
+    // That a keep was due after the held look: the next look of the timer of the same head is followed by one.
+    let again = run
+        .write_and_wait("a.txt", "fourth, of the timer\n", LONG)
+        .await
+        .unwrap();
+    let line = run.line_when_stored(again).await;
+    assert!(
+        (field(&line, "by"), field(&line, "engine")) == (Some("timer"), Some("same"))
+            && keep_ran(&line)
+            && names_a_kept_pack(&line),
+        "TRIGGER PRESENT is not shown: no keep follows a look of the timer of this head, so none was due when the wake was \
+         pending: {line}"
+    );
+    assert_eq!(keeps_started(&run.dir), 2);
+    ends_as_asked(&mut run).await;
 }
