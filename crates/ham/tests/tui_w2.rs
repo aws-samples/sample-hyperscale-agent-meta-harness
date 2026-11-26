@@ -240,6 +240,19 @@ fn thread_times() -> Option<(Duration, Duration)> {
 struct DrawClock {
     wall: Instant,
     waited: Option<Duration>,
+    /// What the thread had spent on a processor when the clock started, where the machine reports it.
+    worked: Option<Duration>,
+}
+
+/// One reading of a draw clock at the end of what it timed.
+struct Reading {
+    /// What the clock of the bound read.
+    clock: Duration,
+    wall: Duration,
+    /// What the thread spent on a processor meanwhile, where the machine reports it. The clock less this is what the timed part spent
+    /// blocked: asleep, on a lock, in a read, on a child process.
+    worked: Option<Duration>,
+    what: &'static str,
 }
 
 impl DrawClock {
@@ -247,9 +260,11 @@ impl DrawClock {
         // The wall clock first and the wait second here, the other way round in `elapsed`: a wait for a processor that falls between
         // the two readings is then counted, at either end.
         let wall = Instant::now();
+        let times = thread_times();
         Self {
             wall,
-            waited: thread_times().map(|t| t.1),
+            waited: times.map(|t| t.1),
+            worked: times.map(|t| t.0),
         }
     }
 
@@ -259,6 +274,25 @@ impl DrawClock {
         match (self.waited, waited) {
             (Some(start), Some(now)) => wall.saturating_sub(now.saturating_sub(start)),
             _ => wall,
+        }
+    }
+
+    /// The clock as `elapsed` reads it, and beside it the wall clock and the thread's time on a processor, from the same two readings.
+    fn read(&self) -> Reading {
+        let times = thread_times();
+        let wall = self.wall.elapsed();
+        let (clock, worked) = match (self.waited, self.worked, times) {
+            (Some(waited), Some(worked), Some(now)) => (
+                wall.saturating_sub(now.1.saturating_sub(waited)),
+                Some(now.0.saturating_sub(worked)),
+            ),
+            _ => (wall, None),
+        };
+        Reading {
+            clock,
+            wall,
+            worked,
+            what: self.what(),
         }
     }
 
@@ -272,13 +306,17 @@ impl DrawClock {
     }
 }
 
-/// The times of some draws, each read on the clock of the bound and on the wall clock.
+/// The times of some draws, each read on the clock of the bound and on the wall clock, and of the yardsticks timed beside them.
 struct Draws {
     n: u32,
     clock: Duration,
     wall: Duration,
     slowest: Duration,
     what: &'static str,
+    /// The yardsticks, one timed just before each draw on the same clock.
+    yardsticks: Duration,
+    /// What the thread spent on a processor in the draws; `None` once a draw had no such reading.
+    worked: Option<Duration>,
 }
 
 impl Draws {
@@ -289,17 +327,20 @@ impl Draws {
             wall: Duration::ZERO,
             slowest: Duration::ZERO,
             what: "no draw",
+            yardsticks: Duration::ZERO,
+            worked: Some(Duration::ZERO),
         }
     }
 
-    /// One more draw, which began when `t` started and has just ended.
-    fn add(&mut self, t: &DrawClock) {
-        let read = t.elapsed();
-        self.wall += t.wall.elapsed();
+    /// One more draw: the yardstick timed just before it, and what its clock read when it ended.
+    fn add(&mut self, yardstick: Duration, read: Reading) {
+        self.wall += read.wall;
         self.n += 1;
-        self.clock += read;
-        self.slowest = self.slowest.max(read);
-        self.what = t.what();
+        self.clock += read.clock;
+        self.slowest = self.slowest.max(read.clock);
+        self.what = read.what;
+        self.yardsticks += yardstick;
+        self.worked = self.worked.zip(read.worked).map(|(sum, one)| sum + one);
     }
 
     /// The seconds one draw took on the clock of the bound, the mean of the draws.
@@ -309,6 +350,55 @@ impl Draws {
 
     fn on_the_wall(&self) -> f64 {
         self.wall.as_secs_f64() / f64::from(self.n)
+    }
+
+    /// The seconds one yardstick took, the mean of the yardsticks beside the draws.
+    fn per_yardstick(&self) -> f64 {
+        self.yardsticks.as_secs_f64() / f64::from(self.n)
+    }
+
+    /// The draws in yardsticks: what the draws took on the clock of the bound over what the yardsticks beside them took.
+    fn in_yardsticks(&self) -> f64 {
+        self.clock.as_secs_f64() / self.yardsticks.as_secs_f64()
+    }
+
+    /// The seconds one draw spent blocked, the mean of the draws: the clock of the bound less the thread's time on a processor. One
+    /// draw's figure is good to a tick of the kernel (10 ms), the mean to less. `None` where the machine does not report that time.
+    fn waiting(&self) -> Option<f64> {
+        self.worked
+            .map(|worked| (self.clock.as_secs_f64() - worked.as_secs_f64()) / f64::from(self.n))
+    }
+
+    /// The line of this kind for the missed bounds when its waiting misses the bound, on a machine that reads the waiting at
+    /// all: the kind waited too long, or it has no waiting figure because one of its draws had no reading of its thread's time
+    /// on a processor. A kind without a figure is not held, so it is a missed bound and never passes without a word.
+    fn missed_waiting(&self, kind: &str) -> Option<String> {
+        let Some(waiting) = self.waiting() else {
+            return Some(format!(
+                "WAITING: a draw of 5,000 agents {kind} has no waiting figure: at least one of its {} draws had no reading of the time its thread spent on a processor, on a machine that reports that time, so the bound of under {DRAW_BOUND_WAITING} s of waiting a draw is not held for this kind",
+                self.n
+            ));
+        };
+        if waiting.partial_cmp(&DRAW_BOUND_WAITING) == Some(std::cmp::Ordering::Less) {
+            return None;
+        }
+        Some(format!(
+            "WAITING: a draw of 5,000 agents {kind} waited {waiting:.3} s and the bound is under {DRAW_BOUND_WAITING} s a draw (its clock read {:.3} s a draw; the waiting is the clock less the time the thread spent on a processor: a sleep, a lock, a read that blocks or a child process inside the draw)",
+            self.per_draw()
+        ))
+    }
+
+    /// What the two bounds read, for the line a run prints.
+    fn bounds(&self, waiting_read: bool) -> String {
+        let waiting = match self.waiting().filter(|_| waiting_read) {
+            Some(waiting) => format!("{waiting:.3} s of waiting a draw"),
+            None => "its waiting not read".to_string(),
+        };
+        format!(
+            "{:.2} yardsticks and {waiting} (a yardstick {:.3} s)",
+            self.in_yardsticks(),
+            self.per_yardstick()
+        )
     }
 }
 
@@ -396,22 +486,161 @@ fn b836_a_screen_drawn_before_shows_the_agents_a_first_draw_shows() {
     }
 }
 
+/// The bound on the work of a draw of 5,000 agents in a plain build: the draws of a kind take under this many times the yardstick
+/// timed beside them. Until the bound was 0.5 s a draw on the clock above. That clock still counts how fast the processor is that the
+/// thread gets: a core whose other hardware thread works runs the draw 1.5 to 1.7 times slower, so the unbroken product missed 0.5 s
+/// in every run beside a crowd and held it in every run alone. The yardstick is slowed as the draw is: a whole draw of the unbroken
+/// product read 4.97 to 5.94 yardsticks alone on a 36-processor build host (83 runs) and 5.26 to 5.61 beside a crowd. The yardstick
+/// differs by about a tenth from one process to the next, and the ratio with it. With the agents card made into a block twice in
+/// every draw, a whole draw read 7.51 to 9.25 alone. 6.7 is the midpoint of the largest reading of the unbroken product and the
+/// smallest one of the card made twice.
+const DRAW_BOUND_YARDSTICKS: f64 = 6.7;
+
+/// The same bound in a coverage build. A coverage build (`cargo llvm-cov`) counts the regions of the workspace's own crates as they
+/// run, and not those of third-party dependencies or of the standard library.
+const DRAW_BOUND_YARDSTICKS_COVERAGE: f64 = 9.3;
+
+/// The variable `cargo llvm-cov` sets for the tests it runs: one of the two signs of a coverage build (`BuildSigns`). A variable
+/// says how a program was started and the cfg says how it was built, and neither names a coverage build without the other.
+const COVERAGE_TOOL_VARIABLE: &str = "CARGO_LLVM_COV";
+
+/// The kind of build this test program is, which says which bound in yardsticks its draws hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Build {
+    Plain,
+    Coverage,
+}
+
+impl Build {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Coverage => "coverage",
+        }
+    }
+
+    /// The bound in yardsticks that the draws of a kind hold in this build.
+    fn bound(self) -> f64 {
+        match self {
+            Self::Plain => DRAW_BOUND_YARDSTICKS,
+            Self::Coverage => DRAW_BOUND_YARDSTICKS_COVERAGE,
+        }
+    }
+}
+
+/// The two signs of a coverage build: how this test program was built and how it was started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BuildSigns {
+    /// The program carries the coverage tool's cfg: `cargo llvm-cov` builds every crate with `--cfg coverage` unless it is told
+    /// not to.
+    cfg: bool,
+    /// The coverage tool started the program: its variable is set.
+    tool: bool,
+}
+
+impl BuildSigns {
+    #[allow(unexpected_cfgs)] // `coverage` is the coverage tool's cfg, and no manifest of the workspace declares it
+    fn of_this_program() -> Self {
+        Self {
+            cfg: cfg!(coverage),
+            tool: std::env::var_os(COVERAGE_TOOL_VARIABLE).is_some(),
+        }
+    }
+
+    /// A coverage build only when both signs say so: the program carries the cfg and the coverage tool started it. Every other
+    /// program is a plain build and holds the tighter bound, also a program with one sign alone: a cfg that reached a plain
+    /// program (a flag of the compiler, a config file) and a variable that reached a plain run never widen the bound, and
+    /// `fault` makes each of them a red naming test.
+    fn build(self) -> Build {
+        if self.cfg && self.tool {
+            Build::Coverage
+        } else {
+            Build::Plain
+        }
+    }
+
+    /// What is wrong when one sign stands without the other, in a sentence that says which of the two it is. `None` when the
+    /// two signs agree.
+    fn fault(self) -> Option<String> {
+        match (self.cfg, self.tool) {
+            (true, false) => Some(format!(
+                "the test program carries cfg(coverage) and the coverage tool did not start it ({COVERAGE_TOOL_VARIABLE} is not set): the cfg reached a program that the coverage step did not build, or a coverage program was started by hand; the draw test holds this program to the plain build's bound"
+            )),
+            (false, true) => Some(format!(
+                "the coverage tool started this test ({COVERAGE_TOOL_VARIABLE} is set) and the test program was built without cfg(coverage): the coverage step no longer gives the compiler the cfg, or the variable reached a plain run; the draw test holds this program to the plain build's bound"
+            )),
+            (true, true) | (false, false) => None,
+        }
+    }
+
+    /// Both signs in words, for the lines a run prints.
+    fn in_words(self) -> String {
+        format!(
+            "cfg(coverage) is {} and the coverage tool's variable {COVERAGE_TOOL_VARIABLE} is {}",
+            if self.cfg { "carried" } else { "not carried" },
+            if self.tool { "set" } else { "not set" }
+        )
+    }
+}
+
+/// The bound on the waiting of a draw of 5,000 agents, in seconds, the mean of the draws of a kind: what the clock read less
+/// what the thread spent on a processor, so what a draw spent asleep, on a lock, in a read that blocks or on a child process. A ratio
+/// alone lets a wait pass beside a crowd, because the yardstick grows there and a wait does not. A healthy draw waits at most 0.005 s,
+/// alone and beside a crowd; a wait of 200 ms in a draw reads 0.2 s there and there.
+const DRAW_BOUND_WAITING: f64 = 0.05;
+
+/// The yardstick of the draw bound: a fixed piece of work of the kind a draw does (15,000 lines formatted, cleaned character
+/// by character and kept in a map, the 5,000 kept ones cloned out), timed on the clock of the bound just before a draw. What slows the
+/// work of a draw on a shared machine slows this work as much.
+fn yardstick() -> Duration {
+    let t = DrawClock::start();
+    let mut kept: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut characters = 0usize;
+    for round in 0..3 {
+        for i in 0..5000u32 {
+            let line = format!(
+                "A{i:04} working  us.anthropic.claude-sonnet-5  editing src/module_{i}.py pass {round}"
+            );
+            let clean: String = line.chars().filter(|c| !c.is_control()).collect();
+            characters += clean.len();
+            kept.insert(format!("A{i:04}"), clean);
+        }
+    }
+    let lines: Vec<String> = kept.values().cloned().collect();
+    std::hint::black_box((characters, lines.len()));
+    let took = t.elapsed();
+    // TRIGGER PRESENT: the yardstick did its fixed work.
+    assert_eq!(
+        (characters, lines.len()),
+        (1_166_670, 5000),
+        "the yardstick of the draw bound cleaned other lines than its fixed ones"
+    );
+    took
+}
+
 #[test]
 fn five_thousand_agents_draw_in_bounded_time() {
     const AGENTS: u64 = 5000;
+    // The bound in yardsticks is the one of this program's build, which its two signs name.
+    let signs = BuildSigns::of_this_program();
+    let build = signs.build();
+    let bound = build.bound();
     let mut app = dashboard(agents(5000));
-    // The bound holds for each kind of draw on its own, so that no cheap kind hides a dear one in a mean:
+    // The bounds hold for each kind of draw on its own, so that no cheap kind hides a dear one in a mean:
     // - a whole draw makes every row of the agent table and makes the agents card into a block: the first draw of the screen and a
     //   draw after the layout of the table changed. Until every draw did both.
     // - a draw after one agent's row changed makes that row and the agents card again: the draw of a live run.
     // - a draw of the screen that did not change makes neither.
     let (mut whole, mut changed, mut again) = (Draws::new(), Draws::new(), Draws::new());
-    // The snapshots first, each compared inside the timed part as it always was. What a draw made says which kind it is: the rows of
-    // 120 and of 200 columns are the same text, so the third size makes its rows for another layout and no block.
+    // The snapshots first. Each is compared after its draw was timed: the comparison is the snapshot library's work, and the
+    // first one of a process starts a child process and waits for it. What a draw made says which kind it is: the rows of 120 and of
+    // 200 columns are the same text, so the third size makes its rows for another layout and no block.
     for (w, h) in SIZES {
         let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let beside = yardstick();
         let t = DrawClock::start();
-        snapshot_at(&app, "dash_5000_agents", w, h);
+        let screen = screen_text(&app, w, h);
+        let read = t.read();
         let kind = match (
             app.agent_rows_made() - rows,
             app.card_blocks_made() - blocks,
@@ -420,7 +649,8 @@ fn five_thousand_agents_draw_in_bounded_time() {
             (0, 0) => &mut again,
             _ => &mut changed,
         };
-        kind.add(&t);
+        kind.add(beside, read);
+        insta::assert_snapshot!(format!("dash_5000_agents_{w}x{h}"), screen);
     }
     assert!(
         whole.n >= 1,
@@ -436,18 +666,20 @@ fn five_thousand_agents_draw_in_bounded_time() {
             (80, 24)
         };
         let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let beside = yardstick();
         let t = DrawClock::start();
         let screen = screen_text(&app, size.0, size.1);
-        whole.add(&t);
-        // TRIGGER PRESENT: the draw made every row and the agents card.
+        whole.add(beside, t.read());
+        // TRIGGER PRESENT: the draw made every row and the agents card, and no other card.
         assert_eq!(
             app.agent_rows_made() - rows,
             AGENTS,
             "the draw at {size:?} after another layout did not make every row"
         );
-        assert!(
-            app.card_blocks_made() > blocks,
-            "the draw at {size:?} after another layout made no card into a block"
+        assert_eq!(
+            app.card_blocks_made() - blocks,
+            1,
+            "the draw at {size:?} after another layout did not make one card into a block"
         );
         assert!(screen.contains("agents 5000"), "{screen}");
     }
@@ -455,27 +687,30 @@ fn five_thousand_agents_draw_in_bounded_time() {
     for n in 0..10 {
         one_row_changes(&mut app, n);
         let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let beside = yardstick();
         let t = DrawClock::start();
         let screen = screen_text(&app, size.0, size.1);
-        changed.add(&t);
-        // TRIGGER PRESENT: the draw made the row that changed, and the agents card again.
+        changed.add(beside, t.read());
+        // TRIGGER PRESENT: the draw made the row that changed, and the agents card again, and no other card.
         assert_eq!(
             app.agent_rows_made() - rows,
             1,
             "draw {n} after one agent's row changed"
         );
-        assert!(
-            app.card_blocks_made() > blocks,
-            "draw {n} after one agent's row changed made no card into a block"
+        assert_eq!(
+            app.card_blocks_made() - blocks,
+            1,
+            "draw {n} after one agent's row changed did not make one card into a block"
         );
         assert!(screen.contains("agents 5000"), "{screen}");
     }
     // The same screen ten more times: nothing changed, so no row and no card is made again.
     for _ in 0..10 {
         let (rows, blocks) = (app.agent_rows_made(), app.card_blocks_made());
+        let beside = yardstick();
         let t = DrawClock::start();
         screen_text(&app, size.0, size.1);
-        again.add(&t);
+        again.add(beside, t.read());
         assert_eq!(
             (
                 app.agent_rows_made() - rows,
@@ -485,7 +720,8 @@ fn five_thousand_agents_draw_in_bounded_time() {
             "a draw of the screen that did not change made rows or cards again"
         );
     }
-    // The figures of a run, shown with `--nocapture` and in the output of a failure.
+    // The figures of a run, shown with `--nocapture`, in the output of a failure and, by a row of `.config/nextest.toml`, in the log
+    // of a run that passed.
     eprintln!(
         "DRAW-TIMES 5,000 agents: a whole draw {:.3} s (the slowest of {} {:.3} s; {:.3} s on the wall clock), a draw after one row changed {:.3} s (the slowest of {} {:.3} s; {:.3} s on the wall clock), a draw of the unchanged screen {:.3} s ({:.3} s on the wall clock); {}",
         whole.per_draw(),
@@ -500,22 +736,157 @@ fn five_thousand_agents_draw_in_bounded_time() {
         again.on_the_wall(),
         whole.what
     );
+    // Whether this machine says what a thread spent on a processor: the file is there and the kernel counts in it (this thread has
+    // worked for seconds by now).
+    let waiting_read = thread_times().is_some_and(|t| !t.0.is_zero());
+    if !waiting_read {
+        eprintln!(
+            "NOT RUN: this machine reports no time of a thread on a processor, so the waiting of a draw is not read here; the bound in yardsticks holds"
+        );
+    }
+    eprintln!(
+        "DRAW-RATIOS 5,000 agents ({} build): a whole draw {}, a draw after one row changed {}, a draw of the unchanged screen {}; the bounds of a {} build: under {bound} yardsticks and under {DRAW_BOUND_WAITING} s of waiting a draw (a plain build holds under {DRAW_BOUND_YARDSTICKS} yardsticks and a coverage build under {DRAW_BOUND_YARDSTICKS_COVERAGE}; a coverage build is named by both signs together: {})",
+        build.name(),
+        whole.bounds(waiting_read),
+        changed.bounds(waiting_read),
+        again.bounds(waiting_read),
+        build.name(),
+        signs.in_words()
+    );
+    // Every bound that a kind of draw missed, so that a red run says which: the ratio, the waiting, or both.
+    let mut missed = Vec::new();
     for (draws, kind) in [
         (&whole, "that makes every row and the agents card"),
         (&changed, "after one agent's row changed"),
         (&again, "of a screen that did not change"),
     ] {
-        assert!(
-            draws.per_draw() < 0.5,
-            "a draw of 5,000 agents {kind} took {:.3} s ({}; {:.3} s on the wall clock; the slowest of {} took {:.3} s)",
-            draws.per_draw(),
-            draws.what,
-            draws.on_the_wall(),
-            draws.n,
-            draws.slowest.as_secs_f64()
-        );
+        let yardsticks = draws.in_yardsticks();
+        if yardsticks.partial_cmp(&bound) != Some(std::cmp::Ordering::Less) {
+            missed.push(format!(
+                "RATIO: a draw of 5,000 agents {kind} took {yardsticks:.2} yardsticks and the bound of a {} build is under {bound} (a draw {:.3} s, the yardstick beside it {:.3} s; {}; a draw {:.3} s on the wall clock; the slowest of {} took {:.3} s)",
+                build.name(),
+                draws.per_draw(),
+                draws.per_yardstick(),
+                draws.what,
+                draws.on_the_wall(),
+                draws.n,
+                draws.slowest.as_secs_f64()
+            ));
+        }
+        // The waiting is held where this machine reads it at all, and then for every kind: a kind without a figure is a line too.
+        if let Some(line) = draws.missed_waiting(kind).filter(|_| waiting_read) {
+            missed.push(line);
+        }
     }
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
     assert!(screen_text(&app, 200, 60).contains("agents 5000"));
+}
+
+#[test]
+fn b946_the_draw_bound_follows_the_build_and_a_build_without_the_coverage_cfg_is_a_plain_one() {
+    assert_eq!((Build::Plain.name(), Build::Plain.bound()), ("plain", 6.7));
+    assert_eq!(
+        (Build::Coverage.name(), Build::Coverage.bound()),
+        ("coverage", 9.3)
+    );
+    // Both signs together name a coverage build, and a program with neither is a plain one.
+    let both = BuildSigns {
+        cfg: true,
+        tool: true,
+    };
+    assert_eq!((both.build(), both.fault()), (Build::Coverage, None));
+    let neither = BuildSigns {
+        cfg: false,
+        tool: false,
+    };
+    assert_eq!((neither.build(), neither.fault()), (Build::Plain, None));
+    // One sign without the other: the program holds the plain build's bound, the tighter of the two, and the naming is at fault
+    // with a sentence that says which sign stands alone.
+    let cfg_alone = BuildSigns {
+        cfg: true,
+        tool: false,
+    };
+    assert_eq!(
+        cfg_alone.build(),
+        Build::Plain,
+        "a program that carries the cfg and that the coverage tool did not start holds the plain build's bound"
+    );
+    let said = cfg_alone.fault().unwrap_or_default();
+    assert!(
+        said.starts_with(
+            "the test program carries cfg(coverage) and the coverage tool did not start it (CARGO_LLVM_COV is not set)"
+        ),
+        "the cfg without the tool is a fault of the naming that says so: {said:?}"
+    );
+    let tool_alone = BuildSigns {
+        cfg: false,
+        tool: true,
+    };
+    assert_eq!(
+        tool_alone.build(),
+        Build::Plain,
+        "a program without the cfg that the coverage tool started holds the plain build's bound"
+    );
+    let said = tool_alone.fault().unwrap_or_default();
+    assert!(
+        said.starts_with(
+            "the coverage tool started this test (CARGO_LLVM_COV is set) and the test program was built without cfg(coverage)"
+        ),
+        "the tool without the cfg is a fault of the naming that says so: {said:?}"
+    );
+    // This program: its two signs agree. The plain step has neither and the coverage step has both. A program with one of the
+    // two fails here in every run, and not only in the runs whose draws miss the plain build's bound: a coverage step whose
+    // cfg stops naming it (`--no-cfg-coverage`, another tool), and a plain program that the cfg or the variable reached.
+    let signs = BuildSigns::of_this_program();
+    eprintln!(
+        "BUILD-NAMED {} build: {}; a coverage build is named by both signs together",
+        signs.build().name(),
+        signs.in_words()
+    );
+    if let Some(fault) = signs.fault() {
+        panic!("{fault}");
+    }
+}
+
+#[test]
+fn b946_a_kind_of_draw_without_a_waiting_figure_misses_the_waiting_bound() {
+    let reading = |clock_ms: u64, worked_ms: Option<u64>| Reading {
+        clock: Duration::from_millis(clock_ms),
+        wall: Duration::from_millis(clock_ms),
+        worked: worked_ms.map(Duration::from_millis),
+        what: "a clock of this test",
+    };
+    let yardstick = Duration::from_millis(50);
+    // Draws whose thread worked for all the time they took: no waiting, no line.
+    let mut held = Draws::new();
+    held.add(yardstick, reading(300, Some(300)));
+    held.add(yardstick, reading(300, Some(298)));
+    assert_eq!(held.missed_waiting("of this test"), None);
+    // Draws that waited 0.2 s each miss the bound of 0.05 s, and the line says how long they waited.
+    let mut waited = Draws::new();
+    waited.add(yardstick, reading(500, Some(300)));
+    waited.add(yardstick, reading(500, Some(300)));
+    let line = waited.missed_waiting("of this test").unwrap_or_default();
+    assert!(
+        line.starts_with(
+            "WAITING: a draw of 5,000 agents of this test waited 0.200 s and the bound is under 0.05 s a draw"
+        ),
+        "{line:?}"
+    );
+    // One draw of three without a reading of its thread's time on a processor: the kind has no waiting figure, so its waiting
+    // is not held, and that is a line of the missed bounds too.
+    let mut unread = Draws::new();
+    unread.add(yardstick, reading(300, Some(300)));
+    unread.add(yardstick, reading(300, None));
+    unread.add(yardstick, reading(300, Some(300)));
+    assert_eq!(unread.waiting(), None);
+    let line = unread.missed_waiting("of this test").unwrap_or_default();
+    assert!(
+        line.starts_with(
+            "WAITING: a draw of 5,000 agents of this test has no waiting figure: at least one of its 3 draws had no reading"
+        ),
+        "a kind without a waiting figure misses the waiting bound with a line that says so: {line:?}"
+    );
 }
 
 #[test]

@@ -28,6 +28,12 @@ from test_setup_teardown_local import READY_SESSION, TEAR, TeardownBase
 PLAN_END = "== Stopping what is running"
 
 
+# The parallel script step runs the tests of this file as this many processes side by side.
+# In one process this file is one of those that bound the step; every unit pays the file's
+# fixtures again, so more units cost more than they save (scripts/tests/AGENTS.md has the measured numbers).
+SUITE_UNITS = 2
+
+
 def throttle(match: str, times: int = 10 ** 6, after: int = 0) -> dict:
     return {"match": match, "stderr": "An error occurred (ThrottlingException) when calling the operation (reached max retries: 2): Rate exceeded", "exit": 254, "times": times,
             "after": after}

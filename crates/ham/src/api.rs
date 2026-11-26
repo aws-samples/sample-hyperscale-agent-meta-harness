@@ -790,9 +790,29 @@ impl<P: ControlPlane> Api<P> {
         }
     }
 
+    /// A read of every page of the list ([`Refresh::Manual`]) that hands its newest page to `newest` as soon as it has it: when the first
+    /// page carries a next token, `newest` is called once with that page ([`RunsRead::First`] with `has_more`) and its index entries,
+    /// before the second page is asked for. A first page without a next token calls nothing, and neither does a client with several
+    /// backends: the read is then one answer. A later page that fails fails the read; the pages read so far are never the result.
+    pub async fn read_runs_whole(
+        &self,
+        newest: &mut (dyn FnMut(IndexedRead) + Send),
+    ) -> Result<IndexedRead, ApiError> {
+        self.read_runs_paged(Refresh::Manual, newest).await
+    }
+
     /// [`Api::read_runs`] with what the run index holds about each row: the same route, read as rows that carry a title, a model and,
     /// the run's name with its source. A stage without the index sends bare summaries and gives no entries.
     pub async fn read_runs_indexed(&self, how: Refresh) -> Result<IndexedRead, ApiError> {
+        self.read_runs_paged(how, &mut |_| {}).await
+    }
+
+    /// The read behind [`Api::read_runs_indexed`] and [`Api::read_runs_whole`]. Only a read of every page from one backend calls `newest`.
+    async fn read_runs_paged(
+        &self,
+        how: Refresh,
+        newest: &mut (dyn FnMut(IndexedRead) + Send),
+    ) -> Result<IndexedRead, ApiError> {
         if let Some(aliases) = self.multi_aliases() {
             let all = how.pages() == Pages::All;
             let (rows, has_more) = self.multi_rows(aliases, all, how == Refresh::Timer).await?;
@@ -823,7 +843,9 @@ impl<P: ControlPlane> Api<P> {
         let filter = ham_core::run_index::RunFilter::default();
         let mut runs: Vec<RunSummary> = Vec::new();
         let mut index: Vec<IndexEntry> = Vec::new();
-        let mut take = |rows: Vec<ham_core::run_index::RunRow>| {
+        let take = |rows: Vec<ham_core::run_index::RunRow>,
+                    runs: &mut Vec<RunSummary>,
+                    index: &mut Vec<IndexEntry>| {
             for r in rows {
                 if r.title.is_some() || r.model.is_some() || r.name.is_some() || r.tags.is_some() {
                     index.push(IndexEntry {
@@ -838,15 +860,26 @@ impl<P: ControlPlane> Api<P> {
                 runs.push(r.summary);
             }
         };
+        let mut first = true;
         match how.pages() {
             Pages::All => {
                 let mut next: Option<String> = None;
                 loop {
                     let page = self.run_rows(&filter, next.as_deref()).await?;
-                    take(page.runs);
+                    take(page.runs, &mut runs, &mut index);
                     match page.next_token {
                         Some(t) if next.as_deref() != Some(t.as_str()) => next = Some(t),
                         _ => break,
+                    }
+                    // More pages follow: the newest page goes to the caller before the second page is asked for.
+                    if std::mem::take(&mut first) {
+                        newest(IndexedRead {
+                            read: RunsRead::First {
+                                runs: runs.clone(),
+                                has_more: true,
+                            },
+                            index: index.clone(),
+                        });
                     }
                 }
                 Ok(IndexedRead {
@@ -857,7 +890,7 @@ impl<P: ControlPlane> Api<P> {
             Pages::First => {
                 let page = self.run_rows(&filter, None).await?;
                 let has_more = page.next_token.is_some();
-                take(page.runs);
+                take(page.runs, &mut runs, &mut index);
                 Ok(IndexedRead {
                     read: RunsRead::First { runs, has_more },
                     index,

@@ -532,9 +532,43 @@ pub fn merge_first_page(
     out
 }
 
+/// The words the Runs table's top border carries behind its title while the read of the older runs is out over a list that is not whole.
+pub const OLDER_LOADING: &str = "loading older runs";
+
+/// The words the Runs table's top border carries behind its title when the read of the older runs failed over a list that is not whole.
+pub const OLDER_NOT_LOADED: &str = "older runs not loaded";
+
+/// One read of a whole read of the list (its newest page, or every page) laid over `held`: the read is laid as [`RunsRead::apply`] lays
+/// it, and the held rows that the laid list lacks and that were not created before the read's newest row stay on top, in the order they
+/// were held. Such a row is a run that started after the read's first page was read: a timer read showed it meanwhile, and without
+/// this rule it would vanish until the next timer read. A run of the newest row's second stays too ([`not_after`] compares whole
+/// seconds). A read with no row keeps nothing.
+pub fn lay_read(held: &[RunSummary], read: RunsRead) -> Vec<RunSummary> {
+    let newest = match &read {
+        RunsRead::First { runs, .. } | RunsRead::All(runs) => {
+            runs.first().map(|r| r.created_at.clone())
+        }
+    };
+    let laid = read.apply(held);
+    let Some(newest) = newest else {
+        return laid;
+    };
+    let in_laid: HashSet<&str> = laid.iter().map(|r| r.run_id.as_str()).collect();
+    let mut out: Vec<RunSummary> = held
+        .iter()
+        .filter(|r| !in_laid.contains(r.run_id.as_str()) && not_after(&newest, &r.created_at))
+        .cloned()
+        .collect();
+    if out.is_empty() {
+        return laid;
+    }
+    out.extend(laid);
+    out
+}
+
 /// `time` is not later than `edge`, as times (seconds; a fraction is ignored, so a time in the edge's second counts as the edge). Two
 /// strings that are not both RFC 3339 UTC times compare as text.
-fn not_after(time: &str, edge: &str) -> bool {
+pub fn not_after(time: &str, edge: &str) -> bool {
     match (parse_utc_unix(time), parse_utc_unix(edge)) {
         (Some(t), Some(e)) => t <= e,
         _ => time <= edge,

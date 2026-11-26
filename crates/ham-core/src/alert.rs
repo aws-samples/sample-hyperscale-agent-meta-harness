@@ -143,6 +143,13 @@ impl Alerts {
         self.waiting = waiting.iter().map(|s| (*s).to_string()).collect();
     }
 
+    /// Adds these waits to the ones already known and makes no alert: the runs that a read of the older pages shows for the first time
+    /// make no sound, as the first read of a session makes none.
+    pub fn seed_more(&mut self, waiting: &[&str]) {
+        self.waiting
+            .extend(waiting.iter().map(|s| (*s).to_string()));
+    }
+
     /// The waits now. Returns an alert for each that did not wait at the last call, in the order given. An id is opaque to this type: the Runs
     /// list of the TUI passes `<run id>|<request id>`, so a run that asks a new question is a new wait, and the alert's `run_id` is the
     /// id as it was given.

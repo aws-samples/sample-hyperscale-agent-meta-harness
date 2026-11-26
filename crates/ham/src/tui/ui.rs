@@ -307,10 +307,14 @@ impl App {
     /// The words of the Runs note for a failed read: `cannot list runs: <error>`. `None` while a notice or the mouse hint holds the note, or
     /// when no read has failed.
     fn runs_error_text(&self) -> Option<String> {
-        let error = self
-            .runs_error
-            .as_ref()
-            .map(|e| format!("cannot list runs: {}", s(e)));
+        // The words follow the message that set the error: a failed read of the older runs over a part of the list says so.
+        let error = self.runs_error.as_ref().map(|e| {
+            if self.runs_error_older {
+                format!("could not load the older runs: {}", s(e))
+            } else {
+                format!("cannot list runs: {}", s(e))
+            }
+        });
         // One banner for each backend that did not answer; a client with one backend has none.
         let banners: Vec<String> = self.backend_banners().iter().map(|b| s(b)).collect();
         let banners_empty = banners.is_empty();
@@ -468,7 +472,19 @@ impl App {
         }
         // Where the selected run stands among the runs shown: `run 12 of 769` at the right end of the bottom border, which is free at every
         // width (the note line under the table is full at 80 columns). Nothing without a selected run.
-        let mut frame = block("runs", false);
+        // The top border is free at every width: behind the title it says that older runs are being loaded, or that they could not be
+        // loaded and which key loads them. The two phrases are `ham-core`'s.
+        let title = if self.runs_older_loading() {
+            format!("runs \u{b7} {}", ham_core::runfilter::OLDER_LOADING)
+        } else if self.runs_older_failed() {
+            format!(
+                "runs \u{b7} {} \u{b7} r loads all",
+                ham_core::runfilter::OLDER_NOT_LOADED
+            )
+        } else {
+            "runs".to_string()
+        };
+        let mut frame = block(&title, false);
         if let Some(at) = visible.iter().position(|&i| i == self.selected) {
             let place = position_text(at + 1, visible.len());
             frame = frame.title_bottom(Line::from(format!(" {place} ")).right_aligned());
@@ -484,7 +500,8 @@ impl App {
             self.head.empty_table
                 && self.runs_answered
                 && self.runs.is_empty()
-                && self.runs_error.is_none(),
+                && self.runs_error.is_none()
+                && !self.runs_older_loading(),
             self.head.look,
             self.mascot_frame(),
         );
@@ -536,7 +553,12 @@ impl App {
             }
             (Some(_), _) => self.runs_error_text().unwrap_or_default(),
             _ if !self.backend_banners().is_empty() => self.runs_error_text().unwrap_or_default(),
-            (None, true) => "no runs yet: press n to start one".into(),
+            // Said only once the service has answered, and not while older runs are being loaded: the newest page can hold no run of
+            // the person.
+            (None, true) if self.runs_answered && !self.runs_older_loading() => {
+                "no runs yet: press n to start one".into()
+            }
+            (None, true) => String::new(),
             (None, false) if filter.is_narrowed() => {
                 let mut note = filter.summary(visible.len(), self.runs.len());
                 if let Some(n) = selected_run.and_then(|r| r.needs_input.as_ref()) {

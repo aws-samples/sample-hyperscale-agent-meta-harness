@@ -118,8 +118,9 @@ fn the_default_head_shows_the_empty_table_picture_and_no_band() {
 #[test]
 fn a_session_that_has_not_heard_from_the_service_shows_no_mascot() {
     // The first frame is drawn before the list arrives: a user who has runs must not see the mascot flash by.
+    // And nothing says yet that there are no runs.
     let text = screen(&fresh(), 80, 24);
-    assert!(text.contains(NOTE), "{text}");
+    assert!(!text.contains(NOTE), "{text}");
     assert!(none(&text, Look::Blocks), "{text}");
 }
 
@@ -170,7 +171,11 @@ fn the_mascot_moves_no_existing_cell() {
         (80, 12),
         (30, 24),
     ] {
-        let before = buffer(&fresh(), w, h);
+        // The baseline is the same answered, empty list with the picture switched off: a session that has no answer yet does not
+        // say `no runs yet` under the table, so its note line is another.
+        let mut plain = answered(vec![]);
+        plain.set_head(head(false, false, Look::Blocks));
+        let before = buffer(&plain, w, h);
         let after = buffer(&answered(vec![]), w, h);
         let (_, at) = mascot::placement(body(w, h), Look::Blocks).unwrap();
         assert!(at.width > 0 && at.height > 0, "{w}x{h}");
@@ -192,8 +197,9 @@ fn the_mascot_moves_no_existing_cell() {
 #[test]
 fn the_large_form_stays_in_the_empty_table_when_the_band_is_on() {
     for (w, h) in [(120, 40), (200, 60), (100, 31)] {
-        let mut before = fresh();
-        before.set_head(head(true, true, Look::Blocks));
+        // The baseline is the same answered, empty list with the band on and the picture in the table switched off.
+        let mut before = answered(vec![]);
+        before.set_head(head(true, false, Look::Blocks));
         let mut after = answered(vec![]);
         after.set_head(head(true, true, Look::Blocks));
         let text = screen(&after, w, h);
@@ -354,7 +360,7 @@ fn the_switch_hides_the_picture_in_the_empty_table() {
     let text = screen(&app, 80, 24);
     assert!(none(&text, Look::Blocks), "{text}");
     assert!(text.contains(NOTE), "{text}");
-    // And the screen is the one of a session that has not heard from the service, but for its status row.
+    // And the screen is the one of a session that has not heard from the service, but for its status row and the note under the table.
     app.set_head(head(false, true, Look::Blocks));
     assert!(shows(&screen(&app, 80, 24), Form::Large, Look::Blocks));
 }
@@ -695,4 +701,82 @@ fn the_body_of_a_screen_does_not_move_when_the_band_does() {
             assert_eq!(first[(x, y)], second[(x, y)], "cell ({x},{y})");
         }
     }
+}
+
+// ---- while older runs are being loaded -------------------------------------------------------------------------------------------
+
+/// `n` runs created one second apart, newest first, from `2026-10-16T08:00:00Z` back; `extra` is laid over each row's JSON.
+fn rows_from(first: usize, n: usize, extra: serde_json::Value) -> Vec<RunSummary> {
+    (first..first + n)
+        .map(|i| {
+            let mut v = json!({"runId": format!("01M5A0000000000000{i:08}"), "status": "complete", "phase": "planning",
+                "target": {"mode": "s3-only"},
+                "createdAt": format!("2026-10-16T{:02}:{:02}:{:02}Z", 7 - i / 3600, 59 - (i / 60) % 60, 59 - i % 60),
+                "ownerPrincipalArn": "arn:aws:sts::111122223333:assumed-role/Admin/tester"});
+            for (k, x) in extra.as_object().cloned().unwrap_or_default() {
+                v[k] = x;
+            }
+            serde_json::from_value(v).unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn b961_a_newest_page_of_probe_runs_does_not_say_no_runs_yet() {
+    use ham::tui::Effect;
+    use ham_core::runfilter::{IndexedRead, RunsRead};
+    let probes = rows_from(0, 100, json!({"kind": "probe"}));
+    let mut app = fresh();
+    app.update(Msg::RunsNewest(IndexedRead {
+        read: RunsRead::First {
+            runs: probes.clone(),
+            has_more: true,
+        },
+        index: vec![],
+    }));
+    // No run of the person is on the newest page: the table is empty, and nothing says that there are no runs.
+    let text = screen(&app, 80, 24);
+    assert!(
+        text.contains("\u{250c} runs \u{b7} loading older runs \u{2500}"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("01M5A0"),
+        "probe runs are not listed: {text}"
+    );
+    assert!(!text.contains(NOTE), "{text}");
+    assert!(
+        none(&text, Look::Blocks),
+        "no mascot while older runs are loading: {text}"
+    );
+    // The whole list: three runs of the person behind the probe runs, one of them with an open question. It was there before the session
+    // began, so it rings nothing.
+    let mut whole = probes;
+    whole.extend(rows_from(100, 2, json!({})));
+    whole.extend(rows_from(
+        102,
+        1,
+        json!({"status": "active", "needsInput": {"requestId": "01M5A2R7K3C9XJ4D8E6FQ0WT1N", "reason": "engine_stop",
+            "title": "Cline stopped", "expiresAt": "2026-10-16T09:00:00Z"}}),
+    ));
+    let effects = app.update(Msg::RunsOlder(Ok(IndexedRead {
+        read: RunsRead::All(whole),
+        index: vec![],
+    })));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Bell | Effect::Notify(_))),
+        "an old run with an open question rings nothing when the list is completed: {effects:?}"
+    );
+    let text = screen(&app, 80, 24);
+    assert!(text.contains("\u{250c} runs \u{2500}"), "{text}");
+    for i in 100..103 {
+        assert!(
+            text.contains(&format!("01M5A0000000000000{i:08}")),
+            "{text}"
+        );
+    }
+    assert!(text.contains(" run 1 of 3 "), "{text}");
+    assert!(none(&text, Look::Blocks), "{text}");
 }

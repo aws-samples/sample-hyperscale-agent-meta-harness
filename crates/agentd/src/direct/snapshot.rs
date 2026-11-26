@@ -37,8 +37,8 @@ use crate::logging::LogSink;
 use crate::s3::FileDigest;
 use crate::time::now_unix;
 use crate::workspace::{
-    WsError, git_bytes_with_env, git_dir_problem, git_with_env, git_with_env_outside,
-    git_with_env_until, git_with_env_until_input,
+    GitEnd, GitInput, WsError, git_bytes_with_env, git_dir_problem, git_fed_until, git_with_env,
+    git_with_env_outside, git_with_env_until, git_with_env_until_input,
 };
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 use std::io::Read;
@@ -1083,7 +1083,10 @@ impl ScratchRepo {
             tidy_said: AtomicBool::new(false),
             tidy_limit: TIDY_LIMIT,
             disk_low: AtomicBool::new(false),
-            packs_reader: PacksQuestion(Arc::new(engine_packs_of)),
+            packs_reader: PacksQuestion {
+                read: Arc::new(engine_packs_of),
+                set: false,
+            },
             packs_busy: Arc::new(AtomicBool::new(false)),
             git_dir_reader: GitDirQuestion(Arc::new(git_dir_is_own)),
         })
@@ -1981,13 +1984,17 @@ impl Snapshotter {
     /// With [`BundleForm::AboveFloor`] and a floor the bundle leaves out what the floors reach ([`Self::write_bundle_above`]).
     /// In every other case, and whenever that path fails or says that this copy must be whole, the bundle holds everything the copy's
     /// commit reaches, as it always did: a copy is never lost to the form it was to have.
-    async fn write_bundle(&self, form: BundleForm) -> Result<(PathBuf, u64), String> {
+    ///
+    /// The answer also says which of the three bundles was written ([`Written`]): above the floors, with the length of
+    /// its header, above the head's own parents, or whole. The form of the keep indexes only a bundle above the floors
+    /// ([`Self::keep_commits`]).
+    async fn write_bundle(&self, form: BundleForm) -> Result<(PathBuf, u64, Written), String> {
         let bundle = self.git_dir.join("snapshot.bundle");
         if form == BundleForm::AboveFloor
             && !self.floors.is_empty()
-            && let Ok(Some(bytes)) = self.write_bundle_above(&bundle).await
+            && let Ok(Some((bytes, written))) = self.write_bundle_above(&bundle).await
         {
-            return Ok((bundle, bytes));
+            return Ok((bundle, bytes, written));
         }
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
@@ -2007,11 +2014,11 @@ impl Snapshotter {
             .await
             .map_err(ws)?;
         let bytes = std::fs::metadata(&bundle).map_err(io)?.len();
-        Ok((bundle, bytes))
+        Ok((bundle, bytes, Written::Whole))
     }
 
-    /// Writes the bundle of `refs/heads/snapshot` without what the floors reach, and returns its size; `None` when this copy
-    /// must be whole. An error is a git call that failed, and the caller then writes the bundle whole too.
+    /// Writes the bundle of `refs/heads/snapshot` without what the floors reach, and returns its size and what was
+    /// left out ([`Written`]); `None` when this copy must be whole. An error is a git call that failed, and the caller then writes the bundle whole too.
     ///
     /// What is left out: when the copy's commit is above the floors (`git rev-list --count refs/heads/snapshot ^<floor>...` answers 1
     /// or more), the floors. When it answers 0 the ref names a commit the base holds, which only the copy of the end does (a session
@@ -2022,7 +2029,7 @@ impl Snapshotter {
     ///
     /// git writes the commits it left out as prerequisite lines of the bundle's header (bundle version 2). The header is read back:
     /// one that cannot be read, or that is longer than [`THIN_HEADER_MAX`], makes the copy whole.
-    async fn write_bundle_above(&self, bundle: &Path) -> Result<Option<u64>, String> {
+    async fn write_bundle_above(&self, bundle: &Path) -> Result<Option<(u64, Written)>, String> {
         let gd: &Path = &self.git_dir;
         let cwd = self.git_dir.parent().unwrap_or(Path::new("/"));
         let below_floors: Vec<String> = self.floors.iter().map(|f| format!("^{f}")).collect();
@@ -2043,7 +2050,8 @@ impl Snapshotter {
             .trim()
             .parse()
             .map_err(|_| "snapshot: git rev-list --count answered no number".to_string())?;
-        let left_out: Vec<String> = if above >= 1 {
+        let above_floors = above >= 1;
+        let left_out: Vec<String> = if above_floors {
             below_floors
         } else {
             let parents = self
@@ -2087,11 +2095,19 @@ impl Snapshotter {
             .windows(2)
             .position(|w| w == b"\n\n")
             .map(|at| at + 2);
-        match (harness_protocol::bundle_header::needs(&prefix), header_len) {
-            (Ok(_), Some(len)) if len <= THIN_HEADER_MAX => {}
+        let header = match (harness_protocol::bundle_header::needs(&prefix), header_len) {
+            (Ok(_), Some(len)) if len <= THIN_HEADER_MAX => len as u64,
             _ => return Ok(None),
-        }
-        Ok(Some(std::fs::metadata(bundle).map_err(io)?.len()))
+        };
+        let written = if above_floors {
+            Written::AboveFloors { header }
+        } else {
+            Written::AboveParents
+        };
+        Ok(Some((
+            std::fs::metadata(bundle).map_err(io)?.len(),
+            written,
+        )))
     }
 
     /// The private repository of a read of a stopped session's storage, `<dir>/snapshot.git`, for the work tree at `repo`. Unlike
@@ -2190,7 +2206,7 @@ impl Snapshotter {
             .await
             .map_err(ws)?;
         // The read-back bundle holds the whole history, whatever the form of a session's copies is.
-        let (bundle, bundle_bytes) = self.write_bundle(BundleForm::Whole).await?;
+        let (bundle, bundle_bytes, _) = self.write_bundle(BundleForm::Whole).await?;
         Ok(ReadBack {
             commit,
             tree,
@@ -2429,7 +2445,7 @@ impl Snapshotter {
             .map_err(ws)?;
         self.steps.commit = at.elapsed();
         let at = Instant::now();
-        let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
+        let (bundle, bundle_bytes, _) = self.write_bundle(self.form).await?;
         self.steps.bundle = at.elapsed();
         self.last_tree = tree;
         self.count = n;
@@ -2527,11 +2543,11 @@ impl Snapshotter {
         self.steps.commit = at.elapsed();
         let at = Instant::now();
         self.keep_check(head.as_deref()).await;
-        let (bundle, bundle_bytes) = self.write_bundle(self.form).await?;
+        let (bundle, bundle_bytes, written) = self.write_bundle(self.form).await?;
         self.steps.bundle = at.elapsed();
         // A look that read the kept pack is followed by no keep at once.
         self.keep.look_read_kept = self.keep.use_kept;
-        self.steps.engine = self.keep.note_head(head.as_deref(), bundle_bytes);
+        self.steps.engine = self.keep.note_head(head.as_deref(), bundle_bytes, written);
         self.last_tree = tree;
         if head.is_some() {
             self.last_parent = head;
@@ -2585,6 +2601,18 @@ const KEPT_LINE: &str = "agentd kept ";
 /// How the second line of the marker starts; what the engine's own packs were when the pack was kept follows
 /// ([`ScratchRepo::engine_packs`]).
 const KEPT_PACKS_LINE: &str = "engine packs ";
+/// How the first line of the marker of a kept pack that was made from a look's bundle goes on behind [`KEPT_LINE`], in
+/// front of the head: `agentd kept bundle <head>`. A worker of releases 5.28 to 5.31 reads `bundle <head>` as no object id,
+/// removes the pack and keeps by its own rule.
+const KEPT_BUNDLE_WORD: &str = "bundle ";
+/// The folder under [`KEPT_DIR`] that the form indexes a look's bundle into: an object folder of its own that holds
+/// nothing else and has no alternates, so git refuses a bundle that is thin.
+const FORM_INDEXED: &str = "indexed";
+/// The largest bundle of a look that the form indexes, in bytes: the largest one whose form was timed on a session
+/// machine (5,000 commits that git had not packed: the form took 1,221 to 1,238 ms where release 5.28's keep took 18,411 to
+/// 18,856 ms). No time is borrowed for a size above it: a keep after a look with a larger bundle is release 5.28's
+/// ([`Snapshotter::set_keep_form_limit`] names another limit; tests).
+pub const FORM_BUNDLE_MAX: u64 = 37_456_492;
 /// The most packs of the engine's store whose names are read ([`ScratchRepo::engine_packs`]); a store with more keeps no pack.
 const ENGINE_PACKS_MAX: usize = 4_096;
 /// What a read of the engine's packs answers while an earlier read has not returned ([`ScratchRepo::off_the_looks_flag`]).
@@ -2602,6 +2630,19 @@ pub const KEPT_CHECK_LIMIT: Duration = PRIME_LIMIT;
 /// pack did not end within its limit when a worker started ([`Snapshotter::check_kept`]). A pack that cannot be checked within the
 /// limit is never kept twice, whatever its size.
 const KEPT_OFF: &str = "off";
+
+/// Which bundle a look wrote ([`Snapshotter::write_bundle`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Written {
+    /// Everything the copy's commit reaches.
+    #[default]
+    Whole,
+    /// What is above the floors, the commits the run started from; `header` is the length of the bundle's header in bytes:
+    /// the pack begins at that byte.
+    AboveFloors { header: u64 },
+    /// What is above the head's own parents: the one commit of a copy whose commit the base holds.
+    AboveParents,
+}
 
 /// What came of a keep of the run's commits ([`Snapshotter::keep_commits`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2717,6 +2758,24 @@ struct KeepState {
     keeping: Option<String>,
     /// The size of the bundle of the last copy.
     last_bundle_bytes: u64,
+    /// Which bundle the last look wrote ([`Snapshotter::write_bundle`]). A keep is due only after a look that wrote its
+    /// own bundle, so while a keep is due this is the bundle of the head that is kept, and it stands on the worker's disk
+    /// until the next look writes its own.
+    last_bundle: Written,
+    /// The form's session mark, in memory only: git refused the form's own work in this worker (an indexing or a
+    /// filter that ended with a non-zero exit while the engine's packs stood still, or a filtered pack whose index the worker
+    /// cannot read). No `index-pack --stdin` is started for the rest of the worker's session; release 5.28's keep runs alone.
+    /// Running out of time, a cut, a row at which the form is off and git's own `gc` in flight never set it.
+    form_refused: bool,
+    /// The session was restored from a saved copy ([`Snapshotter::set_session_restored`]): the form is off for the
+    /// session (row d of the build brief).
+    form_restored: bool,
+    /// The largest bundle the form indexes, when a test set one ([`Snapshotter::set_keep_form_limit`]); else
+    /// [`FORM_BUNDLE_MAX`].
+    form_limit: Option<u64>,
+    /// What came of the form at the keep that just ended, for the worker's log line, until the caller has taken it
+    /// ([`Snapshotter::take_form_note`]). Cleared when a keep starts.
+    form_note: Option<String>,
     /// The look in progress may read the kept pack ([`Snapshotter::keep_check`]).
     use_kept: bool,
     /// Why the pack an earlier worker kept was not adopted ([`Snapshotter::check_kept`]), until the caller has taken it
@@ -2734,9 +2793,11 @@ struct KeepState {
 }
 
 impl KeepState {
-    /// The look that just made a copy found the engine's head at `head`, and its bundle has `bundle_bytes` bytes.
-    fn note_head(&mut self, head: Option<&str>, bundle_bytes: u64) -> EngineHead {
+    /// The look that just made a copy found the engine's head at `head`, and its bundle has `bundle_bytes` bytes and is the
+    /// bundle `written` says.
+    fn note_head(&mut self, head: Option<&str>, bundle_bytes: u64, written: Written) -> EngineHead {
         self.last_bundle_bytes = bundle_bytes;
+        self.last_bundle = written;
         let found = match head {
             Some(head) if self.seen_head.as_deref() == Some(head) => {
                 self.rest_head = Some(head.to_string());
@@ -2776,20 +2837,67 @@ impl Drop for Incoming {
     }
 }
 
+/// Empties the folders a keep writes into before its pack stands, under the folder `kept` of the kept pack:
+/// `incoming/` (the pack of release 5.28's keep and the form's filtered pack) and `indexed/pack/` (the look's bundle as the
+/// form indexed it; git leaves a `tmp_pack_*` there when it is cut). Plain calls on the worker's own disk.
+fn clear_keep_folders(kept: &Path) {
+    clear_folder(&kept.join("incoming"));
+    clear_folder(&kept.join(FORM_INDEXED).join("pack"));
+}
+
+/// The folders the form writes into ([`clear_keep_folders`], given the folder of the kept pack). They are emptied when
+/// the form ends in any way, also when the keep's future is dropped: a form that gave way, was refused or was cut leaves no
+/// file behind. Declared before the form's git calls, so git's group is ended first.
+struct FormFolders(PathBuf);
+
+impl Drop for FormFolders {
+    fn drop(&mut self) {
+        clear_keep_folders(&self.0);
+    }
+}
+
+/// How the form ended at one keep ([`Snapshotter::keep_by_form`]).
+enum FormEnd {
+    /// The form's pack stands: the kept pack.
+    Stands(KeptPack),
+    /// The form did not run at this keep: release 5.28's keep runs with the keep's give-up.
+    Off,
+    /// The form started and its pack does not stand: release 5.28's keep runs in the same wait, with a give-up of its own.
+    GaveWay,
+    /// The form's own read of the engine's store ended in an error: that error is the keep's answer, and release 5.28's
+    /// keep is not run.
+    Read(String),
+}
+
 /// What the engine's store at `dir` (its `objects/pack`) holds as packs: their number and a hash over their names. A store
 /// without that folder holds none.
 fn engine_packs_of(dir: &Path) -> Result<String, String> {
+    engine_packs_listed(dir).map(|(packs, _)| packs)
+}
+
+/// One listing of the engine's pack folder `dir`: what [`engine_packs_of`] answers, and every name in it that ends in
+/// `.pack`, sorted, each with whether its `.idx` name stands in the same listing.
+fn engine_packs_listed(dir: &Path) -> Result<(String, Vec<(String, bool)>), String> {
     use sha2::{Digest, Sha256};
-    let mut names: Vec<String> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".pack"))
-            .take(ENGINE_PACKS_MAX + 1)
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    let mut names: Vec<String> = Vec::new();
+    let mut indexes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".pack") {
+                    names.push(name);
+                    if names.len() > ENGINE_PACKS_MAX {
+                        break;
+                    }
+                } else if name.ends_with(".idx") && indexes.len() <= ENGINE_PACKS_MAX {
+                    indexes.insert(name);
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(io(e)),
-    };
+    }
     if names.len() > ENGINE_PACKS_MAX {
         return Err(format!(
             "snapshot: the engine's store holds more than {ENGINE_PACKS_MAX} packs"
@@ -2802,15 +2910,190 @@ fn engine_packs_of(dir: &Path) -> Result<String, String> {
         hash.update(b"\n");
     }
     let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("{}:{digest}", names.len()))
+    let packs = format!("{}:{digest}", names.len());
+    let listed = names
+        .into_iter()
+        .map(|name| {
+            let index = format!("{}.idx", name.strip_suffix(".pack").unwrap_or(&name));
+            let has_index = indexes.contains(&index);
+            (name, has_index)
+        })
+        .collect();
+    Ok((packs, listed))
+}
+
+/// What the keep's head is as a loose object file of the engine's own object folder ([`engine_store`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LooseHead {
+    /// A regular file: the head is a loose object. It may stand in a pack as well.
+    File,
+    /// No such file: the head stands in a pack only.
+    Missing,
+    /// Anything else, with what the system said: the question has no answer.
+    Unreadable(String),
+}
+
+/// What one read of the engine's store answered ([`engine_store`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineStore {
+    /// The number of the engine's packs and a hash over their names ([`ScratchRepo::engine_packs`]), or what a reader that a
+    /// test set answered.
+    pub packs: String,
+    /// Every name in the engine's pack folder that ends in `.pack`, sorted, each with whether its `.idx` stands in the same
+    /// listing; `None` when a reader that a test set answered, which names none.
+    pub names: Option<Vec<(String, bool)>>,
+    /// Whether the store has alternates of its own (`objects/info/alternates`); `None` when that was not asked.
+    pub alternates: Option<bool>,
+    /// What the head is as a loose object file; `None` when that was not asked.
+    pub loose: Option<LooseHead>,
+}
+
+/// Where the object `id` stands as a loose object file of the repository at `repo`:
+/// `<repo>/.git/objects/<first two characters>/<the other 38>` of a full id of 40 hexadecimal characters. `None` for any other
+/// text: a shorter id, an id of 64 characters, no id.
+pub fn loose_object_path(repo: &Path, id: &str) -> Option<PathBuf> {
+    (id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| repo.join(".git/objects").join(&id[..2]).join(&id[2..]))
+}
+
+/// The engine's store at `repo` as agentd's own file calls find it, one read for a keep: what `.git` is first, then one
+/// listing of the pack folder, and for a keep by the form (`head` is the head that is kept) whether the store has alternates
+/// of its own and whether the head stands as a loose object file. `None` when `.git` is not the repository's own directory
+/// ([`git_dir_problem`]): nothing else is read then. Each later question is asked only while every answer before it leaves the
+/// form on: a store without a pack is asked nothing more, and a store with alternates is not asked for the head.
+pub fn engine_store(repo: &Path, head: Option<&str>) -> Result<Option<EngineStore>, String> {
+    let is_own: GitDirReader = Arc::new(git_dir_is_own);
+    engine_store_with(repo, head, &is_own, None)
+}
+
+/// [`engine_store`] with the readers of a [`ScratchRepo`]: `read` is the reader of the packs that a test set, which answers
+/// one string and no names.
+fn engine_store_with(
+    repo: &Path,
+    head: Option<&str>,
+    is_own: &GitDirReader,
+    read: Option<&PacksReader>,
+) -> Result<Option<EngineStore>, String> {
+    if !is_own(repo) {
+        return Ok(None);
+    }
+    let dir = repo.join(".git/objects/pack");
+    let (packs, names) = match read {
+        Some(read) => (read(&dir)?, None),
+        None => {
+            let (packs, names) = engine_packs_listed(&dir)?;
+            (packs, Some(names))
+        }
+    };
+    let mut store = EngineStore {
+        packs,
+        names,
+        alternates: None,
+        loose: None,
+    };
+    let Some(head) = head else {
+        return Ok(Some(store));
+    };
+    if store.names.as_ref().is_none_or(Vec::is_empty) {
+        return Ok(Some(store));
+    }
+    let alternates = !matches!(
+        std::fs::symlink_metadata(repo.join(".git/objects/info/alternates")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    store.alternates = Some(alternates);
+    if alternates {
+        return Ok(Some(store));
+    }
+    store.loose = Some(match loose_object_path(repo, head) {
+        None => LooseHead::Unreadable("the id is not 40 hexadecimal characters".to_string()),
+        Some(path) => match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => LooseHead::File,
+            Ok(_) => LooseHead::Unreadable("it is no regular file".to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LooseHead::Missing,
+            Err(e) => LooseHead::Unreadable(io(e)),
+        },
+    });
+    Ok(Some(store))
+}
+
+/// The engine's packs that the form's filter call names with `^` in front, from the listing of step a: every name that
+/// ends in `.pack`. The error is the first name the form does not take: one that is not `pack-<40 hexadecimal characters>.pack`
+/// or that stands without its index (git's own `gc` in flight writes such files).
+fn form_pack_names(names: &[(String, bool)]) -> Result<Vec<&str>, &str> {
+    names
+        .iter()
+        .map(|(name, has_index)| {
+            let hash = name
+                .strip_prefix("pack-")
+                .and_then(|rest| rest.strip_suffix(".pack"))
+                .unwrap_or_default();
+            if *has_index && hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                Ok(name.as_str())
+            } else {
+                Err(name.as_str())
+            }
+        })
+        .collect()
+}
+
+/// Whether the index of a pack at `idx` names the object `id` (40 hexadecimal characters). The index is read as
+/// version 2: a header of 8 bytes, 256 counts of 4 bytes, then the ids in order, 20 bytes each; the count before the id's first
+/// byte and the count at it bound the ids that are read. No git is started. An index that is not version 2, or that is shorter
+/// than its counts say, is an error.
+pub fn pack_index_has(idx: &Path, id: &str) -> Result<bool, String> {
+    use std::io::{Seek, SeekFrom};
+    const COUNTS: u64 = 8 + 256 * 4;
+    if loose_object_path(Path::new(""), id).is_none() {
+        return Err(format!(
+            "snapshot: not an id of 40 characters: {}",
+            id.escape_debug()
+        ));
+    }
+    let want: Vec<u8> = (0..20)
+        .filter_map(|i| u8::from_str_radix(&id[2 * i..2 * i + 2], 16).ok())
+        .collect();
+    let mut file = std::fs::File::open(idx).map_err(io)?;
+    let length = file.metadata().map_err(io)?.len();
+    let mut head = [0u8; COUNTS as usize];
+    file.read_exact(&mut head).map_err(io)?;
+    if head[..8] != [0xff, b't', b'O', b'c', 0, 0, 0, 2] {
+        return Err("snapshot: the index of the pack is not version 2".to_string());
+    }
+    let count = |n: usize| {
+        let at = 8 + 4 * n;
+        u64::from(u32::from_be_bytes([
+            head[at],
+            head[at + 1],
+            head[at + 2],
+            head[at + 3],
+        ]))
+    };
+    let first = usize::from(want[0]);
+    let (from, to) = (if first == 0 { 0 } else { count(first - 1) }, count(first));
+    if to < from || to > count(255) || length < COUNTS + count(255) * 20 {
+        return Err("snapshot: the index of the pack is shorter than its counts say".to_string());
+    }
+    let mut ids = vec![0u8; ((to - from) * 20) as usize];
+    file.seek(SeekFrom::Start(COUNTS + from * 20)).map_err(io)?;
+    file.read_exact(&mut ids).map_err(io)?;
+    Ok(ids
+        .as_chunks::<20>()
+        .0
+        .iter()
+        .any(|one| one.as_slice() == want.as_slice()))
 }
 
 /// What reads the packs of an engine's store, given the store's `objects/pack` ([`engine_packs_of`]; a test gives a storage
 /// that answers slowly, [`Snapshotter::set_engine_packs_reader`]).
 pub type PacksReader = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 
-/// A [`PacksReader`] as a member of [`ScratchRepo`].
-struct PacksQuestion(PacksReader);
+/// A [`PacksReader`] as a member of [`ScratchRepo`]. `set` says that a test set the reader
+/// ([`Snapshotter::set_engine_packs_reader`]): such a reader answers one string and names no pack, so the form is off.
+struct PacksQuestion {
+    read: PacksReader,
+    set: bool,
+}
 
 impl std::fmt::Debug for PacksQuestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2844,7 +3127,8 @@ impl std::fmt::Debug for GitDirQuestion {
 /// cut while the pack before was replaced) are removed. A pack with another marker, or with none, is not the worker's: it stays.
 fn kept_at_open(git_dir: &Path) -> Option<KeptPack> {
     let kept = git_dir.join(KEPT_DIR);
-    clear_folder(&kept.join("incoming"));
+    // The form's folder too: a form that was cut left the bundle it indexed, or git's `tmp_pack_*`.
+    clear_keep_folders(&kept);
     let packs = kept.join("pack");
     let mut own: Vec<(std::time::SystemTime, KeptPack)> = Vec::new();
     for entry in std::fs::read_dir(&packs).ok()?.flatten() {
@@ -2861,7 +3145,9 @@ fn kept_at_open(git_dir: &Path) -> Option<KeptPack> {
         let Some(head) = lines.next().and_then(|l| l.strip_prefix(KEPT_LINE)) else {
             continue;
         };
-        let head = head.trim();
+        // Both first lines are the worker's own: `agentd kept <head>` of release 5.28's keep and
+        // `agentd kept bundle <head>` of a pack that was made from a look's bundle.
+        let head = head.strip_prefix(KEPT_BUNDLE_WORD).unwrap_or(head).trim();
         let engine_packs = lines
             .next()
             .and_then(|l| l.strip_prefix(KEPT_PACKS_LINE))
@@ -2911,7 +3197,7 @@ impl ScratchRepo {
     /// once, and a look whose read is refused reads no kept pack. No file call of a look waits for it or is refused because of it.
     async fn engine_packs(&self) -> Result<String, String> {
         let dir = self.repo.join(".git/objects/pack");
-        let read = self.packs_reader.0.clone();
+        let read = self.packs_reader.read.clone();
         self.off_the_looks_flag(move || read(&dir)).await
     }
 
@@ -2922,15 +3208,20 @@ impl ScratchRepo {
     /// The keep at once makes no call under the flag of a look's file calls ([`Self::on_tree`]). Its future is dropped when the
     /// next look starts, and a call of it that has not returned then would refuse that look its first file call: the look that
     /// a request to end asks for would fail, and the work written before the request would be in no stored copy.
-    async fn engine_packs_if_own(&self) -> Result<Option<String>, String> {
-        let (repo, dir) = (self.repo.clone(), self.repo.join(".git/objects/pack"));
-        let (is_own, read) = (self.git_dir_reader.0.clone(), self.packs_reader.0.clone());
+    ///
+    /// The same call is the form's own read of the engine's store ([`engine_store`]): with the keep's head it also
+    /// asks, in the one call, whether the store has alternates of its own and whether the head stands as a loose object
+    /// file (step a of the form), and without a head it is the read behind the form's filter (step d). The keep at once
+    /// calls it without a head and makes the file calls it always made.
+    async fn engine_packs_if_own(&self, head: Option<&str>) -> Result<Option<EngineStore>, String> {
+        let (repo, head) = (self.repo.clone(), head.map(str::to_string));
+        let is_own = self.git_dir_reader.0.clone();
+        let read = self
+            .packs_reader
+            .set
+            .then(|| self.packs_reader.read.clone());
         self.off_the_looks_flag(move || {
-            if is_own(&repo) {
-                read(&dir).map(Some)
-            } else {
-                Ok(None)
-            }
+            engine_store_with(&repo, head.as_deref(), &is_own, read.as_ref())
         })
         .await
     }
@@ -2983,7 +3274,10 @@ impl Snapshotter {
 
     /// Another reader of the engine's packs than [`engine_packs_of`]; tests.
     pub fn set_engine_packs_reader(&mut self, reader: PacksReader) {
-        self.scratch.packs_reader = PacksQuestion(reader);
+        self.scratch.packs_reader = PacksQuestion {
+            read: reader,
+            set: true,
+        };
     }
 
     /// Another answer to whether the engine's `.git` is the repository's own directory than [`git_dir_is_own`]; tests.
@@ -3110,13 +3404,41 @@ impl Snapshotter {
     /// last bundle ([`Self::keep_commits`], `more` is the size of the last bundle): the pack that is then written leaves the
     /// disk above the rule, so no look removes it for the room it took.
     fn keep_short_disk(&mut self, more: u64) -> Option<(u64, u64)> {
-        let free = match self.keep.free.len() {
+        let free = self.keep_free();
+        Self::keep_rule_short(&self.scratch.marks, self.keep.last_bundle_bytes, more, free)
+            .map(|need| (free, need))
+    }
+
+    /// One question to the disk of the private repository: its free bytes, or the next answer a test set
+    /// ([`Self::set_keep_free_answers`]). A keep asks once and decides both its own rule and the form's from the one answer.
+    fn keep_free(&mut self) -> u64 {
+        match self.keep.free.len() {
             0 => free_bytes(&self.git_dir),
             1 => self.keep.free[0],
             _ => self.keep.free.remove(0),
-        };
-        Self::keep_rule_short(&self.scratch.marks, self.keep.last_bundle_bytes, more, free)
-            .map(|need| (free, need))
+        }
+    }
+
+    /// The session was restored from a saved copy (`restored`): the form is off for the session, and release 5.28's
+    /// keep makes every pack. The form pays for the whole bundle of a look, and in a restored session most of that bundle
+    /// stands in the engine's packs, where release 5.28's keep pays only for what is loose. The copy task says so where it
+    /// switches the keep on. Tests also switch the form off with it.
+    pub fn set_session_restored(&mut self, restored: bool) {
+        self.keep.form_restored = restored;
+    }
+
+    /// Another limit than [`FORM_BUNDLE_MAX`] for the bundle the form indexes; `None` is that constant. Tests.
+    pub fn set_keep_form_limit(&mut self, bytes: Option<u64>) {
+        self.keep.form_limit = bytes;
+    }
+
+    /// What came of the form at the keep that just ended ([`Self::keep_commits`]), once, for the worker's log line
+    /// `direct turn copy keep form: `: `made index=<ms> filter=<ms>` when the form's pack stands, `gave way index=<ms>
+    /// filter=<ms>: <why>` when the form started and release 5.28's keep ran in its place (with `; off for this session` when
+    /// git refused the form), and `off: <why>` when the form did not run. `None` when no keep was due and when the form's own
+    /// read of the engine's store ended the keep: the keep's own line says why then.
+    pub fn take_form_note(&mut self) -> Option<String> {
+        self.keep.form_note.take()
     }
 
     /// How long the steps of the last look took and what it found of the engine's head.
@@ -3249,8 +3571,8 @@ impl Snapshotter {
         // engine's `.git` is and what its packs are is one call under the flag of the packs' read; the head is one git call,
         // which ends with this future.
         let still = matches!(
-            self.scratch.engine_packs_if_own().await,
-            Ok(Some(now)) if now == packs
+            self.scratch.engine_packs_if_own(None).await,
+            Ok(Some(now)) if now.packs == packs
         ) && self.engine_head_id().await.as_deref() == Some(head.as_str());
         self.scratch.give_up = None;
         if still {
@@ -3296,7 +3618,8 @@ impl Snapshotter {
     /// file it made after the sweep of [`Incoming`] would stay on a disk where no keep starts. No keep is in flight here: a keep
     /// holds the repository, and what starts a look or the copy of the end drops it first. No git call is made.
     fn keep_gives_way(&mut self) {
-        clear_folder(&self.git_dir.join(KEPT_DIR).join("incoming"));
+        // The form's folder too ([`clear_keep_folders`]).
+        clear_keep_folders(&self.git_dir.join(KEPT_DIR));
         if self.keep.kept.is_some() && self.keep_short_disk(0).is_some() {
             self.drop_kept();
         }
@@ -3384,7 +3707,19 @@ impl Snapshotter {
     /// finds that head is tried. Before, a read that one slow call left outstanding spent the head's one try, and a head
     /// that rested got no pack in that worker
     /// (`b932_a_keep_whose_first_read_of_the_packs_is_refused_is_no_try`).
+    ///
+    /// The pack is made from the bundle the look just wrote where that is cheaper ([`Self::keep_by_form`], the form):
+    /// git indexes the bundle on the worker's own disk and a filter call leaves out what the engine's own packs hold, so no
+    /// loose object of the run is read again from the session's storage. The form starts after the head is noted as being
+    /// kept and the give-up is set, and before release 5.28's keep. Its pack is a kept pack like any other and ends the keep
+    /// through the same arm. Where the form is off, or gives way, release 5.28's keep runs in the same wait and its answer
+    /// is the keep's: the form never writes a mark. A form that gave way has used its own time, so the keep behind
+    /// it gets a give-up of its own ([`KEEP_LIMIT`] from then): the git of one wait is given up after twice that limit at
+    /// the latest, and the start of the next look ends whichever runs. One case ends the keep without release 5.28's keep:
+    /// an error of the form's own read of the engine's store is the keep's answer.
     pub async fn keep_commits(&mut self, give_up: &GiveUp) -> Keep {
+        // What the form of an earlier keep left for the log is not this keep's.
+        self.keep.form_note = None;
         let at_once = std::mem::take(&mut self.keep.due_at_once);
         let Some(head) = self.keep.rest_head.take() else {
             return Keep::NotDue;
@@ -3399,14 +3734,30 @@ impl Snapshotter {
         } else {
             self.keep.tried = Some(head.clone());
         }
-        if let Some((free, need)) = self.keep_short_disk(self.keep.last_bundle_bytes) {
+        // One question to the disk for both rules. The keep's rule asks for room for the pack it is about to write,
+        // about one bundle; the form holds the indexed and the filtered pack for a moment and asks for two.
+        let (last, free) = (self.keep.last_bundle_bytes, self.keep_free());
+        if let Some(need) = Self::keep_rule_short(&self.scratch.marks, last, last, free) {
             return Keep::Missed(format!(
                 "the disk of the private repository has {free} bytes free; a pack is kept only above {need}"
             ));
         }
+        let form_short =
+            Self::keep_rule_short(&self.scratch.marks, last, last.saturating_mul(2), free)
+                .map(|need| (free, need));
         self.keep.keeping = Some(head.clone());
         self.scratch.give_up = Some(give_up.clone());
-        let made = self.keep_pack(&head, give_up).await;
+        let made = match self.keep_by_form(&head, give_up, form_short).await {
+            FormEnd::Stands(kept) => Ok(Some(kept)),
+            FormEnd::Read(e) => Err(e),
+            FormEnd::Off => self.keep_pack(&head, give_up).await,
+            FormEnd::GaveWay => {
+                // The form's time never eats the keep's: release 5.28's keep behind a form that gave way has its own.
+                let own = GiveUp::at(Some(tokio::time::Instant::now() + KEEP_LIMIT));
+                self.scratch.give_up = Some(own.clone());
+                self.keep_pack(&head, &own).await
+            }
+        };
         self.scratch.give_up = None;
         self.keep.keeping = None;
         match made {
@@ -3432,6 +3783,337 @@ impl Snapshotter {
                 Keep::Missed(e)
             }
         }
+    }
+
+    /// The form did not run at this keep, and why (the line `direct turn copy keep form: off: `).
+    fn form_off(&mut self, why: impl std::fmt::Display) -> FormEnd {
+        self.keep.form_note = Some(format!("off: {why}"));
+        FormEnd::Off
+    }
+
+    /// The form started and gives way at this keep: how long its two git calls ran in milliseconds (0 for one that did
+    /// not run), why, and whether git refused the form's own work (`refused`), which sets the session mark.
+    fn form_gave_way(
+        &mut self,
+        (index, filter): (u128, u128),
+        why: impl std::fmt::Display,
+        refused: bool,
+    ) -> FormEnd {
+        self.keep.form_refused |= refused;
+        self.keep.form_note = Some(format!(
+            "gave way index={index} filter={filter}: {why}{}",
+            if refused {
+                "; off for this session"
+            } else {
+                ""
+            }
+        ));
+        FormEnd::GaveWay
+    }
+
+    /// The form: the kept pack for the head `head` made from the bundle the look just wrote
+    /// (`<private>/snapshot.bundle`, which stands until the next look writes its own). `short` is the form's disk rule when
+    /// the disk is short of it. What came of the form is noted for the worker's log ([`Self::take_form_note`]).
+    ///
+    /// The form is off, and release 5.28's keep runs alone, when git refused the form earlier in this session (the session
+    /// mark), in a session restored from a saved copy, after a look whose bundle is whole or above the head's parents or
+    /// larger than [`FORM_BUNDLE_MAX`], on a disk short of the form's rule, for a head whose id is not 40 hexadecimal
+    /// characters, and, after the one read of the engine's store (step a, [`ScratchRepo::engine_packs_if_own`]), when
+    /// `.git` is not the repository's own directory, when the store holds no pack (the filter would read every loose commit
+    /// and tree below the floors) or a test's reader answers for it, when the store has alternates of its own, and when the
+    /// head does not stand as a loose object file there: a head that stands in a pack only cannot be in the filtered pack.
+    /// Off is no refusal: the next keep asks again.
+    ///
+    /// Then, all inside the wait and ended when this future is dropped:
+    /// - `git index-pack --stdin` reads the bundle from the byte after its header, as an open file, into `kept/indexed/`, an
+    ///   object folder that holds nothing else: no byte of the bundle passes through agentd's memory.
+    /// - `git pack-objects --stdin-packs` writes the objects of the indexed pack that no pack of the engine holds into
+    ///   `kept/incoming/`: every pack of the engine is named with `^` in front, and the engine's store is the call's only
+    ///   other object folder. A name in the engine's pack folder that is no pack with its index makes the form give way.
+    /// - The engine's store is read once more (step d): when its packs changed, or `.git` is no longer the repository's own
+    ///   directory, the form gives way and leaves no pack.
+    /// - The index of the filtered pack is read for the head ([`pack_index_has`], no third git call): a pack without it holds
+    ///   only the copy's own commit and the files no commit holds, and is not installed.
+    /// - The marker (`agentd kept bundle <head>`, and what the engine's packs were) is written, and marker, pack, reverse
+    ///   index and index are renamed into `kept/pack/` in that order; the pack kept before is removed.
+    ///
+    /// The form has no limit of its own: its git calls and reads use the keep's give-up. Git's refusal of the form's own
+    /// work (a non-zero exit of the indexing, or of the filter while the engine's packs stood still, or a filtered pack whose
+    /// index cannot be read) sets the session mark. Any end of `git index-pack` other than exit 0 sets it, also a disk of
+    /// the worker that fills during the write and a process that a signal ended: the worker does not tell these from
+    /// git's own refusal. An indexing that ends 0 and names no pack, or names one that does not stand in the form's folder,
+    /// sets it too, and so does a filter that ends 0 and prints something that is no pack name. The one exception is a
+    /// filter that ends 0 and prints nothing: the form gives way for that keep without the mark (step e; that branch
+    /// cannot be reached today). Running out of time, a named pack that is gone (`could not find pack`),
+    /// packs that changed, a head missing from the filtered pack and a failing file call on the worker's own disk set none.
+    /// An error of the form's own read (step a or step d: an earlier read has not returned, the give-up came, the listing
+    /// failed, the read's thread ended) is the keep's answer.
+    async fn keep_by_form(
+        &mut self,
+        head: &str,
+        give_up: &GiveUp,
+        short: Option<(u64, u64)>,
+    ) -> FormEnd {
+        if self.keep.form_refused {
+            return self.form_off("git refused the form earlier in this session");
+        }
+        if self.keep.form_restored {
+            return self.form_off("the session was restored from a saved copy");
+        }
+        let header = match self.keep.last_bundle {
+            Written::AboveFloors { header } => header,
+            Written::Whole => return self.form_off("the look's bundle is whole"),
+            Written::AboveParents => {
+                return self.form_off("the look's bundle is above the head's parents");
+            }
+        };
+        let (bytes, limit) = (
+            self.keep.last_bundle_bytes,
+            self.keep.form_limit.unwrap_or(FORM_BUNDLE_MAX),
+        );
+        if bytes > limit {
+            return self.form_off(format!(
+                "the look's bundle has {bytes} bytes, and the form indexes at most {limit}"
+            ));
+        }
+        if let Some((free, need)) = short {
+            return self.form_off(format!(
+                "the disk of the private repository has {free} bytes free; the form runs only above {need}"
+            ));
+        }
+        if loose_object_path(&self.repo, head).is_none() {
+            return self.form_off("the head's id is not 40 hexadecimal characters");
+        }
+        // Step a: the keep's first read of the engine's store, one call under the flag of the packs' read.
+        let store = match self.scratch.engine_packs_if_own(Some(head)).await {
+            Err(e) => return FormEnd::Read(e),
+            Ok(None) => {
+                return self.form_off("the engine's .git is not the repository's own directory");
+            }
+            Ok(Some(store)) => store,
+        };
+        let Some(names) = &store.names else {
+            return self.form_off("the engine's packs are read by a reader that names none");
+        };
+        if names.is_empty() {
+            return self.form_off("the engine's store holds no pack");
+        }
+        if store.alternates != Some(false) {
+            return self.form_off("the engine's store has alternates of its own");
+        }
+        match &store.loose {
+            Some(LooseHead::File) => {}
+            Some(LooseHead::Missing) => {
+                return self.form_off("the head stands in a pack only");
+            }
+            Some(LooseHead::Unreadable(why)) => {
+                return self.form_off(format!(
+                    "the head's loose object file could not be read: {why}"
+                ));
+            }
+            None => return self.form_off("the head's loose object file was not asked for"),
+        }
+        let mut times = (0, 0);
+        let mut input = String::new();
+        match form_pack_names(names) {
+            Ok(engine) => {
+                for name in engine {
+                    input.push_str(&format!("^{name}\n"));
+                }
+            }
+            Err(name) => {
+                let why = format!(
+                    "the engine's pack folder holds {}, which is no pack with its index",
+                    name.escape_debug()
+                );
+                return self.form_gave_way(times, why, false);
+            }
+        }
+        let gd = self.git_dir.clone();
+        let cwd = gd.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let kept = gd.join(KEPT_DIR);
+        let (indexed, incoming, packs) = (
+            kept.join(FORM_INDEXED),
+            kept.join("incoming"),
+            kept.join("pack"),
+        );
+        for dir in [&indexed.join("pack"), &incoming, &packs] {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                return self.form_gave_way(times, io(e), false);
+            }
+        }
+        clear_keep_folders(&kept);
+        // Declared before the git calls: when this future is dropped, git's group is ended first and its files are removed after.
+        let _left = FormFolders(kept.clone());
+        // Step b: the bundle as an open file at the byte after its header.
+        let fed = std::fs::File::open(gd.join("snapshot.bundle")).and_then(|mut file| {
+            use std::io::{Seek, SeekFrom};
+            file.seek(SeekFrom::Start(header)).map(|_| file)
+        });
+        let fed = match fed {
+            Ok(file) => file,
+            Err(e) => {
+                let why = format!("the look's bundle could not be opened: {}", io(e));
+                return self.form_gave_way(times, why, false);
+            }
+        };
+        let at = Instant::now();
+        let ended = git_fed_until(
+            &cwd,
+            &["index-pack", "--stdin"],
+            &[("GIT_DIR", &gd), ("GIT_OBJECT_DIRECTORY", &indexed)],
+            GitInput::File(fed),
+            give_up,
+        )
+        .await;
+        times.0 = at.elapsed().as_millis().max(1);
+        let indexed_pack = match ended {
+            Ok(GitEnd::Done(out)) => {
+                let hash = out.split_whitespace().last().unwrap_or_default();
+                let name = format!("pack-{hash}.pack");
+                if hash.len() == 40
+                    && object_id(hash).is_ok()
+                    && indexed.join("pack").join(&name).is_file()
+                {
+                    name
+                } else {
+                    return self.form_gave_way(times, "git index-pack named no pack", true);
+                }
+            }
+            Ok(GitEnd::Refused(text)) => {
+                return self.form_gave_way(times, format!("git index-pack: {text}"), true);
+            }
+            Ok(GitEnd::GivenUp { .. }) => {
+                return self.form_gave_way(
+                    times,
+                    "git index-pack was given up before it had ended",
+                    false,
+                );
+            }
+            Err(e) => return self.form_gave_way(times, ws(e), false),
+        };
+        // Step c: the filter. The indexed pack, less what the engine's own packs hold.
+        input.insert_str(0, &format!("{indexed_pack}\n"));
+        let engine_objects = self.repo.join(".git/objects");
+        let base = incoming.join("pack");
+        let at = Instant::now();
+        let ended = git_fed_until(
+            &cwd,
+            &[
+                "pack-objects",
+                "--stdin-packs",
+                "--non-empty",
+                "-q",
+                base.to_str().unwrap_or_default(),
+            ],
+            &[
+                ("GIT_DIR", &gd),
+                ("GIT_OBJECT_DIRECTORY", &indexed),
+                ("GIT_ALTERNATE_OBJECT_DIRECTORIES", &engine_objects),
+            ],
+            GitInput::Bytes(input.as_bytes()),
+            give_up,
+        )
+        .await;
+        times.1 = at.elapsed().as_millis().max(1);
+        let (hash, refusal) = match ended {
+            Ok(GitEnd::Done(out)) => (out, None),
+            // A pack the call names is gone: git's own `gc` in flight.
+            Ok(GitEnd::Refused(text)) if text.contains("could not find pack") => {
+                return self.form_gave_way(times, format!("git pack-objects: {text}"), false);
+            }
+            Ok(GitEnd::Refused(text)) => (String::new(), Some(text)),
+            Ok(GitEnd::GivenUp { .. }) => {
+                return self.form_gave_way(
+                    times,
+                    "git pack-objects was given up before it had ended",
+                    false,
+                );
+            }
+            Err(e) => return self.form_gave_way(times, ws(e), false),
+        };
+        // Step d: the engine's store once more. Packs that changed around the filter are git's own `gc` in flight.
+        match self.scratch.engine_packs_if_own(None).await {
+            Err(e) => return FormEnd::Read(e),
+            Ok(Some(now)) if now.packs == store.packs => {}
+            Ok(_) => {
+                return self.form_gave_way(
+                    times,
+                    "the engine's packs changed while the pack was made",
+                    false,
+                );
+            }
+        }
+        if let Some(text) = refusal {
+            return self.form_gave_way(times, format!("git pack-objects: {text}"), true);
+        }
+        // Step e: the head in the index of the filtered pack. No pack name: the filter wrote nothing.
+        // This branch cannot be reached today: the look's bundle always holds the copy's own commit, and no pack of the
+        // engine holds it, so the filter always writes a pack. The branch stays so that a filter with `--non-empty` that
+        // printed no pack name is read as a give-way for this keep, with no session mark, and never as a pack without a
+        // name.
+        if hash.is_empty() {
+            return self.form_gave_way(
+                times,
+                "the filtered pack would be empty: the engine's packs hold the head",
+                false,
+            );
+        }
+        if hash.len() != 40 || object_id(&hash).is_err() {
+            return self.form_gave_way(times, "git pack-objects named no pack", true);
+        }
+        let name = format!("pack-{hash}");
+        match pack_index_has(&incoming.join(format!("{name}.idx")), head) {
+            Ok(true) => {}
+            Ok(false) => {
+                return self.form_gave_way(
+                    times,
+                    "the filtered pack lacks the head: the engine's packs hold it",
+                    false,
+                );
+            }
+            Err(e) => {
+                let why = format!("the index of the filtered pack could not be read: {e}");
+                return self.form_gave_way(times, why, true);
+            }
+        }
+        // Step f: the marker, then marker, pack, reverse index and index into the folder of the kept pack.
+        let bytes = match std::fs::metadata(incoming.join(format!("{name}.pack"))) {
+            Ok(meta) => meta.len(),
+            Err(e) => return self.form_gave_way(times, io(e), false),
+        };
+        if let Err(e) = std::fs::write(
+            incoming.join(format!("{name}.keep")),
+            format!(
+                "{KEPT_LINE}{KEPT_BUNDLE_WORD}{head}\n{KEPT_PACKS_LINE}{}\n",
+                store.packs
+            ),
+        ) {
+            return self.form_gave_way(times, io(e), false);
+        }
+        for ext in ["keep", "pack", "rev", "idx"] {
+            let from = incoming.join(format!("{name}.{ext}"));
+            if !from.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&from, packs.join(format!("{name}.{ext}"))) {
+                remove_pack(&packs, &name);
+                self.keep.kept = self.keep.kept.take().filter(|kept| kept.name != name);
+                return self.form_gave_way(times, io(e), false);
+            }
+        }
+        if let Some(old) = &self.keep.kept
+            && old.name != name
+        {
+            remove_pack(&packs, &old.name);
+        }
+        self.keep.form_note = Some(format!("made index={} filter={}", times.0, times.1));
+        FormEnd::Stands(KeptPack {
+            head: head.to_string(),
+            name,
+            bytes,
+            engine_packs: store.packs,
+        })
     }
 
     async fn keep_pack(

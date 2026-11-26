@@ -262,3 +262,119 @@ async fn every_page_is_read_and_a_name_does_not_cost_a_second_request_per_run() 
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(calls[1].contains("nextToken=t2"), "{calls:?}");
 }
+
+// ---- every page, and a later page that fails -------------------------------------------------------------------------------------------
+
+/// What `ham runs` wrote, with standard error; each reply is scripted with its status.
+struct Wrote {
+    code: i32,
+    out: String,
+    err: String,
+}
+
+async fn ham_runs_replies(replies: Vec<(u16, Value)>, extra: &[&str]) -> (Wrote, Arc<Scripted>) {
+    let plane = Arc::new(Scripted::default());
+    *plane.replies.lock().unwrap() = replies.into_iter().collect();
+    let api = Api::new(plane.clone()).with_retry(Retry {
+        attempts: 1,
+        base: Duration::from_millis(1),
+    });
+    let mut argv = vec!["runs".to_string()];
+    argv.extend(extra.iter().map(ToString::to_string));
+    let invocation = parse(&argv).unwrap();
+    let env = |_: &str| None;
+    let downloads = std::env::temp_dir();
+    let out = run_captured(
+        &invocation,
+        &ExecContext {
+            api: &api,
+            cfg: &Config::default(),
+            downloads: &downloads,
+            chunk: 16 << 20,
+            env: &env,
+            stdin: None,
+        },
+    )
+    .await;
+    (
+        Wrote {
+            code: out.code,
+            out: out.stdout_text(),
+            err: out.stderr_text(),
+        },
+        plane,
+    )
+}
+
+/// The id of run `n` of 1,021.
+fn nth(n: usize) -> String {
+    format!("01M5A0000000000000{n:08}")
+}
+
+/// 1,021 runs in eleven pages of 100 (the last holds 21), each with the token of the next.
+fn eleven_pages() -> Vec<(u16, Value)> {
+    (0..11)
+        .map(|p| {
+            let rows: Vec<Value> = (p * 100..(p * 100 + 100).min(1021))
+                .map(|n| run(&nth(n), json!({})))
+                .collect();
+            let mut body = json!({"runs": rows});
+            if p < 10 {
+                body["nextToken"] = json!(format!("t{}", p + 2));
+            }
+            (200, body)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn b961_ham_runs_prints_every_run_of_eleven_pages() {
+    let want: Vec<String> = (0..1021).map(nth).collect();
+    let (p, plane) = ham_runs_replies(eleven_pages(), &[]).await;
+    assert_eq!(p.code, 0, "{}", p.err);
+    let printed: Vec<&str> = p
+        .out
+        .lines()
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        printed, want,
+        "every run, one line each, in the pages' order"
+    );
+    let calls = plane.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 11, "{calls:?}");
+    for (i, call) in calls.iter().enumerate().skip(1) {
+        assert!(call.contains(&format!("nextToken=t{}", i + 1)), "{calls:?}");
+    }
+    // The JSON form: one line, every run a member.
+    let (p, plane) = ham_runs_replies(eleven_pages(), &["--json"]).await;
+    assert_eq!(p.code, 0, "{}", p.err);
+    assert_eq!(p.out.lines().count(), 1);
+    let v: Value = serde_json::from_str(p.out.trim()).unwrap();
+    let listed: Vec<&str> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["runId"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, want);
+    assert_eq!(plane.calls.lock().unwrap().len(), 11);
+}
+
+#[tokio::test]
+async fn b961_ham_runs_prints_nothing_when_a_later_page_fails() {
+    let forms: [&[&str]; 2] = [&[], &["--json"]];
+    for extra in forms {
+        let mut replies = eleven_pages();
+        replies[5] = (500, json!({"code": "internal", "message": "boom"}));
+        let (p, plane) = ham_runs_replies(replies, extra).await;
+        assert_eq!(p.code, ham_core::exit::ERROR, "{extra:?}");
+        assert_eq!(
+            p.out, "",
+            "{extra:?}: no run of the pages read so far is printed"
+        );
+        assert_eq!(p.err.lines().count(), 1, "{extra:?}: {}", p.err);
+        assert!(p.err.starts_with("ham: "), "{extra:?}: {}", p.err);
+        assert_eq!(plane.calls.lock().unwrap().len(), 6, "{extra:?}");
+    }
+}

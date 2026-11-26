@@ -2411,8 +2411,8 @@ A one-character gutter at the left of each row marks the runs that need attentio
 | `n` | Open New run |
 | `/` | Open the filter line at the bottom |
 | `p` | Show only the runs of the selected run's repository; press again to show all. The key line names what a press does (see below) |
-| `r` | Read every page of the list again |
-| `R` | Resume every paused and stalled run of the list: one question names the count, Enter or `R` again starts them |
+| `r` | Read every page of the list again. The newest runs are refreshed first, the older ones when the read has ended |
+| `R` | Resume every paused and stalled run of the list: one question names the count, Enter or `R` again starts them. It waits for the whole list (see below) |
 | `s` | Opens the Settings screen. |
 | `t` | Opens the tag explorer: the tags of the runs the list holds, with the number of runs that hold each. |
 | Up/Down or `k`/`j` | Select a run (only among the runs shown) |
@@ -2598,6 +2598,7 @@ A box follows with one of these titles:
 
 - `tags · all 212 runs loaded at 14:05`, as an example.
 - `tags · newest 100 runs only - r loads all`.
+- `tags · newest 100 runs, loading the older ones`, while the older runs are still being loaded.
 
 The box contains a table with TAG and RUNS columns.
 At 100 columns wide, a LAST column also appears.
@@ -2642,6 +2643,7 @@ Counts cover the runs that the list holds.
 The box title tells you which snapshot you have.
 The full-list title gives the time the whole list was read.
 The other title means only the newest 100 runs are held.
+While the older runs are still being loaded, the title says so and gives the number of runs held.
 The Runs list refreshes every 5 seconds.
 That refresh updates counts while the explorer is open.
 Your cursor stays on its tag.
@@ -2655,6 +2657,8 @@ The explorer starts with the Runs list's existing picks.
 
 Removal stays off until every page has been read.
 Until then, it says `remove needs every run loaded: press r to load them all, then d`.
+While the older runs are still being loaded, it says `remove needs every run loaded: they are still loading`.
+Each sentence goes away as soon as it no longer holds.
 After `y`, ham sends removals in batches of 40 runs.
 It sends one batch after another.
 It stops at the first failed batch.
@@ -2709,6 +2713,19 @@ The newest 100 runs are read again every 5 seconds while this screen is open, so
 A read that is still unanswered is never followed by a second one.
 A run older than the newest page changes only when you press `r`.
 When a read fails, the list on screen stays and the note line says so.
+
+A read of every page shows its newest 100 runs as soon as they arrive, and the older runs when the read has ended.
+That is the read at the start, after `r` and on the way back from a run.
+While the list on screen is not whole yet, the title in the table's top border reads `runs · loading older runs`.
+The counts are then those of the runs on screen.
+If the older runs cannot be loaded, the newest runs stay and the title reads `runs · older runs not loaded · r loads all`.
+The note line then says `could not load the older runs:` with the reason.
+On the first screen of a session that asks for the mouse, the note line shows the line about the mouse until your first key or click; the title still says that the older runs are not loaded.
+While the list is not whole, `R` starts nothing.
+It says `older runs are still loading: press R again in a moment`, or `not every run is loaded: press r, then R`.
+Each sentence goes away as soon as it no longer holds.
+On a run's own screen, `R` then names no count.
+The note `no runs yet: press n to start one` appears only after the service has answered.
 
 #### The mascot
 
@@ -5429,7 +5446,7 @@ Both keep the code they delivered. `ham runs --json` shows `statusReason`, a cod
 
 `ham resume <runId>` starts a new run from the code a paused or stalled run delivered. It sends the request that run was started with and adds a note to the prompt that says the run is a continuation. A resumed run keeps the lifecycle records where they are, because it is the same request. The new run has its own total time. `ham resume --all` does this for every paused and stalled run in your list that no later run continues, four at a time, and prints one line per run: the new run id, or why that run did not start. `--dry-run` prints what would start and starts nothing. Resuming the same run twice returns the run the first call started and never starts a second one. Each resumed run is billable like any new run.
 
-In the terminal app, `R` on the Runs screen asks one question that names how many runs it will resume and how many it leaves. Enter or `R` again, 0.3 seconds or more later, starts them, and Esc withdraws the question. On the screen of a run, `R` shows the preview of `/resume --all`, and `R` again starts it: it resumes every paused and stalled run in your list that no later run continues, and never the run on screen alone. The preview names how many runs that is before anything starts. The screen of a paused or stalled run names the key and what it resumes. When that run is the only one `R` would resume, its box title reads "Not available: run paused; Esc, then R resumes it" and its browse key line reads `R resume`. When your list holds three such runs, the title ends "Esc, then R resumes 3 runs" and the key line reads `R resume all`. When ham has not read your list of runs since the run stopped, for example when a run pauses while you watch it, the title ends "Esc, then R resumes all". The list is then read once more, and the title gives the count when it answers. To resume that run alone, type `/resume <runId>` in its box or run `ham resume <runId>`. A short line under the table reports what each run did, for example `resumed 1 of 2: 01K6A000 -> 01K6E000 · 01K6B000 not started`. When a run did not start, or ham switched the mode of provider data sharing for a run, a panel above that line shows the whole text: each line about the switch once, then each reason once with the runs it stopped. The next key closes the line and the panel. A run that did not start keeps its reason as a card titled `resume did not start` on its screen until a later resume of it starts or you close ham: the card is kept in memory only. The panel of `/resume --all` on a run's screen wraps its lines.
+In the terminal app, `R` on the Runs screen waits for the whole list and then asks one question that names how many runs it will resume and how many it leaves. Enter or `R` again, 0.3 seconds or more later, starts them, and Esc withdraws the question. On the screen of a run, `R` shows the preview of `/resume --all`, and `R` again starts it: it resumes every paused and stalled run in your list that no later run continues, and never the run on screen alone. The preview names how many runs that is before anything starts. The screen of a paused or stalled run names the key and what it resumes. When that run is the only one `R` would resume, its box title reads "Not available: run paused; Esc, then R resumes it" and its browse key line reads `R resume`. When your list holds three such runs, the title ends "Esc, then R resumes 3 runs" and the key line reads `R resume all`. When ham has not read your list of runs since the run stopped, for example when a run pauses while you watch it, the title ends "Esc, then R resumes all". The list is then read once more, and the title gives the count when it answers. To resume that run alone, type `/resume <runId>` in its box or run `ham resume <runId>`. A short line under the table reports what each run did, for example `resumed 1 of 2: 01K6A000 -> 01K6E000 · 01K6B000 not started`. When a run did not start, or ham switched the mode of provider data sharing for a run, a panel above that line shows the whole text: each line about the switch once, then each reason once with the runs it stopped. The next key closes the line and the panel. A run that did not start keeps its reason as a card titled `resume did not start` on its screen until a later resume of it starts or you close ham: the card is kept in memory only. The panel of `/resume --all` on a run's screen wraps its lines.
 
 ### The scanner kit
 
@@ -7658,6 +7675,7 @@ Find your symptom below, then follow the fix in that row.
 | A run shows no tags | Tags arrive a few seconds after the run starts. They may not have arrived yet. The prompt had fewer than 4 words. Such a run makes no model call. It shows only its derived project. The model call or its reply failed a check. The run is older than tags. An operator switched the model or tags off for the stage. A run with no repository (`s3-only`) has no derived project. | Wait a few seconds and press `r` on the Runs screen. A short prompt or an older run needs nothing. Add a tag with `/tag`. If every new run stays without tags, tell the operator. |
 | `this stage cannot edit tags yet: it needs a newer backend (run ham update; ask the person who runs the stage if that is not you)` after `/tag` or after `d` (remove a tag) in the tag explorer. | The stage runs a service older than the tags feature. It has no edit route. | Update the stage with `ham update`. If someone else runs the stage, ask that person to update it. Tags that were already sent still show. |
 | `remove needs every run loaded: press r to load them all, then d` in the tag explorer. | The explorer holds only the newest 100 runs. Removing a tag everywhere would miss the others. | Press `r` to read every page of the list, then `d`. |
+| `remove needs every run loaded: they are still loading` in the tag explorer. | The Runs list has shown its newest runs and is still loading the older ones. | Wait until the title says that all runs are loaded, then press `d`. |
 
 ### A run that stops or does not deliver
 

@@ -570,6 +570,12 @@ else:
 STACKS = ["network", "security", "data", "packages", "control", "delivery", "runtimes", "orchestration", "observability"]
 
 
+# The parallel script step runs the tests of this file as this many processes side by side.
+# In one process this file is one of those that bound the step; every unit pays the file's
+# fixtures again, so more units cost more than they save (scripts/tests/AGENTS.md has the measured numbers).
+SUITE_UNITS = 2
+
+
 def fake_build_id(stage: str, spec: str, tag: str) -> str:
     """The build id FAKE_CODEBUILD prints for an image (the shape of scripts/codebuild-run.sh's `CODEBUILD PASS id=`)."""
     import uuid

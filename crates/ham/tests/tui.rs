@@ -716,6 +716,9 @@ fn ctrl(c: char) -> KeyEvent {
 #[test]
 fn runs_screen_states_and_keys() {
     let mut app = new_app("n", None);
+    // Before the service has answered nothing says that there are no runs; an empty answer says it.
+    assert!(!screen_text(&app, 80, 24).contains("no runs yet"));
+    app.update(Msg::Runs(Ok(vec![])));
     assert!(screen_text(&app, 80, 24).contains("no runs yet: press n to start one"));
     app.update(Msg::Runs(Err("HTTP 403: not authorized (http)".into())));
     assert!(screen_text(&app, 80, 24).contains("cannot list runs: HTTP 403"));

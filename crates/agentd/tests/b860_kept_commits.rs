@@ -23,7 +23,8 @@ mod common;
 mod direct_support;
 
 use agentd::direct::snapshot::{
-    GiveUp, Keep, SnapshotMade, Snapshotter, TIDY_FREE_BYTES, TidyMarks, hash_bundle,
+    GiveUp, Keep, LooseHead, SnapshotMade, Snapshotter, TIDY_FREE_BYTES, TidyMarks, engine_store,
+    hash_bundle, loose_object_path,
 };
 use b860_kept_support::{
     Seen, alive, changed_look, command_of, edit, engine_commits, fetched_into_the_base,
@@ -2482,6 +2483,13 @@ async fn b860_kept_every_reader_restores_a_copy_made_beside_a_kept_pack() {
 
 // ---- a storage that answers a keep slowly ------------------------------------------------------------------------------------------
 
+/// The longest the storage of
+/// `b860_kept_a_read_of_the_keep_that_has_not_returned_fails_no_look` stays silent at one read: 120 s. The test lets the
+/// storage answer after two looks, one restore and one refused keep, and the second time after three looks, one restore
+/// and one keep that is given up after 300 ms: the whole test took 2.4 s at the most in 100 runs, 16 at a time. A worker that follows the rules gives the test no reason to wait longer; the bound is what a
+/// test of these files waits for at the most.
+const SILENT_AT_MOST: Duration = Duration::from_secs(120);
+
 /// A file call of a keep on the session's storage that has not returned when the keep is cut fails no look. A keep reads the names
 /// of the engine's packs, a folder on the storage of the work tree. When the storage answers slowly and the keep is cut meanwhile
 /// (a tool call ended, agentd was asked to end), the look that follows at once must make its copy: the copy of a stop must not be
@@ -2500,9 +2508,30 @@ async fn b860_kept_a_read_of_the_keep_that_has_not_returned_fails_no_look() {
     let answers = Arc::new(AtomicBool::new(false));
     let asked = Arc::new(AtomicUsize::new(0));
     let (gate, count) = (answers.clone(), asked.clone());
+    // The storage's silence has a bound, and it ends with the test. Before, a read
+    // that was held when an assertion failed was held for good: the runtime of a test waits for the thread of a held
+    // call, so a fault that failed this test stalled the run where it should have failed it (two deliberate breakages of
+    // the form's read did, for 15 and 25 minutes). A read that is still held after [`SILENT_AT_MOST`] answers with an
+    // error that names what the storage saw; the guard lets the storage answer when the test ends, also when it fails.
+    struct AnswersAtTheEnd(Arc<AtomicBool>);
+    impl Drop for AnswersAtTheEnd {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _answers_at_the_end = AnswersAtTheEnd(answers.clone());
     copies.set_engine_packs_reader(Arc::new(move |_: &Path| {
-        count.fetch_add(1, Ordering::SeqCst);
+        let read = count.fetch_add(1, Ordering::SeqCst) + 1;
+        let began = Instant::now();
         while !gate.load(Ordering::SeqCst) {
+            if began.elapsed() > SILENT_AT_MOST {
+                return Err(format!(
+                    "the storage of the test was silent for more than {} s at read {read} of the engine's packs and was \
+                     not let go ({} reads asked so far): the worker did not come back to the test in that time",
+                    SILENT_AT_MOST.as_secs(),
+                    count.load(Ordering::SeqCst)
+                ));
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         Ok("the packs of the test".to_string())
@@ -3499,6 +3528,7 @@ async fn b860_kept_an_engine_repack_under_a_kept_pack_does_not_grow_the_copy() {
 
     // The head moves and comes to rest: the new keep holds what is in no pack, the one new commit, and replaces the pack before.
     let head = engine_commits(&l.repo, 100, 1);
+    let (engines_commit, mut copys_commit) = (head.clone(), String::new());
     for round in 4..=5 {
         let a = changed_look(&mut kept, &l.repo, round).await;
         let b = b860_kept_support::look(&mut release).await;
@@ -3508,6 +3538,7 @@ async fn b860_kept_an_engine_repack_under_a_kept_pack_does_not_grow_the_copy() {
             (&kept_git, &a),
             (&release_git, &b),
         );
+        copys_commit = a.commit;
     }
     assert!(matches!(
         kept.keep_commits(&limit()).await,
@@ -3519,9 +3550,854 @@ async fn b860_kept_an_engine_repack_under_a_kept_pack_does_not_grow_the_copy() {
         vec![head]
     );
     let held = objects_of(&l.repo, &markers[0].0);
+    if b860_kept_support::made_from_a_bundle(&markers[0].0) {
+        // Ruling 51 (c) of the lead: a pack that was made from the look's bundle also holds the copy's own commit. It
+        // holds exactly two commits, each by its id: the one the engine has in no pack, and the copy's own.
+        let mut commits: Vec<&str> = held
+            .iter()
+            .filter(|(_, kind)| kind == "commit")
+            .map(|(id, _)| id.as_str())
+            .collect();
+        commits.sort_unstable();
+        let mut both = vec![engines_commit.as_str(), copys_commit.as_str()];
+        both.sort_unstable();
+        assert_eq!(
+            commits, both,
+            "the pack holds the one commit that the engine has in no pack and the copy's own commit, and no other: {held:?}"
+        );
+    } else {
+        assert_eq!(
+            held.iter().filter(|(_, kind)| kind == "commit").count(),
+            1,
+            "the pack holds the one commit that the engine has in no pack: {held:?}"
+        );
+    }
+}
+
+// ----: the form's one read of the engine's store, the function alone (test 15 (a), (b) and (d) of the build brief) ----------
+
+/// A lab whose base stands in a pack, as the product makes an engine's store (a clone of the bundle the run started from stands
+/// in one pack), with `n` commits of the engine on top whose objects are loose. The answer is the lab and the engine's head.
+fn lab_on_a_packed_base(label: &str, n: u32) -> (Lab, String) {
+    let l = lab(label);
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+    let head = engine_commits(&l.repo, 0, n);
+    (l, head)
+}
+
+/// Test 15 (a) of the build brief (ruling 49 (a) of the lead, thing 1): the loose question asks for
+/// `objects/<first two characters>/<the other 38>` of a full id of 40 hexadecimal characters under the engine's `.git`, which is
+/// where git writes a loose object; an id of 64 characters, a shorter id and text that is no id give no path.
+#[test]
+fn b936_the_loose_question_asks_for_the_file_of_a_full_id_of_40_characters() {
+    let repo = Path::new("/work/repo");
+    let id = "0123456789abcdef0123456789abcdef01234567";
     assert_eq!(
-        held.iter().filter(|(_, kind)| kind == "commit").count(),
-        1,
-        "the pack holds the one commit that the engine has in no pack: {held:?}"
+        loose_object_path(repo, id),
+        Some(repo.join(".git/objects/01/23456789abcdef0123456789abcdef01234567")),
+        "TRIGGER PRESENT: the id is cut behind its first two characters"
     );
+    let of_64 = format!("{id}{}", &id[..24]);
+    let of_41 = format!("{id}0");
+    for none in [
+        of_64.as_str(),
+        of_41.as_str(),
+        &id[..39],
+        &id[..7],
+        "",
+        "HEAD",
+        "refs/heads/main",
+        "0123456789abcdef0123456789abcdef0123456g",
+        "../../../../../../../../../../../../etc/x",
+    ] {
+        assert_eq!(loose_object_path(repo, none), None, "no path for {none:?}");
+    }
+    // The path is the file git wrote for a commit whose objects are loose.
+    let (l, head) = lab_on_a_packed_base("b936-loose-path", 1);
+    let path = loose_object_path(&l.repo, &head).unwrap();
+    assert!(path.is_file(), "the loose object of the head: {path:?}");
+    assert_eq!(
+        engine_store(&l.repo, Some(&head)).unwrap().unwrap().loose,
+        Some(LooseHead::File)
+    );
+}
+
+/// Test 15 (b) of the build brief, the function alone (ruling 49 (a) of the lead, thing 2): the loose question and the
+/// names of the packs are right only in the engine's own object folder. A `.git` that is a file (a linked worktree) and a `.git`
+/// that holds a `commondir` file answer "not the repository's own" and nothing else is read: no pack name and no loose
+/// question. A store with alternates of its own is told after the listing, and the head is not asked for.
+#[test]
+fn b936_the_forms_read_asks_what_git_is_first_and_reads_nothing_else_when_it_is_not_the_repositorys_own()
+ {
+    let (l, head) = lab_on_a_packed_base("b936-own-folder", 2);
+    let own = engine_store(&l.repo, Some(&head)).unwrap().unwrap();
+    assert_eq!(
+        (own.alternates, own.loose.clone()),
+        (Some(false), Some(LooseHead::File)),
+        "TRIGGER PRESENT: in the repository's own directory all four questions are asked: {own:?}"
+    );
+    let names = own.names.clone().unwrap();
+    assert_eq!(names.len(), 1, "the base stands in one pack: {names:?}");
+    assert!(
+        names[0].0.starts_with("pack-") && names[0].0.ends_with(".pack") && names[0].1,
+        "the pack by its name, with its index in the same listing: {names:?}"
+    );
+    assert!(
+        own.packs.starts_with("1:"),
+        "the count and the hash: {own:?}"
+    );
+    // Without a head (the keep at once, and the read behind the filter) the file calls are those of release 5.30.
+    let plain = engine_store(&l.repo, None).unwrap().unwrap();
+    assert_eq!(
+        (plain.packs.as_str(), plain.alternates, plain.loose),
+        (own.packs.as_str(), None, None)
+    );
+
+    // A linked worktree: `.git` is a file that names another directory.
+    let linked = l.dir.join("linked");
+    git(
+        &l.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    assert!(linked.join(".git").is_file());
+    assert_eq!(
+        engine_store(&linked, Some(&head)),
+        Ok(None),
+        "a `.git` that is a file: nothing is read"
+    );
+
+    // Alternates of the store's own: told after the listing, and the head is not asked for.
+    let (other, other_head) = lab_on_a_packed_base("b936-own-folder-alternates", 1);
+    std::fs::write(
+        other.repo.join(".git/objects/info/alternates"),
+        format!("{}\n", l.repo.join(".git/objects").display()),
+    )
+    .unwrap();
+    let with = engine_store(&other.repo, Some(&other_head))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (with.alternates, with.loose.clone()),
+        (Some(true), None),
+        "alternates of the store's own: {with:?}"
+    );
+    assert_eq!(with.names.map(|n| n.len()), Some(1));
+
+    // A `commondir` file inside `.git` names another directory.
+    std::fs::write(other.repo.join(".git/commondir"), ".\n").unwrap();
+    assert_eq!(
+        engine_store(&other.repo, Some(&other_head)),
+        Ok(None),
+        "a `commondir` file in `.git`: nothing is read"
+    );
+}
+
+/// Test 15 (d) of the build brief, the function alone (ruling 49 (a) of the lead, thing 4): the loose question tells
+/// "no such file" (the head stands in a pack only) from an error. A store without a pack is asked nothing more.
+#[test]
+fn b936_the_loose_question_tells_no_such_file_from_an_error() {
+    let (l, head) = lab_on_a_packed_base("b936-loose-answers", 2);
+    let loose = |id: &str| engine_store(&l.repo, Some(id)).unwrap().unwrap().loose;
+    assert_eq!(loose(&head), Some(LooseHead::File), "a loose head");
+    // An id whose folder of the first two characters does not exist, and one whose file does not exist in a folder that does.
+    let absent = "ee00000000000000000000000000000000000000";
+    assert!(!l.repo.join(".git/objects/ee").exists());
+    assert_eq!(loose(absent), Some(LooseHead::Missing), "no folder");
+    let beside = format!("{}{}", &head[..2], "0".repeat(38));
+    assert_eq!(loose(&beside), Some(LooseHead::Missing), "no file");
+    // A file where the folder of the first two characters should be: an error, with the system's words.
+    std::fs::write(l.repo.join(".git/objects/ee"), "no folder").unwrap();
+    match loose(absent) {
+        Some(LooseHead::Unreadable(why)) => assert!(!why.is_empty()),
+        other => panic!(
+            "TRIGGER PRESENT: a path that cannot be read is an error, not \"no such file\": {other:?}"
+        ),
+    }
+    // A folder where the object file should be: no regular file.
+    std::fs::create_dir_all(
+        l.repo
+            .join(".git/objects")
+            .join(&beside[..2])
+            .join(&beside[2..]),
+    )
+    .unwrap();
+    assert!(matches!(loose(&beside), Some(LooseHead::Unreadable(_))));
+    // After the engine packed everything the head stands in a pack only.
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+    assert_eq!(loose(&head), Some(LooseHead::Missing), "packed only");
+
+    // A store without a pack is asked nothing more than its listing.
+    let bare = lab("b936-loose-answers-no-pack");
+    let head = engine_commits(&bare.repo, 0, 1);
+    let store = engine_store(&bare.repo, Some(&head)).unwrap().unwrap();
+    assert_eq!(
+        (store.names, store.alternates, store.loose),
+        (Some(vec![]), None, None)
+    );
+    assert!(store.packs.starts_with("0:"));
+}
+
+// ----: the content rule (test 1 of the build brief) ---------------------------------------------------------------------------
+
+/// A lab whose engine pack holds two versions of one file that the floor's tree does not hold: the base's history wrote `x`
+/// into `two.bin`, then the shorter `y`, then removed the file, and the store was packed with git's own window, so `y` stands
+/// in the pack as a delta of `x`. The answer is the lab, `x`, `y` and their ids.
+fn lab_with_two_versions_in_the_pack(label: &str) -> (Lab, Vec<u8>, Vec<u8>, String, String) {
+    let dir = scratch(label);
+    let repo = python_calc(&dir);
+    let x = noise(936, 100_000);
+    let y = x[..96_000].to_vec();
+    for (version, text) in [(&x, "the long version"), (&y, "the short version")] {
+        std::fs::write(repo.join("two.bin"), version).unwrap();
+        git(&repo, &["add", "two.bin"]);
+        git(&repo, &["commit", "-q", "-m", text]);
+    }
+    let (x_id, y_id) = (
+        git(&repo, &["rev-parse", "HEAD~1:two.bin"]),
+        git(&repo, &["rev-parse", "HEAD:two.bin"]),
+    );
+    git(&repo, &["rm", "-q", "two.bin"]);
+    git(&repo, &["commit", "-q", "-m", "the file is gone"]);
+    git(&repo, &["repack", "-a", "-d", "-f", "-q"]);
+    let packs = repo.join(".git/objects/pack");
+    let indexes: Vec<String> = names(&packs)
+        .into_iter()
+        .filter(|n| n.ends_with(".idx"))
+        .collect();
+    assert_eq!(indexes.len(), 1, "the engine's store stands in one pack");
+    let listed = git(
+        &repo,
+        &[
+            "verify-pack",
+            "-v",
+            packs.join(&indexes[0]).to_str().unwrap(),
+        ],
+    );
+    let line_of_y: Vec<&str> = listed
+        .lines()
+        .find(|line| line.starts_with(&y_id))
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    assert_eq!(
+        line_of_y.last().copied(),
+        Some(x_id.as_str()),
+        "TRIGGER PRESENT is not shown: y does not stand in the engine's pack as a delta of x: {line_of_y:?}"
+    );
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let base_bundle = dir.join("repo.bundle");
+    b860_thin_support::stage_base(&repo, &base_bundle);
+    (
+        Lab {
+            dir,
+            repo,
+            base_bundle,
+            base,
+        },
+        x,
+        y,
+        x_id,
+        y_id,
+    )
+}
+
+/// The ids of the objects in the pack of the bundle `bundle`, indexed with nothing else in reach but the pack itself (git
+/// refuses a pack that needs an object from elsewhere).
+fn objects_of_the_bundle(l: &Lab, name: &str, bundle: &Path) -> Vec<String> {
+    let bytes = std::fs::read(bundle).unwrap();
+    let pack_at = bytes.windows(2).position(|w| w == b"\n\n").unwrap() + 2;
+    let pack = l.dir.join(format!("bundled-{name}.pack"));
+    std::fs::write(&pack, &bytes[pack_at..]).unwrap();
+    git(&l.repo, &["index-pack", pack.to_str().unwrap()]);
+    git(
+        &l.repo,
+        &[
+            "verify-pack",
+            "-v",
+            pack.with_extension("idx").to_str().unwrap(),
+        ],
+    )
+    .lines()
+    .filter_map(|line| line.split_whitespace().next())
+    .filter(|id| id.len() == 40)
+    .map(str::to_string)
+    .collect()
+}
+
+/// Test 1 of the build brief (ruling 44 (f) of the lead): the content rule, in a cell that asks the kept copy first. The
+/// engine's pack holds `x` and, as a delta of `x`, the shorter `y`; neither is in the floor's tree. The engine brings `y` back
+/// under a name that sorts before the one `x` comes back under, in a commit that also adds a file its pack does not hold. The
+/// look's bundle holds `y` whole, so the pack git indexes from it holds an object of the engine's pack. The pack the form keeps
+/// leaves that object out: when `x` comes back, the next copy is, byte for byte, the copy of a private repository that never
+/// held a kept pack, in which git writes `y` as the delta the engine's pack has. A kept pack that held `y` whole would be asked
+/// first, and the copy would hold both versions whole.
+#[tokio::test]
+async fn b936_a_copy_beside_a_pack_by_the_form_is_the_releases_copy_over_a_delta_in_the_engines_pack()
+ {
+    let Some(dir) = second_process(
+        "b936_a_copy_beside_a_pack_by_the_form_is_the_releases_copy_over_a_delta_in_the_engines_pack",
+    ) else {
+        return;
+    };
+    fix_the_dates(&dir);
+    let (l, x, y, x_id, y_id) = lab_with_two_versions_in_the_pack("b936-content-rule");
+    let mut kept = thin(&l, "data-kept").await;
+    let mut release = thin(&l, "data-release").await;
+    release.set_keep_commits(false);
+    let (kept_git, release_git) = (private(&l, "data-kept"), private(&l, "data-release"));
+
+    std::fs::write(l.repo.join("a.bin"), &y).unwrap();
+    std::fs::write(
+        l.repo.join("new.txt"),
+        "a file the engine's pack does not hold\n",
+    )
+    .unwrap();
+    git(&l.repo, &["add", "a.bin", "new.txt"]);
+    git(&l.repo, &["commit", "-q", "-m", "y is back"]);
+    let head = git(&l.repo, &["rev-parse", "HEAD"]);
+    assert_eq!(git(&l.repo, &["rev-parse", "HEAD:a.bin"]), y_id);
+    let mut bundled = Vec::new();
+    for round in 1..=2 {
+        let a = changed_look(&mut kept, &l.repo, round).await;
+        let b = b860_kept_support::look(&mut release).await;
+        assert_the_releases_copy(
+            &l,
+            &format!("y-is-back-look-{round}"),
+            (&kept_git, &a),
+            (&release_git, &b),
+        );
+        bundled = objects_of_the_bundle(&l, &format!("look-{round}"), &a.bundle);
+        if round == 1 {
+            assert_eq!(kept.keep_commits(&limit()).await, Keep::NotDue);
+        }
+    }
+    assert!(
+        bundled.contains(&y_id) && !bundled.contains(&x_id),
+        "TRIGGER PRESENT is not shown: the look's bundle, which the form indexes, holds y, an object of the engine's pack, \
+         and not x: {bundled:?}"
+    );
+    let keep = kept.keep_commits(&limit()).await;
+    assert!(matches!(keep, Keep::Kept { .. }), "{keep:?}");
+    let markers = kept_markers(&kept_git);
+    assert_eq!(markers.len(), 1, "one kept pack: {markers:?}");
+    assert!(
+        b860_kept_support::made_from_a_bundle(&markers[0].0) && markers[0].1 == head,
+        "TRIGGER PRESENT is not shown: the pack was not made by the form for the head: {markers:?}"
+    );
+    let note = kept.take_form_note().unwrap_or_default();
+    assert!(note.starts_with("made index="), "the form's note: {note:?}");
+
+    std::fs::write(l.repo.join("b.bin"), &x).unwrap();
+    git(&l.repo, &["add", "b.bin"]);
+    git(&l.repo, &["commit", "-q", "-m", "x is back"]);
+    assert_eq!(git(&l.repo, &["rev-parse", "HEAD:b.bin"]), x_id);
+    let a = changed_look(&mut kept, &l.repo, 3).await;
+    let b = b860_kept_support::look(&mut release).await;
+    println!(
+        "the copy after x came back: {} bytes beside the pack by the form, {} in a repository without a kept pack; x has {} \
+         bytes and y {}",
+        a.bundle_bytes,
+        b.bundle_bytes,
+        x.len(),
+        y.len()
+    );
+    assert!(
+        b.bundle_bytes < (x.len() + y.len() / 2) as u64,
+        "TRIGGER PRESENT is not shown: without a kept pack git writes y as the delta the engine's pack has, so the copy is \
+         far smaller than both versions whole: {} bytes",
+        b.bundle_bytes
+    );
+    assert_the_releases_copy(&l, "x-is-back", (&kept_git, &a), (&release_git, &b));
+    assert_eq!(
+        hash_of(&a.bundle),
+        hash_of(&b.bundle),
+        "TRIGGER PRESENT: the copy beside the pack by the form is, byte for byte, the copy without a kept pack"
+    );
+    let held = objects_of(&l.repo, &markers[0].0);
+    assert!(
+        !held.iter().any(|(id, _)| id == &y_id || id == &x_id),
+        "the pack by the form leaves out what the engine's pack holds: {held:?}"
+    );
+}
+
+// ----: `keep_check` after a packing of the engine in flight (test 2 of the build brief) -----------------------------------------
+
+/// Test 2 of the build brief: a packing of the engine that ends after the form's pack stood. Both reads of the form
+/// (before the indexing and behind the filter) saw the same pack names, so the pack by the form stands; then the engine's new
+/// pack appears and holds what the kept pack holds. The next look's `keep_check` finds other packs than the marker names and
+/// removes the kept pack before the bundle is written: the stand-in sees no kept pack at the bundle step, and the copy is, in
+/// its bytes and in its objects, the copy of a private repository that never held a kept pack. The run's commits rewrite one
+/// line of a long file, so a copy that read the kept pack first would hold each version whole.
+#[tokio::test]
+async fn b936_a_pack_by_the_form_that_the_engines_packing_overtook_is_gone_before_the_next_bundle()
+{
+    let Some(dir) = second_process(
+        "b936_a_pack_by_the_form_that_the_engines_packing_overtook_is_gone_before_the_next_bundle",
+    ) else {
+        return;
+    };
+    fix_the_dates(&dir);
+    let l = lab("b936-packing-in-flight");
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+    std::fs::create_dir_all(l.repo.join("run")).unwrap();
+    for round in 0..20u32 {
+        let text: String = (0..4_000u32)
+            .map(|n| {
+                if n == round * 100 {
+                    format!("line {n} of the long file, changed in round {round}\n")
+                } else {
+                    format!("line {n} of the long file\n")
+                }
+            })
+            .collect();
+        std::fs::write(l.repo.join("run/long.txt"), text).unwrap();
+        git(&l.repo, &["add", "run"]);
+        git(&l.repo, &["commit", "-q", "-m", &format!("round {round}")]);
+    }
+    let head = git(&l.repo, &["rev-parse", "HEAD"]);
+    let mut kept = thin(&l, "data-kept").await;
+    let mut release = thin(&l, "data-release").await;
+    release.set_keep_commits(false);
+    let (kept_git, release_git) = (private(&l, "data-kept"), private(&l, "data-release"));
+    let mut loose_bytes = 0;
+    for round in 1..=2 {
+        changed_look(&mut kept, &l.repo, round).await;
+        loose_bytes = b860_kept_support::look(&mut release).await.bundle_bytes;
+    }
+    let keep = kept.keep_commits(&limit()).await;
+    let markers = kept_markers(&kept_git);
+    assert!(
+        matches!(keep, Keep::Kept { .. })
+            && markers.len() == 1
+            && markers[0].1 == head
+            && b860_kept_support::made_from_a_bundle(&markers[0].0),
+        "TRIGGER PRESENT is not shown: no pack was kept by the form: {keep:?} {markers:?}"
+    );
+
+    // The engine's packing ends now: the form's two reads saw the names that stood before it.
+    git(&l.repo, &["gc", "-q"]);
+    let engine_packs = l.repo.join(".git/objects/pack");
+    for name in names(&engine_packs) {
+        std::fs::File::open(engine_packs.join(&name))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(3_600))
+            .unwrap();
+    }
+    b860_kept_support::edit(&l.repo, 3);
+    let b = b860_kept_support::look(&mut release).await;
+    let from = kept_seen(&dir, &kept_git).len();
+    let a = b860_kept_support::look(&mut kept).await;
+    let (calls, _) = calls_beside_a_pack(&dir, &kept_git, from);
+    let bundle_steps: Vec<&Seen> = calls
+        .iter()
+        .filter(|c| command_of(&c.call) == "bundle")
+        .collect();
+    assert_eq!(bundle_steps.len(), 1, "one bundle step: {calls:?}");
+    assert_eq!(
+        (&bundle_steps[0].pack, kept_markers(&kept_git)),
+        (&Vec::<String>::new(), vec![]),
+        "TRIGGER PRESENT: the look that found the engine's new pack removed the pack by the form before its bundle step"
+    );
+    println!(
+        "the release's copy: {loose_bytes} bytes while the run's commits were loose, {} after the engine packed them; beside \
+         the pack by the form that was removed: {}",
+        b.bundle_bytes, a.bundle_bytes
+    );
+    assert!(
+        b.bundle_bytes * 2 < loose_bytes,
+        "TRIGGER PRESENT is not shown: the engine's pack did not make the release's copy smaller: {} bytes after it, \
+         {loose_bytes} before",
+        b.bundle_bytes
+    );
+    assert_the_releases_copy(&l, "after-the-packing", (&kept_git, &a), (&release_git, &b));
+    assert_eq!(
+        hash_of(&a.bundle),
+        hash_of(&b.bundle),
+        "the copy's bytes are those of a repository without a kept pack"
+    );
+    let (mut with, mut without) = (
+        objects_of_the_bundle(&l, "after-the-packing-kept", &a.bundle),
+        objects_of_the_bundle(&l, "after-the-packing-release", &b.bundle),
+    );
+    with.sort_unstable();
+    without.sort_unstable();
+    assert_eq!(
+        with, without,
+        "the copy's objects are those of a repository without a kept pack"
+    );
+}
+
+// ----: the filter's object set (test 14 of the build brief, with test 15 (f)) ------------------------------------------------
+
+/// A lab whose base is a merge commit: one floor with two parents.
+fn lab_with_a_merge_at_the_base(label: &str) -> Lab {
+    let dir = scratch(label);
+    let repo = python_calc(&dir);
+    git(&repo, &["checkout", "-q", "-b", "side"]);
+    std::fs::write(repo.join("side.txt"), "the file of the side branch\n").unwrap();
+    git(&repo, &["add", "side.txt"]);
+    git(&repo, &["commit", "-q", "-m", "side"]);
+    git(&repo, &["checkout", "-q", "main"]);
+    std::fs::write(repo.join("main.txt"), "the file of the main branch\n").unwrap();
+    git(&repo, &["add", "main.txt"]);
+    git(&repo, &["commit", "-q", "-m", "main"]);
+    git(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "side into main", "side"],
+    );
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        git(&repo, &["rev-list", "--parents", "-n", "1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        3,
+        "the base is a merge of two parents"
+    );
+    let base_bundle = dir.join("repo.bundle");
+    b860_thin_support::stage_base(&repo, &base_bundle);
+    Lab {
+        dir,
+        repo,
+        base_bundle,
+        base,
+    }
+}
+
+/// The ids of the objects each pack of the engine's store holds, by the pack's index name.
+fn objects_of_the_engines_packs(l: &Lab) -> Vec<(String, Vec<String>)> {
+    let packs = l.repo.join(".git/objects/pack");
+    names(&packs)
+        .into_iter()
+        .filter(|name| name.ends_with(".idx"))
+        .map(|name| {
+            let ids = objects_of(&l.repo, &packs.join(&name))
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            (name, ids)
+        })
+        .collect()
+}
+
+/// The engine's stores of [`b936_the_filtered_pack_holds_the_indexed_objects_less_those_in_the_engines_packs`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilterCell {
+    /// The run starts from a bundle of two branches: two floors.
+    TwoFloors,
+    /// The base is a merge commit.
+    MergeFloor,
+    /// Three packs of the engine, each with objects of the run; one object stands in two of them.
+    SharedObject,
+    /// Two packs of the engine, each with objects of the run, under a multi-pack index.
+    MultiPackIndex,
+    /// A plain `git gc` after an object that no commit holds: a pack of the history and a cruft pack.
+    CruftPack,
+}
+
+/// Test 14 of the build brief, with the store of test 15 (f): the filter's object set, with git as the build host has
+/// it. In five stores of the engine (two floors; a merge floor; three packs that each hold objects of the run, one object in
+/// two of them; two such packs under a multi-pack index; a cruft pack beside the pack of a plain `git gc`) the look's bundle
+/// holds objects that packs of the engine hold too, and the pack the form keeps holds exactly the objects git indexed from
+/// that bundle less the objects in the engine's packs: every pack is named to the filter. A filter that names no pack of
+/// the engine keeps every indexed object, and one that leaves a single pack's name out keeps the objects of that pack.
+#[tokio::test]
+async fn b936_the_filtered_pack_holds_the_indexed_objects_less_those_in_the_engines_packs() {
+    use std::collections::BTreeSet;
+    for cell in [
+        FilterCell::TwoFloors,
+        FilterCell::MergeFloor,
+        FilterCell::SharedObject,
+        FilterCell::MultiPackIndex,
+        FilterCell::CruftPack,
+    ] {
+        let label = format!("b936-filter-{cell:?}");
+        let l = match cell {
+            FilterCell::TwoFloors => lab_of_two_branches(&label).0,
+            FilterCell::MergeFloor => lab_with_a_merge_at_the_base(&label),
+            _ => lab(&label),
+        };
+        let packs = l.repo.join(".git/objects/pack");
+        if matches!(cell, FilterCell::TwoFloors | FilterCell::MergeFloor) {
+            // The base stands in a pack of its own, as the product makes an engine's store.
+            git(&l.repo, &["repack", "-a", "-d", "-q"]);
+        }
+        // The engine packs what is loose, and removes the loose files: a pack with objects of the run.
+        engine_commits(&l.repo, 0, 6);
+        git(&l.repo, &["repack", "-d", "-q"]);
+        engine_commits(&l.repo, 6, 6);
+        match cell {
+            FilterCell::SharedObject | FilterCell::MultiPackIndex => {
+                git(&l.repo, &["repack", "-d", "-q"]);
+            }
+            FilterCell::CruftPack => {
+                let file = l.dir.join("held-by-no-commit.bin");
+                std::fs::write(&file, noise(14, 2_048)).unwrap();
+                git(&l.repo, &["hash-object", "-w", file.to_str().unwrap()]);
+                git(&l.repo, &["gc", "-q"]);
+                assert!(
+                    names(&packs).iter().any(|name| name.ends_with(".mtimes")),
+                    "TRIGGER PRESENT is not shown: {cell:?}: git's gc wrote no cruft pack: {:?}",
+                    names(&packs)
+                );
+            }
+            _ => {}
+        }
+        if cell == FilterCell::SharedObject {
+            use std::io::Write;
+            let shared = git(&l.repo, &["rev-parse", "HEAD:run/file0007.txt"]);
+            let file = l.dir.join("in-the-third-pack.bin");
+            std::fs::write(&file, noise(15, 2_048)).unwrap();
+            let other = git(&l.repo, &["hash-object", "-w", file.to_str().unwrap()]);
+            let mut child = std::process::Command::new("git")
+                .current_dir(&l.repo)
+                .args(["pack-objects", "-q", ".git/objects/pack/pack"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(format!("{}\n{}\n", shared.trim(), other.trim()).as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+            let holders = objects_of_the_engines_packs(&l)
+                .iter()
+                .filter(|(_, ids)| ids.contains(&shared))
+                .count();
+            assert_eq!(
+                holders, 2,
+                "TRIGGER PRESENT is not shown: {cell:?}: one object stands in two packs of the engine"
+            );
+        }
+        if cell == FilterCell::MultiPackIndex {
+            git(&l.repo, &["multi-pack-index", "write"]);
+            assert!(
+                packs.join("multi-pack-index").is_file(),
+                "TRIGGER PRESENT is not shown: {cell:?}: no multi-pack index"
+            );
+        }
+        // Three more commits stay loose: the head is a loose file, and the form runs.
+        let head = engine_commits(&l.repo, 12, 3);
+        let mut copies = thin(&l, "data").await;
+        let git_dir = private(&l, "data");
+        changed_look(&mut copies, &l.repo, 1).await;
+        assert_eq!(copies.keep_commits(&limit()).await, Keep::NotDue);
+        let made = changed_look(&mut copies, &l.repo, 2).await;
+        let indexed: BTreeSet<String> = objects_of_the_bundle(&l, "second-look", &made.bundle)
+            .into_iter()
+            .collect();
+        let by_pack = objects_of_the_engines_packs(&l);
+        let in_packs: BTreeSet<String> = by_pack
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect();
+        let both = indexed.intersection(&in_packs).count();
+        assert!(
+            both > 0 && both < indexed.len(),
+            "TRIGGER PRESENT is not shown: {cell:?}: of the {} objects git indexes from the look's bundle, {both} stand in \
+             the engine's {} packs",
+            indexed.len(),
+            by_pack.len()
+        );
+        if matches!(cell, FilterCell::SharedObject | FilterCell::MultiPackIndex) {
+            assert!(
+                by_pack
+                    .iter()
+                    .all(|(_, ids)| ids.iter().any(|id| indexed.contains(id))),
+                "TRIGGER PRESENT is not shown: {cell:?}: every pack of the engine holds an object of the look's bundle"
+            );
+        }
+        let keep = copies.keep_commits(&limit()).await;
+        let markers = kept_markers(&git_dir);
+        assert!(
+            matches!(keep, Keep::Kept { .. })
+                && markers.len() == 1
+                && markers[0].1 == head
+                && b860_kept_support::made_from_a_bundle(&markers[0].0),
+            "TRIGGER PRESENT is not shown: {cell:?}: no pack was kept by the form: {keep:?} {markers:?} {:?}",
+            copies.take_form_note()
+        );
+        let filtered: BTreeSet<String> = objects_of(&l.repo, &markers[0].0)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let wanted: BTreeSet<String> = indexed.difference(&in_packs).cloned().collect();
+        let (more, fewer): (Vec<&String>, Vec<&String>) = (
+            filtered.difference(&wanted).collect(),
+            wanted.difference(&filtered).collect(),
+        );
+        println!(
+            "{cell:?}: {} objects indexed from the look's bundle, {both} of them in the engine's {} packs, {} in the pack \
+             the form kept",
+            indexed.len(),
+            by_pack.len(),
+            filtered.len()
+        );
+        assert!(
+            more.is_empty() && fewer.is_empty(),
+            "TRIGGER PRESENT: {cell:?}: the pack the form kept holds the indexed objects less those in the engine's packs: \
+             it holds {} that a pack of the engine holds or that were not indexed ({:?}), and lacks {} ({:?})",
+            more.len(),
+            more.iter().take(3).collect::<Vec<_>>(),
+            fewer.len(),
+            fewer.iter().take(3).collect::<Vec<_>>()
+        );
+    }
+}
+
+// ----: the copies and the readers beside a pack by the form (the two pins of test 13 of the build brief) -----------------------
+
+/// Test 13 of the build brief, the first pin: `b860_kept_the_copy_is_the_releases_copy` on a pack of the form. Above a
+/// base that stands in a pack (the run's commits all loose; a loose tail behind a pack of the run's commits), the pack is
+/// made by the form, and each copy made beside it is the copy of a private repository that never held a kept pack: the same
+/// commit, the same needed commits, the same files and history, restored by the product's own restore, and the same bytes.
+/// Both copies of a comparison are made from commits with fixed dates ([`fix_the_dates`]).
+#[tokio::test]
+async fn b936_the_copies_beside_a_pack_by_the_form_are_the_releases_copies() {
+    let Some(dir) =
+        second_process("b936_the_copies_beside_a_pack_by_the_form_are_the_releases_copies")
+    else {
+        return;
+    };
+    fix_the_dates(&dir);
+    for tail in [false, true] {
+        let l = lab(&format!("b936-pin-copies-{tail}"));
+        git(&l.repo, &["repack", "-a", "-d", "-q"]);
+        let mut head = engine_commits(&l.repo, 0, 30);
+        if tail {
+            git(&l.repo, &["gc", "-q"]);
+            head = engine_commits(&l.repo, 30, 10);
+        }
+        let mut kept = thin(&l, "data-kept").await;
+        let mut release = thin(&l, "data-release").await;
+        release.set_keep_commits(false);
+        let (kept_git, release_git) = (private(&l, "data-kept"), private(&l, "data-release"));
+        for round in 1..=4 {
+            let mut a = changed_look(&mut kept, &l.repo, round).await;
+            let keep = kept.keep_commits(&limit()).await;
+            let b = b860_kept_support::look(&mut release).await;
+            assert_eq!(release.keep_commits(&limit()).await, Keep::NotDue);
+            if round == 2 {
+                let markers = kept_markers(&kept_git);
+                assert!(
+                    matches!(keep, Keep::Kept { .. })
+                        && markers.len() == 1
+                        && markers[0].1 == head
+                        && b860_kept_support::made_from_a_bundle(&markers[0].0),
+                    "TRIGGER PRESENT is not shown (tail {tail}): no pack was kept by the form, so the copies compared are \
+                     not copies beside a pack of the form: {keep:?} {markers:?}"
+                );
+            } else {
+                assert_eq!(keep, Keep::NotDue, "tail {tail}, look {round}");
+            }
+            let what = format!("form-tail-{tail}-look-{round}");
+            assert_the_releases_copy(&l, &what, (&kept_git, &a), (&release_git, &b));
+            assert_eq!(
+                hash_of(&a.bundle),
+                hash_of(&b.bundle),
+                "{what}: the copy beside the pack by the form has the bytes of the copy without a kept pack"
+            );
+            let wt = restored(&l, &what, &a.bundle, &a.commit).await;
+            assert_eq!(
+                std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+                work_of(round)
+            );
+            hash_bundle(&mut a, &limit()).await.unwrap();
+            let digest = a.digest.clone().unwrap();
+            assert_eq!(
+                (digest.sha256_hex, digest.bytes),
+                hash_of(&a.bundle),
+                "{what}: the hash of the bundle"
+            );
+        }
+    }
+}
+
+/// Test 13 of the build brief, the second pin: `b860_kept_every_reader_restores_a_copy_made_beside_a_kept_pack` on a
+/// pack of the form. After 50 commits of the run above a base that stands in a pack, the pack is made by the form, and
+/// every reader restores a copy made beside it: a later session's restore, the read of a stopped session's storage, and the
+/// copy of the end, which builds no pack and removes none.
+#[tokio::test]
+async fn b936_every_reader_restores_a_copy_made_beside_a_pack_by_the_form() {
+    let l = lab("b936-pin-readers");
+    git(&l.repo, &["repack", "-a", "-d", "-q"]);
+    let mut copies = thin(&l, "data").await;
+    let git_dir = private(&l, "data");
+    let run_head = engine_commits(&l.repo, 0, 50);
+    changed_look(&mut copies, &l.repo, 1).await;
+    changed_look(&mut copies, &l.repo, 2).await;
+    let kept = copies.keep_commits(&limit()).await;
+    let markers = kept_markers(&git_dir);
+    assert!(
+        matches!(kept, Keep::Kept { .. })
+            && markers.len() == 1
+            && markers[0].1 == run_head
+            && b860_kept_support::made_from_a_bundle(&markers[0].0),
+        "TRIGGER PRESENT is not shown: no pack was kept by the form: {kept:?} {markers:?}"
+    );
+    let files = names(&kept_folder(&l, "data"));
+
+    let made = changed_look(&mut copies, &l.repo, 3).await;
+    assert_eq!(
+        needed(&made.bundle),
+        vec![l.base.clone()],
+        "the copy is above the run's base"
+    );
+    let wt = restored(&l, "later-session", &made.bundle, &made.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(3)
+    );
+    assert!(
+        wt.join("run/file0049.txt").is_file(),
+        "the run's last commit is in the copy"
+    );
+
+    let read = l.dir.join("read-back");
+    std::fs::create_dir_all(&read).unwrap();
+    let mut reader = Snapshotter::for_read_back(&read, &l.repo, &l.base)
+        .await
+        .unwrap();
+    let back = reader
+        .read_back(&l.base, 1, &GiveUp::at(None))
+        .await
+        .unwrap();
+    let wt = restored(&l, "read-back", &back.bundle, &back.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(3)
+    );
+    assert_eq!(
+        kept_markers(&read.join("snapshot.git")),
+        vec![],
+        "a read keeps no pack"
+    );
+
+    git(&l.repo, &["add", "-A"]);
+    git(&l.repo, &["commit", "-q", "-m", "the work of the session"]);
+    let head = git(&l.repo, &["rev-parse", "HEAD"]);
+    let end = copies.final_copy(Some(&head)).await.unwrap();
+    assert!(end.final_copy);
+    assert_eq!(end.commit, head);
+    assert_eq!(needed(&end.bundle), vec![l.base.clone()]);
+    let wt = restored(&l, "the-end", &end.bundle, &end.commit).await;
+    assert_eq!(
+        std::fs::read_to_string(wt.join("work.txt")).unwrap(),
+        work_of(3)
+    );
+    assert_eq!(
+        kept_markers(&git_dir),
+        markers,
+        "the copy of the end keeps nothing and removes nothing"
+    );
+    assert_eq!(names(&kept_folder(&l, "data")), files);
+    assert_eq!(names(&incoming_folder(&l, "data")), Vec::<String>::new());
 }

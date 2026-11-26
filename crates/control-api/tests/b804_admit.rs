@@ -33,12 +33,17 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// A lock with `value` that SSM wrote `age_s` seconds ago.
-fn lock_aged(value: &str, age_s: i64) -> DeployLock {
+/// A lock with `value` that SSM wrote `age_s` seconds before the clock read `at` (Unix seconds).
+fn lock_aged_at(value: &str, age_s: i64, at: i64) -> DeployLock {
     DeployLock {
         value: value.to_string(),
-        written_epoch_s: Some(now() - age_s),
+        written_epoch_s: Some(at - age_s),
     }
+}
+
+/// A lock with `value` that SSM wrote `age_s` seconds ago.
+fn lock_aged(value: &str, age_s: i64) -> DeployLock {
+    lock_aged_at(value, age_s, now())
 }
 
 /// A deploy took the lock a minute ago and renews it.
@@ -109,34 +114,68 @@ fn lock_reads(w: &World) -> usize {
     w.count("deploy_lock")
 }
 
+/// How often a test that reads the lock's age in the service's line asks again, when the clock's second turned while the service answered.
+const TRIES: u32 = 5;
+
+/// The age in whole seconds that a line about the lock names: the number in "written <n> s ago".
+fn named_age(line: &str) -> i64 {
+    line.split_once("written ")
+        .and_then(|(_, rest)| rest.split_once(" s ago"))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or_else(|| panic!("the line names no age of the lock: {line}"))
+}
+
 #[tokio::test]
 async fn b804_admit_a_start_is_refused_while_a_renewed_lock_is_held() {
-    let w = World::new();
-    close(&w);
-    let (out, v, logs) = start(&w, "k-1").await;
-    assert_refused(&out, &v);
     assert_eq!(STAGE_UPDATING, "stage-updating");
     assert_eq!(
         MESSAGE,
         "This stage is being updated, so it starts no new runs. Try again in a few minutes."
     );
     assert_eq!(RETRY_AFTER_S, 120);
-    assert!(w.runs.lock().unwrap().is_empty(), "no run was created");
-    assert!(w.started.lock().unwrap().is_empty(), "no execution started");
-    assert_eq!(w.count("blob_put"), 0, "no request was stored");
-    assert_eq!(
-        w.idem.lock().unwrap().len(),
-        1,
-        "only the claim of the key was written"
-    );
-    assert_eq!(logs.len(), 1, "one line for the refusal: {logs:?}");
-    assert!(
-        logs[0].contains("deploy lock") && logs[0].contains("60 s"),
-        "the line names the lock and its age: {logs:?}"
-    );
-    assert!(
-        !logs[0].contains("tok-b804"),
-        "the token of the lock stays out of the log: {logs:?}"
+    // The service judges the lock against its own read of the system clock, in whole seconds, so the age in its line is the whole seconds
+    // from the lock's write to that read. The test reads the clock before it writes the lock and again after the answer; the service's read
+    // lies between the two. When no second turned between them, the age is exactly 60. When one turned, the service read before the turn
+    // (60) or after it (61) and the test cannot see which: it holds the line to those two values and asks again on a new stage, until it
+    // has seen the exact 60.
+    for _ in 0..TRIES {
+        let w = World::new();
+        let before = now();
+        *w.deploy_lock.lock().unwrap() = Some(Ok(lock_aged_at(LOCK, 60, before)));
+        let (out, v, logs) = start(&w, "k-1").await;
+        let turned = now() - before;
+        assert_refused(&out, &v);
+        assert!(w.runs.lock().unwrap().is_empty(), "no run was created");
+        assert!(w.started.lock().unwrap().is_empty(), "no execution started");
+        assert_eq!(w.count("blob_put"), 0, "no request was stored");
+        assert_eq!(
+            w.idem.lock().unwrap().len(),
+            1,
+            "only the claim of the key was written"
+        );
+        assert_eq!(logs.len(), 1, "one line for the refusal: {logs:?}");
+        assert!(
+            logs[0].contains("deploy lock"),
+            "the line names the lock: {logs:?}"
+        );
+        let age = named_age(&logs[0]);
+        assert!(
+            (60..=60 + turned).contains(&age),
+            "the line names the lock's age at the service's read of the clock. The lock was written 60 s before this test's read, and the \
+             clock's second turned {turned} time(s) before the answer came, so the age is 60 at the least and {} at the most, never {age}: \
+             {logs:?}",
+            60 + turned
+        );
+        assert!(
+            !logs[0].contains("tok-b804"),
+            "the token of the lock stays out of the log: {logs:?}"
+        );
+        if turned == 0 {
+            return;
+        }
+    }
+    panic!(
+        "the clock's second turned while the service answered in each of {TRIES} tries, so the test never saw the exact age of 60 s"
     );
 }
 

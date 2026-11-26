@@ -50,6 +50,10 @@ const GAP: usize = 1;
 const COUNT_MIN: usize = 5;
 /// From this screen width the table has the LAST column.
 const LAST_FROM: u16 = 100;
+/// `d` while the list held is a part: while older runs are being loaded, and for every other part. `tags_note_follows_list`
+/// takes each away when it no longer holds, so the two are known by their text.
+const D_STILL_LOADING: &str = "remove needs every run loaded: they are still loading";
+const D_NOT_LOADED: &str = "remove needs every run loaded: press r to load them all, then d";
 
 /// A question waiting for `y`: remove `tag` from `ids`.
 #[derive(Debug)]
@@ -222,6 +226,12 @@ impl App {
             .unwrap_or_else(|| "--:--".to_string())
     }
 
+    /// The list held is whole: every page was laid, or a newest page that has no next token. It is the claim of the tag explorer's title, and
+    /// the one gate of what needs every run: `R` on the Runs screen, `d` here, the count `R` names on a run's screen.
+    pub(crate) fn runs_whole(&self) -> bool {
+        self.tags.loaded.is_some()
+    }
+
     /// A read of the list is about to be applied: every page is the whole list; the newest page with no next token is too; a newest page
     /// with a next token keeps the claim only when it shares a run with the held list (so nothing can be missing between them).
     pub(crate) fn tags_note_read(&mut self, read: &RunsRead) {
@@ -243,6 +253,19 @@ impl App {
     /// Every page of the list was read (`Msg::Runs`).
     pub(crate) fn tags_note_full_read(&mut self) {
         self.tags.loaded = Some(self.tags_clock());
+    }
+
+    /// The tag explorer's half of `App::runs_notes_follow_list`: `d`'s sentence that the runs are loading goes when they no
+    /// longer are, its sentence that names `r` goes when the list is whole. A note of another kind stays until the next key.
+    pub(crate) fn tags_note_follows_list(&mut self) {
+        let stale = match self.tags.note.as_deref() {
+            Some(D_STILL_LOADING) => !self.runs_older_loading(),
+            Some(D_NOT_LOADED) => self.runs_whole(),
+            _ => false,
+        };
+        if stale {
+            self.tags.note = None;
+        }
     }
 
     /// Whether a timer read is out when an edit's answer lands: that read is older than the answer.
@@ -432,8 +455,14 @@ impl App {
             return;
         }
         if self.tags.loaded.is_none() {
-            self.tags.note =
-                Some("remove needs every run loaded: press r to load them all, then d".to_string());
+            self.tags.note = Some(
+                if self.runs_older_loading() {
+                    D_STILL_LOADING
+                } else {
+                    D_NOT_LOADED
+                }
+                .to_string(),
+            );
             return;
         }
         let Some(tag) = self.tags.cursor_tag.clone() else {
@@ -789,6 +818,11 @@ impl App {
         let snapshot = match &self.tags.loaded {
             Some(at) => format!(
                 "all {} {} loaded at {at}",
+                view.held,
+                plural(view.held, "run", "runs")
+            ),
+            None if self.runs_older_loading() => format!(
+                "newest {} {}, loading the older ones",
                 view.held,
                 plural(view.held, "run", "runs")
             ),

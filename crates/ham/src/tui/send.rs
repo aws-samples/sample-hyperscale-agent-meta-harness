@@ -1802,7 +1802,7 @@ impl App {
             GoalStatus::Stalled => "stalled",
             _ => return None,
         };
-        if self.runs.is_empty() || self.runs_behind_view() {
+        if self.runs.is_empty() || self.runs_behind_view() || !self.runs_whole() {
             return Some((word, None));
         }
         let plan = ham_core::resume::plan(&self.runs);

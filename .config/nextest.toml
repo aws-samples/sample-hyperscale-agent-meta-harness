@@ -11,44 +11,61 @@ seccomp-children = { max-threads = 1 }
 filter = 'binary(~sandbox_) | binary(=direct_messages_reap_sandboxed) | binary(=b790_loopback)'
 test-group = 'seccomp-children'
 
+# Every row with `threads-required = 'num-test-threads'` also has `priority = 100`: nextest starts the tests of the highest priority first, so
+# these tests run at the start of a run, one after the other, when no test is in flight. In its place in the list such a test waited until every
+# test in flight had ended while no other test could start: a test of 219 s in flight then cost the run up to that long on every test thread.
+#
 # A test that starts one busy thread per processor of the machine takes every test thread of the run: nextest starts it when no other test
 # runs and starts no other test until it has ended.
 [[profile.default.overrides]]
 filter = 'binary(=fake_cline_inproc) & test(=b836_a_thousand_exchanges_beside_busy_threads_are_never_answered_from_the_queue)'
 threads-required = 'num-test-threads'
+priority = 100
 
 # The cost test of the first process holds what the first-process role costs a turn under three times the noise that the same run measures: the
 # difference between two turns without the role. That noise grows with whatever else the machine does, and the bound with it: alone on the build host the
 # test held a turn under 20.6 to 27.7 ms, inside a full run of the worker's crate under 90.4 ms, so a cost that it catches alone passed beside the other
 # tests. It gets every test thread of the run, as the stress test above does. The row costs a run the length of the test, in which no other test of the
-# run works, and the wait until the tests in flight have ended.
+# run works; with its priority it waits for no test in flight.
 [[profile.default.overrides]]
 filter = 'binary(=b883_first_process) & test(=b883_cost_a_turn_behind_process_1_against_process_1_serving_itself)'
 threads-required = 'num-test-threads'
+priority = 100
 
-# Four tests with a time bound of their own failed a first pass of a full run on a loaded build host and passed alone: the draw of 5,000 agents of the
-# client (0.505 s against its 0.5 s bound) and three copy tests of the worker, which wait for a copy that git processes make (a copy not seen within its
-# 7 s, one notice more than expected, 18.66 s against 16 s). Their bounds stay as they are. Each gets every test thread of the run, as the stress test
-# above does: it starts when no other test of the run works and no other test starts until it has ended, so the other tests of the run are no longer part
-# of what it measures. What other processes of the host do is still part of it. A row is not free: it waits until the tests in flight have ended and then
-# holds every test thread for the length of its test. The four rows add about a third to the length of a full run on a 36-processor build host, the three
-# rows of the worker about two thirds of that. The draw test keeps its row all the same: its clock leaves out the wait for a processor, but the draw
-# itself is slower while other work shares the processors, and beside the other tests of a run that work is the run's own.
+# Four tests with a time bound of their own failed a first pass of a full run on a loaded build host and passed alone: the draw of 5,000 agents of the client (0.505 s against its 0.5 s bound) and
+# three copy tests of the worker, which wait for a copy that git processes make (a copy not seen within its 7 s, one notice more than expected, 18.66 s against 16 s). Their bounds stay as they
+# are. Each gets every test thread of the run, as the stress test above does: it starts when no other test of the run works and no other test starts until it has ended, so the other tests of the
+# run are no longer part of what it measures. What other processes of the host do is still part of it. A row is not free: it holds every test thread for the length of its test. Before the rows had
+# a priority they also waited until the tests in flight had ended: the four rows then added about a third to the length of a full run on a 36-processor build host, the three rows of the worker
+# about two thirds of that. The draw test keeps its row all the same: its clock leaves out the wait for a processor, but the draw itself is slower while other work shares the processors, and
+# beside the other tests of a run that work is the run's own.
 [[profile.default.overrides]]
 filter = 'binary(=tui_w2) & test(=five_thousand_agents_draw_in_bounded_time)'
 threads-required = 'num-test-threads'
+priority = 100
+
+# Since the draw test holds two bounds in the place of the 0.5 s above: the draws of each kind take under 6.7 times a yardstick, a fixed
+# piece of work the test times just before every draw (under 9.3 times in a coverage build, which slows the code of a draw and not the
+# yardstick), and wait under 0.05 s a draw. A busy machine slows the yardstick as it slows the draw, so the ratio says nearly the same
+# alone and in a crowd. The test prints its build and what both bounds read in every run (DRAW-RATIOS).
+[[profile.default.overrides]]
+filter = 'binary(=tui_w2) & (test(=five_thousand_agents_draw_in_bounded_time))'
+success-output = 'immediate'
 
 [[profile.default.overrides]]
 filter = 'binary(=b823_copies_run) & test(=b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer)'
 threads-required = 'num-test-threads'
+priority = 100
 
 [[profile.default.overrides]]
 filter = 'binary(=b823_stop_copy) & test(=b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies)'
 threads-required = 'num-test-threads'
+priority = 100
 
 [[profile.default.overrides]]
 filter = 'binary(=b823_stop_copy) & test(=b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more)'
 threads-required = 'num-test-threads'
+priority = 100
 
 # The tests of a look of the copy task that hangs print what they found. The three that run a real worker print what each late line of
 # the worker states (STATED). The twenty-eight that drive the clock print the durations they imposed, the moment on that clock at which

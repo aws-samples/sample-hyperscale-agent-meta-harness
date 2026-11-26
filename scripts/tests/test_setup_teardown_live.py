@@ -49,6 +49,13 @@ RUNNER_BUCKET = f"hamh-setup-{ACCOUNT}-us-east-1"
 # are multiplied by one whole number, HAMH_TEST_WAIT_SCALE rounded up: the proportions the tests rely on stay, and the delay that fits in a window grows with the factor.
 Q = max(1, math.ceil(SCALE))
 
+
+# The parallel script step runs the tests of this file as this many processes side by side.
+# In one process this file is one of those that bound the step; every unit pays the file's
+# fixtures again, so more units cost more than they save (scripts/tests/AGENTS.md has the measured numbers).
+SUITE_UNITS = 2
+
+
 class LiveBase(SafetyBase):
     def network_deletes(self) -> tuple:
         """The calls that delete the network stack: those that wait for CloudFormation to try, and those that retain resources."""

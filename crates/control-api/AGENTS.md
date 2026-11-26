@@ -143,7 +143,9 @@ The Lambda behind the public `/v1` API starts direct runs from one prompt. It li
   for longer than the limit (one log line), and when the stage's own setup refuses the read (`StoreError::NotSetUp`, a role without the grant; one log line). A read that may
   pass on a retry is the 503 of the deployment read beside it. A repeat whose Run item has `runtimeEndpoint` (its first session pinned the worker runtime) returns its run
   without a look at the lock; a Run item without it is treated like a new run. No other route reads the lock, so running work can end. A new route that starts a run ends in
-  `start_prepared`.
+  `start_prepared`. `admit` reads the system clock itself, in whole seconds, and `judge` takes the clock as an argument. A test of an exact age gives `judge` a fixed clock. A test
+  that reads the age out of a log line through the handler reads the clock before it writes the lock and again after the answer, holds the age to the seconds between the two
+  reads and asks again while a second turned between them, until it has seen the exact age (the tests that name 60 s in `tests/b804_admit.rs` and `tests/b841_starts.rs`).
 
 ## Work Guidance
 

@@ -31,14 +31,13 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
 - A fake of an AWS API rejects what the real API rejects (formats, name patterns, enums, required
   pairs), with the API reference cited in the fake. A permissive fake let a runtime version pass as
   InvokeAgentRuntime's `qualifier` (an endpoint name) and broke live dispatch.
-- A test with a time bound of its own that fails only beside the other tests of a full run gets a row in `.config/nextest.toml` that gives it every test thread of the run
-  (`threads-required = 'num-test-threads'`), one row with one term for each test. Its bound stays as it is. Besides the stress test of the fake engine, four tests have such a
-  row: `five_thousand_agents_draw_in_bounded_time` of `ham/tests/tui_w2.rs`, `b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer` of
-  `agentd/tests/b823_copies_run.rs`, and `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and
-  `b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more` of `agentd/tests/b823_stop_copy.rs`. The three worker tests wait for copies that git
-  processes make. A row is not free: it waits for the tests in flight and then holds every test thread, and the four rows add about a third to the length of a full run of the
-  workspace's tests; add one only for a test that failed a first pass beside the other tests and passed alone. The note stands here and not in the agentd crate because every file
-  of that crate is an input of the worker image key.
+- A test with a time bound of its own that fails only beside the other tests of a full run gets a row in `.config/nextest.toml` that gives it every test thread of the run (`threads-required = 'num-test-threads'`) and starts
+  it before the other tests of the run (`priority = 100`), one row with one term for each test. Its bound stays as it is. Besides the stress test of the fake engine, four tests have such a row:
+  `five_thousand_agents_draw_in_bounded_time` of `ham/tests/tui_w2.rs`, `b841_copy_a_copy_that_failed_is_tried_again_before_the_next_tick_of_a_long_timer` of `agentd/tests/b823_copies_run.rs`, and
+  `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and `b823_the_first_process_lets_the_look_in_flight_store_its_copy_and_copies_once_more` of `agentd/tests/b823_stop_copy.rs`. The
+  three worker tests wait for copies that git processes make. A row is not free: it holds every test thread for the length of its test. With the priority the test runs at the start of the run, when no test is in flight; in
+  its place in the list it also waited for every test in flight while no other test could start, and the four rows then added about a third to the length of a full run of the workspace's tests. Add one only for a test that
+  failed a first pass beside the other tests and passed alone. The note stands here and not in the agentd crate because every file of that crate is an input of the worker image key.
 - A test that holds a cost under a multiple of the noise which its own run measures gets such a row as well: the other tests of a run make that noise
   larger, so beside them the bound is wider than alone and a cost that the test catches alone passes. The cost test of the first process,
   `b883_cost_a_turn_behind_process_1_against_process_1_serving_itself` of `agentd/tests/b883_first_process.rs`, held a turn under 20.6 to 27.7 ms alone
@@ -49,17 +48,27 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   from the process id is new among the processes that run now, not over time: the kernel hands an id out again, nextest starts one process for each
   test, and the tests leave their folders in the scratch directory, so a later run can be handed a folder that holds another test's files and fail on
   them. `tmp()` of `ham-core/tests/skills_namespace.rs` is the pattern, beside the test that plants such folders.
-- A test that prints what it measured keeps those lines in the log of a full run through a row in `.config/nextest.toml` with `success-output =
-  'immediate'`: nextest shows the output of a test that passed only when a row asks for it. One row names the thirty-one tests of a look of the copy task
-  that hangs in `agentd/tests/b823_stop_copy.rs`. Three run a real worker:
-  `b823_a_look_that_hangs_in_git_add_is_said_late_and_copies_when_the_tree_answers_again`,
-  `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and
-  `b823_a_look_is_given_up_when_the_file_system_of_the_tree_no_longer_answers`; their lines begin with `STATED` (what a late line of the worker states).
-  Twenty-eight drive the clock (their names begin with `b893_`); their lines begin with `DRIVEN` (the durations the test imposed, the moment on that clock
-  at which it saw the look said late or given up, the numbers of the worker's late line, and what the run had been told). A second row keeps the `DRIVEN`
-  lines of the tests in `agentd/tests/b923_tree_question.rs` (when the copy task asks the file system of the work tree, the order in which it takes the end
-  of a look, its late line, a request to end and the question, and the late limit of the look that follows a look which a request to end overtook), and the
-  same test fails when it does not name one of them.
+- A test that runs its work as several processes side by side gets a row in `.config/nextest.toml` with one test thread of the run for each of them
+  (`threads-required = <n>`, no priority): nextest counts a test as one thread otherwise and starts as many other tests beside the processes as beside
+  one.
+- A row of `.config/nextest.toml` names its test program as `binary(=<name>)`, a term of its own that `&` joins to the rest of the filter.
+  cargo-nextest reads the file before it builds anything and refuses it when a `binary()` or `package()` term selects no test program or package of the
+  tree.
+- A test that prints what it measured keeps those lines in the log of a full run through a row in `.config/nextest.toml` with `success-output = 'immediate'`: nextest shows the output
+  of a test that passed only when a row asks for it. One row names the thirty-one tests of a look of the copy task that hangs in `agentd/tests/b823_stop_copy.rs`. Three run a real
+  worker: `b823_a_look_that_hangs_in_git_add_is_said_late_and_copies_when_the_tree_answers_again`,
+  `b823_a_look_that_hangs_in_git_add_is_given_up_its_git_is_ended_and_a_later_look_copies` and `b823_a_look_is_given_up_when_the_file_system_of_the_tree_no_longer_answers`; their
+  lines begin with `STATED` (what a late line of the worker states). Twenty-eight drive the clock (their names begin with `b893_`); their lines begin with `DRIVEN` (the durations the
+  test imposed, the moment on that clock at which it saw the look said late or given up, the numbers of the worker's late line, and what the run had been told). A second row keeps
+  the `DRIVEN` lines of the tests in `agentd/tests/b923_tree_question.rs` (when the copy task asks the file system of the work tree, the order in which it takes the end of a look,
+  its late line, a request to end and the question, and the late limit of the look that follows a look which a request to end overtook), and the same test fails when it does not name
+  one of them. A third row keeps the `DRAW-RATIOS` line of the draw test of the client, `five_thousand_agents_draw_in_bounded_time` of `ham/tests/tui_w2.rs`, and the same test fails
+  when that row is missing, the test no longer prints the line or the line no longer names the build.
+- A bound that holds a time as a ratio to a yardstick the test times beside it is one bound for each kind of build when a coverage build slows the two unequally: a coverage build (`cargo llvm-cov`) counts the regions
+  of the workspace's own crates as they run, and not those of third-party dependencies or of the standard library. The draw test of the client holds its draws under 6.7 yardsticks in a plain build and under 9.3 in a
+  coverage build, where a draw is 1.3 to 1.5 times slower, by the machine, and the yardstick is not. A test names a coverage build by two signs together: the cfg the coverage tool gives the compiler
+  (`cfg!(coverage)`, under `#[allow(unexpected_cfgs)]`: no manifest declares it) and the variable the tool sets for the tests it starts (`CARGO_LLVM_COV`). Neither names one alone: a program with one of the two holds
+  the plain build's bound, the tighter one, and fails a test of the naming with a sentence that says which sign stands alone.
 
 ## Verification
 

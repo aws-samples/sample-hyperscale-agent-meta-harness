@@ -273,6 +273,8 @@ fn b832_a_retry_answer_on_the_runs_screen_is_whole() {
 fn b832_the_next_key_takes_the_notice_and_its_panel_away() {
     for (w, h) in SIZES {
         let mut app = runs_screen();
+        // The service has answered with no run: the note under the table says so once the notice is gone.
+        app.update(Msg::Runs(Ok(vec![])));
         app.update(Msg::Ext(Done::Resumed {
             outcomes: vec![Outcome {
                 run_id: RUN.into(),

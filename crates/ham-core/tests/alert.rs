@@ -206,3 +206,23 @@ proptest! {
         }
     }
 }
+
+// ---- the runs that a read of the older pages shows for the first time ---------------------------------------------------------------
+
+#[test]
+fn b961_seed_more_adds_waits_and_makes_no_alert() {
+    let mut al = Alerts::new();
+    al.seed(&[A]);
+    // The read of the older pages shows B for the first time: it joins the known waits and makes no sound.
+    al.seed_more(&[B]);
+    let got = al.observe(&[A, B, C]);
+    let ids: Vec<&str> = got.iter().map(|a| a.run_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![C],
+        "the seeded wait stays known, the added wait makes no alert, a new wait rings"
+    );
+    // Adding nothing changes nothing.
+    al.seed_more(&[]);
+    assert!(al.observe(&[A, B, C]).is_empty());
+}

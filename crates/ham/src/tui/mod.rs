@@ -69,6 +69,28 @@ pub fn attach_backends<P: ControlPlane>(
     app.update(Msg::Backends(plane.backend_view()));
 }
 
+/// One whole read of the run list ([`Effect::LoadRuns`]) and the messages it sends through `send`. A read whose first page carries a next
+/// token sends [`Msg::RunsNewest`] with that page as soon as it has it, and [`Msg::RunsOlder`] when it has ended: every page, or the
+/// failure of a later page. Every other read sends the one [`Msg::RunsIndexed`] of before: a first page without a next token, a client
+/// with several backends, and a first page that fails. So [`Msg::RunsOlder`] only follows the [`Msg::RunsNewest`] of its own read, and
+/// every read that sent the one sends the other.
+pub async fn load_runs<P: ControlPlane>(api: &Api<P>, send: &mut (dyn FnMut(Msg) + Send)) {
+    let mut handed = false;
+    let result = {
+        let mut newest = |page: ham_core::runfilter::IndexedRead| {
+            handed = true;
+            send(Msg::RunsNewest(page));
+        };
+        api.read_runs_whole(&mut newest).await
+    };
+    let result = result.map_err(|e| e.to_string());
+    send(if handed {
+        Msg::RunsOlder(result)
+    } else {
+        Msg::RunsIndexed(result)
+    });
+}
+
 /// Runs one effect; `Quit` yields nothing. Errors become the message text shown on screen.
 pub async fn perform<P: ControlPlane>(api: &Api<P>, dir: &Path, effect: Effect) -> Option<Msg> {
     perform_with_env(api, dir, effect, &ham_core::envnames::os_env).await
@@ -829,7 +851,13 @@ pub async fn event_loop_timed<P: ControlPlane, B: Backend>(
             let (api, dir, tx) = (api.clone(), dir.clone(), msg_tx.clone());
             tokio::spawn(async move {
                 let reads_runs = matches!(e, Effect::LoadRuns | Effect::RefreshRuns(_));
-                if let Some(m) = perform(&api, &dir, e).await {
+                if e == Effect::LoadRuns {
+                    // A whole read sends its newest page first when more pages follow ([`load_runs`]).
+                    let mut send = |m: Msg| {
+                        let _ = tx.send(m);
+                    };
+                    load_runs(&api, &mut send).await;
+                } else if let Some(m) = perform(&api, &dir, e).await {
                     let _ = tx.send(m);
                 }
                 // A client with several backends hears how each answered after every read of the list.

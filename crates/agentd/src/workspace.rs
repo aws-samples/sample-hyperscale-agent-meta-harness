@@ -376,18 +376,73 @@ pub(crate) async fn git_with_env_until_input(
     input: Option<&[u8]>,
     give_up: &crate::direct::snapshot::GiveUp,
 ) -> Result<String, WsError> {
+    let what = args.first().copied().unwrap_or("");
+    let input = match input {
+        Some(bytes) => GitInput::Bytes(bytes),
+        None => GitInput::None,
+    };
+    match git_fed_until(dir, args, envs, input, give_up).await? {
+        GitEnd::Done(out) => Ok(out),
+        GitEnd::Refused(text) => Err(WsError::Git(format!("git {what}: {text}"))),
+        GitEnd::GivenUp { gone } => Err(WsError::Git(format!(
+            "git {what}: given up before it had ended{}",
+            if gone {
+                ""
+            } else {
+                "; the process was still there 2 s after it was ended"
+            }
+        ))),
+    }
+}
+
+/// What the standard input of a git call is ([`git_fed_until`]).
+pub(crate) enum GitInput<'a> {
+    /// Nothing: the null device.
+    None,
+    /// Bytes agentd holds, written into a pipe that is closed after them (the commits a `git pack-objects --revs` packs, the
+    /// pack names a `git pack-objects --stdin-packs` reads).
+    Bytes(&'a [u8]),
+    /// A file agentd opened, handed to git as it is, read from the position the file stands at: the bundle of a look from the
+    /// byte after its header (`git index-pack --stdin`). Nothing of the file passes through agentd's memory, and no pipe can fill.
+    File(std::fs::File),
+}
+
+/// How a git call that may be given up ended ([`git_fed_until`]). A caller that must tell a git that refused from a
+/// git that ran out of time reads it here; [`git_with_env_until_input`] makes one error of both, as it always did.
+pub(crate) enum GitEnd {
+    /// git ended with 0: its output, trimmed.
+    Done(String),
+    /// git ended with another exit status: what it wrote to its standard error, trimmed.
+    Refused(String),
+    /// The time to give up came before git had ended: its group was ended. `gone` says whether the process was gone within
+    /// [`GIT_END_LIMIT`].
+    GivenUp { gone: bool },
+}
+
+/// One git call with agentd's guards and the harness as author, in a process group of its own, that ends when `give_up`
+/// says so and whose whole group is ended when the call is dropped before git has ended ([`KillGroup`]); its standard input is
+/// `input`. The process is started outside `dir` ([`git_command_outside`]). An error is a git that could not be started or
+/// waited for; every way git itself can end is a [`GitEnd`].
+pub(crate) async fn git_fed_until(
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &Path)],
+    input: GitInput<'_>,
+    give_up: &crate::direct::snapshot::GiveUp,
+) -> Result<GitEnd, WsError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let what = args.first().copied().unwrap_or("");
     let mut cmd = git_command_outside(dir, args);
+    let (fed, input) = match input {
+        GitInput::None => (std::process::Stdio::null(), None),
+        GitInput::Bytes(bytes) => (std::process::Stdio::piped(), Some(bytes)),
+        GitInput::File(file) => (std::process::Stdio::from(file), None),
+    };
     cmd.env("GIT_AUTHOR_NAME", HARNESS_AUTHOR.0)
         .env("GIT_AUTHOR_EMAIL", HARNESS_AUTHOR.1)
         .env("GIT_COMMITTER_NAME", HARNESS_AUTHOR.0)
         .env("GIT_COMMITTER_EMAIL", HARNESS_AUTHOR.1)
-        .stdin(if input.is_some() {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        })
+        .stdin(fed)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .process_group(0)
@@ -441,25 +496,19 @@ pub(crate) async fn git_with_env_until_input(
             // git was waited for: its group id may be given out again.
             guard.disarm();
         }
-        return Err(WsError::Git(format!(
-            "git {what}: given up before it had ended{}",
-            if gone {
-                ""
-            } else {
-                "; the process was still there 2 s after it was ended"
-            }
-        )));
+        return Ok(GitEnd::GivenUp { gone });
     };
     let status = status.map_err(|e| WsError::Git(format!("git {what}: {e}")))?;
     // git has ended and was waited for.
     guard.disarm();
     if !status.success() {
-        return Err(WsError::Git(format!(
-            "git {what}: {}",
-            String::from_utf8_lossy(&err).trim()
-        )));
+        return Ok(GitEnd::Refused(
+            String::from_utf8_lossy(&err).trim().to_string(),
+        ));
     }
-    Ok(String::from_utf8_lossy(&out).trim().to_string())
+    Ok(GitEnd::Done(
+        String::from_utf8_lossy(&out).trim().to_string(),
+    ))
 }
 
 /// One git call of agentd's own plumbing (the DOX starter commit, `direct::dox`): the guards and the cleaned environment of every agentd git call, the

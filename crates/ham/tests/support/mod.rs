@@ -193,6 +193,8 @@ pub struct Mem {
     /// The message ledger's table: the real ledger over the in-memory table, shared with a simulated agentd.
     pub msgs: message_ledger::mem::MemTable,
     pub base: Arc<Mutex<String>>,
+    /// The list of runs comes in pages of this many (0, the default: every run in one page, with no next token).
+    pub runs_page: Arc<std::sync::atomic::AtomicUsize>,
     counter: Arc<AtomicU64>,
     last_ms: Arc<Mutex<u128>>,
 }
@@ -367,6 +369,15 @@ impl Store for Mem {
             .cloned()
             .collect();
         out.sort_by(|a, b| b.run_id.cmp(&a.run_id));
+        // A page size set by a test: pages of that many runs with a cursor, as the real store pages. The cursor is the number of rows
+        // given so far, so a run created between two pages moves the rows by one (no test that sets a page size creates one meanwhile).
+        let page = self.runs_page.load(Ordering::SeqCst);
+        if page > 0 {
+            let start = _next.and_then(|t| t.parse::<usize>().ok()).unwrap_or(0);
+            let more = start + page < out.len();
+            let rows: Vec<RunItem> = out.into_iter().skip(start).take(page).collect();
+            return Ok((rows, more.then(|| (start + page).to_string())));
+        }
         Ok((out, None))
     }
     async fn events(
@@ -1427,6 +1438,13 @@ pub struct Faults {
     /// The list of runs (`GET /v1/runs`, every page): wait this many milliseconds before the answer (0 = answer at once). A slow list
     /// is how a loaded host looks to the Runs screen, which draws its frame before the first list arrives.
     pub runs_delay_ms: AtomicU64,
+    /// The list of runs, only a call that carries a page token (`GET /v1/runs?nextToken=..`): while this is set such a call waits before
+    /// its answer until the test clears it. A call without a token (a first page, the timer's read) is answered at once and not counted.
+    pub runs_gate: std::sync::atomic::AtomicBool,
+    /// The page tokens of the list calls that arrived, in order (calls without a token are not counted).
+    pub runs_tokens_in: Mutex<Vec<String>>,
+    /// The page tokens of the list calls that passed the gate to their answer, in order.
+    pub runs_tokens_out: Mutex<Vec<String>>,
     /// The transcript route (`GET /v1/runs/{id}/transcript`, every page): wait this many milliseconds before the answer (0 = answer at once). On the
     /// stage the route answers in about 0.65 s, after the run screen has drawn its progress feed.
     pub transcript_delay_ms: AtomicU64,
@@ -1655,6 +1673,24 @@ impl Fake {
                 None => (pct_decode(kv), String::new()),
             })
             .collect();
+        if method == Method::GET
+            && v1_path == "/v1/runs"
+            && let Some(token) = q.get("nextToken")
+        {
+            self.faults
+                .runs_tokens_in
+                .lock()
+                .unwrap()
+                .push(token.clone());
+            while self.faults.runs_gate.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            self.faults
+                .runs_tokens_out
+                .lock()
+                .unwrap()
+                .push(token.clone());
+        }
         let deps = Deps {
             store: self.mem.clone(),
             blobs: self.mem.clone(),

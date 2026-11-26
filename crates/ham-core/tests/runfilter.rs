@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use ham_core::runfilter::{
-    FIRST_PAGE, Gutter, IndexEntry, Pages, Refresh, RunRow, RunsFilter, RunsRead, Scope,
+    FIRST_PAGE, Gutter, IndexEntry, Pages, Refresh, RunRow, RunsFilter, RunsRead, Scope, lay_read,
     merge_first_page, newly_needing_you, select_after,
 };
 use harness_protocol::api::v1::RunSummary;
@@ -1116,4 +1116,77 @@ fn b689_paused_and_stalled_runs_have_their_words_and_the_filter_finds_the_ones_r
     assert_eq!(find("resumable"), [true, true, false, false]);
     assert_eq!(find("stalled"), [false, true, true, false]);
     assert_eq!(find("paused"), [true, false, false, false]);
+}
+
+// ---- one read of a whole read laid over the list held ------------------------------------------------------------------------------
+
+#[test]
+fn b961_held_rows_not_earlier_than_the_reads_newest_row_stay_on_top() {
+    let at = |id: &str, created: &str| run(id, "active", repo("calc"), created, json!({}));
+    let ids = |l: &[RunSummary]| l.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>();
+    // The read's newest row was created at 10:00:00.
+    let whole = vec![
+        at("N1", "2026-10-16T10:00:00Z"),
+        at("N2", "2026-10-16T09:00:00Z"),
+        at("N3", "2026-10-16T08:00:00Z"),
+    ];
+    let held = vec![
+        at("X-LATER", "2026-10-16T10:00:05Z"),
+        at("X-SAME", "2026-10-16T10:00:00Z"),
+        at("N1", "2026-10-16T10:00:00Z"),
+        at("X-EARLIER", "2026-10-16T09:30:00Z"),
+        at("N3", "2026-10-16T08:00:00Z"),
+    ];
+    // Every page: the read itself, below the held rows that it lacks and that are not earlier than its newest row.
+    let got = lay_read(&held, RunsRead::All(whole.clone()));
+    assert_eq!(
+        ids(&got),
+        ["X-LATER", "X-SAME", "N1", "N2", "N3"],
+        "a later run and one of the same second stay on top in the order held; an earlier one is gone; N1 is there once"
+    );
+    // A newest page: `merge_first_page` below the rows that stay.
+    let page = vec![
+        at("N1", "2026-10-16T10:00:00Z"),
+        at("N2", "2026-10-16T09:00:00Z"),
+    ];
+    let got = lay_read(
+        &held,
+        RunsRead::First {
+            runs: page.clone(),
+            has_more: true,
+        },
+    );
+    let mut want = vec!["X-LATER".to_string(), "X-SAME".to_string()];
+    want.extend(ids(&merge_first_page(&held, page, true)));
+    assert_eq!(ids(&got), want);
+    assert_eq!(ids(&got), ["X-LATER", "X-SAME", "N1", "N2", "N3"]);
+    // A page of one row and a held row of its second: the merge keeps that row below the page, and it is not laid a second time on top.
+    let held = vec![
+        at("P1", "2026-10-16T10:00:00Z"),
+        at("H2", "2026-10-16T10:00:00Z"),
+        at("OLD", "2026-10-16T07:00:00Z"),
+    ];
+    let got = lay_read(
+        &held,
+        RunsRead::First {
+            runs: vec![at("P1", "2026-10-16T10:00:00Z")],
+            has_more: true,
+        },
+    );
+    assert_eq!(ids(&got), ["P1", "H2", "OLD"]);
+    // A read with no row keeps nothing on top: every page with no run is an empty list, a newest page with no run leaves the list.
+    assert!(lay_read(&held, RunsRead::All(vec![])).is_empty());
+    let got = lay_read(
+        &held,
+        RunsRead::First {
+            runs: vec![],
+            has_more: true,
+        },
+    );
+    assert_eq!(ids(&got), ["P1", "H2", "OLD"]);
+    // With nothing held the read is the list.
+    assert_eq!(
+        ids(&lay_read(&[], RunsRead::All(whole))),
+        ["N1", "N2", "N3"]
+    );
 }

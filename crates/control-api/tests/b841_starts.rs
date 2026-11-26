@@ -24,16 +24,17 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// A lock with `value` that SSM wrote `age_s` seconds ago.
-fn lock_aged(value: &str, age_s: i64) -> DeployLock {
-    DeployLock {
+/// The stage holds a lock with `value` that SSM wrote `age_s` seconds before the clock read `at` (Unix seconds).
+fn hold_at(w: &World, value: &str, age_s: i64, at: i64) {
+    *w.deploy_lock.lock().unwrap() = Some(Ok(DeployLock {
         value: value.to_string(),
-        written_epoch_s: Some(now() - age_s),
-    }
+        written_epoch_s: Some(at - age_s),
+    }));
 }
 
+/// The stage holds a lock with `value` that SSM wrote `age_s` seconds ago.
 fn hold(w: &World, value: &str, age_s: i64) {
-    *w.deploy_lock.lock().unwrap() = Some(Ok(lock_aged(value, age_s)));
+    hold_at(w, value, age_s, now());
 }
 
 async fn start(w: &World, key: &str) -> (V1Response, Value, Vec<String>) {
@@ -49,32 +50,65 @@ fn about_the_lock(logs: &[String]) -> Vec<&String> {
     logs.iter().filter(|l| l.contains("deploy lock")).collect()
 }
 
+/// How often a test that reads the lock's age in the service's line asks again, when the clock's second turned while the service answered.
+const TRIES: u32 = 5;
+
+/// The age in whole seconds that a line about the lock names: the number in "written <n> s ago".
+fn named_age(line: &str) -> i64 {
+    line.split_once("written ")
+        .and_then(|(_, rest)| rest.split_once(" s ago"))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or_else(|| panic!("the line names no age of the lock: {line}"))
+}
+
 #[tokio::test]
 async fn b841_starts_a_lock_that_lets_runs_start_does_not_refuse_and_logs_one_line() {
-    let w = World::new();
-    hold(&w, &format!("{LOCK}\nstarts=yes"), 60);
-    println!(
-        "B841-STARTS TRIGGER PRESENT: a renewed lock with no deploys=no line is held: {}",
-        w.deploy_lock.lock().unwrap().is_some()
-    );
-    let (out, v, logs) = start(&w, "k-1").await;
-    assert_eq!(out.status, 201, "the update lets new runs start: {v}");
-    assert_eq!(out.retry_after_s, None);
-    assert_eq!(w.runs.lock().unwrap().len(), 1, "the run was created");
-    assert_eq!(w.started.lock().unwrap().len(), 1, "its execution started");
-    let about = about_the_lock(&logs);
-    assert_eq!(
-        about.len(),
-        1,
-        "one line for a start under a deploy: {logs:?}"
-    );
-    assert!(
-        about[0].contains("starts=yes") && about[0].contains("60 s"),
-        "the line names the reason and the age of the lock: {logs:?}"
-    );
-    assert!(
-        !about[0].contains("tok-b841"),
-        "the token of the lock stays out of the log: {logs:?}"
+    // The age in the line is counted to the service's own read of the system clock, in whole seconds. The test reads the clock before it
+    // writes the lock and again after the answer, holds the age to the seconds between the two reads, and asks again on a new stage while
+    // a second turned between them, until it has seen the exact 60 (`b804_admit_a_start_is_refused_while_a_renewed_lock_is_held` in
+    // `tests/b804_admit.rs` says why).
+    for _ in 0..TRIES {
+        let w = World::new();
+        let before = now();
+        hold_at(&w, &format!("{LOCK}\nstarts=yes"), 60, before);
+        println!(
+            "B841-STARTS TRIGGER PRESENT: a renewed lock with no deploys=no line is held: {}",
+            w.deploy_lock.lock().unwrap().is_some()
+        );
+        let (out, v, logs) = start(&w, "k-1").await;
+        let turned = now() - before;
+        assert_eq!(out.status, 201, "the update lets new runs start: {v}");
+        assert_eq!(out.retry_after_s, None);
+        assert_eq!(w.runs.lock().unwrap().len(), 1, "the run was created");
+        assert_eq!(w.started.lock().unwrap().len(), 1, "its execution started");
+        let about = about_the_lock(&logs);
+        assert_eq!(
+            about.len(),
+            1,
+            "one line for a start under a deploy: {logs:?}"
+        );
+        assert!(
+            about[0].contains("starts=yes"),
+            "the line names the reason: {logs:?}"
+        );
+        let age = named_age(about[0]);
+        assert!(
+            (60..=60 + turned).contains(&age),
+            "the line names the lock's age at the service's read of the clock. The lock was written 60 s before this test's read, and the \
+             clock's second turned {turned} time(s) before the answer came, so the age is 60 at the least and {} at the most, never {age}: \
+             {logs:?}",
+            60 + turned
+        );
+        assert!(
+            !about[0].contains("tok-b841"),
+            "the token of the lock stays out of the log: {logs:?}"
+        );
+        if turned == 0 {
+            return;
+        }
+    }
+    panic!(
+        "the clock's second turned while the service answered in each of {TRIES} tries, so the test never saw the exact age of 60 s"
     );
 }
 

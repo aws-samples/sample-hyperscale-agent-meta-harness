@@ -1273,3 +1273,88 @@ async fn b584_the_title_version_reads_the_backends_and_goes_back_when_removed() 
     assert_eq!(ham::version::backend().as_deref(), Some("mixed"));
     ham::version::set_backend_override(None);
 }
+
+// ---- a whole read that hands its newest page over: not with several backends
+
+/// A backend whose list comes in two pages: the first carries a next token.
+fn paged_list(
+    first: Vec<serde_json::Value>,
+    second: Vec<serde_json::Value>,
+) -> impl Fn(&str, &str) -> Result<Response, TransportError> + Send + Sync + 'static {
+    move |_m, p| {
+        if p.starts_with("/v1/runs") && !p.starts_with("/v1/runs/") {
+            if p.contains("nextToken=") {
+                json(200, Some("5.05"), serde_json::json!({"runs": second}))
+            } else {
+                json(
+                    200,
+                    Some("5.05"),
+                    serde_json::json!({"runs": first, "nextToken": "t2"}),
+                )
+            }
+        } else {
+            json(
+                404,
+                Some("5.05"),
+                serde_json::json!({"code": "not-found", "message": "no such run"}),
+            )
+        }
+    }
+}
+
+#[tokio::test]
+async fn b961_several_backends_hand_over_nothing() {
+    let planes = || {
+        let l = log();
+        let mut planes = Planes::new();
+        planes.insert(
+            "work".into(),
+            Ok(Fake::new(
+                &l,
+                "work",
+                paged_list(
+                    vec![row("W2", "2026-11-04T10:00:09Z")],
+                    vec![row("W1", "2026-11-04T10:00:01Z")],
+                ),
+            )),
+        );
+        planes.insert(
+            "spare".into(),
+            Ok(Fake::new(
+                &l,
+                "spare",
+                paged_list(
+                    vec![row("S5", "2026-11-04T10:00:05Z")],
+                    vec![row("S4", "2026-11-04T10:00:03Z")],
+                ),
+            )),
+        );
+        planes
+    };
+    let ids = |read: &RunsRead| match read {
+        RunsRead::All(runs) => runs.iter().map(|r| r.run_id.clone()).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let defs = || vec![def("work", false), def("spare", false)];
+    let b = Arc::new(backends(defs(), None, planes()).await.unwrap());
+    let api = Api::new(Arc::clone(&b));
+    let mut handed = 0usize;
+    let got = api.read_runs_whole(&mut |_page| handed += 1).await.unwrap();
+    assert_eq!(handed, 0, "several backends hand over no newest page");
+    // And the read sends the one message of before.
+    let mut sent: Vec<ham::tui::Msg> = Vec::new();
+    ham::tui::load_runs(&api, &mut |m| sent.push(m)).await;
+    assert!(
+        matches!(sent.as_slice(), [ham::tui::Msg::RunsIndexed(Ok(_))]),
+        "{sent:?}"
+    );
+    assert_eq!(ids(&got.read), ["W2", "S5", "S4", "W1"]);
+    // The same as the whole read of before.
+    let b = Arc::new(backends(defs(), None, planes()).await.unwrap());
+    let today = Api::new(Arc::clone(&b))
+        .read_runs_indexed(Refresh::Manual)
+        .await
+        .unwrap();
+    assert_eq!(ids(&got.read), ids(&today.read));
+    assert_eq!(got.index, today.index);
+}

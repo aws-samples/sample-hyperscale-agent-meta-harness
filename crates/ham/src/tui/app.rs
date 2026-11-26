@@ -281,6 +281,18 @@ pub enum Effect {
     Quit,
 }
 
+/// Where the read of the older runs of a whole read stands. It only picks words (the table's border, the notices of `R` and `d`, the
+/// tag explorer's title); what `R` and `d` may do is decided by whether the list held is whole ([`App::runs_whole`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Older {
+    /// No read of older runs is out and none failed, or a read that is the whole list was laid since.
+    No,
+    /// The newest page of a whole read was laid and its older runs are being read.
+    Loading,
+    /// The read of the older runs failed over a list that is not whole.
+    Failed,
+}
+
 #[derive(Clone, Debug)]
 pub enum Msg {
     Runs(Result<Vec<RunSummary>, String>),
@@ -288,6 +300,10 @@ pub enum Msg {
     RunsRead(Result<RunsRead, String>),
     /// A read of the list with the run index joined: the same as [`Msg::RunsRead`], and the title and model of the rows.
     RunsIndexed(Result<IndexedRead, String>),
+    /// The newest page of a whole read whose first page has a next token ([`super::load_runs`]): laid at once, the older runs follow.
+    RunsNewest(IndexedRead),
+    /// The end of the whole read that sent [`Msg::RunsNewest`]: every page, or the failure of a later page.
+    RunsOlder(Result<IndexedRead, String>),
     /// What each backend answered last, after a read of the list; `None` for a client with one backend.
     Backends(Option<ham_core::backends::BackendView>),
     Started(Result<StartRunResponse, String>),
@@ -509,6 +525,11 @@ const PASTE_IGNORED_BROWSING: &str = "paste ignored: press i or Enter to type, t
 
 /// The notice of a paste on a screen with no text box.
 const PASTE_IGNORED: &str = "paste ignored: this screen has no text box";
+
+/// `R` on the Runs screen while the list held is a part: while older runs are being loaded, and for every other part.
+/// `App::runs_notes_follow_list` takes each away when it no longer holds, so the two are known by their text.
+const R_STILL_LOADING: &str = "older runs are still loading: press R again in a moment";
+const R_NOT_EVERY: &str = "not every run is loaded: press r, then R";
 
 /// Pasted text made safe to insert: every line break becomes `\n`, escape sequences and control characters (the paste's own
 /// `ESC [ 201 ~` end mark included) are removed, tabs become four spaces.
@@ -755,6 +776,10 @@ pub struct App {
     runs_ticks: u8,
     /// A timer read of the Runs list is in flight: the next one waits for its answer.
     runs_inflight: bool,
+    /// Where the read of the older runs stands ([`Older`]).
+    runs_older: Older,
+    /// The error held in `runs_error` was set by a failed read of the older runs over a list that was not whole: the note words it so.
+    pub(crate) runs_error_older: bool,
     /// The Runs table's window onto the shown list (`runs_view.rs`): the first row it drew and the rows it had, as positions in the list the
     /// filter shows. A draw sets them (it takes `&self`, hence the cells); the page keys read them.
     runs_first: std::cell::Cell<usize>,
@@ -1015,6 +1040,8 @@ impl App {
             runs_editing: false,
             runs_ticks: 0,
             runs_inflight: false,
+            runs_older: Older::No,
+            runs_error_older: false,
             runs_first: std::cell::Cell::new(0),
             runs_window: std::cell::Cell::new(0),
             hits: RefCell::new(HitMap::new()),
@@ -1852,7 +1879,8 @@ impl App {
             && self.head.empty_table
             && self.runs_answered
             && self.runs.is_empty()
-            && self.runs_error.is_none();
+            && self.runs_error.is_none()
+            && !self.runs_older_loading();
         let showing = self.mascot_motion && (self.head.band || picture);
         self.mascot_ticks = if showing {
             self.mascot_ticks.wrapping_add(1)
@@ -2395,6 +2423,46 @@ impl App {
         self.runs_filter.visible(&self.runs_rows)
     }
 
+    /// Older runs are being loaded: the list held is not whole and a whole read has laid its newest page.
+    pub(crate) fn runs_older_loading(&self) -> bool {
+        !self.runs_whole() && self.runs_older == Older::Loading
+    }
+
+    /// The read of the older runs failed and the list held is still a part.
+    pub(crate) fn runs_older_failed(&self) -> bool {
+        !self.runs_whole() && self.runs_older == Older::Failed
+    }
+
+    /// A read that is itself the whole list (every page, or a newest page without a next token) ends the state of the older runs.
+    fn runs_older_ends_with(&mut self, read: &RunsRead) {
+        if matches!(
+            read,
+            RunsRead::All(_)
+                | RunsRead::First {
+                    has_more: false,
+                    ..
+                }
+        ) {
+            self.runs_older = Older::No;
+        }
+    }
+
+    /// A sentence about a list that is not whole never stays once that is no longer so. Called by every message that can change
+    /// the claim of the whole list or the state of the older runs. `R`'s sentence that older runs are loading goes when they no longer
+    /// are (the list is whole, or their read failed: the note line then shows that read's words); its sentence that names `r` goes when
+    /// the list is whole. The tag explorer's two sentences go by the same rule. A note of another kind stays until the next key.
+    fn runs_notes_follow_list(&mut self) {
+        let stale = match self.runs_notice.as_deref() {
+            Some(R_STILL_LOADING) => !self.runs_older_loading(),
+            Some(R_NOT_EVERY) => self.runs_whole(),
+            _ => false,
+        };
+        if stale {
+            self.runs_notice = None;
+        }
+        self.tags_note_follows_list();
+    }
+
     /// Lays a new list over the held one: probe runs are left out, the rows are made again, and the selection stays on its run when it is
     /// still shown, else on the nearest place of the narrowed list.
     fn set_runs(&mut self, runs: Vec<RunSummary>) {
@@ -2574,6 +2642,18 @@ impl App {
 
     /// `R` on the Runs screen: the plan for the runs read, and the one line that asks. Nothing starts until Enter or `R` again.
     fn resume_all_ask(&mut self) -> Vec<Effect> {
+        // `R` starts runs, so it plans from the whole list only: while the list held is a part it asks nothing and says why.
+        if !self.runs_whole() {
+            self.runs_notice = Some(
+                if self.runs_older_loading() {
+                    R_STILL_LOADING
+                } else {
+                    R_NOT_EVERY
+                }
+                .to_string(),
+            );
+            return vec![];
+        }
         let plan = ham_core::resume::plan(&self.runs);
         match ham_core::resume::confirm_line(&plan) {
             None => {
@@ -2906,7 +2986,7 @@ impl App {
     /// list itself.
     fn resume_key(&mut self) -> Vec<Effect> {
         let plan = ham_core::resume::plan(&self.runs);
-        let uncounted = self.runs.is_empty() || self.runs_behind_view();
+        let uncounted = self.runs.is_empty() || self.runs_behind_view() || !self.runs_whole();
         if plan.resume.is_empty() && !uncounted {
             self.say("no paused or stalled run to resume");
             return vec![];
@@ -4631,12 +4711,16 @@ impl App {
             Msg::Runs(Ok(runs)) => {
                 // A probe run is not the user's; `ham runs --probes` lists it.
                 self.runs_error = None;
+                self.runs_error_older = false;
+                self.runs_older = Older::No;
                 self.tags_note_full_read();
                 self.set_runs(runs);
+                self.runs_notes_follow_list();
                 self.alert_effects()
             }
             Msg::Runs(Err(e)) => {
                 self.runs_error = Some(e);
+                self.runs_error_older = false;
                 vec![]
             }
             Msg::RunsRead(Ok(read)) => {
@@ -4644,9 +4728,12 @@ impl App {
                 // flight together.
                 self.runs_inflight = false;
                 self.runs_error = None;
+                self.runs_error_older = false;
                 self.tags_note_read(&read);
+                self.runs_older_ends_with(&read);
                 let merged = read.apply(&self.runs);
                 self.set_runs(merged);
+                self.runs_notes_follow_list();
                 self.alert_effects()
             }
             Msg::RunsIndexed(Ok(IndexedRead { read, mut index })) => {
@@ -4654,7 +4741,9 @@ impl App {
                 self.tags_unpin(&mut index);
                 self.runs_inflight = false;
                 self.runs_error = None;
+                self.runs_error_older = false;
                 self.tags_note_read(&read);
+                self.runs_older_ends_with(&read);
                 // A read of every page is the whole list: it replaces what was known. A read of the newest page lays over it.
                 if matches!(read, RunsRead::All(_)) {
                     self.run_index.clear();
@@ -4664,13 +4753,100 @@ impl App {
                 }
                 let merged = read.apply(&self.runs);
                 self.set_runs(merged);
-                // This is the answer the compiled app gets for every read of the list (`Effect::LoadRuns`, the 5 s timer), so the bell and the
-                // notification for a run that starts to wait come from here, by the same rule as the other two reads: the first read only seeds.
+                self.runs_notes_follow_list();
+                // The answer the compiled app gets for the 5 s timer's read and for a whole read that is one answer (a first page without a
+                // next token, a client with several backends). A whole read whose first page has a next token sends `Msg::RunsNewest` and
+                // `Msg::RunsOlder` instead. The bell and the notification for a run that starts to wait come from each of them by one rule:
+                // the first read only seeds.
                 self.alert_effects()
             }
             Msg::RunsIndexed(Err(e)) => {
                 self.runs_inflight = false;
                 self.runs_error = Some(e);
+                self.runs_error_older = false;
+                vec![]
+            }
+            Msg::RunsNewest(IndexedRead { read, mut index }) => {
+                // The newest page of a whole read, laid as a timer's page is laid, with one rule more: a held run that started after this
+                // page was read stays on top (`lay_read`). The flag of the timer's read is the timer's: this message leaves it alone.
+                self.tags_unpin(&mut index);
+                self.runs_error = None;
+                self.runs_error_older = false;
+                self.tags_note_read(&read);
+                for e in index {
+                    self.run_index.insert(e.run_id.clone(), e);
+                }
+                let merged = ham_core::runfilter::lay_read(&self.runs, read);
+                self.set_runs(merged);
+                self.runs_older = Older::Loading;
+                self.runs_notes_follow_list();
+                self.alert_effects()
+            }
+            Msg::RunsOlder(Ok(IndexedRead { read, mut index })) => {
+                // The whole list of the read that sent `Msg::RunsNewest`. Noted first, before the claim is set: whether the list was whole,
+                // the runs held and the creation time of the oldest of them.
+                let was_whole = self.runs_whole();
+                let held: HashSet<String> = self.runs.iter().map(|r| r.run_id.clone()).collect();
+                let oldest = self.runs.last().map(|r| r.created_at.clone());
+                let in_read: HashSet<String> = match &read {
+                    RunsRead::All(runs) | RunsRead::First { runs, .. } => {
+                        runs.iter().map(|r| r.run_id.clone()).collect()
+                    }
+                };
+                self.tags_unpin(&mut index);
+                self.runs_error = None;
+                self.runs_error_older = false;
+                self.tags_note_read(&read);
+                let merged = ham_core::runfilter::lay_read(&self.runs, read);
+                // The read is the whole list: the run index forgets what it knew, but for the rows that stay on top of it.
+                let stay: HashSet<&str> = merged
+                    .iter()
+                    .map(|r| r.run_id.as_str())
+                    .filter(|id| !in_read.contains(*id))
+                    .collect();
+                self.run_index.retain(|id, _| stay.contains(id.as_str()));
+                for e in index {
+                    self.run_index.insert(e.run_id.clone(), e);
+                }
+                self.set_runs(merged);
+                if !was_whole {
+                    // The runs that the older pages show for the first time make no sound, as the first read of a session makes none:
+                    // every run that was not held and is not newer than the oldest run held (every run, when none was held). A run that
+                    // started meanwhile is newer than that and still rings; so does a held run that begins to wait.
+                    let quiet: Vec<String> = self
+                        .runs
+                        .iter()
+                        .filter(|r| !r.status.is_terminal() && !held.contains(&r.run_id))
+                        .filter(|r| {
+                            oldest.as_deref().is_none_or(|edge| {
+                                ham_core::runfilter::not_after(&r.created_at, edge)
+                            })
+                        })
+                        .filter_map(|r| {
+                            r.needs_input
+                                .as_ref()
+                                .map(|n| format!("{}|{}", r.run_id, n.request_id))
+                        })
+                        .collect();
+                    let refs: Vec<&str> = quiet.iter().map(String::as_str).collect();
+                    self.alerts.seed_more(&refs);
+                }
+                self.runs_older = Older::No;
+                self.runs_notes_follow_list();
+                self.alert_effects()
+            }
+            Msg::RunsOlder(Err(e)) => {
+                // A later page failed: the list stays. Over a part of the list the border and the note say that the older runs are missing;
+                // over a whole list (the read was a refresh) the words are those of every failed read.
+                self.runs_error = Some(e);
+                if self.runs_whole() {
+                    self.runs_older = Older::No;
+                    self.runs_error_older = false;
+                } else {
+                    self.runs_older = Older::Failed;
+                    self.runs_error_older = true;
+                }
+                self.runs_notes_follow_list();
                 vec![]
             }
             Msg::Backends(view) => {
@@ -4681,6 +4857,7 @@ impl App {
                 // A failed read keeps the held list and frees the timer for the next interval.
                 self.runs_inflight = false;
                 self.runs_error = Some(e);
+                self.runs_error_older = false;
                 vec![]
             }
             Msg::Started(Ok(r)) => {

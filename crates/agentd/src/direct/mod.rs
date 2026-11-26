@@ -3273,6 +3273,9 @@ impl Copies {
         let form = app.cfg.direct.copy_form;
         snapshotter.set_form(form);
         snapshotter.set_keep_commits(app.cfg.direct.keep_commits);
+        // In a session restored from a saved copy the kept pack is made by release 5.28's keep alone: most of a look's
+        // bundle then stands in the engine's packs, and the form pays for the whole bundle.
+        snapshotter.set_session_restored(slice::Restored::of(req).is_some());
         if form == BundleForm::AboveFloor {
             match floors_of_the_base(app, req, &bucket, base_header, &snapshotter).await {
                 Ok(floors) => snapshotter.set_floors(floors),
@@ -3727,6 +3730,8 @@ impl Copies {
     /// The copy of the end begins after the copy task was aborted, which drops a keep in flight the same way.
     ///
     /// What came of the keep goes into the look's log line; why a keep was missed is logged once, in a line of its own.
+    /// So is what came of the form at a due keep (`direct turn copy keep form: `, [`Snapshotter::take_form_note`]):
+    /// that it made the pack, with the time of its two git calls, that it gave way and why, or that it was off and why.
     async fn keep_between_looks(&self) -> std::convert::Infallible {
         let line = self
             .keep_line
@@ -3750,6 +3755,14 @@ impl Copies {
             snapshotter.keep_at_once(&give_up).await;
             ending.starts();
             let keep = snapshotter.keep_commits(&give_up).await;
+            // What came of the form at this keep, in a line of its own: the save line stays as it is. A keep that the
+            // start of the next look cut never comes here, and a keep that the form's own read ended left no note.
+            if let Some(form) = snapshotter.take_form_note() {
+                self.log.line(&format!(
+                    "direct turn copy keep form: {}",
+                    scrub_detail(&form)
+                ));
+            }
             let took = began.elapsed().as_millis().max(1).to_string();
             let word = match &keep {
                 crate::direct::snapshot::Keep::Kept { .. }

@@ -1214,3 +1214,62 @@ fn b852_b846_a_paused_run_whose_session_was_asked_to_end_names_r_and_no_cancel_a
         assert!(keys.contains("R resume · Esc runs"), "{what}: {keys}");
     }
 }
+
+// ---- R on a run's own screen while the list held is a part -------------------------------------------------------------------------
+
+#[test]
+#[allow(non_snake_case)]
+fn b961_R_on_a_runs_own_screen_names_no_count_while_the_list_is_not_whole() {
+    use ham_core::runfilter::{IndexedRead, RunsRead};
+    let label = "Cline stopped: the run reached its time limit";
+    let paused = || -> Vec<harness_protocol::api::v1::RunSummary> {
+        serde_json::from_value(Value::Array(vec![row(
+            "paused",
+            json!({"statusReason": "total_time: the run used the total time it was given", "resumeMode": "follow_up", "session": 1}),
+        )]))
+        .unwrap()
+    };
+    // The list held is a newest page with more behind it (a chat opened without the Runs screen reads it so). It lists the run as paused.
+    let mut app = ready(stopped_events("paused", label));
+    app.update(Msg::RunsIndexed(Ok(IndexedRead {
+        read: RunsRead::First {
+            runs: paused(),
+            has_more: true,
+        },
+        index: vec![],
+    })));
+    let mut clock = Clock::new();
+    let title = title_row(&screen(&app, 80, 30));
+    assert!(
+        title.contains("Not available: run paused; Esc, then R resumes all"),
+        "the box title names no count taken from a part of the list: {title}"
+    );
+    press(&mut app, &mut clock, KeyCode::Esc, 50);
+    let first = press(&mut app, &mut clock, KeyCode::Char('R'), 400);
+    assert!(first.is_empty(), "{first:?}");
+    let text = flat(&screen(&app, 80, 30));
+    assert!(
+        text.contains("press R again to resume every paused and stalled run"),
+        "{text}"
+    );
+    assert!(!text.contains("press R again to resume 1 paused"), "{text}");
+    // With the whole list held both name the count.
+    let mut app = ready(stopped_events("paused", label));
+    app.update(Msg::RunsIndexed(Ok(IndexedRead {
+        read: RunsRead::All(paused()),
+        index: vec![],
+    })));
+    let mut clock = Clock::new();
+    let title = title_row(&screen(&app, 80, 30));
+    assert!(
+        title.contains("Not available: run paused; Esc, then R resumes it"),
+        "{title}"
+    );
+    press(&mut app, &mut clock, KeyCode::Esc, 50);
+    press(&mut app, &mut clock, KeyCode::Char('R'), 400);
+    let text = flat(&screen(&app, 80, 30));
+    assert!(
+        text.contains("press R again to resume 1 paused or stalled run"),
+        "{text}"
+    );
+}

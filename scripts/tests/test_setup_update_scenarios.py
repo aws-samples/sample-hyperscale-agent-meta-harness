@@ -77,6 +77,12 @@ MIGRATING = STUB_HAM.replace('case "$1 $2" in\n', 'case "$1 $2" in\n  "config mi
 assert MIGRATING != STUB_HAM
 
 
+# The parallel script step runs the tests of this file as this many processes side by side.
+# In one process this file is one of those that bound the step; every unit pays the file's
+# fixtures again, so more units cost more than they save (scripts/tests/AGENTS.md has the measured numbers).
+SUITE_UNITS = 2
+
+
 def lines_of(text: str) -> list:
     return [ln for ln in text.splitlines() if ln.strip()]
 

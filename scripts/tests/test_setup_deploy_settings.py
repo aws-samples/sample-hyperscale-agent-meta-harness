@@ -81,6 +81,12 @@ CONTRACT_ROWS = {
 }
 
 
+# The parallel script step runs the tests of this file as this many processes side by side.
+# In one process this file is one of those that bound the step; every unit pays the file's
+# fixtures again, so more units cost more than they save (scripts/tests/AGENTS.md has the measured numbers).
+SUITE_UNITS = 2
+
+
 def registry_rows() -> list[dict]:
     """The rows of the registry, parsed as its header says: the first three fields, the last one, and the pattern between them."""
     rows = []

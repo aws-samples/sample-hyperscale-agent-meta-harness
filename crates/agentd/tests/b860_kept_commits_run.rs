@@ -60,6 +60,25 @@ const NO_TICK_MS: u64 = 600_000;
 const DUE_EVERY_MS: u64 = 3_000;
 /// What the worker gives a git that it has ended to be gone (`GIT_END_LIMIT` in the worker's `workspace.rs`): 2 s.
 const GIT_END: Duration = Duration::from_secs(2);
+/// How long a turn of these tests has before the worker ends it for its time: an hour, which no test of this file comes to.
+/// The rig's own turn has 120 s, and a test of this file waits up to [`LONG`] for each of its copies. On a crowded machine
+/// the turn of `b860_kept_a_look_that_is_due_ends_the_keep_and_its_copy_is_not_later` came to its 120 s before the test's
+/// last part: the worker ended the engine, and the copy of the end met what the test had prepared for a look. A turn of
+/// these tests ends when its test asks for it.
+///
+/// The hour bounds no wait of a test: each wait has its own limit ([`LONG`], [`RESULT_WITHIN`]). It is also not the first
+/// limit of the worker that a turn of these tests would come to. The engine of these tests says nothing while it waits for
+/// the file that lets it speak, and the worker gives an engine that says nothing 900 s when the turn names no other time
+/// (`DEFAULT_PROVIDER_SILENCE_S` in the worker's `acp.rs`, which `direct/mod.rs` takes when `provider_silence_s` of the
+/// request is not set; the rig's `Opts` leaves it unset). That is read from the code: no test of this file waits that
+/// long, and no run was made to that limit.
+const TURN_S: u32 = 3_600;
+/// How long a test of this file waits for the result of a turn at the most: 210 s, what the rig's own wait was while
+/// the turns of this file had the rig's 120 s (the rig waits the turn's time and 90 s more). With [`TURN_S`] the rig's own
+/// wait is 3,690 s, and a worker whose turn end hangs would hold a test that long where it failed after three and a half
+/// minutes. So no test of this file asks the rig for a turn's result itself: it asks [`the_turns_result`], whatever the
+/// turn's time is.
+const RESULT_WITHIN: Duration = Duration::from_secs(210);
 /// How many turns the test of the line that waits for its keep runs at most to see its trigger. A turn shows it one time
 /// in two, so all of them miss it one time in a million.
 const PENDING_TURNS: u32 = 20;
@@ -80,6 +99,44 @@ async fn wait_for(limit: Duration, mut seen: impl FnMut() -> bool) -> bool {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     true
+}
+
+/// The result of the turn of `d`, waited for [`RESULT_WITHIN`] at the most, counted from this call as the rig counts
+/// its own wait. The one line of code in this file that asks the rig for a turn's result
+/// (`b948_a_turns_result_is_waited_for_within_the_tests_own_bound`).
+async fn the_turns_result(d: &Direct) -> harness_protocol::runtime::InvocationResponse {
+    tokio::time::timeout(RESULT_WITHIN, d.wait_result())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "no result of the turn within {RESULT_WITHIN:?} at {}",
+                d.result_path().display()
+            )
+        })
+}
+
+/// A test of this file waits for a turn's result within its own bound, whatever the turn's time. The rig's wait
+/// follows the turn's time, so it is asked in one line of code of this file, the one in [`the_turns_result`], and the bound
+/// is the 210 s that the wait was before the turns of this file got their hour.
+#[test]
+fn b948_a_turns_result_is_waited_for_within_the_tests_own_bound() {
+    assert_eq!(RESULT_WITHIN, Duration::from_secs(210));
+    let rigs_wait = concat!("wait_", "result");
+    let asked: Vec<String> = include_str!("b860_kept_commits_run.rs")
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//") && line.contains(rigs_wait))
+        .map(|(n, line)| format!("{}: {}", n + 1, line.trim()))
+        .collect();
+    assert!(
+        asked.len() == 1
+            && asked
+                .first()
+                .is_some_and(|line| line.contains("timeout(RESULT_WITHIN, ")),
+        "the rig's wait for a turn's result follows the turn's time, which is an hour here: only `the_turns_result` asks \
+         the rig, inside its own bound; the lines of code that ask it:\n{}",
+        asked.join("\n")
+    );
 }
 
 /// A process of the stand-in engine that a turn of these tests started: its number, and the time the system says it started at
@@ -196,6 +253,7 @@ impl Run {
             scenario: "four_edits",
             engine_env: vec![("FAKE_ACP_STEP_FILE", steps.display().to_string())],
             agentd_env,
+            timeout_s: TURN_S,
             ..Opts::default()
         })
         .await;
@@ -675,6 +733,13 @@ async fn b860_kept_a_look_that_is_due_ends_the_keep_and_its_copy_is_not_later() 
         run.stored(),
         run.look_lines().join("\n")
     );
+    // The turn still runs: every line so far is the line of a look, and none is the line of a copy of the turn's end.
+    assert!(
+        !run.engines.is_empty() && run.engines.iter().all(engine_runs),
+        "TRIGGER PRESENT is not shown: the engine of the turn has ended before the test asked the worker to end, so a copy \
+         after that is the copy of the turn's end; log:\n{}",
+        run.log()
+    );
     let lines = run.look_lines();
     for line in &lines {
         for name in [
@@ -1073,7 +1138,8 @@ async fn b860_kept_a_session_cut_in_the_keep_loses_nothing() {
 /// kept; the worker's log says so in the line of that look, and the folder of the private repository holds the one pack. Then the
 /// engine ends its turn: the copy of the end is stored as the last record and has its save line, a checkout that has only
 /// the bundle the run started from beside it holds the work, and the copy of the end has built no pack and removed none. The test waits for what it asserts
-/// and holds no time.
+/// and holds no time. For the result of its turn it waits 210 s at the most ([`RESULT_WITHIN`]), as it did before its turn had
+/// an hour: a worker whose turn end takes four minutes longer fails it there.
 #[tokio::test(flavor = "multi_thread")]
 async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
     let dir = scratch("b860-kept-turn");
@@ -1082,6 +1148,7 @@ async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
     let d = Direct::start(Opts {
         scenario: "four_edits",
         engine_env: vec![("FAKE_ACP_STEP_FILE", steps.display().to_string())],
+        timeout_s: TURN_S,
         edit_cfg: Some(Box::new(|cfg| {
             cfg.direct.snapshot_interval = Some(Duration::from_millis(500));
             cfg.direct.snapshot_floor = Some(Duration::from_millis(50));
@@ -1151,7 +1218,7 @@ async fn b860_kept_a_turn_keeps_a_pack_and_ends_with_the_copy_of_the_end() {
 
     // The engine ends its turn: the copy of the end is the last record.
     std::fs::write(&steps, "1000000\n").unwrap();
-    let resp = d.wait_result().await;
+    let resp = the_turns_result(&d).await;
     assert_eq!(
         resp.outcome,
         harness_protocol::runtime::TurnOutcome::Completed,
@@ -2131,15 +2198,53 @@ struct NextLook {
 /// follows it, whatever the machine does; the held look is the look of the tick that tries the refused copy again. `wake` true
 /// (ruling 37 (b) of the lead): the held look is the first look after a burst, a tool call ends while it runs, its keep is the
 /// keep at once, which starts after the task has taken the tool call's wake, and the look after it is the tool call's.
-async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> NextLook {
+///
+/// The trigger of a turn with a wake is proved in two parts ([`first_after_the_burst`]), and a turn is judged by its keep
+/// only when both hold. The burst, the hold of the bundle step and the write must all fall before the timer's next look:
+/// the test stands right behind a look when it starts them, and on a crowded machine the 3 s to the next tick can pass
+/// while it makes the burst's commits. A look that starts among those steps finds a part of the burst or misses the write,
+/// the stand-in holds the bundle step of that look, and the copy that holds the write is then the copy of a later look that
+/// nothing held and that found no new head. This part needs no line of the worker's log (the stand-in's list of git calls
+/// and the bucket show it) and is checked first, before the test looks at the held keep. And the held look must end before
+/// the tick that follows its own start, 3 s after it: a look that takes longer, as it can on a machine whose disk is busy,
+/// ends with that tick due, and a tick that overtakes a wake starts the look after as the timer's. This part is read from
+/// the held look's own line, after the test has looked at the held keep, counted the copies and written, when the lines of
+/// both looks are in the log. With the keep on, the worker writes the line of the held look only when the keep is cut,
+/// which is when the look after it starts: a test that waits for that line before it looks at the keep and counts the
+/// copies does both too late, and it failed when it was itself half a second late. A turn that lacks either part
+/// shows nothing about a keep: the answer is `Err` with what was missing, the worker is ended as asked, and
+/// [`HeldLook::turn`] makes the turn again.
+async fn next_look_after_a_held_one(
+    label: &str,
+    keep_on: bool,
+    wake: bool,
+) -> Result<NextLook, String> {
+    next_look_after_a_held_one_holding(label, keep_on, wake, false).await
+}
+
+/// [`next_look_after_a_held_one`], with what the stand-in holds named. With `form` it holds the form's
+/// `index-pack --stdin` through `check-hold` where it otherwise holds the `pack-objects` of release 5.28's keep through
+/// `keep-hold` (behind a form that the stand-in's rule makes give way at its filter): the look after the held one ends a
+/// form that is in its own git.
+async fn next_look_after_a_held_one_holding(
+    label: &str,
+    keep_on: bool,
+    wake: bool,
+    form: bool,
+) -> Result<NextLook, String> {
     let mut more = vec![retry_at_the_tick()];
     if !keep_on {
         more.push(("AGENTD_DIRECT_KEEP_COMMITS", "0".to_string()));
     }
     let mut run = Run::start(label, BURST_EVERY_MS, more).await;
     run.behind_a_look("a.txt").await;
+    let calls = git_calls(&run.dir).len();
     run.burst(1, 3);
-    run.hold_the_keep();
+    if form {
+        run.hold_the_form("check-hold", "check-running");
+    } else {
+        run.hold_the_keep();
+    }
     let from = run.bundles().len();
     let held_work = "written for the look whose bundle step is held\n";
     if wake {
@@ -2150,6 +2255,9 @@ async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> N
             .await;
         run.hold_the_bundle();
     }
+    // How many git calls the worker started while the test made the burst, set the holds and wrote: none, when no look ran
+    // among those steps.
+    let among = git_calls(&run.dir).len() - calls;
     assert!(
         wait_for(LONG, || run.dir.join("bundle-running").exists()).await,
         "TRIGGER PRESENT is not shown: no look reached its bundle step after the write; log:\n{}",
@@ -2179,10 +2287,22 @@ async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> N
                 run.log()
             )
         });
-    if keep_on {
+    // First what needs no line of the worker's log: no look ran among the test's steps, and the copy that holds the write
+    // is the first one after the burst. The held look's own line is read further down: with the keep on it is not written
+    // before the look after the held one starts.
+    if wake && let Some(missing) = first_after_the_burst(among, from, held, "") {
+        ends_as_asked(&mut run).await;
+        return Err(missing);
+    }
+    if keep_on && form {
+        run.the_held_form(held, "check-running").await;
+    } else if keep_on {
         run.the_held_keep(held).await;
     }
+    let first = from;
     let from = run.bundles().len();
+    // With the keep on, the keep's git is held at this moment: the test has just seen it held and has waited for nothing
+    // since.
     run.write("a.txt", "third, written while the keep's git was held\n");
     assert!(
         wait_for(LONG, || run.stored() > from).await,
@@ -2198,14 +2318,31 @@ async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> N
         run.look_lines().join("\n")
     );
     let (before, line) = (run.line_of(held), run.line_of(from));
+    // Then what the held look's own line says: its bundle step is the one that was held, it found a new head, and it ended
+    // before the tick that follows its start.
+    if wake && let Some(missing) = first_after_the_burst(among, first, held, &before) {
+        ends_as_asked(&mut run).await;
+        return Err(missing);
+    }
     left_the_timer(&before);
-    assert_eq!(
-        keeps_started(&run.dir),
-        usize::from(keep_on),
-        "TRIGGER PRESENT is not shown: the keep is {}; lines:\n{}",
-        if keep_on { "on" } else { "off" },
-        run.look_lines().join("\n")
-    );
+    if form {
+        assert_eq!(
+            run.form_calls(),
+            (usize::from(keep_on), 0, 0),
+            "TRIGGER PRESENT is not shown: the keep is {}, and with the keep on the held call is the form's indexing, with no \
+             filter call and no call of the older keep; lines:\n{}",
+            if keep_on { "on" } else { "off" },
+            run.look_lines().join("\n")
+        );
+    } else {
+        assert_eq!(
+            keeps_started(&run.dir),
+            usize::from(keep_on),
+            "TRIGGER PRESENT is not shown: the keep is {}; lines:\n{}",
+            if keep_on { "on" } else { "off" },
+            run.look_lines().join("\n")
+        );
+    }
     assert_eq!(
         (field(&before, "keep"), field(&line, "by")),
         (
@@ -2222,12 +2359,105 @@ async fn next_look_after_a_held_one(label: &str, keep_on: bool, wake: bool) -> N
     let late_ms = i64::try_from(took.as_millis()).unwrap()
         - i64::try_from(ms_of(&line, "total") + spacing).unwrap();
     ends_as_asked(&mut run).await;
-    NextLook {
+    Ok(NextLook {
         took,
         allowed,
         late_ms,
         lines: (before, line),
+    })
+}
+
+/// Whether the look whose bundle step a turn with a wake held is the first look after the burst and holds the
+/// write, from three things the test reads for itself; `Some` says which of them is missing, `None` that the trigger is
+/// there. `among`: how many git calls the worker started, by the stand-in's own list, between the start of the burst and
+/// the write: a look reads the engine's head with a git call when it starts and the tree with another, so with none among
+/// the steps the next look read the head after the last commit of the burst and the tree after the write. `from` and
+/// `held`: how many copies the bucket held before the write, and the index of the copy that holds the write: the same,
+/// when no look stored a copy between them. `held_line`: the worker's line of that copy's look: the stand-in held its
+/// bundle step for [`SLOW`] at the least, it found a head that the look before it had not found, and it took less than
+/// the timer's period ([`BURST_EVERY_MS`]), so the tick that follows its start had not come when it ended and the wake
+/// was the first thing the copy task found. An empty line shows nothing missing by the line: a turn asks first with no
+/// line, for the two things that need none, and again with the line once both looks are logged.
+fn first_after_the_burst(
+    among: usize,
+    from: usize,
+    held: usize,
+    held_line: &str,
+) -> Option<String> {
+    if among > 0 {
+        return Some(format!(
+            "the worker started {among} git calls while the test made the burst, set the holds and wrote: a look ran among \
+             those steps"
+        ));
     }
+    if held != from {
+        return Some(format!(
+            "the copy that holds the write is copy {held} and not copy {from}, the first one after the burst: a look \
+             stored a copy between the burst and the write"
+        ));
+    }
+    if held_line.is_empty() {
+        return None;
+    }
+    let bundle_ms = field(held_line, "bundle").and_then(|ms| ms.parse::<u128>().ok());
+    if field(held_line, "engine") != Some("moved")
+        || bundle_ms.is_none_or(|ms| ms < SLOW.as_millis())
+    {
+        return Some(format!(
+            "the look that stored the write is not the look whose bundle step was held for {SLOW:?} or found no new head: \
+             {held_line}"
+        ));
+    }
+    let total_ms = field(held_line, "total").and_then(|ms| ms.parse::<u64>().ok());
+    if total_ms.is_none_or(|ms| ms >= BURST_EVERY_MS) {
+        return Some(format!(
+            "the held look took as long as the timer's period of {BURST_EVERY_MS} ms or longer, so the tick that follows \
+             its start came before it ended and overtook the wake: {held_line}"
+        ));
+    }
+    None
+}
+
+/// The four things [`first_after_the_burst`] reads, each alone: a git call of the worker among the test's
+/// steps, a copy stored between the burst and the write, a line that names a bundle step shorter than the hold or no new
+/// head, and a line of a look that took the timer's period or longer show that the trigger is missing; the line of a held
+/// first look after a burst shows nothing missing, and neither does a line that is not there yet. Without a line the first
+/// two still show: a turn asks for them before it has the line.
+#[test]
+fn b932_a_turn_with_a_wake_proves_that_its_held_look_is_the_first_after_the_burst() {
+    let held = "agentd: direct turn copy look n=3 stored by=timer engine=moved ms total=900 tidy=6 tree=40 head=10 \
+                commit=20 bundle=640 hash=0 store=180 keep=ended bytes=2010 kept=0";
+    assert_eq!(first_after_the_burst(0, 2, 2, held), None);
+    assert_eq!(first_after_the_burst(0, 2, 2, ""), None);
+    assert!(first_after_the_burst(1, 2, 2, "").is_some_and(|why| why.contains("1 git calls")));
+    assert!(
+        first_after_the_burst(0, 2, 3, "").is_some_and(|why| why.contains("copy 3 and not copy 2"))
+    );
+    assert!(first_after_the_burst(1, 2, 2, held).is_some_and(|why| why.contains("1 git calls")));
+    assert!(
+        first_after_the_burst(0, 2, 3, held)
+            .is_some_and(|why| why.contains("copy 3 and not copy 2"))
+    );
+    // The lines of the run that failed on a crowded machine: the look that stored the write was not held and found no
+    // new head.
+    let not_held = "agentd: direct turn copy look n=4 stored by=timer engine=same ms total=2317 tidy=6 tree=572 head=10 \
+                    commit=148 bundle=17 hash=0 store=1560 keep=0 bytes=2010 kept=0";
+    assert!(first_after_the_burst(0, 3, 3, not_held).is_some_and(|why| why.contains("bundle=17")));
+    let no_new_head = held.replace("engine=moved", "engine=same");
+    assert!(first_after_the_burst(0, 2, 2, &no_new_head).is_some());
+    let short = held.replace("bundle=640", "bundle=599");
+    assert!(first_after_the_burst(0, 2, 2, &short).is_some());
+    // A line of a run under an io load: the look that was held took 3,064 ms, its next tick came before it ended, and
+    // the look after it was the timer's.
+    let overtaken = "agentd: direct turn copy look n=3 stored by=timer engine=moved ms total=3064 tidy=7 tree=304 head=227 \
+                     commit=454 bundle=1446 hash=0 store=623 keep=0 bytes=1771 kept=0";
+    assert!(
+        first_after_the_burst(0, 2, 2, overtaken).is_some_and(|why| why.contains("total=3064"))
+    );
+    let just_in_time = held.replace("total=900", "total=2999");
+    assert_eq!(first_after_the_burst(0, 2, 2, &just_in_time), None);
+    let at_the_tick = held.replace("total=900", "total=3000");
+    assert!(first_after_the_burst(0, 2, 2, &at_the_tick).is_some());
 }
 
 /// What two readings of [`NextLook::late_ms`] can differ by with nothing between them: the stand-in sees within
@@ -3035,11 +3265,31 @@ const END_WITHIN: Duration = Duration::from_secs(8);
 /// own (ruling 45 (b) of the lead): the worker ends within [`END_WITHIN`], 8 s, of the request; a review measured 307 to
 /// 309 ms. The spacing ends no sooner than 15 s after the held bundle step was let go, because the git work of that look
 /// ends after that moment.
-async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: bool) {
+///
+/// With `form` the stand-in
+/// holds, without end, a git call of the form of that keep at once in place of the `pack-objects` of release 5.28's keep:
+/// the indexing (`check-hold`) or the filter (`filter-hold`), with the file its process id is written into. The held call
+/// is the form's own and no call of the older keep has started. At the end nothing of the form is left in its folders, no
+/// pack and no marker stands, no form line is written, and release 5.28's keep did not run behind the form that the
+/// request ended. A worker that waited for the form would wait for the keep's limit, 300 s.
+async fn a_request_to_end_ends_the_wait_a_keep_runs_through(
+    label: &str,
+    wake: bool,
+    form: Option<(&str, &str)>,
+) {
     let mut run = Run::start(label, BURST_EVERY_MS, Vec::new()).await;
     run.behind_a_look("a.txt").await;
     run.burst(1, 5);
-    run.hold_the_keep();
+    match form {
+        Some((hold, running)) => run.hold_the_form(hold, running),
+        None => run.hold_the_keep(),
+    }
+    // What the stand-in holds: a git call of the form, or the `pack-objects` of release 5.28's keep.
+    let what = if form.is_some() {
+        "the form's git call"
+    } else {
+        "the pack-objects"
+    };
     run.hold_the_bundle();
     let from = run.bundles().len();
     run.write("a.txt", "first after the burst\n");
@@ -3065,11 +3315,25 @@ async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: b
                 run.log()
             )
         });
-    let pid = run.the_held_keep(first).await;
+    let pid = match form {
+        Some((_, running)) => run.the_held_form(first, running).await,
+        None => run.the_held_keep(first).await,
+    };
+    // The form's calls so far, when a call of the form is held: its indexing, its filter when that is the held
+    // call, and no call of the older keep.
+    let form_calls = form.map(|(hold, _)| (1, usize::from(hold == "filter-hold"), 0));
+    if let Some(wanted) = form_calls {
+        assert_eq!(
+            run.form_calls(),
+            wanted,
+            "TRIGGER PRESENT is not shown: the held call of the keep at once is not the form's own; log:\n{}",
+            run.log()
+        );
+    }
     tokio::time::sleep_until(tick_passed + Duration::from_millis(500)).await;
     assert!(
         alive(pid),
-        "TRIGGER PRESENT is not shown: the pack-objects of the keep at once is no longer held; log:\n{}",
+        "TRIGGER PRESENT is not shown: {what} of the keep at once is no longer held; log:\n{}",
         run.log()
     );
     assert_eq!(
@@ -3086,7 +3350,7 @@ async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: b
          to come"
     );
     println!(
-        "TRIGGER PRESENT: the pack-objects of a keep at once (process {pid}) is held, the tick of the timer has passed, and \
+        "TRIGGER PRESENT: {what} of a keep at once (process {pid}) is held, the tick of the timer has passed, and \
          the spacing of 15 s after the slow look has at least {left:?} to run (a tool call's wake was taken first: {wake})"
     );
     let last = "written right before the request to end\n";
@@ -3142,20 +3406,29 @@ async fn a_request_to_end_ends_the_wait_a_keep_runs_through(label: &str, wake: b
         is_gone,
         "the git of the keep that the request ended is gone"
     );
+    if let Some(wanted) = form_calls {
+        assert_eq!(
+            (run.keep_folders(), run.form_lines(), run.form_calls()),
+            ((vec![], vec![], vec![]), Vec::<String>::new(), wanted),
+            "a form that a request to end cut in the wait for the spacing leaves nothing in its folders and no pack, \
+             writes no form line, and release 5.28's keep did not run behind it; log:\n{}",
+            run.log()
+        );
+    }
 }
 
 /// A request to end while a keep at once packs, after the tick of the timer has passed,
 /// ends the wait for the spacing ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn b932_a_request_to_end_ends_the_wait_for_the_spacing_that_a_keep_runs_through() {
-    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-tick", false).await;
+    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-tick", false, None).await;
 }
 
 /// A request to end while a keep at once packs in the wait that follows a taken wake of a
 /// tool call ends that wait ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]).
 #[tokio::test(flavor = "multi_thread")]
 async fn b932_a_request_to_end_ends_the_wait_after_a_taken_wake_that_a_keep_runs_through() {
-    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-wake", true).await;
+    a_request_to_end_ends_the_wait_a_keep_runs_through("b932-stop-wake", true, None).await;
 }
 
 // ----, ruling 43 (d) of the lead: rule B also follows the copy after a tool call ----------------------------------------------
@@ -3397,20 +3670,56 @@ enum HeldLook {
     /// The first look after a burst, a tool call's: its keep is the keep at once, and the look after it is the timer's
     /// (ruling 43 (d) of the lead).
     FirstOfAToolCall,
+    /// [`HeldLook::SecondOfTheTimer`], with the form of the keep held in its `index-pack --stdin` through
+    /// `check-hold`.
+    SecondOfTheTimerWithTheFormHeld,
 }
 
 impl HeldLook {
-    /// One turn of the tests of a look's start, with the keep on or off.
+    /// One turn of the tests of a look's start, with the keep on or off. A turn of a held look of the timer whose trigger
+    /// was missing ([`next_look_after_a_held_one`]) is made again, [`TURNS_AGAIN`] times at the most, each in a folder of
+    /// its own; when none of them shows the trigger, the test fails and says what each was missing.
     async fn turn(self, label: &str, keep_on: bool) -> NextLook {
-        match self {
-            HeldLook::SecondOfTheTimer => next_look_after_a_held_one(label, keep_on, false).await,
-            HeldLook::FirstWithAWake => next_look_after_a_held_one(label, keep_on, true).await,
+        let (wake, form) = match self {
+            HeldLook::SecondOfTheTimer => (false, false),
+            HeldLook::FirstWithAWake => (true, false),
             HeldLook::FirstOfAToolCall => {
-                next_look_after_a_held_look_of_a_tool_call(label, keep_on).await
+                return next_look_after_a_held_look_of_a_tool_call(label, keep_on).await;
+            }
+            HeldLook::SecondOfTheTimerWithTheFormHeld => (false, true),
+        };
+        let mut missing = Vec::new();
+        for again in 0..=TURNS_AGAIN {
+            let label = if again == 0 {
+                label.to_string()
+            } else {
+                format!("{label}-r{again}")
+            };
+            let turn = if form {
+                next_look_after_a_held_one_holding(&label, keep_on, wake, true).await
+            } else {
+                next_look_after_a_held_one(&label, keep_on, wake).await
+            };
+            match turn {
+                Ok(next) => return next,
+                Err(why) => {
+                    println!("TRIGGER ABSENT in the turn {label}: {why}; the turn is made again");
+                    missing.push(why);
+                }
             }
         }
+        panic!(
+            "TRIGGER PRESENT is not shown: in none of {} turns was the held look the first look after the burst with the \
+             write in its copy:\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
     }
 }
+
+/// How many times a turn of a test of a look's start is made again when its trigger was missing
+/// ([`HeldLook::turn`]). The test in this file makes up to [`PENDING_TURNS`] turns to see its trigger.
+const TURNS_AGAIN: u32 = 5;
 
 /// One turn of the test of a look's start after a tool call's look, with the keep on or off
 /// ([`NextLook`]). The first look after a burst is a tool call's, and its bundle step is held for [`TOOL_SLOW`], so the spacing
@@ -3749,4 +4058,564 @@ async fn b932_a_later_looks_line_ends_the_wait_for_a_keep_at_once() {
     );
     assert_eq!(keeps_started(&run.dir), 2);
     ends_as_asked(&mut run).await;
+}
+
+// ----: the form in whole turns (tests 11 and 12 of the build brief; the wiring of row d) ----------------------------------------
+
+/// The lines `direct turn copy keep form: ` of a worker's log, each without what stands before those words.
+fn form_lines(log: &[String]) -> Vec<String> {
+    log.iter()
+        .filter_map(|line| {
+            line.split_once("direct turn copy keep form: ")
+                .map(|(_, rest)| rest.to_string())
+        })
+        .collect()
+}
+
+/// The first lines of the markers of the kept packs in the private repository of a worker's copies.
+fn kept_marker_lines(private: &Path) -> Vec<String> {
+    let folder = private.join("kept/pack");
+    names(&folder)
+        .into_iter()
+        .filter(|name| name.ends_with(".keep"))
+        .map(|name| {
+            std::fs::read_to_string(folder.join(name))
+                .unwrap_or_default()
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The engine of the in-process turn `d` commits once, and three looks of the timer each find a changed tree: the looks find
+/// the engine's head twice, and a keep follows. `session` is the number of the session whose copies are counted. The answer
+/// is the engine's head.
+async fn a_commit_and_three_looks(d: &Direct, session: u32) -> String {
+    let stored = || {
+        d.aws
+            .versions_of(&keys::snapshot_json_key_t(RUN, session))
+            .len()
+    };
+    let wt = d.worktree();
+    std::fs::create_dir_all(wt.join("run")).unwrap();
+    std::fs::write(wt.join("run/file.txt"), "the file of the engine's commit\n").unwrap();
+    git(&wt, &["add", "run"]);
+    git(&wt, &["commit", "-q", "-m", "the engine's commit"]);
+    for content in ["first\n", "second\n", "third\n"] {
+        let before = stored();
+        std::fs::write(wt.join("t.txt"), content).unwrap();
+        assert!(
+            wait_for(LONG, || stored() > before).await,
+            "a look of the timer stores the copy of {content:?}; log:\n{}",
+            d.log.lines().join("\n")
+        );
+    }
+    git(&wt, &["rev-parse", "HEAD"])
+}
+
+/// Test 12 of the build brief: the form's line in a whole turn. The engine commits, the looks of the timer find its
+/// head twice, and the form keeps the pack: the worker's log has `direct turn copy keep form: made index=<n> filter=<n>`
+/// with two numbers of at least 1, before the save line of that look, whose `keep=` is a number, whose `kept=` is the bytes
+/// of the kept pack, and which still ends `keep=<what> bytes=<n> kept=<n>`. The marker of the pack reads
+/// `agentd kept bundle <head>`.
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_the_forms_line_stands_before_the_save_line_of_its_look() {
+    let dir = scratch("b936-form-line");
+    let steps = dir.join("engine-steps");
+    std::fs::write(&steps, "0\n").unwrap();
+    let d = Direct::start(Opts {
+        scenario: "four_edits",
+        engine_env: vec![("FAKE_ACP_STEP_FILE", steps.display().to_string())],
+        edit_cfg: Some(Box::new(|cfg| {
+            cfg.direct.snapshot_interval = Some(Duration::from_millis(500));
+            cfg.direct.snapshot_floor = Some(Duration::from_millis(50));
+        })),
+        ..Opts::default()
+    })
+    .await;
+    let (code, text) = d.post().await;
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        wait_for(LONG, || !d.prompts_received().is_empty()).await,
+        "the engine got its prompt"
+    );
+    let head = a_commit_and_three_looks(&d, 1).await;
+    let kept_look = |lines: &[String]| -> Option<usize> {
+        lines.iter().position(|l| {
+            l.contains("direct turn copy look n=")
+                && field(l, "keep").is_some_and(|v| v.parse::<u64>().is_ok_and(|ms| ms > 0))
+                && field(l, "kept").is_some_and(|v| v.parse::<u64>().is_ok_and(|bytes| bytes > 0))
+        })
+    };
+    assert!(
+        wait_for(LONG, || kept_look(&d.log.lines()).is_some()).await,
+        "TRIGGER PRESENT is not shown: no pack was kept in a turn whose engine committed and whose looks found its head \
+         twice; log:\n{}",
+        d.log.lines().join("\n")
+    );
+    let log = d.log.lines();
+    let private = d.agent_data().join("snapshot.git");
+    assert_eq!(
+        kept_marker_lines(&private),
+        vec![format!("agentd kept bundle {head}")],
+        "TRIGGER PRESENT is not shown: the pack was not made by the form"
+    );
+    let save_at = kept_look(&log).unwrap();
+    let form_at = log
+        .iter()
+        .position(|l| l.contains("direct turn copy keep form: "));
+    let forms = form_lines(&log);
+    assert_eq!(
+        forms.len(),
+        1,
+        "TRIGGER PRESENT: one keep was due, and the form has one line for it; log:\n{}",
+        log.join("\n")
+    );
+    let numbers: Vec<Option<u64>> = ["index", "filter"]
+        .iter()
+        .map(|name| field(&forms[0], name).and_then(|v| v.parse().ok()))
+        .collect();
+    assert!(
+        forms[0].starts_with("made index=")
+            && forms[0].split_whitespace().count() == 3
+            && numbers.iter().all(|n| n.is_some_and(|ms| ms >= 1)),
+        "the form's line names the time of its two git calls, each at least 1: {:?}",
+        forms[0]
+    );
+    assert!(
+        form_at.is_some_and(|at| at < save_at),
+        "the form's line stands before the save line of its look; log:\n{}",
+        log.join("\n")
+    );
+    let save = &log[save_at];
+    let pack_bytes: u64 = names(&private.join("kept/pack"))
+        .iter()
+        .filter(|name| name.ends_with(".pack"))
+        .map(|name| {
+            std::fs::metadata(private.join("kept/pack").join(name))
+                .unwrap()
+                .len()
+        })
+        .sum();
+    assert_eq!(
+        field(save, "kept").and_then(|v| v.parse::<u64>().ok()),
+        Some(pack_bytes),
+        "the save line's kept= is the bytes of the kept pack: {save}"
+    );
+    let last: Vec<&str> = save.split_whitespace().rev().take(3).collect();
+    assert!(
+        last.len() == 3
+            && last[2].starts_with("keep=")
+            && last[1].starts_with("bytes=")
+            && last[0].starts_with("kept="),
+        "the save line still ends keep=<what> bytes=<n> kept=<n>: {save}"
+    );
+    std::fs::write(&steps, "1000000\n").unwrap();
+    let resp = the_turns_result(&d).await;
+    assert_eq!(
+        resp.outcome,
+        harness_protocol::runtime::TurnOutcome::Completed,
+        "{resp:?}"
+    );
+}
+
+/// Row d of "where the form is off" in a whole turn. A
+/// second session of a run restores the copy the first session saved. Its engine commits, the looks of the timer find its
+/// head twice, and the keep is release 5.28's alone: the worker's log has
+/// `direct turn copy keep form: off: the session was restored from a saved copy`, no `made` line and no `gave way` line,
+/// and the marker of the kept pack reads `agentd kept <head>`. The copy task tells the snapshotter that the session is
+/// restored; before this test only the setter was tested.
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_session_restored_from_a_saved_copy_keeps_by_the_older_keep_alone() {
+    use agentd::direct::snapshot::BundleForm;
+    let d1 = Direct::start(b860_thin_support::base_form(Opts {
+        snapshot_every_s: Some(0),
+        ..Opts::default()
+    }))
+    .await;
+    let (_, resp) = d1.invoke().await;
+    assert_eq!(
+        resp.outcome,
+        harness_protocol::runtime::TurnOutcome::Completed,
+        "{resp:?}"
+    );
+    let s = d1.summary();
+    let (saved_head, base) = (
+        s.git.head_sha.clone().unwrap(),
+        s.git.base_sha.clone().unwrap(),
+    );
+    let own = d1.aws.get(&keys::bundle_key(RUN)).unwrap();
+
+    let dir = scratch("b936-restored-turn");
+    let steps = dir.join("engine-steps");
+    std::fs::write(&steps, "0\n").unwrap();
+    let d2 = b860_thin_support::later_session(
+        Opts {
+            scenario: "four_edits",
+            engine_env: vec![("FAKE_ACP_STEP_FILE", steps.display().to_string())],
+            edit_cfg: Some(Box::new(|cfg| {
+                cfg.direct.copy_form = BundleForm::AboveFloor;
+                cfg.direct.snapshot_interval = Some(Duration::from_millis(500));
+                cfg.direct.snapshot_floor = Some(Duration::from_millis(50));
+            })),
+            ..Opts::default()
+        },
+        &d1,
+        &keys::bundle_key_t(RUN, 1),
+        own,
+        &saved_head,
+        &base,
+    )
+    .await;
+    let (code, text) = d2.post().await;
+    assert_eq!(code, 200, "{text}");
+    assert!(
+        wait_for(LONG, || !d2.prompts_received().is_empty()).await,
+        "the engine of the restored session got its prompt"
+    );
+    let head = a_commit_and_three_looks(&d2, 2).await;
+    assert!(
+        wait_for(LONG, || !form_lines(&d2.log.lines()).is_empty()).await,
+        "TRIGGER PRESENT is not shown: no keep was due in the restored session; log:\n{}",
+        d2.log.lines().join("\n")
+    );
+    let log = d2.log.lines();
+    assert_eq!(
+        form_lines(&log),
+        vec!["off: the session was restored from a saved copy".to_string()],
+        "TRIGGER PRESENT: in a session restored from a saved copy the form is off; log:\n{}",
+        log.join("\n")
+    );
+    assert!(
+        wait_for(LONG, || !kept_marker_lines(
+            &d2.agent_data().join("snapshot.git")
+        )
+        .is_empty())
+        .await,
+        "release 5.28's keep keeps the pack; log:\n{}",
+        d2.log.lines().join("\n")
+    );
+    assert_eq!(
+        kept_marker_lines(&d2.agent_data().join("snapshot.git")),
+        vec![format!("agentd kept {head}")],
+        "the pack is release 5.28's keep's"
+    );
+    std::fs::write(&steps, "1000000\n").unwrap();
+    let resp = the_turns_result(&d2).await;
+    assert_eq!(
+        resp.outcome,
+        harness_protocol::runtime::TurnOutcome::Completed,
+        "{resp:?}"
+    );
+}
+
+impl Run {
+    /// The stand-in holds a git call of the form from now on: `check-hold` holds its `index-pack --stdin` (and writes
+    /// `check-running`), `filter-hold` holds its filter call (and writes `filter-running`).
+    fn hold_the_form(&self, hold: &str, running: &str) {
+        let _ = std::fs::remove_file(self.dir.join(running));
+        std::fs::write(self.dir.join(hold), "").unwrap();
+    }
+
+    /// Waits for the held git call of the form of the keep that follows the stored copy with index `index`, until
+    /// the call's process id stands whole in `running`. The copy of that look was stored before the form's git started. The
+    /// answer is the process id of the held call.
+    async fn the_held_form(&self, index: usize, running: &str) -> u32 {
+        let mut pid: Option<u32> = None;
+        assert!(
+            wait_for(LONG, || {
+                pid = std::fs::read_to_string(self.dir.join(running))
+                    .ok()
+                    .and_then(|text| text.strip_suffix('\n').and_then(|n| n.parse().ok()));
+                pid.is_some()
+            })
+            .await,
+            "TRIGGER PRESENT is not shown: no git call of the form was held ({running}); log:\n{}",
+            self.log()
+        );
+        assert_eq!(
+            (self.bundles().len(), self.stored()),
+            (index + 1, index + 1),
+            "TRIGGER PRESENT: the form's git started before the copy of its look was stored"
+        );
+        pid.unwrap_or_default()
+    }
+
+    /// What the keeps of the turn have started so far, by the stand-in's log of every git call (written before a
+    /// call is held): `index-pack --stdin` calls, filter calls and calls of the older keep.
+    fn form_calls(&self) -> (usize, usize, usize) {
+        let calls = git_calls(&self.dir);
+        (
+            calls
+                .iter()
+                .filter(|call| {
+                    b860_kept_support::command_of(call) == "index-pack"
+                        && call.split_whitespace().any(|word| word == "--stdin")
+                })
+                .count(),
+            b860_kept_support::filters_in(&calls),
+            b860_kept_support::older_keeps_in(&calls),
+        )
+    }
+
+    /// What is left of a keep in the private repository: the names in the form's folder, in the folder a keep writes
+    /// into and in the folder of the kept pack.
+    fn keep_folders(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let kept = self.private().join("kept");
+        (
+            names(&kept.join("indexed/pack")),
+            names(&kept.join("incoming")),
+            names(&kept.join("pack")),
+        )
+    }
+
+    /// The lines `direct turn copy keep form: ` of the worker's log.
+    fn form_lines(&self) -> Vec<String> {
+        let lines: Vec<String> = self.log().lines().map(str::to_string).collect();
+        form_lines(&lines)
+    }
+}
+
+/// Test 11 of the build brief in a whole turn (rulings 42 (c)(i) and 44 (f) of the lead): a tool call that ends while
+/// a git call of the form is held ends the form. The copy its wake asks for holds what was written then, the held git is
+/// gone, nothing is left in the form's folders or in the folder a keep writes into, no pack and no marker stands, the line
+/// of the look reads `keep=ended`, and the keep that was cut writes no form line. The head is untried: after the next look
+/// of the timer on the same head the form keeps the pack, and the log then has its one `made` line.
+async fn a_tool_call_ends_a_form_that_is_held(label: &str, hold: &str, running: &str) {
+    let mut run = Run::start(label, NO_TICK_MS, Vec::new()).await;
+    run.hold_the_form(hold, running);
+    let index = run.to_the_look_a_keep_follows(1, "b.txt").await;
+    let head = git(&run.d.worktree(), &["rev-parse", "HEAD"]);
+    let pid = run.the_held_form(index, running).await;
+    let filters = usize::from(hold == "filter-hold");
+    assert_eq!(
+        run.form_calls(),
+        (1, filters, 0),
+        "TRIGGER PRESENT is not shown: {hold}: the held call is the form's own, before any call of the older keep"
+    );
+    assert_eq!(
+        field(&run.line_of(index), "by"),
+        None,
+        "the line of that look waits for its keep"
+    );
+
+    let at_the_call = "written when the third tool call ended\n";
+    let from = run.bundles().len();
+    run.write("b.txt", at_the_call);
+    run.tool_call_ends().await;
+    let found = run.wait_copy(from, "b.txt", at_the_call, LONG).await;
+    assert!(
+        found.is_some(),
+        "TRIGGER PRESENT: {hold}: no copy holds the work of the moment the tool call ended (the timer is ten minutes): the \
+         form held the copy task; log:\n{}",
+        run.log()
+    );
+    assert!(
+        gone(pid).await,
+        "TRIGGER PRESENT: {hold}: the form's git was not ended when a tool call ended"
+    );
+    let line = run.line_when_stored(found.unwrap()).await;
+    assert_eq!(
+        field(&line, "by"),
+        Some("tool"),
+        "the look that stored that copy was the tool call's: {line}"
+    );
+    assert_eq!(
+        field(&run.line_of(index), "keep"),
+        Some("ended"),
+        "the line of the look whose keep the tool call cut; lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    assert_eq!(
+        run.keep_folders(),
+        (vec![], vec![], vec![]),
+        "{hold}: a form that was cut leaves nothing in its folders, and no pack and no marker stands"
+    );
+    assert_eq!(
+        (run.form_lines(), run.form_calls()),
+        (Vec::<String>::new(), (1, filters, 0)),
+        "TRIGGER PRESENT: {hold}: a keep that was cut writes no form line, and release 5.28's keep did not run behind it"
+    );
+    std::fs::remove_file(run.dir.join(hold)).unwrap();
+
+    // The bucket refuses the copy of the fourth tool call's look; the tick that tries again is the timer's, at the same head.
+    let key = keys::snapshot_bundle_key(RUN);
+    let attempts = run.d.aws.put_attempts(&key);
+    let from = run.bundles().len();
+    run.d.aws.fail_puts("snapshot.bundle", 4);
+    let again = "in the copy of the tick after the tool call cut the form\n";
+    run.write("b.txt", again);
+    run.tool_call_ends().await;
+    assert!(wait_for(LONG, || run.d.aws.put_attempts(&key) >= attempts + 4).await);
+    assert!(
+        run.wait_copy(from, "b.txt", again, LONG).await.is_some(),
+        "log:\n{}",
+        run.log()
+    );
+    assert!(
+        wait_for(LONG, || run.kept_lines() >= 1).await,
+        "TRIGGER PRESENT: {hold}: the keep whose form a tool call cut was not made after a later look by the timer; \
+         lines:\n{}",
+        run.look_lines().join("\n")
+    );
+    let forms = run.form_lines();
+    assert!(
+        forms.len() == 1 && forms[0].starts_with("made index="),
+        "{hold}: the keep that was tried again is the form's, and it has the one form line of the turn: {forms:?}"
+    );
+    assert_eq!(
+        (kept_marker_lines(&run.private()), run.form_calls()),
+        (
+            vec![format!("agentd kept bundle {head}")],
+            (2, 1 + filters, 0)
+        ),
+        "{hold}: the form made the pack at its second try, and no call of the older keep ran"
+    );
+
+    run.d.process.as_ref().unwrap().signal("TERM");
+    assert_eq!(
+        exit_of(&mut run, LONG).await,
+        Some(Some(143)),
+        "log:\n{}",
+        run.log()
+    );
+}
+
+/// Test 11: a tool call ends a form that is held in its indexing ([`a_tool_call_ends_a_form_that_is_held`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_tool_call_ends_a_form_that_is_held_in_its_indexing() {
+    a_tool_call_ends_a_form_that_is_held("b936-tool-index", "check-hold", "check-running").await;
+}
+
+/// Test 11: a tool call ends a form that is held in its filter by the filter's own hold file
+/// ([`a_tool_call_ends_a_form_that_is_held`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_tool_call_ends_a_form_that_is_held_in_its_filter() {
+    a_tool_call_ends_a_form_that_is_held("b936-tool-filter", "filter-hold", "filter-running").await;
+}
+
+/// Test 11 of the build brief in a whole turn: a request to end is not held by the form. While a git call of the
+/// form is held without end, the worker is asked to end: the form is ended, the copy of the stop, which holds the file
+/// written right before the signal, is stored inside the time a stop has (two minutes here, as in
+/// `b860_kept_a_stop_is_not_held_by_the_keep`), the held git is gone, the worker ends as the signal asks, no look failed,
+/// nothing of the form is left, and no form line is written.
+async fn a_request_to_end_ends_a_form_that_is_held(label: &str, hold: &str, running: &str) {
+    let budget = ("AGENTD_DIRECT_STOP_COPY_BUDGET_MS", "120000".to_string());
+    let mut run = Run::start(label, NO_TICK_MS, vec![budget]).await;
+    run.hold_the_form(hold, running);
+    let index = run.to_the_look_a_keep_follows(1, "a.txt").await;
+    let pid = run.the_held_form(index, running).await;
+    assert_eq!(
+        run.form_calls(),
+        (1, usize::from(hold == "filter-hold"), 0),
+        "TRIGGER PRESENT is not shown: {hold}: the held call is the form's own"
+    );
+    let late = "written right before the signal, while the form's git ran\n";
+    let from = run.bundles().len();
+    run.write("late.txt", late);
+    let asked = Instant::now();
+    run.d.process.as_ref().unwrap().signal("TERM");
+    let found = run
+        .wait_copy(from, "late.txt", late, Duration::from_secs(100))
+        .await;
+    assert!(
+        found.is_some(),
+        "TRIGGER PRESENT: {hold}: no copy with the file written before the signal was stored within 100 s of the request \
+         to end (a stop has 120 s here): the form held the stop; log:\n{}",
+        run.log()
+    );
+    println!(
+        "{hold}: the copy of the stop was stored {:?} after the signal",
+        asked.elapsed()
+    );
+    assert!(
+        gone(pid).await,
+        "TRIGGER PRESENT: {hold}: the form's git was not ended by the request to end"
+    );
+    assert_eq!(
+        exit_of(&mut run, LONG).await,
+        Some(Some(143)),
+        "log:\n{}",
+        run.log()
+    );
+    let line = run.line_of(found.unwrap());
+    assert_eq!(
+        field(&line, "by"),
+        Some("stop"),
+        "the look of a stop: {line}"
+    );
+    // The one look that failed is the one whose copy the bucket refused on purpose, to bring the timer's look about.
+    let refused: Vec<String> = refused_or_failed(&run.log())
+        .into_iter()
+        .filter(|line| !line.contains(" failed why=store "))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "no look fails because of the form:\n{}",
+        refused.join("\n")
+    );
+    assert_eq!(
+        (run.keep_folders(), run.form_lines()),
+        ((vec![], vec![], vec![]), Vec::<String>::new()),
+        "{hold}: a form that a request to end cut leaves nothing and writes no form line"
+    );
+}
+
+/// Test 11: a request to end ends a form that is held in its indexing
+/// ([`a_request_to_end_ends_a_form_that_is_held`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_request_to_end_ends_a_form_that_is_held_in_its_indexing() {
+    a_request_to_end_ends_a_form_that_is_held("b936-stop-index", "check-hold", "check-running")
+        .await;
+}
+
+/// Test 11: a request to end ends a form that is held in its filter by the filter's own hold file
+/// ([`a_request_to_end_ends_a_form_that_is_held`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_request_to_end_ends_a_form_that_is_held_in_its_filter() {
+    a_request_to_end_ends_a_form_that_is_held("b936-stop-filter", "filter-hold", "filter-running")
+        .await;
+}
+
+/// Test 11 of the build brief in the cell of [`END_WITHIN`] (ruling 69 (b) of the lead): a request to end ends the
+/// wait for the spacing that a keep at once runs through while the form's indexing is held without end
+/// ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]). The worker ends within 8 s of the request and before the
+/// spacing ends, the copy that the request asked for holds the work written right before it, the form's git is gone, and
+/// nothing of the form is left.
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_request_to_end_ends_the_wait_for_the_spacing_with_the_forms_indexing_held() {
+    a_request_to_end_ends_the_wait_a_keep_runs_through(
+        "b936-stop-tick-index",
+        false,
+        Some(("check-hold", "check-running")),
+    )
+    .await;
+}
+
+/// Test 11 of the build brief in the cell of [`END_WITHIN`]: a request to end ends the wait for the spacing that a
+/// keep at once runs through while the form's filter is held without end by the filter's own hold file
+/// ([`a_request_to_end_ends_the_wait_a_keep_runs_through`]).
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_request_to_end_ends_the_wait_for_the_spacing_with_the_forms_filter_held() {
+    a_request_to_end_ends_the_wait_a_keep_runs_through(
+        "b936-stop-tick-filter",
+        false,
+        Some(("filter-hold", "filter-running")),
+    )
+    .await;
+}
+
+/// Test 11 of the build brief: a form in flight never moves the start of a look
+/// ([`the_keep_never_moves_the_start_of_the_next_look`]). The keep of the second look is the form's, and the stand-in holds
+/// its `index-pack --stdin` without end: the look after the held one starts when the spacing says, as in a turn with the
+/// keep off (`AGENTD_DIRECT_KEEP_COMMITS=0`; a whole turn cannot switch the form alone off), and its start ends the form.
+#[tokio::test(flavor = "multi_thread")]
+async fn b936_a_form_held_in_its_indexing_never_moves_the_start_of_a_look() {
+    the_keep_never_moves_the_start_of_the_next_look(
+        "b936-start-form",
+        HeldLook::SecondOfTheTimerWithTheFormHeld,
+    )
+    .await;
 }

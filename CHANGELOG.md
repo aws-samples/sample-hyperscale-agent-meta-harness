@@ -6,6 +6,13 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.33] - 2026-11-26
+
+### Changed
+
+- Where it is cheaper, the session program makes the pack it keeps of a run's commits from the copy it has just saved, which takes a fraction of the time after many commits that git has not packed.
+- The Runs screen shows the newest runs after the first answer and loads the older runs behind them. The table's title reads `runs · loading older runs` meanwhile. `R` and the tag explorer's `d` wait for the whole list.
+
 ## [5.32] - 2026-11-25
 
 ### Changed
