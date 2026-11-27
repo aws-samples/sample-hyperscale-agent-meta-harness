@@ -4442,6 +4442,14 @@ A stage that is older than your ham refuses a run on another engine and says so.
 `ham engine <name>` says whether an engine is available and how to choose it.
 The follow-up of a finished run in the app uses the engine of that run.
 The words in the app, such as the box title "Message to <engine>", use the engine of the run on screen.
+A run you start in the app carries its engine's name from the start.
+A run you open from the Runs list reads Cline until the first event of its session has arrived.
+The follow-up and the retry name the engine too.
+The block that Ctrl-L adds is marked as written by the engine of the finished run, and the panel says which engine the new run starts on.
+Two texts about rule files have no run at hand: the line of `ham rules init` for `continue.md`, and the refusal of a rule file named `AGENTS.md`.
+They name the engine your settings select for new runs, `default_engine`, and Cline when you set none.
+A start names the engine of that start.
+This guide quotes all these texts as a run on Cline shows them.
 
 ```bash
 ham "Add tests for the parser" --direct --engine opencode

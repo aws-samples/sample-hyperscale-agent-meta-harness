@@ -326,6 +326,10 @@ that sees this (the `goal` module) votes `Wait { until }` at `on_turn_end` inste
 - When `until` has passed it asks the modules again. The last message of the run is the one the engine said last (`DirectCollector::final_message`), and the tree is measured
   again. A `Prompt` of any module replaces a `Wait` whichever module votes first (a user's message goes out while the engine works), a `Stop` beats it, of two `Wait`s the shorter
   is kept (at least `hooks::MIN_WAIT`, 10 ms), and `on_seal` may not wait (a `Wait` there is read as `Done`).
+- When a hold's own time has passed, the question that follows reads the clock again, and a question that finds no time left asks no module (`driver::consult`).
+  When the deadline falls between the hold's last clock read and that read, the run keeps the outcome of the last answered prompt and no `session/cancel` is
+  written; only the user's cancel is made the run's end there. That end is against the rule above and is open as. A test whose module holds a run up to
+  its time limit asks for a last hold that outlasts the limit, so the deadline comes up inside a hold (`NoBrake` in `crates/agentd/tests/direct_goal.rs`).
 - A module asked after a `Wait` vote at the same turn end reads `TurnEnd.engine_working`: `Hooks::vote` sets it for every module it asks after the vote, the
   driver's `consult` gives `false`, the first module asked reads `false`, and at the seal every module reads `false`. A prompt voted then goes to an engine that is busy
   with its own round: the engine takes the prompt behind that round and answers the request at once. The `messages` module keeps the word with its vote, so the answer of

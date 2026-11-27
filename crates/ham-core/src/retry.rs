@@ -8,7 +8,7 @@
 //! The Idempotency-Key is `retry-<blocked run id>`: a second press, or a send that got no answer, returns the run the first one started, and a
 //! blocked run has one retry (if that retry blocks too, the person retries the new run). This module holds that key, the words of the box, the
 //! offer and the refusals, and the note that marks a run that continues another. Every word that comes from the service passes the line
-//! sanitizer, and no word names the engine (`engines::say`).
+//! sanitizer, and no word names the engine: the confirmation takes the blocked run's engine (`engines::say_for`).
 
 use crate::engines;
 use crate::sanitize::sanitize_line;
@@ -70,6 +70,18 @@ pub fn confirmation_with(
     has_text: bool,
     saved: Option<&crate::saved_copy::SavedCopy>,
 ) -> String {
+    confirmation_for(None, run_id, target, has_text, saved)
+}
+
+/// [`confirmation_with`] for a blocked run on the engine `engine` names (its id): the retry starts the same request again, so the new run
+/// is on the blocked run's engine, and "The new <engine> receives" names it.
+pub fn confirmation_for(
+    engine: Option<&str>,
+    run_id: &str,
+    target: Option<&str>,
+    has_text: bool,
+    saved: Option<&crate::saved_copy::SavedCopy>,
+) -> String {
     let run = sanitize_line(run_id);
     let work = crate::saved_copy::blocked_work(run_id, saved);
     let target = match target.map(sanitize_line).filter(|t| !t.trim().is_empty()) {
@@ -81,9 +93,12 @@ pub fn confirmation_with(
     } else {
         ""
     };
-    engines::say(&format!(
-        "This starts a new billable run with the same request as run {run}: the same prompt, target, model, rules and settings. The new run is linked to run {run}.{target}\nThe new {{engine}} receives the request only, not this run's history.\n{work}{kept}\nEnter starts it \u{b7} Esc cancels"
-    ))
+    engines::say_for(
+        engine,
+        &format!(
+            "This starts a new billable run with the same request as run {run}: the same prompt, target, model, rules and settings. The new run is linked to run {run}.{target}\nThe new {{engine}} receives the request only, not this run's history.\n{work}{kept}\nEnter starts it \u{b7} Esc cancels"
+        ),
+    )
 }
 
 /// The notice when the service started the retry: both runs by id, and where the text of the box went.

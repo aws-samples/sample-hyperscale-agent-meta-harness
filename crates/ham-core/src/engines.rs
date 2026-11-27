@@ -260,11 +260,17 @@ pub fn of_events<'a>(events: impl IntoIterator<Item = &'a Envelope>) -> &'static
 /// The engine a run is on: the one its `session.started` event named. A run with no session yet, and an engine this build lacks, read as the
 /// default engine, which is also what a request with no engine member runs.
 pub fn of_view(view: &RunView) -> &'static Engine {
+    named_in(view).unwrap_or_else(default_engine)
+}
+
+/// The engine the run's session named, when the view holds a `session.started` event that names an engine of the table. `None` for a run
+/// with no session yet and for a session that named no engine: a caller that knows the run from somewhere else (the start it sent itself)
+/// can then say so before it falls back to the default engine, as [`of_view`] does.
+pub fn named_in(view: &RunView) -> Option<&'static Engine> {
     view.agents
         .values()
         .find_map(|a| a.engine.as_deref())
         .and_then(|id| find(&id.trim().to_ascii_lowercase()))
-        .unwrap_or_else(default_engine)
 }
 
 // ---- the settings of an engine -------------------------------------------------------------------

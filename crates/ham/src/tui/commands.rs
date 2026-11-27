@@ -347,9 +347,9 @@ pub fn name_continue_target(
     })
 }
 
-/// The preview of a cancel, a finish or a fresh session with the name of the engine the run is on. `engine` knows it for a run
-/// whose events the screen holds; the preview for a run it does not know says "the engine". Only the words of the preview change. `None`
-/// for every other line.
+/// The preview of a cancel, a finish or a fresh session with the name of the engine the run is on. `engine` knows it for the run
+/// on screen and for a run this app started; the preview for a run it does not know says "the engine". Only
+/// the words of the preview change. `None` for every other line.
 pub fn name_run_engine(
     outcome: &RouteOutcome,
     engine: &dyn Fn(&str) -> Option<String>,

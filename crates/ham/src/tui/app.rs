@@ -834,6 +834,8 @@ pub struct App {
     pub(crate) earlier: earlier::EarlierRuns,
     /// The model to show for a run whose session has not named one (A1 proof: the title never depends on one event).
     pub(crate) titled: model_title::ModelTitle,
+    /// The engine each run was started on from this app, for a run whose session has not named its engine yet.
+    pub(crate) started_on: engine_ui::StartedOn,
     /// The names of runs on the run screen: the seed of a prompt this app sent, what a read of the run's row said, the reads' schedule
     /// (`run_name.rs`).
     pub(crate) names: run_name::RunNames,
@@ -1093,6 +1095,7 @@ impl App {
             hist: history::History::default(),
             earlier: earlier::EarlierRuns::default(),
             titled: model_title::ModelTitle::default(),
+            started_on: engine_ui::StartedOn::default(),
             names: run_name::RunNames::default(),
             send: send::SendState::default(),
             open_fallback: None,
@@ -3668,12 +3671,14 @@ impl App {
             })
     }
 
-    /// The engine of run `id` when the screen holds the run's events: the run on screen. A row of the run list carries no engine.
+    /// The engine of run `id` as far as the screen knows it. The run on screen: the engine its session named, before that the engine this
+    /// app started it on, else the default engine (`run_engine`). Any other run: the engine this app started it on, when it did; a row of the
+    /// run list carries no engine, so every other run is `None`.
     pub(super) fn known_engine(&self, id: &str) -> Option<&'static ham_core::engines::Engine> {
         if self.focused_run() != Some(id) {
-            return None;
+            return self.engine_started_on(id);
         }
-        self.cached.as_ref().map(ham_core::engines::of_view)
+        self.cached.as_ref().map(|_| self.run_engine())
     }
 
     /// Runs a command that is allowed to run: `watch` opens the run on this screen (the runner refuses it), the rest become
@@ -4730,6 +4735,8 @@ impl App {
                     self.composer.error = None;
                     self.composer.submitting = true;
                     self.model_asked(args.model.clone());
+                    // The engine in the Engine box is the one this start runs on: chosen there, or what the file's `default_engine` gave.
+                    self.engine_asked(ham_core::engines::find(self.composer.engine.id));
                     self.name_asked(&args.prompt);
                     match backend {
                         Some(backend) => vec![Effect::SubmitDirectOn {
@@ -4919,6 +4926,7 @@ impl App {
                 self.direct.started += 1;
                 self.model_started(&r.run_id);
                 self.name_started(&r.run_id);
+                self.engine_started(&r.run_id);
                 self.open_run(&r.run_id)
             }
             Msg::RunName { run_id, name } => {

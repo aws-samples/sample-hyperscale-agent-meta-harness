@@ -6,6 +6,12 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.35] - 2026-11-27
+
+### Fixed
+
+- The follow-up draft, the follow-up and retry confirmations and two messages about rule files name the engine of the run, or the engine your `default_engine` setting selects. A run you start in the app is named by its engine before its session starts. Before, these said Cline on a run on OpenCode.
+
 ## [5.34] - 2026-11-27
 
 ### Changed

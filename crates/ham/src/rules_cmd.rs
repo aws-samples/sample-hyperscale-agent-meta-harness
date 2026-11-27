@@ -140,9 +140,11 @@ pub fn read_review(path: &Path) -> Result<harness_protocol::direct::ReviewOption
 }
 
 /// What a direct run sends from disk: the rules (the default directory, or `rules` when given, or none for `--no-rules`) and the
-/// nudge (`continue_file` when given, else `continue.md` when it exists).
+/// nudge (`continue_file` when given, else `continue.md` when it exists). `engine` is the id of the engine the run starts on: a refusal
+/// that names an engine names that one.
 pub fn direct_inputs(
     env: Env<'_>,
+    engine: &str,
     rules: Option<&str>,
     no_rules: bool,
     continue_file: Option<&str>,
@@ -152,7 +154,7 @@ pub fn direct_inputs(
     let rule_files = if no_rules {
         Vec::new()
     } else if let Some(p) = rules {
-        let files = read_rules_path(Path::new(p)).map_err(|e| e.to_string())?;
+        let files = read_rules_path(Path::new(p)).map_err(|e| e.words_for(Some(engine)))?;
         if files.is_empty() {
             return Err(format!(
                 "{p} holds no rule files; add a .md file, or start with --no-rules"
@@ -167,7 +169,7 @@ pub fn direct_inputs(
         match read_rules_path(&p.dir) {
             Ok(files) if !files.is_empty() => files,
             Ok(_) => return Err(no_rules_message(&p.dir)),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(e.words_for(Some(engine))),
         }
     };
     let nudge = match continue_file {
@@ -262,8 +264,13 @@ pub fn direct_inputs_for(
     env: Env<'_>,
     args: &ham_core::command::DirectArgs,
 ) -> Result<ham_core::request::DirectInputs, InputsError> {
+    let engine = args
+        .engine
+        .as_deref()
+        .unwrap_or(ham_core::engines::DEFAULT_ENGINE_ID);
     let inputs = direct_inputs(
         env,
+        engine,
         args.rules.as_deref(),
         args.no_rules,
         args.continue_file.as_deref(),
@@ -272,10 +279,6 @@ pub fn direct_inputs_for(
     )
     .map_err(InputsError::Files)?;
     let mut inputs = with_attachments(inputs, &args.attach).map_err(InputsError::Files)?;
-    let engine = args
-        .engine
-        .as_deref()
-        .unwrap_or(ham_core::engines::DEFAULT_ENGINE_ID);
     inputs.engine_config = engine_settings(env, engine)?;
     Ok(inputs)
 }
@@ -377,9 +380,22 @@ fn ensure_dir(dir: &Path, what: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
+/// The engine the person's settings select for the next run: `default_engine` of `config.toml`, else the default engine. It is
+/// the name in a text about rules files that has no run at hand. A config file that cannot be read, and a value that names no engine a
+/// person can choose, read as the default engine here: these texts only name an engine, and a start refuses such a file in its own words.
+pub fn next_run_engine(env: Env<'_>) -> &'static ham_core::engines::Engine {
+    crate::config_cmd::load_file(env)
+        .ok()
+        .and_then(|loaded| {
+            ham_core::engines::resolve(None, loaded.read.config.default_engine.as_deref()).ok()
+        })
+        .map_or_else(ham_core::engines::default_engine, |(engine, _)| engine)
+}
+
 /// `ham rules init`: the default rules file where the directory holds none, and `continue.md` where there is none. A default that is already
-/// there is brought up to date when it holds exactly an earlier default (nobody edited it); an edited one is kept.
-fn init(p: &Paths, out: &mut dyn Write) -> Result<(), String> {
+/// there is brought up to date when it holds exactly an earlier default (nobody edited it); an edited one is kept. `engine` is the engine
+/// the line about the nudge file names ([`next_run_engine`]).
+fn init(p: &Paths, engine: &ham_core::engines::Engine, out: &mut dyn Write) -> Result<(), String> {
     ensure_dir(&p.dir, "the rules")?;
     let default = p.dir.join(DEFAULT_RULES_NAME);
     let has_rules = std::fs::read_dir(&p.dir)
@@ -438,8 +454,9 @@ fn init(p: &Paths, out: &mut dyn Write) -> Result<(), String> {
         say(
             out,
             format!(
-                "created {}: what Cline is told when it stops without saying it is done. Change it with: ham rules edit continue",
-                p.continue_md.display()
+                "created {}: what {} is told when it stops without saying it is done. Change it with: ham rules edit continue",
+                p.continue_md.display(),
+                engine.name
             ),
         );
     } else {
@@ -592,6 +609,7 @@ fn chosen_flow(env: Env<'_>) -> Result<LifecycleFlow, String> {
 /// limits (the rule file count), or a skills folder asked for with `--skills` that is a link or has no room, writes nothing.
 fn init_pack(
     p: &Paths,
+    engine: &ham_core::engines::Engine,
     skills: Option<(&Path, SkillsMode)>,
     opts: PackOpts,
     out: &mut dyn Write,
@@ -625,7 +643,7 @@ fn init_pack(
         ));
     }
     if p.dir.exists() {
-        let mut all = read_rules_path(&p.dir).map_err(|e| e.to_string())?;
+        let mut all = read_rules_path(&p.dir).map_err(|e| e.words_for(Some(engine.id)))?;
         if default_new {
             all.push(ham_core::rules::rule_file(
                 DEFAULT_RULES_NAME,
@@ -638,7 +656,7 @@ fn init_pack(
                 .filter(|r| creates.contains(&r.path.as_str()))
                 .cloned(),
         );
-        validate_rule_files(&all).map_err(|e| e.to_string())?;
+        validate_rule_files(&all).map_err(|e| e.words_for(Some(engine.id)))?;
     }
     // The skills: written when there is room; otherwise `--skills` stops here and a bare install says what it left out and what to do.
     let mut left_out: Option<String> = None;
@@ -671,7 +689,7 @@ fn init_pack(
         None => None,
     };
     // 2. the install
-    init(p, out)?;
+    init(p, engine, out)?;
     let digest = pack::digest();
     let _ = writeln!(
         out,
@@ -823,14 +841,15 @@ fn edit(p: &Paths, which: Option<&str>, env: Env<'_>, out: &mut dyn Write) -> Re
         p.review_md.clone()
     } else {
         let name = which.unwrap_or(DEFAULT_RULES_NAME);
-        validate_rule_name(name).map_err(|pr| RuleError::new(name, pr).to_string())?;
+        validate_rule_name(name)
+            .map_err(|pr| RuleError::new(name, pr).words_for(Some(next_run_engine(env).id)))?;
         p.dir.join(name)
     };
     // A missing file starts from init (the defaults), a new named rule from an empty file.
     if !file.exists() {
         if editing_continue || editing_review || which.is_none() {
             let mut sink = Vec::new();
-            init(p, &mut sink)?;
+            init(p, next_run_engine(env), &mut sink)?;
         } else {
             ensure_dir(&p.dir, "the rules")?;
             create_once(&file, "")?;
@@ -854,7 +873,8 @@ fn edit(p: &Paths, which: Option<&str>, env: Env<'_>, out: &mut dyn Write) -> Re
     };
     if let Err(e) = check {
         return Err(format!(
-            "{e}\nham: fix it with: ham rules edit{}",
+            "{}\nham: fix it with: ham rules edit{}",
+            e.words_for(Some(next_run_engine(env).id)),
             if editing_continue {
                 " continue".to_string()
             } else if editing_review {
@@ -914,7 +934,7 @@ fn show(
     if rules.is_none() && !dir.exists() {
         return Err(no_rules_message(&dir));
     }
-    let files = read_rules_path(&dir).map_err(|e| e.to_string())?;
+    let files = read_rules_path(&dir).map_err(|e| e.words_for(Some(next_run_engine(env).id)))?;
     if files.is_empty() {
         return Err(no_rules_message(&dir));
     }
@@ -1054,6 +1074,7 @@ pub fn run(
             let flow = chosen_flow(env)?;
             init_pack(
                 &p,
+                next_run_engine(env),
                 dir.as_deref().map(|d| (d, mode)),
                 PackOpts {
                     contract: true,
@@ -1070,7 +1091,7 @@ pub fn run(
         RulesCommand::InitNoSkills => install(SkillsMode::No, false, out),
         RulesCommand::InitPack {
             pack: Pack::None, ..
-        } => init(&p, out),
+        } => init(&p, next_run_engine(env), out),
         // `--skills-as-rules` renders the skill bodies as rules: it writes no skills folder unless `--skills` is also given. A bare
         // `--pack lifecycle` is the pack's default install, the same as a bare `ham rules init`.
         RulesCommand::InitPack {

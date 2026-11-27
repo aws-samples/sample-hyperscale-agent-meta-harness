@@ -1319,7 +1319,12 @@ impl App {
                 "{}\n{}\n{}{waiting}{changed}\n{keys}",
                 followup::OFFER,
                 followup::NOTE,
-                followup::confirmation(&run, self.send.head.as_deref(), source_target.as_deref()),
+                followup::confirmation_for(
+                    Some(self.follow_up_engine().id),
+                    &run,
+                    self.send.head.as_deref(),
+                    source_target.as_deref()
+                ),
             )),
         )
     }
@@ -1367,6 +1372,12 @@ impl App {
     /// The job the second Enter starts: a finished repository run is followed on its own repository, so the new run opens a pull
     /// there; an `s3-only` run, or one whose summary has not arrived (the confirmation then said s3-only), is followed by a zip alone. The target
     /// is read from the same summary as the confirmation's words, so the run that starts is the one that was confirmed.
+    /// The engine a follow-up of the run on screen starts on: the engine that run was on. The start (`follow_up_job`) and the words
+    /// of the confirmation both read it here, so they name one engine.
+    fn follow_up_engine(&self) -> &'static ham_core::engines::Engine {
+        self.run_engine()
+    }
+
     fn follow_up_job(&self, run_id: String, text: String) -> Job {
         let head = self.send.head.clone();
         let repo = self.detail.as_ref().and_then(|d| match &d.summary.target {
@@ -1374,8 +1385,7 @@ impl App {
             | harness_protocol::target::RunTarget::NewRepo { repo } => Some(repo.clone()),
             harness_protocol::target::RunTarget::S3Only => None,
         });
-        // The follow-up runs on the engine the finished run was on.
-        let engine = Some(self.run_engine().id.to_string());
+        let engine = Some(self.follow_up_engine().id.to_string());
         match repo {
             Some(repo) => Job::StartRepoFollowUp {
                 run_id,
@@ -1511,11 +1521,14 @@ impl App {
             return vec![];
         };
         let text = self.chat_text().unwrap_or_default();
-        let mut attempt = followup::add_cline_message(&text, &message, &self.send.fence);
+        // The message is the last one of the run on screen, so its engine wrote it: the marker names that engine.
+        let engine = Some(self.run_engine().id);
+        let mut attempt =
+            followup::add_cline_message_for(engine, &text, &message, &self.send.fence);
         if attempt == Err(followup::AddRefused::NonceInMessage) {
             // The message holds this draft's random word: another word closes no fence of it.
             self.send.fence = crate::start::new_nonce();
-            attempt = followup::add_cline_message(&text, &message, &self.send.fence);
+            attempt = followup::add_cline_message_for(engine, &text, &message, &self.send.fence);
         }
         match attempt {
             Ok(boxed) => {
@@ -1606,6 +1619,9 @@ impl App {
                 self.send.confirm = None;
                 self.panel = None;
                 if self.focused_run() == Some(source) {
+                    // The start carried the engine of the run on screen (`follow_up_job`), so the new run is on it.
+                    let engine = self.follow_up_engine();
+                    self.engine_started_as(&new_run, engine);
                     self.open_run(&new_run)
                 } else {
                     self.say(&format!("started the follow-up run {new_run}"));
@@ -1708,7 +1724,7 @@ impl App {
                 self.send.fence = crate::start::new_nonce();
                 let inputs = self.digest_inputs(&said);
                 let d = followup::digest(&inputs);
-                let text = followup::compose(line, &d, &inputs);
+                let text = followup::compose_for(Some(self.run_engine().id), line, &d, &inputs);
                 self.set_chat_text(&text);
                 // The settings of the engine file as it is now are asked for the confirmation's line about changed settings.
                 self.send.engine_now = None;
@@ -1875,7 +1891,9 @@ impl App {
         let has_text = self.chat_text().is_some_and(|t| !t.trim().is_empty());
         self.panel = Some(Panel::offer(
             retry::CONFIRM_TITLE,
-            &retry::confirmation_with(
+            &retry::confirmation_for(
+                // The retry starts the blocked run's request again: the new run is on that run's engine.
+                Some(self.run_engine().id),
                 &run,
                 target.as_deref(),
                 has_text,
@@ -1985,6 +2003,10 @@ impl App {
                 }
                 let text = self.chat_text().unwrap_or_default();
                 let kept = !text.trim().is_empty();
+                // The service starts the blocked run's request again, so the new run is on its engine, when the screen knows it.
+                if let Some(engine) = self.focused_engine() {
+                    self.engine_started_as(&new_run, engine);
+                }
                 let effects = self.open_run(&new_run);
                 if kept {
                     self.set_chat_text(&text);

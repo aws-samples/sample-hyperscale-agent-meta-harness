@@ -378,6 +378,14 @@ async fn two_identical_blocked_replies_end_the_run_and_the_engines_loop_is_stopp
 /// for ever. The baseline that shows the scenarios would not end on their own.
 struct NoBrake;
 
+/// `NoBrake` asks to be asked again shortly while the driver's own clock read says that more than this is left of the run's time limit of
+/// 5 s: half of it.
+const NO_BRAKE_ASKS_AGAIN_ABOVE: std::time::Duration = std::time::Duration::from_millis(2_500);
+
+/// How far past the time limit the last hold of `NoBrake` reaches. A driver that did not end that hold at the limit would end it this long
+/// after the limit; the next question would find no time left, and the run would keep the outcome of the last answered prompt.
+const NO_BRAKE_PAST_THE_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl DirectHook for NoBrake {
     fn name(&self) -> &'static str {
         "no-brake"
@@ -403,11 +411,22 @@ impl DirectHook for NoBrake {
         })
     }
 
-    fn on_turn_end<'a>(&'a self, _end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
-        Box::pin(async {
-            TurnVote::Wait {
-                until: std::time::Duration::from_millis(50),
-            }
+    /// While more than half of the time limit is left (`TurnEnd::time_left`, the driver's own clock read), the module asks to be asked
+    /// again after 50 ms, as the goal module does while the engine works. From then on it asks for one hold that outlasts the limit: the
+    /// limit comes up inside that hold, and a hold ends at the limit as a prompt does (`driver::hold` returns `Watched::TimedOut`; the
+    /// outcome is `stopped_timeout`). So a hold of this module ends near the limit only on a machine that stood still for more than two
+    /// seconds at one question. A hold that ends just before the limit leaves the next question no time; the driver then asks no module
+    /// (`driver::consult`) and the run keeps the outcome of the last answered prompt. With holds of 50 ms up to the limit this test met
+    /// that end by chance of the clock. It is the driver's matter and not what this baseline shows.
+    fn on_turn_end<'a>(&'a self, end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
+        let left = end.time_left;
+        Box::pin(async move {
+            let until = if left > NO_BRAKE_ASKS_AGAIN_ABOVE {
+                std::time::Duration::from_millis(50)
+            } else {
+                left + NO_BRAKE_PAST_THE_LIMIT
+            };
+            TurnVote::Wait { until }
         })
     }
 }
@@ -421,6 +440,7 @@ async fn trigger_present_without_the_brakes_the_blocked_scenario_never_ends_on_i
     })
     .await;
     let _ = run_with_modules(&d, vec![Arc::new(NoBrake)]).await;
+    // only the time limit ends the run, inside the module's last hold
     assert_eq!(
         d.summary().outcome,
         DirectOutcome::StoppedTimeout,

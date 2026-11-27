@@ -189,10 +189,27 @@ pub fn digest(i: &Inputs<'_>) -> Digest {
     Digest { text, omitted }
 }
 
-/// The fenced block that carries the engine's final message: labelled as written by the engine and untrusted, cut to [`MAX_FINAL_CHARS`]
-/// characters (a cut says so on its own line), and closed by a line with the same random word, which the message cannot contain
-/// ([`add_cline_message`] checks that).
+/// The marker of the block that carries an engine's final message in a follow-up draft: `written by <engine>, untrusted [<nonce>]`, with
+/// the name of the engine that wrote the message (`engine` is its id; `None` is the default engine) and the draft's random word. This is
+/// the one place that makes it: [`cline_block_for`] writes it into the opening line of the block and [`add_cline_message_for`]
+/// looks for it in the box, so the writer and the reader cannot name two engines.
+pub fn marker(engine: Option<&str>, nonce: &str) -> String {
+    crate::engines::say_for(
+        engine,
+        &format!("written by {{engine}}, untrusted [{nonce}]"),
+    )
+}
+
+/// [`cline_block_for`] for a message the default engine wrote.
 pub fn cline_block(message: &str, nonce: &str) -> String {
+    cline_block_for(None, message, nonce)
+}
+
+/// The fenced block that carries the final message of the engine `engine` names: labelled as written by that engine and untrusted
+/// ([`marker`]), cut to [`MAX_FINAL_CHARS`] characters (a cut says so on its own line), and closed by a line with the same random word,
+/// which the message cannot contain ([`add_cline_message_for`] checks that). The message stands in the block as it is: only the two
+/// lines of the fence carry the engine's name.
+pub fn cline_block_for(engine: Option<&str>, message: &str, nonce: &str) -> String {
     let total = message.chars().count();
     let cut: String = message.chars().take(MAX_FINAL_CHARS).collect();
     let note = if total > MAX_FINAL_CHARS {
@@ -200,21 +217,32 @@ pub fn cline_block(message: &str, nonce: &str) -> String {
     } else {
         String::new()
     };
-    crate::engines::say(&format!(
-        "--- written by {{engine}}, untrusted [{nonce}] ---\n{cut}{note}\n--- end of text written by {{engine}} [{nonce}] ---"
-    ))
+    let end = crate::engines::say_for(
+        engine,
+        &format!("end of text written by {{engine}} [{nonce}]"),
+    );
+    format!(
+        "--- {} ---\n{cut}{note}\n--- {end} ---",
+        marker(engine, nonce)
+    )
 }
 
 /// The box's text for a follow-up: the user's own text first, then the digest, then (when the user added it) the engine's final message in a
 /// fence marked with this draft's random word.
 pub fn compose(user_text: &str, d: &Digest, i: &Inputs<'_>) -> String {
+    compose_for(None, user_text, d, i)
+}
+
+/// [`compose`] for a run on the engine `engine` names: the block of its final message, when the inputs carry one, is marked with that
+/// engine's name.
+pub fn compose_for(engine: Option<&str>, user_text: &str, d: &Digest, i: &Inputs<'_>) -> String {
     let mut out = String::new();
     out.push_str(user_text.trim_end());
     out.push_str("\n\n");
     out.push_str(&d.text);
     if let Some(f) = i.cline_final.filter(|f| !f.trim().is_empty()) {
         out.push_str("\n\n");
-        out.push_str(&cline_block(f, i.nonce));
+        out.push_str(&cline_block_for(engine, f, i.nonce));
     }
     out
 }
@@ -234,11 +262,21 @@ pub enum AddRefused {
 /// The box with the engine's final message added after everything the person has there: the user's text and the digest, edits and all, stay
 /// as they are. A second call for the same draft is refused, not toggled.
 pub fn add_cline_message(box_text: &str, message: &str, nonce: &str) -> Result<String, AddRefused> {
+    add_cline_message_for(None, box_text, message, nonce)
+}
+
+/// [`add_cline_message`] for a message that the engine `engine` names wrote: the block is marked with that engine's name, and the box is
+/// searched for the same [`marker`], so the second call for a draft finds what the first one wrote.
+pub fn add_cline_message_for(
+    engine: Option<&str>,
+    box_text: &str,
+    message: &str,
+    nonce: &str,
+) -> Result<String, AddRefused> {
     if message.trim().is_empty() {
         return Err(AddRefused::NoMessage);
     }
-    let marker = crate::engines::say(&format!("written by {{engine}}, untrusted [{nonce}]"));
-    if box_text.contains(&marker) {
+    if box_text.contains(&marker(engine, nonce)) {
         return Err(AddRefused::Already);
     }
     let cut: String = message.chars().take(MAX_FINAL_CHARS).collect();
@@ -247,7 +285,7 @@ pub fn add_cline_message(box_text: &str, message: &str, nonce: &str) -> Result<S
     }
     let mut out = box_text.trim_end().to_string();
     out.push_str("\n\n");
-    out.push_str(&cline_block(message, nonce));
+    out.push_str(&cline_block_for(engine, message, nonce));
     Ok(out)
 }
 
@@ -264,6 +302,17 @@ fn repository_of(source_target: Option<&str>) -> Option<&str> {
 /// own repository, so the new run opens a pull request there; anything else (an `s3-only` run, or a target not known yet) is followed by a
 /// zip alone. The words must match the job the second Enter starts (`ham::tui::send`).
 pub fn confirmation(run_id: &str, head_sha: Option<&str>, source_target: Option<&str>) -> String {
+    confirmation_for(None, run_id, head_sha, source_target)
+}
+
+/// [`confirmation`] for a follow-up that starts on the engine `engine` names (its id): "The new <engine> receives" names the engine of
+/// the new run, which the caller reads from the same place as the start it sends.
+pub fn confirmation_for(
+    engine: Option<&str>,
+    run_id: &str,
+    head_sha: Option<&str>,
+    source_target: Option<&str>,
+) -> String {
     let from = match head_sha.filter(|h| !h.is_empty()) {
         Some(h) => format!("commit {}", h.chars().take(7).collect::<String>()),
         None => "the delivered result".to_string(),
@@ -278,9 +327,12 @@ pub fn confirmation(run_id: &str, head_sha: Option<&str>, source_target: Option<
         ),
         None => "Target: s3-only: the new run delivers a zip of its code on the branch harness/<new run id>, with no pull request.".to_string(),
     };
-    crate::engines::say(&format!(
-        "This starts a new billable run from {from} of run {run_id}{source}.\n{target}\nThe new {{engine}} receives exactly the text in the box: edit it first if you like."
-    ))
+    crate::engines::say_for(
+        engine,
+        &format!(
+            "This starts a new billable run from {from} of run {run_id}{source}.\n{target}\nThe new {{engine}} receives exactly the text in the box: edit it first if you like."
+        ),
+    )
 }
 
 /// What the screen says when a follow-up from the same source is already going; the run's id and status follow it.

@@ -11,7 +11,49 @@
 use super::*;
 use ham_core::engines::{self, Capabilities};
 
+/// The engine each run was started on from this app, by run id: what the screen knows of a run's engine before an event of the
+/// run's session has arrived. A start of the New run screen, a follow-up and a retry fill it. It only chooses which known engine to
+/// name: a session that names its engine wins, and nothing here is sent or stored.
+#[derive(Debug, Default)]
+pub(crate) struct StartedOn {
+    /// The engine in the Engine box when the last start of the New run screen went out.
+    asked_now: Option<&'static engines::Engine>,
+    by_run: std::collections::HashMap<String, &'static engines::Engine>,
+}
+
 impl App {
+    /// The New run screen sent a start that runs on `engine`.
+    pub(crate) fn engine_asked(&mut self, engine: Option<&'static engines::Engine>) {
+        self.started_on.asked_now = engine;
+    }
+
+    /// The start was accepted: `run_id` is the run that engine was asked for.
+    pub(crate) fn engine_started(&mut self, run_id: &str) {
+        if let Some(engine) = self.started_on.asked_now.take() {
+            self.engine_started_as(run_id, engine);
+        }
+    }
+
+    /// Run `run_id`, which this app started, is on `engine`.
+    pub(crate) fn engine_started_as(&mut self, run_id: &str, engine: &'static engines::Engine) {
+        self.started_on.by_run.insert(run_id.to_string(), engine);
+    }
+
+    /// The engine this app started run `id` on, when it started that run.
+    pub(crate) fn engine_started_on(&self, id: &str) -> Option<&'static engines::Engine> {
+        self.started_on.by_run.get(id).copied()
+    }
+
+    /// The engine of the run on screen as far as the screen knows it: the one its session named, else the one this app started the run
+    /// on. `None` when neither is known: a run that was started elsewhere and has no event of its session yet (the run's record carries
+    /// no engine), and a session that named none.
+    pub(crate) fn focused_engine(&self) -> Option<&'static engines::Engine> {
+        self.cached
+            .as_ref()
+            .and_then(engines::named_in)
+            .or_else(|| self.focused_run().and_then(|id| self.engine_started_on(id)))
+    }
+
     /// The capability record of the focused run again, after new events.
     pub(crate) fn caps_refresh(&mut self) {
         let mut caps = self
@@ -57,11 +99,14 @@ impl App {
         out
     }
 
-    /// The engine the focused run is on (read from its `session.started` event). With no run open it is the engine a new run would start on:
+    /// The engine the focused run is on: read from its `session.started` event; before that event, the engine this app started the run on
+    /// ([`App::focused_engine`]); else the default engine, which is what a session that names no engine runs. With no run open it is the engine a new run would start on:
     /// the session's choice, else `default_engine` of the file, else the default engine.
     pub(crate) fn run_engine(&self) -> &'static engines::Engine {
         match &self.cached {
-            Some(view) => engines::of_view(view),
+            Some(_) => self
+                .focused_engine()
+                .unwrap_or_else(engines::default_engine),
             None => self.new_run_engine(),
         }
     }

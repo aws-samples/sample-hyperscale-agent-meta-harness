@@ -89,6 +89,20 @@ pub enum Problem {
     Unreadable(String),
 }
 
+/// The words of [`Problem::ReservedName`], a template: `{engine}` is the engine that would load the file ([`Problem::words_for`]).
+pub const RESERVED_NAME: &str = "cannot be called AGENTS.md: {engine} would load it as a repository instruction file; rename it";
+
+impl Problem {
+    /// The words of the problem for a person whose next run is on the engine `engine` names (its id; `None` is the default engine). Only
+    /// the reserved name says an engine; every other problem reads as its `Display` does.
+    pub fn words_for(&self, engine: Option<&str>) -> String {
+        match self {
+            Problem::ReservedName => crate::engines::say_for(engine, RESERVED_NAME),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl std::fmt::Display for Problem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -103,10 +117,7 @@ impl std::fmt::Display for Problem {
                 "has a name that is not allowed: use 1-{MAX_NAME_BYTES} letters, digits, '.', '_' or '-' (ASCII, no spaces or \
                  slashes, not starting with '.' or '-'), ending in .md"
             ),
-            Problem::ReservedName => write!(
-                f,
-                "cannot be called AGENTS.md: Cline would load it as a repository instruction file; rename it"
-            ),
+            Problem::ReservedName => f.write_str(&crate::engines::say(RESERVED_NAME)),
             Problem::Nul => write!(f, "contains a NUL byte"),
             Problem::Bom => write!(
                 f,
@@ -172,6 +183,12 @@ impl RuleError {
             name: name.to_string(),
             problem,
         }
+    }
+
+    /// The error as a person reads it whose next run is on the engine `engine` names: `rule "<name>" <problem>`, which is what `Display`
+    /// writes with the default engine's name ([`Problem::words_for`]).
+    pub fn words_for(&self, engine: Option<&str>) -> String {
+        format!("rule {:?} {}", self.name, self.problem.words_for(engine))
     }
 }
 
