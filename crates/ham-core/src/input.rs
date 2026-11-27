@@ -621,6 +621,7 @@ pub fn ignored_phrase(why: &str) -> String {
 }
 
 /// The text of an answer is some text of at most 262,144 bytes (the server's rule; there is no limit in characters), checked before anything is sent.
+/// This form has no run at hand and names the default engine: the client's callers know the run and call [`check_text_for`] with its engine.
 pub fn check_text(text: &str) -> Result<(), String> {
     check_text_for(None, text)
 }

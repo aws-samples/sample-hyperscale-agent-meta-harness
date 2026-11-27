@@ -6,6 +6,20 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.34] - 2026-11-27
+
+### Changed
+
+- `ham watch` without a run id and `ham update` respond faster on stages with many runs.
+
+### Fixed
+
+- The note that tells you to press `r` on the Runs screen and in the tag explorer changes to the still-loading note when the older runs start loading.
+- A commit that changes no file is saved within one copy interval. Before, it was saved with the next file change or at the end of the run.
+- Questions about a stopped run, their notices and `ham watch` name the engine the run is on. A run on OpenCode whose session disk is full is asked about OpenCode. The refusal of an empty or too long answer and the previews of cancel, finish and a new session name it too.
+- `ham cancel` ends the run as your stop when it arrives while the engine is still working by itself after a message. Before, the run could show the outcome of the last answered prompt.
+- A temporary storage error while a run's request or repository bundle is read no longer stops the run from starting. The read is tried again up to three times, and a run that still cannot start says how often it was tried.
+
 ## [5.33] - 2026-11-26
 
 ### Changed

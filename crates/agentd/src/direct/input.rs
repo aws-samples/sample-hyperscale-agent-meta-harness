@@ -1164,7 +1164,7 @@ pub fn reason_word(
 }
 
 // The plain title and explanation of each reason name the engine, so they live in `engine::direct_words`.
-pub use crate::engine::direct_words::{reason_explain, reason_title};
+pub use crate::engine::direct_words::{reason_explain, reason_title, reason_title_for};
 
 /// The commands the one-line `text` suggests: the offered actions as `ham` commands, `try_model` left out (it needs a model name).
 /// A message in the same session is not suggested when the stop is a rejected or a full conversation: more prompts there fail the
@@ -1212,12 +1212,26 @@ pub fn needs_input_payload(
     e: &NeedsInputEvidence,
     expires: &str,
 ) -> serde_json::Value {
-    needs_input_payload_for(req_id, n, ask, d, e, expires, None)
+    needs_input_payload_for(
+        req_id,
+        n,
+        ask,
+        d,
+        e,
+        expires,
+        None,
+        crate::engine::direct_words::DEFAULT_ENGINE,
+    )
 }
 
 /// [`needs_input_payload`] for a stage that may have ended on a full session disk. With `disk` the body says `disk_full` as its
 /// reason, titles itself "The session disk is full" and carries what the person can do as its `question`; every other member is the
 /// ask's. The reader's table of reasons has no entry for the word, so it shows the title and the question.
+///
+/// `engine` is the profile name of the engine that ran. The title of the body, which the reader shows as the head line of the
+/// question, names that engine; with no name given the title says "the engine". [`needs_input_payload`] is the form with the default
+/// engine's title.
+#[allow(clippy::too_many_arguments)]
 pub fn needs_input_payload_for(
     req_id: &str,
     n: u32,
@@ -1226,10 +1240,11 @@ pub fn needs_input_payload_for(
     e: &NeedsInputEvidence,
     expires: &str,
     disk: Option<&crate::direct::disk::DiskFull>,
+    engine: &str,
 ) -> serde_json::Value {
     let title = disk.map_or_else(
-        || reason_title(ask.reason),
-        crate::direct::disk::DiskFull::title,
+        || reason_title_for(ask.reason, engine),
+        |full| full.title().to_string(),
     );
     let commands = command_words(ask.reason, &ask.options);
     let text = if commands.is_empty() {
@@ -1244,7 +1259,7 @@ pub fn needs_input_payload_for(
         request_id: req_id.to_string(),
         n,
         reason: reason_word(ask.reason, disk).to_string(),
-        title: title.to_string(),
+        title,
         stop_outcome: d.stop_outcome().map(str::to_string),
         evidence: bounded_evidence(e),
         last_message: d.last_message().map(str::to_string),

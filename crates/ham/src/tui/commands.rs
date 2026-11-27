@@ -347,6 +347,34 @@ pub fn name_continue_target(
     })
 }
 
+/// The preview of a cancel, a finish or a fresh session with the name of the engine the run is on. `engine` knows it for a run
+/// whose events the screen holds; the preview for a run it does not know says "the engine". Only the words of the preview change. `None`
+/// for every other line.
+pub fn name_run_engine(
+    outcome: &RouteOutcome,
+    engine: &dyn Fn(&str) -> Option<String>,
+) -> Option<RouteOutcome> {
+    let RouteOutcome::Command {
+        argv,
+        invocation,
+        class,
+        preview: Some(preview),
+    } = outcome
+    else {
+        return None;
+    };
+    let text = ham_core::router::run_preview_text(invocation, engine)?;
+    Some(RouteOutcome::Command {
+        argv: argv.clone(),
+        invocation: invocation.clone(),
+        class: *class,
+        preview: Some(Preview {
+            text,
+            confirm_with: preview.confirm_with.clone(),
+        }),
+    })
+}
+
 /// The line of a preview that shows the one-way-door note (`ham_core::config_write::door_note`): the message box and the Settings screen show
 /// the same words before the first write that adds a table to `config.toml`.
 pub fn door_text(note: &str) -> String {

@@ -43,7 +43,14 @@ tokio = { workspace = true, features = ["signal"] }
 tokio = { workspace = true, features = ["test-util"] }
 # The processor clock of a thread (`CLOCK_THREAD_CPUTIME_ID`), read by the tests that hold the store of a copy off the runtime's
 # threads (`tests/b860_store_stream.rs`). It adds no package.
-rustix = { workspace = true, features = ["time"] }
+# `net`, with which the stand-in of `tests/b970_no_delay.rs` asks the kernel to hold its acknowledgements back
+# (`TCP_QUICKACK`). It adds no package.
+# `thread`, with which the rig of `tests/direct_support` starts a worker on one processor (`Opts::one_processor`). It adds no
+# package.
+rustix = { workspace = true, features = ["time", "net", "thread"] }
+# The same tests call the worker's connector as the service it is, to read the option of a connection it opens. It adds no
+# package: hyper-util brings it.
+tower-service.workspace = true
 
 [[bin]]
 name = "agentd"

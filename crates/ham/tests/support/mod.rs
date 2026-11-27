@@ -1445,6 +1445,11 @@ pub struct Faults {
     pub runs_tokens_in: Mutex<Vec<String>>,
     /// The page tokens of the list calls that passed the gate to their answer, in order.
     pub runs_tokens_out: Mutex<Vec<String>>,
+    /// The list of runs, only a call that carries a page token: while this is set such a call is answered as the service answers a page
+    /// token it cannot read (400 `bad-request`, `nextToken is not valid`: `control-api/src/run_index.rs`). The store of this stand reads
+    /// every token as a number of rows and refuses none. A 400 is not asked again, so the client's read of the older runs fails with
+    /// that one call. Read after the gate; the call counts in both lists.
+    pub runs_token_refused: std::sync::atomic::AtomicBool,
     /// The transcript route (`GET /v1/runs/{id}/transcript`, every page): wait this many milliseconds before the answer (0 = answer at once). On the
     /// stage the route answers in about 0.65 s, after the run screen has drawn its progress feed.
     pub transcript_delay_ms: AtomicU64,
@@ -1690,6 +1695,9 @@ impl Fake {
                 .lock()
                 .unwrap()
                 .push(token.clone());
+            if self.faults.runs_token_refused.load(Ordering::SeqCst) {
+                return api_error(400, "bad-request", "nextToken is not valid");
+            }
         }
         let deps = Deps {
             store: self.mem.clone(),

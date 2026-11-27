@@ -50,10 +50,11 @@ const GAP: usize = 1;
 const COUNT_MIN: usize = 5;
 /// From this screen width the table has the LAST column.
 const LAST_FROM: u16 = 100;
-/// `d` while the list held is a part: while older runs are being loaded, and for every other part. `tags_note_follows_list`
-/// takes each away when it no longer holds, so the two are known by their text.
-const D_STILL_LOADING: &str = "remove needs every run loaded: they are still loading";
-const D_NOT_LOADED: &str = "remove needs every run loaded: press r to load them all, then d";
+/// `d` while the list held is a part: its two sentences, which `tags_note_follows_list` keeps true.
+const D_PART: PartNote = PartNote {
+    still_loading: "remove needs every run loaded: they are still loading",
+    names_r: "remove needs every run loaded: press r to load them all, then d",
+};
 
 /// A question waiting for `y`: remove `tag` from `ids`.
 #[derive(Debug)]
@@ -94,6 +95,8 @@ pub(crate) struct TagExplorer {
     sent: Option<Sent>,
     /// A one-line answer for the note row, until the next key.
     note: Option<String>,
+    /// `d` was last refused while no older runs were being loaded, so its sentence named `r` (`PartNote::follow`).
+    named_r: bool,
     /// The time (`14:05`) a read of every page was applied; `None`: only the newest page is known.
     loaded: Option<String>,
     /// The tags of the runs an answer changed while a timer read was out, laid over that read when it arrives.
@@ -255,17 +258,11 @@ impl App {
         self.tags.loaded = Some(self.tags_clock());
     }
 
-    /// The tag explorer's half of `App::runs_notes_follow_list`: `d`'s sentence that the runs are loading goes when they no
-    /// longer are, its sentence that names `r` goes when the list is whole. A note of another kind stays until the next key.
+    /// The tag explorer's half of `App::runs_notes_follow_list`: `d`'s two sentences follow the list by the rule of
+    /// `PartNote::follow`. A note of another kind stays until the next key.
     pub(crate) fn tags_note_follows_list(&mut self) {
-        let stale = match self.tags.note.as_deref() {
-            Some(D_STILL_LOADING) => !self.runs_older_loading(),
-            Some(D_NOT_LOADED) => self.runs_whole(),
-            _ => false,
-        };
-        if stale {
-            self.tags.note = None;
-        }
+        let (whole, loading) = (self.runs_whole(), self.runs_older_loading());
+        D_PART.follow(&mut self.tags.note, self.tags.named_r, whole, loading);
     }
 
     /// Whether a timer read is out when an edit's answer lands: that read is older than the answer.
@@ -455,14 +452,9 @@ impl App {
             return;
         }
         if self.tags.loaded.is_none() {
-            self.tags.note = Some(
-                if self.runs_older_loading() {
-                    D_STILL_LOADING
-                } else {
-                    D_NOT_LOADED
-                }
-                .to_string(),
-            );
+            let loading = self.runs_older_loading();
+            self.tags.named_r = !loading;
+            self.tags.note = Some(D_PART.now(loading).to_string());
             return;
         }
         let Some(tag) = self.tags.cursor_tag.clone() else {

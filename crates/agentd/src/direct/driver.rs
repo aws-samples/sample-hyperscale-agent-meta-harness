@@ -19,8 +19,8 @@ use crate::direct::engine_stop::StopReport;
 use crate::direct::failover::{FailoverPlan, FailoverRecord, Route};
 use crate::direct::fresh::{self, FreshSpec};
 use crate::direct::hooks::{
-    Event, Hooks, LadderEvent, PromptReplied, PromptSent, SessionEnd, SessionEnded, SessionStarted,
-    TurnEnd, TurnVote,
+    Event, Hooks, LadderEvent, MIN_WAIT, PromptReplied, PromptSent, SessionEnd, SessionEnded,
+    SessionStarted, TurnEnd, TurnVote,
 };
 use crate::direct::input::{
     Ask, AssessFacts, Assessment, DigestSource, DigestSources, InputPolicy, RunInputState,
@@ -1069,7 +1069,8 @@ where
 /// Puts the end of a stage to the modules: the vote of the turn end (`seal` false) or the seal. `None` when the stage is not one a module
 /// may continue: nothing was asked of the model, the prompt was not answered, the user's cancel is up or no time is left. A vote that comes back
 /// after the user's cancel or the deadline is dropped, except a `Wait` of the turn end: the caller's hold then ends the run for that cancel or
-/// deadline.
+/// deadline. A prompt that comes back after the user's cancel from a poll in which a module said that the engine still works by itself is
+/// dropped too, and the run is held as for that module's wait.
 #[allow(clippy::too_many_arguments)]
 async fn consult(
     hooks: &Hooks,
@@ -1105,10 +1106,10 @@ async fn consult(
         time_left: left,
         tool_calls: collector.tool_calls(),
     };
-    let vote = if seal {
-        hooks.seal(&end).await
+    let (vote, working) = if seal {
+        (hooks.seal(&end).await, false)
     } else {
-        hooks.turn_end(&end).await
+        hooks.turn_end_heard(&end).await
     };
     if cancelled() || deadline <= Instant::now() {
         // With: a module said in this poll that the engine still works by itself (`Wait`), and the user's cancel or the
@@ -1116,8 +1117,16 @@ async fn consult(
         // deadline at once, as it ends an open prompt (the cancel is written to the engine, and the stop is the user's or the time
         // limit's). Dropped, the run ended with the outcome of the last answered prompt; after a user's message that the engine had
         // queued behind its round, that was a turn that ended without a message. Every other vote is dropped as before.
+        // The prompt of one module replaced the `Wait` of another in this poll (a user's message for an engine that works by
+        // itself, at the first ask of the first stop), and the user's cancel came up while the modules were asked. The prompt is
+        // dropped as every vote after the cancel is. What the poll heard about the engine is kept as the wait it was: the same hold
+        // writes the cancel to the engine once and ends the run as the user's stop. Dropped whole, nothing told the engine, and the
+        // run ended with the outcome of the last answered prompt.
         return match vote {
             wait @ TurnVote::Wait { .. } if !seal => Some(wait),
+            TurnVote::Prompt(_) if working && cancelled() => {
+                Some(TurnVote::Wait { until: MIN_WAIT })
+            }
             _ => None,
         };
     }
@@ -1909,6 +1918,7 @@ impl Machine {
                 &evidence,
                 &expires,
                 facts.disk_full.as_ref(),
+                &plan.engine,
             )
         });
         self.log(&format!(

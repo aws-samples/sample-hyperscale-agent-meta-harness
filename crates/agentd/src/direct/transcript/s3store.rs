@@ -3,8 +3,8 @@
 //!
 //! agentd has no AWS SDK, and the shared signed client (`crate::http`) signs no header besides the SigV4 ones, so this store signs its
 //! own requests with the same crate (`aws-sigv4`) and puts the headers it needs into the signature: the condition, the range and the
-//! content type. The TLS stack is the same as the shared client's (rustls with the webpki roots, ring). A failure never carries a
-//! credential: the text is the status and S3's own error code and message.
+//! content type. The connector is the shared client's (`crate::http::connector`: rustls with the webpki roots, ring, and no-delay on
+//! every connection). A failure never carries a credential: the text is the status and S3's own error code and message.
 
 use crate::BoxFuture;
 use crate::creds::CredStore;
@@ -90,16 +90,9 @@ impl S3Store {
         endpoint: Option<String>,
         bucket: String,
     ) -> Self {
-        let mut http = HttpConnector::new();
-        http.enforce_http(false);
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
-            .unwrap_or_else(|e| panic!("ring TLS provider rejected its own defaults: {e}"))
-            .https_or_http()
-            .enable_http1()
-            .wrap_connector(http);
         Self {
-            client: Client::builder(TokioExecutor::new()).build(https),
+            // The worker's one connector: no-delay is set on every connection.
+            client: Client::builder(TokioExecutor::new()).build(crate::http::connector()),
             creds,
             region,
             endpoint,

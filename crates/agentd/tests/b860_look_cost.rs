@@ -206,16 +206,18 @@ const BUDGET_BASE: &str = "B860_BUDGET_BASE";
 const BUDGET_FORM: &str = "B860_BUDGET_FORM";
 /// The bundle the run of [`b860_a_look_above_the_base_stays_inside_its_budget`] starts from, in the test's scratch folder.
 const BUDGET_BASE_BUNDLE: &str = "repo.bundle";
-/// The most git processes a look at an unchanged tree may start: `add -A`, `write-tree`, and the count of the clean-up when the look
-/// before it hashed a changed tree.
-const UNCHANGED_LOOK_GITS: usize = 3;
+/// The most git processes a look at an unchanged tree may start: `add -A`, `write-tree`, the read of the engine's head
+/// (`rev-parse HEAD`), and the count of the clean-up when the look before it hashed a changed tree. The read of the head is
+/// added here on purpose, and it is one call: a commit that changes no file is work of the run, and a look that never read the
+/// head left it in no copy until a file changed again or the run ended.
+const UNCHANGED_LOOK_GITS: usize = 4;
 /// The most git processes a look that makes a copy may start: the eight of a copy (`add -A`, `write-tree`, `rev-parse HEAD`,
 /// `cat-file -e` twice, `commit-tree`, `update-ref`, `bundle create`) and the count of the clean-up when the look before it hashed a
 /// changed tree.
 const CHANGED_LOOK_GITS: usize = 9;
 /// The git commands a look at an unchanged tree starts. A look that starts another one fails the test until the command is added
-/// here on purpose.
-const UNCHANGED_LOOK_COMMANDS: [&str; 3] = ["add", "write-tree", "count-objects"];
+/// here on purpose. `rev-parse` is the read of the engine's head, once a look ([`Looks::look`]).
+const UNCHANGED_LOOK_COMMANDS: [&str; 4] = ["add", "write-tree", "rev-parse", "count-objects"];
 /// The git commands a look that makes a copy starts.
 const CHANGED_LOOK_COMMANDS: [&str; 8] = [
     "add",
@@ -397,11 +399,12 @@ impl Looks<'_> {
                 "TRIGGER PRESENT: {what} started git {command}, which no look of its kind starts:\n{listed}"
             );
         }
-        // One pass over the tree, one tree written, and for a copy one bundle.
+        // One pass over the tree, one tree written, one read of the engine's head,
+        // and for a copy one bundle.
         let once: &[&str] = if copy {
-            &["add", "write-tree", "bundle"]
+            &["add", "write-tree", "rev-parse", "bundle"]
         } else {
-            &["add", "write-tree"]
+            &["add", "write-tree", "rev-parse"]
         };
         for command in once {
             let times = commands.iter().filter(|c| *c == command).count();
@@ -610,12 +613,13 @@ fn looks_in_their_own_process(dir: &Path, test: &str, base: &str, form: Option<&
 }
 
 /// A look stays inside its budget of git processes: on a generated repository of 2,000 files, a look at an unchanged tree starts at most
-/// three (`add -A`, `write-tree`, and the count of the clean-up after a look that hashed a changed tree), and a look that copies 200
-/// changed files at most nine, whose processor time stays far below a fixed bound. The test reads what each git was started with: a
-/// look reads the tree once (one `add -A`, one `write-tree`), a copy writes one bundle, a look starts only the git commands listed
-/// above for its kind, and no look starts `prune`, `repack` or `gc`, because the repository of this test stays far below the marks of
-/// the clean-up. So a change that puts the clean-up back in front of every look, reads the tree a second time, or adds a git call of
-/// any other kind to a look fails here.
+/// four (`add -A`, `write-tree`, the read of the engine's head, and the count of the clean-up after a look that hashed a changed
+/// tree), and a look that copies 200 changed files at most nine, whose processor time stays far below a fixed bound. The test reads
+/// what each git was started with: a look reads the tree once (one `add -A`, one `write-tree`) and the engine's head once (one
+/// `rev-parse`), a copy writes one bundle, a look starts only the git commands listed above for its kind, and no look starts
+/// `prune`, `repack` or `gc`, because the repository of this test stays far below the marks of the clean-up. So a change that puts
+/// the clean-up back in front of every look, reads the tree or the head a second time, or adds a git call of any other kind to a
+/// look fails here. A look at an unchanged tree whose head stands where the last copy found it makes no copy, so it stores nothing.
 ///
 /// What it does not hold: the time a look takes. The processor time of a look on a repository with a long history, and what the
 /// looks cost a long command, are measured on the bench and in the live proof of a release.

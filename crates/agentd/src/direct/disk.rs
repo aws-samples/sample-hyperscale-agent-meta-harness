@@ -26,6 +26,13 @@
 //! [`DiskProbe::diagnose`] says what the machine reports for the log, and [`Limits::engine_fault`] is the cause of a run that ended because
 //! the engine failed on every route while every route answered a test request (`crate::direct::local_fault`).
 //!
+//! One measurement of [`HostDisk`] has a time limit of its own ([`MEASURE_LIMIT`]): a file system that does not answer no longer
+//! holds a prompt boundary or the check after an engine error, and what was not measured in time is never read as full. The test write is
+//! made only in a folder that is the worker's own ([`test_write_with`]: a real folder of the worker's user that neither group nor others
+//! may write, opened once without following a link at the last part of its path), under a name no other write gets ([`probe_name`]),
+//! and the folders of a run that get
+//! it are the run's own on both disks ([`run_write_dirs`]). Any other folder gets no test write and says nothing about the disk.
+//!
 //! The session's storage can refuse writes with "no space left on device" while its files are far below its limit. A stop whose
 //! numbers show room therefore does not call the disk full ([`DiskFull::no_space_with_room`]): it says that the engine reported no space,
 //! or that the worker's own write to the storage was refused (`crate::direct::storage_watch`), with the size of the files. The stop
@@ -33,12 +40,14 @@
 //! alone, for the notice of a refusal.
 
 use crate::BoxFuture;
+use crate::logging::LogSink;
 use harness_protocol::direct::HARNESS_STOP_PREFIX;
 use std::collections::HashSet;
 use std::io::Write as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Free space on the root volume below which it counts as short of room (`AGENTD_DISK_LOW_MB`).
@@ -71,8 +80,9 @@ pub struct Reading {
     pub workspace_used_mb: Option<u64>,
     /// The walk was cut short (entries or time), so `workspace_used_mb` is a lower bound.
     pub workspace_partial: bool,
-    /// A test write (a 4 KiB file created, synced and removed) in each folder the run writes to: `Some(true)` when every folder took it,
-    /// `Some(false)` when one did not (a read-only or full disk that `statvfs` still shows room on), `None` when no folder was tried.
+    /// A test write (a 4 KiB file created, synced and removed) in each folder of the worker's own that the measurement was given:
+    /// `Some(true)` when every folder that was tried took it, `Some(false)` when one refused it (a read-only or full disk that `statvfs`
+    /// still shows room on), `None` when no folder was tried.
     pub writable: Option<bool>,
 }
 
@@ -202,7 +212,8 @@ pub struct DiskFull {
     /// (`crate::direct::storage_watch`). The caller sets it; it changes the words only when both numbers show room
     /// ([`Self::no_space_with_room`]), never the decision to stop.
     pub storage_refused: bool,
-    /// The profile name of the engine that ran, for the question of a stop with room. The caller sets it; empty reads "The engine".
+    /// The profile name of the engine that ran, for the question of every stop. The caller sets it; a cause that was given
+    /// none names no engine (the question of a stop with room reads "The engine", the two others "the engine").
     pub engine: String,
 }
 
@@ -445,9 +456,9 @@ impl DiskFull {
         if self.no_space_with_room() {
             crate::engine::direct_words::storage_refused_question(&self.engine)
         } else if self.only_engine() {
-            crate::engine::direct_words::engine_fault_question().to_string()
+            crate::engine::direct_words::engine_fault_question(&self.engine)
         } else {
-            crate::engine::direct_words::disk_full_question().to_string()
+            crate::engine::direct_words::disk_full_question(&self.engine)
         }
     }
 }
@@ -686,14 +697,35 @@ impl Default for WalkBudget {
     }
 }
 
+/// How long one measurement of [`HostDisk`], and the folders' part of its report, may take: the walk's own budget
+/// ([`WalkBudget`], 5 s) and as long again for the read of the free space and the test writes. A measurement that has not answered by
+/// then is given up: its reading says that nothing was measured, which is never read as full, and the run goes on as after a
+/// measurement that failed. While that measurement is still out, the next one answers at once in the same way and starts no second
+/// read. It is no setting; `crates/agentd/AGENTS.md` ("Session disks", part h) states it for maintainers.
+pub const MEASURE_LIMIT: Duration = Duration::from_secs(10);
+
 /// The real probe: `statvfs` of the root volume's folder (the data root, `/var/lib/agentd`), a walk of the checkout mount and a test write in
-/// each folder the run writes to: the data root, the workspace root and the folders added with [`HostDisk::with_write_dirs`].
+/// each folder it is given that is the worker's own: the data root, the workspace root and the folders added with
+/// [`HostDisk::with_write_dirs`]. One measurement takes [`MEASURE_LIMIT`] at the most.
 #[derive(Debug)]
 pub struct HostDisk {
     root: PathBuf,
     workspace: PathBuf,
     budget: WalkBudget,
     write_dirs: Vec<PathBuf>,
+    /// A measurement's read is out: started and not ended yet.
+    out: Arc<AtomicBool>,
+    /// Where a measurement that was given up at its limit says so, in one line ([`HostDisk::with_log`]).
+    log: Option<Arc<dyn LogSink>>,
+}
+
+/// Says that the read of a measurement has ended, when the read ends or is given up before it began.
+struct ReadOut(Arc<AtomicBool>);
+
+impl Drop for ReadOut {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl HostDisk {
@@ -712,11 +744,21 @@ impl HostDisk {
             root,
             workspace,
             budget,
+            out: Arc::new(AtomicBool::new(false)),
+            log: None,
         }
     }
 
-    /// More folders to make the test write in (the run's own folder, the checkout's parent, the engine's state folder). A folder that does
-    /// not exist is not tried, and one that is listed twice is tried once.
+    /// The log of the worker. A measurement that is given up at [`MEASURE_LIMIT`] writes one line there, so that a maintainer can read
+    /// that the disk was not measured; the measurements that answer at once while that read is still out write none.
+    #[must_use]
+    pub fn with_log(mut self, log: Arc<dyn LogSink>) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    /// More folders to make the test write in (a session gives [`run_write_dirs`]). A folder that does not exist or is not the worker's
+    /// own is not tried, and one that is listed twice is tried once.
     #[must_use]
     pub fn with_write_dirs(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
         for dir in dirs {
@@ -732,11 +774,33 @@ impl DiskProbe for HostDisk {
     fn measure(&self) -> BoxFuture<'_, Reading> {
         let (root, workspace, budget) = (self.root.clone(), self.workspace.clone(), self.budget);
         let write_dirs = self.write_dirs.clone();
+        let out = self.out.clone();
+        let log = self.log.clone();
         Box::pin(async move {
+            // One read at a time. A read that was given up at the limit may still wait for its file system, and a second one
+            // would wait for the same.
+            if out.swap(true, Ordering::SeqCst) {
+                return Reading::default();
+            }
+            let ended = ReadOut(out);
             // The walk reads many directory entries and the test write waits for the disk: not on an async worker.
-            tokio::task::spawn_blocking(move || read(&root, &workspace, budget, &write_dirs))
-                .await
-                .unwrap_or_default()
+            let read = tokio::task::spawn_blocking(move || {
+                let _ended = ended;
+                read(&root, &workspace, budget, &write_dirs)
+            });
+            // A file system that does not answer does not hold the caller longer than the limit. Nothing was measured then.
+            match tokio::time::timeout(MEASURE_LIMIT, read).await {
+                Ok(done) => done.unwrap_or_default(),
+                Err(_) => {
+                    if let Some(log) = &log {
+                        log.line(&format!(
+                            "direct turn disk not measured: the measurement gave no answer within {} s",
+                            MEASURE_LIMIT.as_secs()
+                        ));
+                    }
+                    Reading::default()
+                }
+            }
         })
     }
 
@@ -757,10 +821,16 @@ impl DiskProbe for HostDisk {
         let (root, workspace) = (self.root.clone(), self.workspace.clone());
         let write_dirs = self.write_dirs.clone();
         Box::pin(async move {
-            let mut text =
-                tokio::task::spawn_blocking(move || host_report(&root, &workspace, &write_dirs))
-                    .await
-                    .unwrap_or_default();
+            let report =
+                tokio::task::spawn_blocking(move || host_report(&root, &workspace, &write_dirs));
+            // The folders' part has the limit of a measurement, and the report says when it was given up.
+            let mut text = match tokio::time::timeout(MEASURE_LIMIT, report).await {
+                Ok(done) => done.unwrap_or_default(),
+                Err(_) => format!(
+                    "the folders gave no answer within {} s\n",
+                    MEASURE_LIMIT.as_secs()
+                ),
+            };
             text.push_str(&dmesg_tail().await);
             bounded(text, DIAGNOSE_MAX_CHARS)
         })
@@ -786,29 +856,169 @@ const PROBE_BYTES: usize = 4096;
 /// The most the diagnostic text holds.
 const DIAGNOSE_MAX_CHARS: usize = 4096;
 
-/// The test write: a 4 KiB file created, synced and removed in `dir`. A read-only or full file system refuses one of the three, whatever
-/// `statvfs` reports free.
-pub fn test_write(dir: &Path) -> std::io::Result<()> {
-    let file = dir.join(format!(".agentd-write-probe-{}", std::process::id()));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&file)?;
-    let wrote = f.write_all(&[0u8; PROBE_BYTES]).and_then(|()| f.sync_all());
-    drop(f);
-    let removed = std::fs::remove_file(&file);
-    wrote.and(removed)
+/// The first part of the name of a test write's file; 32 hexadecimal digits follow ([`probe_name`]).
+pub const PROBE_PREFIX: &str = ".agentd-write-probe-";
+
+/// What a test write came to.
+#[derive(Debug)]
+pub enum TestWrite {
+    /// The folder took the file: made, written, synced and removed.
+    Took,
+    /// The file system refused a step of the write (the create, the write, the sync or the remove), as a read-only or full one does.
+    Refused(std::io::Error),
+    /// No write was made, and nothing is said about the disk: the folder is not one the worker alone writes (a link or a file in its
+    /// place, a path that names nothing, another user's folder, or one that group or others may write), no name could be made for the
+    /// file, or the name was taken.
+    NotTried(&'static str),
 }
 
-/// `Some(false)` when a folder that exists refuses the test write, `Some(true)` when every existing folder took it, `None` when no folder
-/// exists.
+/// Where a test looks in at a test write ([`test_write_with`]). The product gives nothing to run there.
+#[derive(Clone, Copy, Debug)]
+pub enum WriteStep<'a> {
+    /// The folder has passed the rule and the file is not touched yet.
+    Checked,
+    /// The file stands under this name: made, written and synced, and not removed yet.
+    Made(&'a str),
+}
+
+/// A name for the file of one test write: [`PROBE_PREFIX`] and 128 bits of the system's random source as 32 hexadecimal digits. No
+/// other write gets the name, in this run or in another, and it cannot be made ahead.
+pub fn probe_name() -> std::io::Result<String> {
+    use std::io::Read as _;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let mut name = String::with_capacity(PROBE_PREFIX.len() + 32);
+    name.push_str(PROBE_PREFIX);
+    for b in bytes {
+        name.push_str(&format!("{b:02x}"));
+    }
+    Ok(name)
+}
+
+/// The test write: a 4 KiB file made, synced and removed in `dir`, under a name of its own ([`probe_name`]). A read-only
+/// or full file system refuses one of the steps, whatever `statvfs` reports free.
+pub fn test_write_in(dir: &Path) -> TestWrite {
+    match probe_name() {
+        Ok(name) => test_write_with(dir, &name, &|_| {}),
+        Err(_) => TestWrite::NotTried("no name could be made for the file"),
+    }
+}
+
+/// [`test_write_in`] for a caller that only asks whether the folder took the write: an error for a write that was refused and for one
+/// that was not tried.
+pub fn test_write(dir: &Path) -> std::io::Result<()> {
+    match test_write_in(dir) {
+        TestWrite::Took => Ok(()),
+        TestWrite::Refused(e) => Err(e),
+        TestWrite::NotTried(why) => Err(std::io::Error::other(why)),
+    }
+}
+
+/// The test write of [`test_write_in`] under the name `name`. The folder is opened once without following a link at the last part of
+/// its path (a link earlier in the path is followed, and the rule holds for the folder that was opened, whatever its path names). It is checked
+/// through that handle: a real folder of this process's user that neither group nor others may write, as the folder of the storage
+/// watch's own write is (`crate::direct::storage_watch::test_write_with`). A folder that fails the rule is not written to, because
+/// somebody else could then decide what the write meets. The file is made new through the handle, for this user alone and without
+/// following a link, and it is removed through the handle, so the write stays in the folder that was checked whatever its path comes
+/// to name afterwards. `look` runs at the two steps of [`WriteStep`]: the product gives nothing to run, and a test looks in there.
+pub fn test_write_with(dir: &Path, name: &str, look: &dyn Fn(WriteStep<'_>)) -> TestWrite {
+    use rustix::fs::{AtFlags, Mode, OFlags};
+    use rustix::io::Errno;
+    let refused = |e: Errno| TestWrite::Refused(std::io::Error::from(e));
+    let folder = match rustix::fs::open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(folder) => folder,
+        // A link or a file in the folder's place.
+        Err(e) if e == Errno::LOOP || e == Errno::NOTDIR => {
+            return TestWrite::NotTried("the folder is not a folder");
+        }
+        Err(e) if e == Errno::NOENT => return TestWrite::NotTried("the folder does not exist"),
+        Err(e) if e == Errno::ACCESS || e == Errno::PERM => {
+            return TestWrite::NotTried("the folder is not the worker's own");
+        }
+        Err(e) => return refused(e),
+    };
+    let stat = match rustix::fs::fstat(&folder) {
+        Ok(stat) => stat,
+        Err(e) => return refused(e),
+    };
+    if stat.st_uid != rustix::process::geteuid().as_raw()
+        || Mode::from_raw_mode(stat.st_mode).intersects(Mode::WGRP | Mode::WOTH)
+    {
+        return TestWrite::NotTried("the folder is not the worker's own");
+    }
+    look(WriteStep::Checked);
+    // The file is made new in the folder that was checked, and no link is followed: a name that is taken is left as it is.
+    let fd = match rustix::fs::openat(
+        &folder,
+        name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    ) {
+        Ok(fd) => fd,
+        Err(e) if e == Errno::EXIST => return TestWrite::NotTried("the name of the file is taken"),
+        Err(e) => return refused(e),
+    };
+    let mut f = std::fs::File::from(fd);
+    let wrote = f.write_all(&[0u8; PROBE_BYTES]).and_then(|()| f.sync_all());
+    if wrote.is_ok() {
+        look(WriteStep::Made(name));
+    }
+    drop(f);
+    let removed =
+        rustix::fs::unlinkat(&folder, name, AtFlags::empty()).map_err(std::io::Error::from);
+    // What the write met comes first: a refused write whose file could not be removed either is a refused write.
+    match wrote.and(removed) {
+        Ok(()) => TestWrite::Took,
+        Err(e) => TestWrite::Refused(e),
+    }
+}
+
+/// The folders of a run that get the test write besides the two roots: the run's own folder on the root volume (`agent_data`)
+/// and the run's own folder on the session's storage (`<workspace root>/<run>`). The worker makes both and hands neither to the
+/// engine's user. The folders the engine's user writes (its state folder, the parent of the checkout) are inside them, on the same two
+/// file systems, and get no test write.
+pub fn run_write_dirs(agent_data: &Path, workspace_root: &Path, run: &str) -> [PathBuf; 2] {
+    [agent_data.to_path_buf(), workspace_root.join(run)]
+}
+
+/// Takes the write bits of group and others off a folder of [`run_write_dirs`]. The worker makes these folders with the mode
+/// its umask leaves. Under a umask that leaves a write bit for the group the rule of [`test_write_with`] would pass the folder by, and
+/// the disk rule would lose its test write there without a word. The folder is opened once without following a link at the last part
+/// of its path, and only a real folder of this process's user is changed. No other bit of the mode moves, so nobody gains an access.
+/// `true` when the mode was changed.
+pub fn keep_run_dir_own(dir: &Path) -> bool {
+    use rustix::fs::{Mode, OFlags};
+    let Ok(folder) = rustix::fs::open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let Ok(stat) = rustix::fs::fstat(&folder) else {
+        return false;
+    };
+    let mode = Mode::from_raw_mode(stat.st_mode);
+    let open = Mode::WGRP | Mode::WOTH;
+    if stat.st_uid != rustix::process::geteuid().as_raw() || !mode.intersects(open) {
+        return false;
+    }
+    rustix::fs::fchmod(&folder, mode.difference(open)).is_ok()
+}
+
+/// `Some(false)` when a folder refuses the test write, `Some(true)` when every folder that was tried took it, `None` when no folder was
+/// tried (none exists, or none is the worker's own).
 fn writable(dirs: &[PathBuf]) -> Option<bool> {
     let mut tried = false;
-    for dir in dirs.iter().filter(|d| d.is_dir()) {
-        tried = true;
-        if test_write(dir).is_err() {
-            return Some(false);
+    for dir in dirs {
+        match test_write_in(dir) {
+            TestWrite::Took => tried = true,
+            TestWrite::Refused(_) => return Some(false),
+            TestWrite::NotTried(_) => {}
         }
     }
     tried.then_some(true)
@@ -827,9 +1037,17 @@ fn bounded(text: String, max: usize) -> String {
 fn host_report(root: &Path, workspace: &Path, write_dirs: &[PathBuf]) -> String {
     let mut out = String::new();
     for dir in write_dirs.iter().filter(|d| d.is_dir()) {
-        match test_write(dir) {
-            Ok(()) => out.push_str(&format!("write test {}: ok\n", dir.display())),
-            Err(e) => out.push_str(&format!("write test {}: failed: {e}\n", dir.display())),
+        match test_write_in(dir) {
+            TestWrite::Took => out.push_str(&format!("write test {}: ok\n", dir.display())),
+            TestWrite::Refused(e) => {
+                out.push_str(&format!("write test {}: failed: {e}\n", dir.display()));
+            }
+            TestWrite::NotTried(why) => {
+                out.push_str(&format!(
+                    "write test {}: not tried ({why})\n",
+                    dir.display()
+                ));
+            }
         }
     }
     let mut paths: Vec<&Path> = vec![Path::new("/"), root, workspace];

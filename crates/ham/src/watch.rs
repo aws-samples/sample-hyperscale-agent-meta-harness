@@ -368,10 +368,11 @@ impl InputMemo {
         if let Some(q) = &v.input.open
             && self.shown.insert(q.request_id.clone())
         {
+            // The head names the engine of the run, as the card's lines do.
             let head = if q.blocking {
-                "Cline needs you:"
+                format!("{} needs you:", q.engine)
             } else {
-                "Notice:"
+                "Notice:".to_string()
             };
             out.push(format!("{head} {}", q.title.trim_end_matches('.')));
             out.extend(q.card_lines().into_iter().skip(1).map(|l| format!("  {l}")));

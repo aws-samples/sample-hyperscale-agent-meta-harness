@@ -173,9 +173,20 @@ impl World {
 
     /// As [`World::run`], with these modules registered first: the message module stays last, its place in the product.
     pub fn run_after(&self, first: Vec<Arc<dyn DirectHook>>) -> JoinHandle<InvocationResponse> {
+        self.run_around(first, Vec::new())
+    }
+
+    /// As [`World::run_after`], with the modules of `last` registered after the message module: a test's own module that must be
+    /// asked once the message module has voted.
+    pub fn run_around(
+        &self,
+        first: Vec<Arc<dyn DirectHook>>,
+        last: Vec<Arc<dyn DirectHook>>,
+    ) -> JoinHandle<InvocationResponse> {
         let mut modules = first;
         modules.push(self.canceller.clone() as Arc<dyn DirectHook>);
         modules.push(self.hook.clone() as Arc<dyn DirectHook>);
+        modules.extend(last);
         let deps = Deps {
             hooks: Some(Hooks::new(modules)),
             ..Deps::default()

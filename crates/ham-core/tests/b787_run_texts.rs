@@ -240,3 +240,26 @@ fn b787_a_run_view_without_a_session_still_reads_as_the_default_engine() {
         "{texts:?}"
     );
 }
+
+/// The notice of a question names the engine of the run, as the question's card does.
+#[test]
+fn b885_the_notice_of_a_question_names_the_engine_of_the_run() {
+    let q = progress(
+        10,
+        json!({"kind": "needs-input", "text": "t", "requestId": id(10), "n": 1, "reason": "no_changes", "title": "",
+               "blocking": true, "options": ["finish"], "models": [], "canContinue": true, "waitS": 1800}),
+    );
+    let text = |engine: &str| {
+        ham_core::notice::notice_of_for(&q, ham_core::engines::find(engine).unwrap())
+            .expect("a question is a notice")
+            .text
+    };
+    assert_eq!(
+        text("opencode"),
+        "The run needs you: OpenCode ended without changing files"
+    );
+    assert_eq!(
+        text("cline"),
+        "The run needs you: Cline ended without changing files"
+    );
+}

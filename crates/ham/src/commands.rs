@@ -8,7 +8,9 @@ use crate::api::ApiError;
 use crate::http::ControlPlane;
 use crate::output::Output;
 use ham_core::exit::ERROR;
-use ham_core::input::{InputRequest, check_text, ignored_phrase, outcome_phrase, resolve_offered};
+use ham_core::input::{
+    InputRequest, check_text_for, ignored_phrase, outcome_phrase, resolve_offered,
+};
 use ham_core::models;
 use ham_core::render::model_name;
 use ham_core::sanitize::sanitize_line;
@@ -424,16 +426,18 @@ pub async fn answer<P: ControlPlane>(
     opts: &AnswerOptions,
 ) -> Result<Answered, AnswerError> {
     let action = want.action();
-    // A message is required for `say`; the other actions take one only if given.
+    let mut state = RunState::new(run_id);
+    api.poll(&mut state).await.map_err(AnswerError::Read)?;
+    let view = state.view_at(Some(now_unix()));
+    // A message is required for `say`; the other actions take one only if given. The text is checked after the one read of the run and
+    // before anything is sent, so that its refusal names the engine the run is on.
     if let Some(t) = want
         .text()
         .filter(|t| matches!(want, Want::Say(_)) || !t.trim().is_empty())
     {
-        check_text(t).map_err(AnswerError::Refused)?;
+        check_text_for(Some(ham_core::engines::of_view(&view).id), t)
+            .map_err(AnswerError::Refused)?;
     }
-    let mut state = RunState::new(run_id);
-    api.poll(&mut state).await.map_err(AnswerError::Read)?;
-    let view = state.view_at(Some(now_unix()));
     let open = view.input.waiting();
     let request_id = match (&opts.request_id, open) {
         (Some(id), _) => id.clone(),

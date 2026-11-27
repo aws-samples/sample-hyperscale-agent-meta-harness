@@ -109,6 +109,15 @@ fn screen(app: &App, w: u16, h: u16) -> String {
     out
 }
 
+/// The text with its box-drawing characters dropped and its runs of white space squashed, so a sentence that wrapped over lines of a
+/// panel can be found.
+fn squashed(text: &str) -> String {
+    text.replace(['│', '┌', '┐', '└', '┘', '─'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn harness(seq: u64, t: EventType, v: Value) -> Envelope {
     Envelope {
         schema_version: SCHEMA_VERSION,
@@ -151,7 +160,8 @@ fn question() -> Envelope {
     }
 }
 
-fn pages(app: &mut App, with_question: bool) {
+/// The events of a run whose session started on `engine`, with or without an open question.
+fn pages_on(app: &mut App, with_question: bool, engine: &str) {
     let mut events = vec![
         harness(
             1,
@@ -161,7 +171,7 @@ fn pages(app: &mut App, with_question: bool) {
         harness(
             2,
             EventType::SessionStarted,
-            json!({"agentId": "direct", "engine": "cline", "modelId": ham_core::models::DEFAULT_MODEL_ID}),
+            json!({"agentId": "direct", "engine": engine, "modelId": ham_core::models::DEFAULT_MODEL_ID}),
         ),
         harness(
             3,
@@ -188,9 +198,14 @@ fn pages(app: &mut App, with_question: bool) {
 
 /// The run `RUN` on screen in typing mode, with its events loaded.
 fn ready(with_question: bool) -> App {
+    ready_on("cline", with_question)
+}
+
+/// [`ready`] for a run whose session started on `engine`.
+fn ready_on(engine: &str, with_question: bool) -> App {
     let mut app = App::new_direct("n".into(), None, DirectSettings::default());
     app.open_run(RUN);
-    pages(&mut app, with_question);
+    pages_on(&mut app, with_question, engine);
     let mut clock = Clock::early();
     press(&mut app, &mut clock, KeyCode::Char('i'), 50);
     assert_eq!(app.mode(), Mode::Typing);
@@ -252,6 +267,29 @@ fn a_plain_line_still_answers_the_open_question() {
             model: None,
         }
     );
+}
+
+/// A line that is too long for an answer, sent from the box of the run screen, is refused in the words of the run's engine. For a
+/// Cline run the words are the ones of before.
+#[test]
+fn b885_a_line_too_long_for_an_answer_is_refused_in_the_words_of_the_runs_engine() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        let mut app = ready_on(engine, true);
+        let mut clock = Clock::new();
+        // A person gets this much text into the box by pasting it.
+        let at = clock.after(100);
+        assert!(app.handle_paste_at("x".repeat(262_145), at).is_empty());
+        let effects = enter(&mut app, &mut clock, 400);
+        assert!(effects.is_empty(), "{engine}: {effects:?}");
+        let text = squashed(&screen(&app, 200, 40));
+        assert!(
+            text.contains(&format!(
+                "the message is 262,145 bytes; {name} takes at most 262,144 bytes (256 KiB)"
+            )),
+            "{engine}: {}",
+            &text[text.len().saturating_sub(1500)..]
+        );
+    }
 }
 
 #[test]
@@ -377,6 +415,68 @@ fn a_command_that_changes_a_run_shows_a_preview_and_waits_for_a_second_enter() {
         !screen(&app, 100, 30).contains("Cancel run"),
         "the preview stays after it ran"
     );
+}
+
+/// The previews of cancel, finish and new-session name the engine the run on screen is on. For a Cline run the words are the ones
+/// of before.
+#[test]
+fn b885_the_previews_of_cancel_finish_and_new_session_name_the_engine_of_the_run() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        for (line, want) in [
+            (
+                "/cancel",
+                format!("Cancel run {RUN}: {name} is asked to stop and the work so far is kept."),
+            ),
+            (
+                "/finish",
+                format!(
+                    "Finish run {RUN} with what exists. This answers the question {name} asked."
+                ),
+            ),
+            (
+                "/new-session",
+                format!("Start a fresh {name} session on the files of run {RUN}."),
+            ),
+        ] {
+            let mut app = ready_on(engine, true);
+            let mut clock = Clock::new();
+            let effects = send(&mut app, &mut clock, line);
+            assert!(
+                effects.is_empty(),
+                "{engine} {line} ran without a second Enter: {effects:?}"
+            );
+            let text = squashed(&screen(&app, 100, 30));
+            assert!(text.contains(&want), "{engine} {line}: {text}");
+        }
+    }
+}
+
+/// The screen holds the events of the run it shows and of no other, so the preview for another run has no engine name to give and
+/// says "the engine". A typed new-session always acts on the run on screen: its words with no name are pinned in ham-core's router test.
+#[test]
+fn b885_the_preview_for_a_run_the_screen_does_not_hold_says_the_engine() {
+    for (line, want) in [
+        (
+            format!("/cancel {RUN2}"),
+            format!("Cancel run {RUN2}: the engine is asked to stop and the work so far is kept."),
+        ),
+        (
+            format!("/finish {RUN2}"),
+            format!(
+                "Finish run {RUN2} with what exists. This answers the question the engine asked."
+            ),
+        ),
+    ] {
+        let mut app = ready_on("opencode", true);
+        let mut clock = Clock::new();
+        let effects = send(&mut app, &mut clock, &line);
+        assert!(
+            effects.is_empty(),
+            "{line} ran without a second Enter: {effects:?}"
+        );
+        let text = squashed(&screen(&app, 100, 30));
+        assert!(text.contains(&want), "{line}: {text}");
+    }
 }
 
 #[test]
@@ -1917,4 +2017,34 @@ fn b804_update_typed_in_the_box_asks_for_no_second_enter_and_never_gets_the_term
         !text.contains("Press Enter to run it"),
         "a pasted /update waits for a second Enter:\n{text}"
     );
+}
+
+/// The key `c` in browse mode shows the preview of a typed `/cancel`, with the engine of the run on screen. For a run on Cline the
+/// words are the ones of before. The same key again, 300 ms or more later, cancels the run the preview named.
+#[test]
+fn b885_the_cancel_key_names_the_engine_of_the_run() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        let mut app = ready_on(engine, false);
+        let mut clock = Clock::new();
+        press(&mut app, &mut clock, KeyCode::Esc, 400);
+        assert_eq!(app.mode(), Mode::Browse);
+        let effects = press(&mut app, &mut clock, KeyCode::Char('c'), 400);
+        assert!(effects.is_empty(), "{engine}: {effects:?}");
+        let text = squashed(&screen(&app, 100, 30));
+        assert!(
+            text.contains(&format!(
+                "Cancel run {RUN}: {name} is asked to stop and the work so far is kept."
+            )),
+            "{engine}: {text}"
+        );
+        assert!(
+            text.contains("press c again to cancel run"),
+            "{engine}: {text}"
+        );
+        let effects = press(&mut app, &mut clock, KeyCode::Char('c'), 400);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Cancel { run_id }] if run_id == RUN),
+            "{engine}: {effects:?}"
+        );
+    }
 }

@@ -151,6 +151,11 @@ fn pages(events: Vec<Envelope>) -> Msg {
 
 /// The run while Cline works: created, one session, active.
 fn working() -> Vec<Envelope> {
+    working_on("cline")
+}
+
+/// [`working`] for a run whose session started on `engine`.
+fn working_on(engine: &str) -> Vec<Envelope> {
     vec![
         harness(
             1,
@@ -160,7 +165,7 @@ fn working() -> Vec<Envelope> {
         harness(
             2,
             EventType::SessionStarted,
-            json!({"agentId": "direct", "engine": "cline", "modelId": ham_core::models::DEFAULT_MODEL_ID}),
+            json!({"agentId": "direct", "engine": engine, "modelId": ham_core::models::DEFAULT_MODEL_ID}),
         ),
         harness(
             3,
@@ -821,6 +826,41 @@ fn when_the_question_is_answered_the_card_goes_and_the_notice_keeps_the_outcome(
     assert!(screen_text(&app, 100, 30).contains("answered: finish"));
 }
 
+/// The notice that keeps the end of a question names the engine of the run.
+#[test]
+fn b885_the_notice_of_an_answered_question_names_the_engine_of_the_run() {
+    let mut events = working_on("opencode");
+    events.push(question(json!({})));
+    let mut app = app_with(events);
+    app.update(pages(vec![received(1, "continue_with_prompt")]));
+    let text = screen_text(&app, 100, 30);
+    assert!(
+        text.contains("answered: message sent to OpenCode"),
+        "{text}"
+    );
+    assert!(!text.contains("message sent to Cline"), "{text}");
+}
+
+/// The notice of an answer that is on its way names the engine of the run.
+#[test]
+fn b885_the_notice_of_an_answer_on_its_way_names_the_engine_of_the_run() {
+    let mut events = working_on("opencode");
+    events.push(question(json!({})));
+    let mut app = app_with(events);
+    ch(&mut app, 'p');
+    type_text(&mut app, "go on");
+    app.handle_key(ctrl_s());
+    app.update(accepted());
+    // A second answer while the first one is on its way.
+    ch(&mut app, 'p');
+    let text = screen_text(&app, 100, 30);
+    assert!(
+        text.contains("Your answer is on its way: wait for OpenCode to take it."),
+        "{text}"
+    );
+    assert!(!text.contains("wait for Cline"), "{text}");
+}
+
 #[test]
 fn when_nobody_answers_the_notice_says_the_window_closed() {
     let mut app = waiting();
@@ -1229,4 +1269,31 @@ async fn the_tui_notices_a_question_answers_it_and_sees_it_close_through_the_rea
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_tui_answers_through_the_real_event_loop_when_the_first_poll_is_slow() {
     answer_through_the_event_loop("tui-loop-slow", 400).await;
+}
+
+/// The refusal of an answer's text on the typing screen names the engine the run is on. For a Cline run the words are the ones of
+/// before.
+#[test]
+fn b885_the_refusal_of_an_answers_text_names_the_engine_of_the_run() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        let mut events = working_on(engine);
+        events.push(question(json!({})));
+        let mut app = app_with(events);
+        ch(&mut app, 'p');
+        assert!(app.handle_key(ctrl_s()).is_empty());
+        let text = squashed(&screen_text(&app, 100, 30));
+        assert!(
+            text.contains(&format!("the message is empty; write some text for {name}")),
+            "{engine}: {text}"
+        );
+        assert!(app.handle_paste("x".repeat(262_145)).is_empty());
+        assert!(app.handle_key(ctrl_s()).is_empty());
+        let text = squashed(&screen_text(&app, 100, 30));
+        assert!(
+            text.contains(&format!(
+                "the message is 262,145 bytes; {name} takes at most 262,144 bytes (256 KiB)"
+            )),
+            "{engine}: {text}"
+        );
+    }
 }

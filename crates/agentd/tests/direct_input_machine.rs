@@ -1013,6 +1013,51 @@ const TITLES: [(NeedsInputReason, &str); 14] = [
     (R::ProviderOutage, "Every model route is down"),
 ];
 
+/// A title asked for with no engine name says "the engine", as both disk questions do, and never the name of the default engine.
+#[test]
+fn b885_a_title_with_no_engine_name_says_the_engine() {
+    use NeedsInputReason as R;
+    for (reason, title) in [
+        (R::EngineStop, "The engine stopped its own prompt"),
+        (R::NoChanges, "The engine ended without changing files"),
+        (R::NoMessage, "The engine sent an empty message"),
+        (R::OutputLimit, "The model reached its output limit"),
+        (R::RequestLimit, "The engine reached its request limit"),
+        (R::Refused, "The answer was refused or blocked"),
+        (
+            R::ReplayRejected,
+            "The provider rejected the saved conversation",
+        ),
+        (
+            R::ContextFull,
+            "The conversation exceeds the context window",
+        ),
+        (R::ProviderError, "The model provider failed"),
+        (R::CapHit, "Automatic recovery reached its prompt cap"),
+        (R::EngineDied, "The engine's process stopped"),
+        (R::Silence, "The engine stopped sending output"),
+        (R::OtherStop, "The engine gave an unknown stop reason"),
+        (R::ProviderOutage, "Every model route is down"),
+    ] {
+        for none in ["", "  "] {
+            assert_eq!(
+                agentd::direct::input::reason_title_for(reason, none),
+                title,
+                "{reason:?}"
+            );
+        }
+    }
+    // A name that is given is used as before.
+    assert_eq!(
+        agentd::direct::input::reason_title_for(R::EngineDied, "opencode"),
+        "The OpenCode process stopped"
+    );
+    assert_eq!(
+        agentd::direct::input::reason_title_for(R::EngineStop, "cline"),
+        "Cline stopped its own prompt"
+    );
+}
+
 #[test]
 fn every_reason_has_its_plain_title_and_an_explanation() {
     for (reason, title) in TITLES {

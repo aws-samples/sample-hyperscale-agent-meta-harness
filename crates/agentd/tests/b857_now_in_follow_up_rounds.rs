@@ -502,6 +502,133 @@ async fn b854_b857_a_request_to_end_in_the_round_a_message_arrived_in_is_told_to
     the_engine_was_not_replaced(&r);
 }
 
+// ---- the user's cancel inside the first poll of the first stop --------------------------------------------------------------
+
+/// Asked after the message module. In the poll in which the feeder handed the message out, it notes what the poll told it about the
+/// engine and delivers the user's cancel: the cancel lands inside that poll, after every module has voted.
+struct CancelInPoll {
+    canceller: Arc<Canceller>,
+    feeder: Arc<Feeder>,
+    done: AtomicBool,
+    /// The poll said that a module asked before this one voted that the engine still works by itself.
+    engine_working: AtomicBool,
+    /// The feeder's ask (1 for the first ask of the first stop) at which the cancel was delivered.
+    at_ask: AtomicU32,
+}
+
+impl DirectHook for CancelInPoll {
+    fn name(&self) -> &'static str {
+        "cancel-in-poll"
+    }
+
+    fn on_turn_end<'a>(&'a self, end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
+        Box::pin(async move {
+            if end.n == 1
+                && self.feeder.fed.load(Ordering::SeqCst)
+                && !self.done.swap(true, Ordering::SeqCst)
+            {
+                self.engine_working
+                    .store(end.engine_working, Ordering::SeqCst);
+                self.at_ask
+                    .store(self.feeder.asks.load(Ordering::SeqCst), Ordering::SeqCst);
+                self.canceller.cancel();
+            }
+            TurnVote::Done
+        })
+    }
+}
+
+/// How often the engine received `session/cancel`.
+fn cancels_written(w: &World) -> usize {
+    w.log()
+        .lines()
+        .filter(|l| *l == "notification session/cancel")
+        .count()
+}
+
+/// The user's cancel lands at the first ask of the first stop, in the poll in which the goal module says that the engine still
+/// works by itself and the message module votes the user's message as the next prompt. The prompt is not sent after the cancel. The
+/// engine is told once, and the run ends as the user's stop: before, nothing told the engine and the run ended with the outcome of the
+/// last answered prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn b882_a_cancel_at_the_first_ask_of_the_first_stop_ends_the_run_as_the_users_stop_and_is_written_once()
+ {
+    let w = World::start_scenario(SCENARIO, quick(), &pid_dir()).await;
+    let goal = GoalHook::for_engine("cline", goal_settings())
+        .expect("the plugin folder is in the repository");
+    let feeder = Arc::new(Feeder {
+        at: At::FirstAsk,
+        hook: w.hook.clone(),
+        store: w.store.clone(),
+        engine_log: w.d.agent_data().join("data/fake-acp.log"),
+        asks: AtomicU32::new(0),
+        fed: AtomicBool::new(false),
+        fed_at_ask: AtomicU32::new(0),
+    });
+    let late = Arc::new(CancelInPoll {
+        canceller: w.canceller.clone(),
+        feeder: feeder.clone(),
+        done: AtomicBool::new(false),
+        engine_working: AtomicBool::new(false),
+        at_ask: AtomicU32::new(0),
+    });
+    let run = w.run_around(
+        vec![
+            goal as Arc<dyn DirectHook>,
+            feeder.clone() as Arc<dyn DirectHook>,
+        ],
+        vec![late.clone() as Arc<dyn DirectHook>],
+    );
+    w.send("m1", TEXT, Mode::Now).await;
+    let _ = run.await.unwrap();
+    let agentd_log = w.d.log.lines();
+    // TRIGGER PRESENT: the message was claimed at the first ask of the first stop, a module had said in that poll that the engine
+    // works by itself, the cancel was delivered in that poll, and the claimed message did not go out as a prompt after it.
+    assert_eq!(
+        feeder.fed_at_ask.load(Ordering::SeqCst),
+        1,
+        "the message was not handed out at the first ask: the test proves nothing"
+    );
+    assert_eq!(
+        late.at_ask.load(Ordering::SeqCst),
+        1,
+        "the cancel was not delivered in the first poll: the test proves nothing"
+    );
+    assert!(
+        late.engine_working.load(Ordering::SeqCst),
+        "no module said in that poll that the engine works by itself: the test proves nothing\n{agentd_log:?}"
+    );
+    assert_eq!(
+        w.hook.stats().claims,
+        1,
+        "the message module did not claim the message in that poll: {agentd_log:?}"
+    );
+    assert_eq!(
+        w.d.prompts_received(),
+        [direct_support::PROMPT.to_string()],
+        "no prompt goes out after the user's cancel"
+    );
+    // What must hold.
+    assert_eq!(
+        w.d.summary().outcome,
+        DirectOutcome::StoppedByUser,
+        "{}\n{agentd_log:?}",
+        w.d.engine_trace()
+    );
+    assert_eq!(
+        cancels_written(&w),
+        1,
+        "the cancel is written to the engine once\n{}",
+        w.log()
+    );
+    assert_eq!(
+        engine_sessions(&w),
+        1,
+        "no fresh engine session after the cancel: {agentd_log:?}"
+    );
+    assert_eq!(w.hook.stats().tripwires, 0, "{agentd_log:?}");
+}
+
 /// TRIGGER PRESENT for the two cases above: the message went out while the engine worked by itself, and the engine queued it behind
 /// its round before the cancel or the request to end.
 fn the_engine_queued_the_message_before(r: &Ran) {

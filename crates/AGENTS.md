@@ -43,7 +43,10 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   `b883_cost_a_turn_behind_process_1_against_process_1_serving_itself` of `agentd/tests/b883_first_process.rs`, held a turn under 20.6 to 27.7 ms alone
   on the build host and under 90.4 ms inside a full run of the worker's crate. The row costs a run the length of the test, in which no other test of
   the run works, and the wait until the tests in flight have ended. The test took 98 to 102 s on a machine that ran one partition of the workspace's
-  tests and nothing else, in a partition that was not the longest, and 133 to 160 s on the build host beside other work.
+  tests and nothing else, in a partition that was not the longest, and 133 to 160 s on the build host beside other work. The test of the uploads of a
+  cost turn, `b965_the_uploads_of_a_cost_turn_do_not_wait_for_the_acknowledgement_of_their_head` of the same file, has such a row too: it fails when
+  the uploads of the cost scenario's turns wait for an acknowledgement, and whether they wait differs with what else the machine does, so its turns
+  must meet what the turns of the cost test meet.
 - A test makes its folder with `create_dir` and passes over a name that exists; it never takes an existing folder with `create_dir_all`. A name built
   from the process id is new among the processes that run now, not over time: the kernel hands an id out again, nextest starts one process for each
   test, and the tests leave their folders in the scratch directory, so a later run can be handed a folder that holds another test's files and fail on

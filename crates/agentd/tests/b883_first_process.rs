@@ -1942,3 +1942,315 @@ async fn b883_cost_a_turn_behind_process_1_against_process_1_serving_itself() {
     }
     assert!(held.is_empty(), "{held:?}");
 }
+
+// ---- the uploads of a turn of the cost scenario do not wait for an acknowledgement ------------------------------------------
+
+use direct_support::{Arrival, BUCKET, FakeAws};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// How long a step of the test of the uploads may take before the test gives up. It ends a test that hangs; nothing is judged by it.
+const WAIT_LIVENESS: Duration = Duration::from_secs(60);
+/// The requests of each control client that are judged, after [`WAIT_WARM_UPS`] that are not.
+const WAIT_ROUNDS: usize = 15;
+const WAIT_WARM_UPS: usize = 3;
+/// Two thirds of the judged requests of a control client: how many must say the same for the cause to count as shown.
+const WAIT_NEED: usize = (2 * WAIT_ROUNDS).div_ceil(3);
+/// The cause is present in a run when the client with Nagle's algorithm on takes at least this many times as long as the client with
+/// no-delay.
+const WAIT_FACTOR: u32 = 10;
+/// The turns of the cost scenario the test looks at. The first half run as the cost test's turns do, the second half with the worker
+/// on one processor; each half has turns with the first-process role and without it.
+const WAIT_TURNS: usize = 6;
+/// Requests that waited in this many of the turns fail the test. A wait in one turn only can be a pause of the machine and is
+/// printed; a wait in a second turn is the wait.
+const WAIT_TURNS_NEED: usize = 2;
+
+/// A client of the test's own on one kept connection of the stand-in. It sends a PUT as two writes: the head and, once the stand-in
+/// has read the head, the body.
+struct TwoWrites {
+    stream: tokio::net::TcpStream,
+    host: String,
+    name: &'static str,
+    sent: usize,
+}
+
+impl TwoWrites {
+    async fn open(aws: &FakeAws, no_delay: bool, name: &'static str) -> Self {
+        let host = aws.base.trim_start_matches("http://").to_string();
+        let stream = tokio::net::TcpStream::connect(&host).await.unwrap();
+        stream.set_nodelay(no_delay).unwrap();
+        assert_eq!(stream.nodelay().unwrap(), no_delay);
+        Self {
+            stream,
+            host,
+            name,
+            sent: 0,
+        }
+    }
+
+    /// One request. How long the first byte of the body came after the head, as the stand-in read them.
+    async fn put(&mut self, aws: &FakeAws, body: &[u8]) -> Duration {
+        let path = format!("/{BUCKET}/b965-control/{}/{}", self.name, self.sent);
+        self.sent += 1;
+        // The head is about as long as a signed head of the worker's.
+        let head = format!(
+            "PUT {path} HTTP/1.1\r\nhost: {}\r\ncontent-length: {}\r\nx-b965-fill: {}\r\n\r\n",
+            self.host,
+            body.len(),
+            "a".repeat(600)
+        );
+        let before = aws.heads_seen();
+        self.stream.write_all(head.as_bytes()).await.unwrap();
+        tokio::time::timeout(WAIT_LIVENESS, aws.head_seen(before))
+            .await
+            .expect("the stand-in did not read the head");
+        self.stream.write_all(body).await.unwrap();
+        let mut answer = Vec::new();
+        let mut chunk = [0_u8; 512];
+        while !answer.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = tokio::time::timeout(WAIT_LIVENESS, self.stream.read(&mut chunk))
+                .await
+                .expect("no answer of the stand-in")
+                .unwrap();
+            assert!(n > 0, "the stand-in closed the connection of {}", self.name);
+            answer.extend_from_slice(&chunk[..n]);
+        }
+        assert!(
+            answer.starts_with(b"HTTP/1.1 200 "),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
+        let seen = aws
+            .arrivals()
+            .into_iter()
+            .rev()
+            .find(|a| a.path == path)
+            .unwrap_or_else(|| panic!("the stand-in noted no request {path}"));
+        assert_eq!(
+            (seen.with_head, seen.body),
+            (0, body.len()),
+            "the head came alone and the body whole: {seen:?}"
+        );
+        seen.body_began_after
+    }
+}
+
+fn median_of(of: &[Duration]) -> Duration {
+    let mut sorted = of.to_vec();
+    sorted.sort();
+    sorted[sorted.len() / 2]
+}
+
+fn micros_of(of: &[Duration]) -> Vec<u128> {
+    of.iter().map(Duration::as_micros).collect()
+}
+
+/// One turn of the cost scenario, started as [`cost_of_a_turn`] starts it, against a stand-in that holds its acknowledgements back:
+/// every request of the worker as its bytes came in. With `one_processor` the worker runs on one processor of the machine.
+async fn arrivals_of_a_cost_turn(role: bool, one_processor: bool) -> Vec<Arrival> {
+    let (bin, _) = leaving_git(&common::scratch("b965-wait-git"));
+    let d = Direct::start_process(Opts {
+        scenario: "first_process_cost",
+        agentd_env: vec![
+            ("AGENTD_DIRECT_SNAPSHOT_FLOOR_MS", "50".to_string()),
+            ("PATH", format!("{}:/usr/bin:/bin", bin.display())),
+        ],
+        first_process: true,
+        serves_itself: !role,
+        timeout_s: 3600,
+        holds_acks: true,
+        one_processor,
+        ..Opts::default()
+    })
+    .await;
+    let (code, text) = d.post().await;
+    assert_eq!(code, 200, "{text}");
+    let resp = d.wait_result().await;
+    d.wait_healthy().await;
+    assert_eq!(
+        resp.outcome,
+        TurnOutcome::Completed,
+        "{resp:?}\nlog:\n{}",
+        d.process.as_ref().unwrap().log_text()
+    );
+    assert_eq!(
+        d.aws.stand_in_faults(),
+        (0, 0),
+        "the stand-in asked the kernel to hold every acknowledgement back and cut every request out of the bytes it read"
+    );
+    d.aws.arrivals()
+}
+
+/// The hardening of the cost test above. The cost test times a turn from the invocation to the idle worker, and the end of a
+/// turn is a row of uploads. Until two of them waited for the acknowledgement of their head in most turns: a turn's time then
+/// sat on levels one such wait apart, each median of the cost test landed on a level by the split of its ten values, and its pass or
+/// its failure said nothing about the first-process role. This test fails when the requests of such a turn wait again, whatever
+/// client of the worker sends them.
+///
+/// It runs [`WAIT_TURNS`] turns of the cost scenario, started as the cost test starts them, half of them with the role, each against
+/// a stand-in that holds its acknowledgements back and notes how the bytes of every request came in
+/// (`FakeAws::start_holding_acks`). Against that stand-in a client with Nagle's algorithm on waits for the acknowledgement of its
+/// head when it sends a request as two writes on a kept connection, and a client with no-delay does not. Two clients of the test's
+/// own show both in the same run (`TRIGGER PRESENT`), and half of the median of the first parts a request that waited from one that
+/// did not: no time is typed in.
+///
+/// Each turn must have sent the two uploads that waited on a kept connection. Requests that waited in
+/// [`WAIT_TURNS_NEED`] of the turns fail the test with a text that names the wait and the requests; a wait in one turn only is
+/// printed. The cost test itself is as it was.
+///
+/// Whether a worker without no-delay waits in a turn is a race inside the worker, and its outcome differs from machine to machine
+/// and with what else the machine does: an upload leaves as two writes only when the first piece of its file is not read yet at the
+/// moment the head is written; when the piece is there, head and body leave together and nothing can wait. So the test looks at
+/// two kinds of turn. The first half of its turns run as the cost test's do, and the test gets every test thread of a run, as the
+/// cost test does (a row of `.config/nextest.toml`): those turns meet what the turns of the cost test meet on the same machine. In
+/// the second half the worker runs on one processor (`Opts::one_processor`). Measured without no-delay: on one quiet machine the
+/// uploads waited in 19 of 20 turns of the first kind and in 9 of 10 of the second; on another quiet machine in 1 of 80 turns of
+/// the first kind and in every turn of the second; on that second machine crowded, in every turn of both kinds. It is no test of
+/// the option itself: `tests/b970_no_delay.rs` holds that on every machine.
+#[tokio::test(flavor = "multi_thread")]
+async fn b965_the_uploads_of_a_cost_turn_do_not_wait_for_the_acknowledgement_of_their_head() {
+    if skipped() {
+        return;
+    }
+    // The two control clients, in turns, against a stand-in of the kind the turns below get.
+    let aws = FakeAws::start_holding_acks().await;
+    let body = vec![b'{'; 176];
+    let mut nagle = TwoWrites::open(&aws, false, "nagle").await;
+    let mut no_delay = TwoWrites::open(&aws, true, "no-delay").await;
+    for _ in 0..WAIT_WARM_UPS {
+        nagle.put(&aws, &body).await;
+        no_delay.put(&aws, &body).await;
+    }
+    let (mut n, mut d) = (Vec::new(), Vec::new());
+    for round in 0..WAIT_ROUNDS {
+        if round % 2 == 0 {
+            n.push(nagle.put(&aws, &body).await);
+            d.push(no_delay.put(&aws, &body).await);
+        } else {
+            d.push(no_delay.put(&aws, &body).await);
+            n.push(nagle.put(&aws, &body).await);
+        }
+    }
+    assert_eq!(aws.stand_in_faults(), (0, 0));
+    let half = median_of(&n) / 2;
+    let n_waited = n.iter().filter(|took| **took >= half).count();
+    let d_waited = d.iter().filter(|took| **took >= half).count();
+    eprintln!(
+        "B965 control body_after_head_us nagle={:?} no_delay={:?} half_of_nagle_median_us={} waited nagle={n_waited} no_delay={d_waited} of {WAIT_ROUNDS}",
+        micros_of(&n),
+        micros_of(&d),
+        half.as_micros(),
+    );
+    // TRIGGER PRESENT: on this machine, in this run, against this kind of stand-in, a client that keeps Nagle's algorithm on waits
+    // for the acknowledgement of its head and a client with no-delay does not.
+    assert!(
+        median_of(&n) >= median_of(&d) * WAIT_FACTOR
+            && n_waited >= WAIT_NEED
+            && d_waited <= WAIT_ROUNDS - WAIT_NEED,
+        "UPLOAD WAIT TRIGGER ABSENT: a client with Nagle's algorithm on did not wait for the acknowledgement of its head in this \
+         run (median {:?}, {n_waited} of {WAIT_ROUNDS} requests waited) where a client with no-delay took {:?} in the median \
+         ({d_waited} waited): this run can say nothing about the uploads of a turn",
+        median_of(&n),
+        median_of(&d),
+    );
+
+    // The turns: without the role, with it, with it, without it, and so on.
+    let mut waits: std::collections::BTreeMap<String, Vec<(usize, Duration)>> =
+        std::collections::BTreeMap::new();
+    let mut turns_with_a_wait = Vec::new();
+    for turn in 0..WAIT_TURNS {
+        let role = turn % 4 == 1 || turn % 4 == 2;
+        // The first half as the cost test starts a turn, the second half with the worker on one processor.
+        let one_processor = turn >= WAIT_TURNS / 2;
+        let arrivals = arrivals_of_a_cost_turn(role, one_processor).await;
+        // A request can show the wait when it has a body and came on a kept connection.
+        let judged: Vec<&Arrival> = arrivals
+            .iter()
+            .filter(|a| a.body > 0 && a.nth >= 1)
+            .collect();
+        let alone: Vec<&&Arrival> = judged.iter().filter(|a| a.with_head == 0).collect();
+        let named = |end: &str| {
+            judged
+                .iter()
+                .filter(|a| a.method == "PUT" && a.path.ends_with(end))
+                .count()
+        };
+        // TRIGGER PRESENT: the turn sent the two uploads that waited, the record of the copy of the end and the
+        // session's summary, each on a kept connection, where a client with Nagle's algorithm on waits. Whether a request came as a
+        // head without its body says nothing here: with no-delay the two writes follow each other so closely that one read of the
+        // stand-in often brings both.
+        assert!(
+            named("/snapshot.json") >= 1 && named("/summary.json") >= 1,
+            "UPLOAD WAIT TRIGGER ABSENT: turn {turn} (role {role}) sent {} requests with a body on a kept connection, {} PUT of \
+             snapshot.json and {} of summary.json among them: {:?}",
+            judged.len(),
+            named("/snapshot.json"),
+            named("/summary.json"),
+            judged
+                .iter()
+                .map(|a| format!(
+                    "{} {} nth={} with_head={}",
+                    a.method, a.path, a.nth, a.with_head
+                ))
+                .collect::<Vec<_>>()
+        );
+        let mut waited_here = std::collections::BTreeMap::new();
+        for a in &alone {
+            if a.body_began_after >= half {
+                // One entry a kind and turn: the longest.
+                let kind = format!("{} {}", a.method, a.path);
+                let longest: &mut Duration = waited_here.entry(kind).or_default();
+                *longest = (*longest).max(a.body_began_after);
+            }
+        }
+        eprintln!(
+            "B965 turn={turn} role={role} requests={} with_a_body_on_a_kept_connection={} head_alone={} waited={:?} longest_body_after_head_us={} one_processor={one_processor}",
+            arrivals.len(),
+            judged.len(),
+            alone.len(),
+            waited_here
+                .iter()
+                .map(|(k, v)| format!("{k} {}us", v.as_micros()))
+                .collect::<Vec<_>>(),
+            alone
+                .iter()
+                .map(|a| a.body_began_after.as_micros())
+                .max()
+                .unwrap_or(0),
+        );
+        if !waited_here.is_empty() {
+            turns_with_a_wait.push(turn);
+        }
+        for (kind, took) in waited_here {
+            waits.entry(kind).or_default().push((turn, took));
+        }
+    }
+    let waited: Vec<String> = waits
+        .iter()
+        .map(|(kind, turns)| {
+            format!(
+                "{kind} in {} of {WAIT_TURNS} turns ({})",
+                turns.len(),
+                turns
+                    .iter()
+                    .map(|(turn, took)| format!("turn {turn}: {took:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect();
+    eprintln!(
+        "B965 turns_with_a_waiting_request={turns_with_a_wait:?} of {WAIT_TURNS} (the test fails from {WAIT_TURNS_NEED}) waited={waited:?}"
+    );
+    assert!(
+        turns_with_a_wait.len() < WAIT_TURNS_NEED,
+        "UPLOAD WAIT: in {} of {WAIT_TURNS} turns of the cost scenario requests of the worker waited for the acknowledgement of \
+         their head: {waited:?}. In this run a client with Nagle's algorithm on took {:?} from its head to the first byte of its \
+         body and a client with no-delay {:?}. While the requests of a turn wait like this, the turn times of the cost test \
+         (b883_cost_a_turn_behind_process_1_against_process_1_serving_itself) sit on levels one such wait apart, and neither a \
+         pass nor a failure of that test says anything about the first-process role.",
+        turns_with_a_wait.len(),
+        median_of(&n),
+        median_of(&d),
+    );
+}

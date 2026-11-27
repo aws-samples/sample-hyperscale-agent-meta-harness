@@ -604,7 +604,8 @@ fn b846_a_request_to_end_while_the_run_waits_for_an_answer_says_that_no_copy_exi
         memo.lines(&view_at(events, "2026-10-16T08:16:35Z"), 50),
         vec![
             STOP.to_string(),
-            "No copy of the work had been saved before that request: a run saves a copy only after its files change."
+            "No copy of the work had been saved before that request: a run saves a copy only after a file changed or the \
+             engine made a commit."
                 .to_string(),
             "The open question was asked by that session: once it has ended, no answer reaches it. When the run has time left, a \
              new session starts and asks again when it needs your answer."
@@ -821,8 +822,9 @@ fn b846_the_card_of_an_open_question_says_that_its_session_was_asked_to_end() {
     assert!(
         text.contains(
             "The session was asked to end at 2026-10-16 08:16 UTC. No copy of the work had been saved before that request: a run \
-             saves a copy only after its files change. The open question was asked by that session: once it has ended, no answer \
-             reaches it. When the run has time left, a new session starts and asks again when it needs your answer."
+             saves a copy only after a file changed or the engine made a commit. The open question was asked by that session: \
+             once it has ended, no answer reaches it. When the run has time left, a new session starts and asks again when it \
+             needs your answer."
         ),
         "{text}"
     );

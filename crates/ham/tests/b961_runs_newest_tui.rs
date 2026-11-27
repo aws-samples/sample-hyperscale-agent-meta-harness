@@ -1061,6 +1061,41 @@ fn b961_a_note_of_another_kind_stays_when_the_list_becomes_whole() {
     assert!(text(&app).contains(NOTHING), "{}", text(&app));
 }
 
+/// The tag explorer's half of the same rule: the note of a removal that is running stays when a message of the list arrives (each
+/// message that leaves the list whole, and the timer's page).
+#[test]
+fn b961_a_tag_explorer_note_of_another_kind_stays_when_a_list_message_arrives() {
+    const REMOVING: &str = "removing topic:old from 250 runs...";
+    let count = ends_whole().len();
+    for i in 0..=count {
+        let mut app = app();
+        app.update(Msg::RunsIndexed(Ok(IndexedRead {
+            read: RunsRead::All(rows(0, 250)),
+            index: tagged(0, 250),
+        })));
+        ch(&mut app, 't');
+        ch(&mut app, 'd');
+        let sent = ch(&mut app, 'y');
+        assert_eq!(sent.len(), 1, "TRIGGER ABSENT: y sent no removal");
+        assert_eq!(
+            bottom_two(&screen(&app)).0,
+            REMOVING,
+            "TRIGGER ABSENT: the note of the removal is not on the screen"
+        );
+        let (name, msg) = if i < count {
+            ends_whole().remove(i)
+        } else {
+            ("the timer's page", timer(rows(0, 100)))
+        };
+        app.update(msg);
+        assert_eq!(
+            bottom_two(&screen(&app)).0,
+            REMOVING,
+            "{name}: the note of the removal was cleared by a message of the list"
+        );
+    }
+}
+
 #[test]
 fn b961_a_read_that_is_itself_the_whole_list_ends_the_state_of_the_older_runs() {
     // Older runs are being loaded. A read arrives that is itself the whole list (every page in one answer, or a newest page with no
@@ -1087,5 +1122,293 @@ fn b961_a_read_that_is_itself_the_whole_list_ends_the_state_of_the_older_runs() 
         let text = self::text(&app);
         assert!(text.contains(NOT_EVERY), "{name}: {text}");
         assert!(!text.contains(STILL_LOADING), "{name}: {text}");
+    }
+}
+
+// ----: a sentence that names `r` becomes the still-loading one when older runs begin to load ----------------------------------
+
+const TAGS_NOT_LOADED: &str = "\u{250c} tags \u{b7} newest 100 runs only - r loads all ";
+const TAGS_LOADING: &str = "\u{250c} tags \u{b7} newest 100 runs, loading the older ones ";
+
+/// The Runs screen after a failed read of the older runs, then `r` and `R` before the newest page of the new read has answered: the
+/// border says that the older runs are not loaded, the note line names `r`, and a whole read is out.
+#[allow(non_snake_case)]
+fn R_names_r_while_a_read_is_out() -> App {
+    let mut app = app();
+    app.update(newest(rows_r(0, 100)));
+    app.update(older_failed("timeout"));
+    assert_eq!(ch(&mut app, 'r'), vec![Effect::LoadRuns]);
+    assert!(ch(&mut app, 'R').is_empty());
+    let text = text(&app);
+    assert!(
+        top(&text).starts_with(NOT_LOADED) && text.contains(NOT_EVERY),
+        "TRIGGER ABSENT: {text}"
+    );
+    app
+}
+
+/// The tag explorer in the same state: `t`, `r` and `d` before the newest page of the new read has answered.
+fn d_names_r_while_a_read_is_out() -> App {
+    let mut app = app();
+    app.update(Msg::RunsNewest(page(rows(0, 100), tagged(0, 100))));
+    app.update(older_failed("timeout"));
+    ch(&mut app, 't');
+    assert_eq!(ch(&mut app, 'r'), vec![Effect::LoadRuns]);
+    assert!(ch(&mut app, 'd').is_empty());
+    let text = screen(&app);
+    assert!(text.contains(TAGS_NOT_LOADED), "TRIGGER ABSENT: {text}");
+    assert_eq!(bottom_two(&text).0, D_NOT_LOADED, "TRIGGER ABSENT");
+    app
+}
+
+/// The newest page of the read that `r` started, for the tag explorer's rows.
+fn newest_tagged() -> Msg {
+    Msg::RunsNewest(page(rows(0, 100), tagged(0, 100)))
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn b971_Rs_sentence_that_names_r_becomes_the_still_loading_one_when_older_runs_begin_to_load() {
+    let mut app = R_names_r_while_a_read_is_out();
+    // The newest page of the read that `r` started lands: older runs are being loaded. No key is pressed.
+    app.update(newest(rows_r(0, 100)));
+    let text = text(&app);
+    assert!(top(&text).starts_with(LOADING), "TRIGGER ABSENT: {text}");
+    assert!(
+        !text.contains(NOT_EVERY),
+        "older runs are loading and the note still says to press r: {text}"
+    );
+    assert!(text.contains(STILL_LOADING), "{text}");
+    assert!(!text.contains("Enter confirms"), "no question: {text}");
+}
+
+#[test]
+fn b971_the_tag_explorers_sentence_that_names_r_becomes_the_still_loading_one_when_older_runs_begin_to_load()
+ {
+    let mut app = d_names_r_while_a_read_is_out();
+    app.update(newest_tagged());
+    let text = screen(&app);
+    assert!(text.contains(TAGS_LOADING), "TRIGGER ABSENT: {text}");
+    assert_eq!(
+        bottom_two(&text).0,
+        D_STILL_LOADING,
+        "older runs are loading and the note still says to press r: {text}"
+    );
+}
+
+#[test]
+fn b971_both_sentences_go_when_the_list_is_whole() {
+    // The Runs screen, through every message that leaves the list whole. No key is pressed after `R`.
+    let count = ends_whole().len();
+    for i in 0..count {
+        let (name, end) = ends_whole().remove(i);
+        let mut app = R_names_r_while_a_read_is_out();
+        app.update(newest(rows_r(0, 100)));
+        assert!(
+            text(&app).contains(STILL_LOADING),
+            "{name}: while older runs load the note is the still-loading sentence: {}",
+            text(&app)
+        );
+        app.update(end);
+        let text = text(&app);
+        assert!(top(&text).starts_with(PLAIN), "{name}: {text}");
+        assert!(
+            !text.contains(STILL_LOADING) && !text.contains(NOT_EVERY),
+            "{name}: the list is whole and a sentence about a part of it still stands: {text}"
+        );
+    }
+    // The tag explorer, through the end of the whole read.
+    let mut app = d_names_r_while_a_read_is_out();
+    app.update(newest_tagged());
+    assert_eq!(
+        bottom_two(&screen(&app)).0,
+        D_STILL_LOADING,
+        "while older runs load the note is the still-loading sentence"
+    );
+    app.update(Msg::RunsOlder(Ok(IndexedRead {
+        read: RunsRead::All(rows(0, 250)),
+        index: tagged(0, 250),
+    })));
+    let text = screen(&app);
+    assert!(text.contains("all 250 runs loaded at 14:05"), "{text}");
+    assert!(
+        !text.contains("remove needs every run loaded"),
+        "the list is whole and a sentence about a part of it still stands: {text}"
+    );
+}
+
+#[test]
+fn b971_both_sentences_name_r_again_when_the_older_runs_fail_again() {
+    // The Runs screen: the sentence named `r`, became the still-loading one, and the read of the older runs fails again.
+    let mut app = R_names_r_while_a_read_is_out();
+    app.update(newest(rows_r(0, 100)));
+    assert!(
+        text(&app).contains(STILL_LOADING),
+        "while older runs load the note is the still-loading sentence: {}",
+        text(&app)
+    );
+    app.update(older_failed("reset"));
+    let text = text(&app);
+    assert!(top(&text).starts_with(NOT_LOADED), "{text}");
+    assert!(
+        text.contains(NOT_EVERY),
+        "the older runs failed again and the note does not name r: {text}"
+    );
+    assert!(!text.contains(STILL_LOADING), "{text}");
+    // A third read: the sentence follows the older runs again, and goes when the list is whole.
+    app.update(newest(rows_r(0, 100)));
+    assert!(self::text(&app).contains(STILL_LOADING));
+    assert!(!self::text(&app).contains(NOT_EVERY));
+    app.update(older_failed("reset twice"));
+    assert!(self::text(&app).contains(NOT_EVERY));
+    // The failure's words are there as before: the next key takes the note away and the note line shows them.
+    key(&mut app, KeyCode::Down);
+    let text = self::text(&app);
+    assert!(
+        text.contains("could not load the older runs: reset twice"),
+        "{text}"
+    );
+    assert!(!text.contains(NOT_EVERY), "{text}");
+
+    // The tag explorer the same way.
+    let mut app = d_names_r_while_a_read_is_out();
+    app.update(newest_tagged());
+    assert_eq!(
+        bottom_two(&screen(&app)).0,
+        D_STILL_LOADING,
+        "while older runs load the note is the still-loading sentence"
+    );
+    app.update(older_failed("reset"));
+    let text = screen(&app);
+    assert!(text.contains(TAGS_NOT_LOADED), "{text}");
+    assert_eq!(
+        bottom_two(&text).0,
+        D_NOT_LOADED,
+        "the older runs failed again and the note does not name r: {text}"
+    );
+    app.update(newest_tagged());
+    assert_eq!(bottom_two(&screen(&app)).0, D_STILL_LOADING);
+    app.update(older_failed("reset twice"));
+    assert_eq!(bottom_two(&screen(&app)).0, D_NOT_LOADED);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn b971_R_and_d_answer_by_the_state_of_the_list_as_before() {
+    const ASKS_D: &str = "Remove topic:old from 250 runs? y/n";
+    // The Runs screen. Over a failed part `R` names `r` (the helper asserts it). While older runs load `R` says so, also when the
+    // note line held the sentence that had named `r`.
+    let mut app = R_names_r_while_a_read_is_out();
+    app.update(newest(rows_r(0, 100)));
+    assert!(ch(&mut app, 'R').is_empty());
+    let text = text(&app);
+    assert!(text.contains(STILL_LOADING), "{text}");
+    assert!(!text.contains(NOT_EVERY), "{text}");
+    assert!(!text.contains("Enter confirms"), "no question: {text}");
+    // That sentence was set by the key while older runs were loading: when their read fails it goes and the failed read speaks.
+    app.update(older_failed("reset"));
+    let text = self::text(&app);
+    assert!(top(&text).starts_with(NOT_LOADED), "{text}");
+    assert!(
+        text.contains("could not load the older runs: reset"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(STILL_LOADING) && !text.contains(NOT_EVERY),
+        "{text}"
+    );
+    // Over the failed part `R` names `r` again; with the whole list held it asks.
+    assert!(ch(&mut app, 'R').is_empty());
+    assert!(self::text(&app).contains(NOT_EVERY));
+    assert_eq!(ch(&mut app, 'r'), vec![Effect::LoadRuns]);
+    app.update(newest(rows_r(0, 100)));
+    app.update(older(rows_r(0, 250)));
+    key(&mut app, KeyCode::Home);
+    ch(&mut app, 'R');
+    assert!(self::text(&app).contains(ASKS_TWO), "{}", self::text(&app));
+
+    // The tag explorer: `d` by the same states.
+    let mut app = d_names_r_while_a_read_is_out();
+    app.update(newest_tagged());
+    assert!(ch(&mut app, 'd').is_empty());
+    assert_eq!(bottom_two(&screen(&app)).0, D_STILL_LOADING);
+    app.update(older_failed("reset"));
+    let text = screen(&app);
+    assert!(text.contains(TAGS_NOT_LOADED), "{text}");
+    assert!(
+        !text.contains("remove needs every run loaded"),
+        "the key set the sentence while older runs were loading, and their read failed: {text}"
+    );
+    assert!(ch(&mut app, 'd').is_empty());
+    assert_eq!(bottom_two(&screen(&app)).0, D_NOT_LOADED);
+    assert_eq!(ch(&mut app, 'r'), vec![Effect::LoadRuns]);
+    app.update(newest_tagged());
+    app.update(Msg::RunsOlder(Ok(IndexedRead {
+        read: RunsRead::All(rows(0, 250)),
+        index: tagged(0, 250),
+    })));
+    ch(&mut app, 'd');
+    assert_eq!(bottom_two(&screen(&app)).0, ASKS_D);
+}
+
+#[test]
+fn b971_a_note_of_another_kind_is_not_changed_when_older_runs_begin_to_load() {
+    const PASTE: &str = "paste ignored: this screen has no text box";
+    const REMOVING: &str = "removing topic:old from 250 runs...";
+    // The Runs screen: `R` named `r`, then a paste put its own note there. The messages of two reads of the older runs leave it.
+    let mut app = R_names_r_while_a_read_is_out();
+    assert!(app.handle_paste("x".to_string()).is_empty());
+    assert!(text(&app).contains(PASTE), "TRIGGER ABSENT");
+    for (name, msg) in [
+        ("the newest page of a whole read", newest(rows_r(0, 100))),
+        ("the failure of the older runs", older_failed("reset")),
+        ("the newest page of the next read", newest(rows_r(0, 100))),
+        ("the timer's page", timer(rows_r(0, 100))),
+        ("the end of the read", older(rows_r(0, 250))),
+    ] {
+        app.update(msg);
+        let text = text(&app);
+        assert!(text.contains(PASTE), "{name}: {text}");
+        assert!(
+            !text.contains(STILL_LOADING) && !text.contains(NOT_EVERY),
+            "{name}: {text}"
+        );
+    }
+
+    // The tag explorer: `d` named `r`; then the whole list arrived and a removal was sent, whose note stands. A timer's page that
+    // leaves a gap makes the list a part again, and the messages of two reads of the older runs leave the note.
+    let mut app = d_names_r_while_a_read_is_out();
+    app.update(newest_tagged());
+    app.update(Msg::RunsOlder(Ok(IndexedRead {
+        read: RunsRead::All(rows(0, 250)),
+        index: tagged(0, 250),
+    })));
+    ch(&mut app, 'd');
+    assert_eq!(
+        ch(&mut app, 'y').len(),
+        1,
+        "TRIGGER ABSENT: y sent no removal"
+    );
+    assert_eq!(bottom_two(&screen(&app)).0, REMOVING, "TRIGGER ABSENT");
+    app.update(timer(rows(300, 400)));
+    assert!(
+        screen(&app).contains("\u{250c} tags \u{b7} newest "),
+        "TRIGGER ABSENT: the list is a part again: {}",
+        screen(&app)
+    );
+    for (name, msg) in [
+        ("the timer's page that leaves a gap", timer(rows(300, 400))),
+        (
+            "the newest page of a whole read",
+            Msg::RunsNewest(page(rows(300, 400), vec![])),
+        ),
+        ("the failure of the older runs", older_failed("reset")),
+        (
+            "the newest page of the next read",
+            Msg::RunsNewest(page(rows(300, 400), vec![])),
+        ),
+    ] {
+        app.update(msg);
+        assert_eq!(bottom_two(&screen(&app)).0, REMOVING, "{name}");
     }
 }

@@ -722,6 +722,7 @@ pub async fn drain<P: ControlPlane>(
     let interrupt = tokio::signal::ctrl_c();
     tokio::pin!(interrupt);
     loop {
+        // Every page, each turn: an active run can stand on any page (a long run, one that waits for an answer, a resumed one).
         let runs = api.list_runs().await?;
         let now = active(&runs);
         let ids: Vec<String> = now.iter().map(|r| r.run_id.clone()).collect();
@@ -1014,7 +1015,8 @@ pub fn client_fit(bin: &Path, expected: &str, before: Option<&str>) -> ClientFit
 
 /// The backend's version after the update: read again until it is `expected` or `limit` has passed. The version is one that an answer
 /// gave after the update: the client first forgets the one it remembers, which was read before setup ran. A read is made for the version
-/// header alone, so a read that fails after its answer carried the header (a list this client cannot decode) still gives that version.
+/// header alone, so it asks for one page of the run list, each turn, and a read that fails after its answer
+/// carried the header (a list this client cannot decode) still gives that version.
 /// `Err` with the failure of the last read when no answer gave a version and that read failed: the backend did not answer.
 pub async fn backend_after<P: ControlPlane>(
     api: &Api<P>,
@@ -1026,7 +1028,7 @@ pub async fn backend_after<P: ControlPlane>(
     crate::version::note_backend(&std::collections::BTreeMap::new());
     let started = Instant::now();
     loop {
-        let read = api.list_runs().await;
+        let read = api.runs_answer().await;
         let now = crate::version::backend();
         if now.as_deref() == Some(expected) || started.elapsed() >= limit {
             return match (now, read) {
@@ -1156,8 +1158,8 @@ pub async fn run_with<P: ControlPlane>(
         }
     };
     let newest = peek.version.clone();
-    // 2. The backend's version (and the caller's runs, read again by the wait).
-    if let Err(e) = api.list_runs().await {
+    // 2. The backend's version: the header of one answer of the run list carries it. The wait reads the caller's runs itself.
+    if let Err(e) = api.runs_answer().await {
         out.err_line(format!("ham update: could not reach the backend: {e}"));
         return exit::FAILED;
     }
@@ -1278,6 +1280,7 @@ pub async fn run_with<P: ControlPlane>(
     // wait. Setup decides again when it runs: if it deploys after all, it waits for the runs of everyone itself, or stops when it was given
     // no wait.
     let wait_started = Instant::now();
+    // Every page: that no run of the caller is active can only be said after the last page.
     let own: Vec<String> = match api.list_runs().await {
         Ok(runs) => active(&runs).iter().map(|r| r.run_id.clone()).collect(),
         Err(e) => {

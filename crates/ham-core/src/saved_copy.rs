@@ -148,7 +148,8 @@ pub fn before_end_request(copy: Option<&SavedCopy>, run_id: &str, copies_failed:
             sanitize_line(run_id)
         ),
         None if copies_failed => "No copy of the work has been saved in this run.".to_string(),
-        None => "No copy of the work had been saved before that request: a run saves a copy only after its files change."
+        None => "No copy of the work had been saved before that request: a run saves a copy only after a file changed or the \
+                 engine made a commit."
             .to_string(),
     }
 }

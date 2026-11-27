@@ -700,11 +700,15 @@ async fn a_folder_that_does_not_exist_is_not_tried() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_folder_that_refuses_the_write_makes_the_reading_unwritable() {
-    // `/proc/self` is a directory that takes no new file, for any user: the same refusal a read-only file system gives.
+    // The folder of this process in `/proc` is a directory that takes no new file, for any user: the same refusal a read-only file
+    // system gives. The folder itself is named and not the link `/proc/self`, because a link in a folder's place gets no test
+    // write (`tests/b886_disk_measure.rs`).
     let ok = common::scratch("wp-ok");
-    let host = HostDisk::new(&ok, &ok).with_write_dirs([Path::new("/proc/self").to_path_buf()]);
+    let no_new_file = Path::new("/proc").join(std::process::id().to_string());
+    let host = HostDisk::new(&ok, &ok).with_write_dirs([no_new_file.clone()]);
     let r = host.measure().await;
     assert_eq!(r.writable, Some(false));
+    assert!(disk::test_write(&no_new_file).is_err());
     assert!(disk::test_write(Path::new("/proc/self")).is_err());
     assert!(disk::test_write(&ok).is_ok());
 }
@@ -886,8 +890,9 @@ fn b881_a_bare_error_with_a_refused_write_and_room_names_the_refusal() {
 
 #[test]
 fn b881_every_other_stop_keeps_its_words() {
-    // A disk the measurement calls full.
-    let full = sample();
+    // A disk the measurement calls full. The question names the engine that ran, so the cause is given the engine of the words.
+    let mut full = sample();
+    full.engine = "cline".to_string();
     assert_eq!(
         full.line(),
         "the session disk is full, workspace 975 MiB against a stop mark of 960 MiB, root 2400 MiB free"
@@ -965,6 +970,56 @@ fn b881_the_question_names_the_engine_that_ran() {
         "{}",
         bare.question()
     );
+}
+
+/// The question of a full disk and the question of an engine that failed on every route name the engine that ran, as the
+/// question of a refused write does. Each is the card's question and the end of the notice.
+#[test]
+fn b885_both_disk_stop_questions_name_the_engine_that_ran() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        // The disk the measurement calls full.
+        let mut full = sample();
+        full.engine = engine.to_string();
+        let q = full.question();
+        assert_eq!(
+            q,
+            format!(
+                "Send a message with `ham say` that asks {name} to delete build output or temporary files ({name} may not be able to answer while the disk is full), or end the run with `ham finish` and keep what exists."
+            )
+        );
+        assert!(q.chars().count() <= harness_protocol::direct::MAX_NEEDS_INPUT_QUESTION_CHARS);
+        assert!(full.notice().ends_with(&q), "{}", full.notice());
+        // The engine failed on every route while every route answered a test request.
+        let mut fault = limits().engine_fault(&reading(Some(5700), Some(40)));
+        fault.engine = engine.to_string();
+        let q = fault.question();
+        assert_eq!(
+            q,
+            format!(
+                "Send a message with `ham say` ({name} may not be able to answer), or end the run with `ham finish` and keep what exists."
+            )
+        );
+        assert!(q.chars().count() <= harness_protocol::direct::MAX_NEEDS_INPUT_QUESTION_CHARS);
+        assert!(fault.notice().ends_with(&q), "{}", fault.notice());
+    }
+}
+
+/// A cause that was given no engine name names no engine in its question and its notice.
+#[test]
+fn b885_a_disk_stop_that_was_given_no_engine_names_none() {
+    let bare = sample();
+    assert_eq!(
+        bare.question(),
+        "Send a message with `ham say` that asks the engine to delete build output or temporary files (the engine may not be able to answer while the disk is full), or end the run with `ham finish` and keep what exists."
+    );
+    let fault = limits().engine_fault(&reading(Some(5700), Some(40)));
+    assert_eq!(
+        fault.question(),
+        "Send a message with `ham say` (the engine may not be able to answer), or end the run with `ham finish` and keep what exists."
+    );
+    for text in [bare.notice(), fault.notice()] {
+        assert!(!text.contains("Cline"), "{text}");
+    }
 }
 
 #[test]

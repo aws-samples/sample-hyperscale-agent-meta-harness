@@ -173,8 +173,9 @@ struct Proc {
     received: Received,
 }
 
-/// One engine process; `prompts` holds the steps of each `session/prompt` of its one session, in order.
-fn spawn_engine(prompts: Vec<Vec<Step>>) -> Proc {
+/// One engine process; `prompts` holds the steps of each `session/prompt` of its one session, in order. `model_value` is the model
+/// it reports for its session: an engine names a model in its own form.
+fn spawn_engine(prompts: Vec<Vec<Step>>, model_value: String) -> Proc {
     let (client_w, engine_r) = tokio::io::duplex(1 << 16);
     let (mut out, client_r) = tokio::io::duplex(1 << 16);
     let received: Received = Arc::default();
@@ -189,7 +190,7 @@ fn spawn_engine(prompts: Vec<Vec<Step>>) -> Proc {
         }
     });
     tokio::spawn(async move {
-        let mut model = MODEL.to_string();
+        let mut model = model_value;
         let mut prompt_no = 0usize;
         while let Some(msg) = rx.recv().await {
             let id = msg.get("id").cloned();
@@ -340,6 +341,8 @@ struct Setup {
     /// `finish` waits until the watch made every test write it was asked for, as the session's end does. A test whose storage
     /// never answers switches the wait off.
     storage_wait: bool,
+    /// The profile name of the engine that runs; every test but the one that names another runs the default engine.
+    engine: &'static str,
 }
 
 impl Setup {
@@ -352,6 +355,7 @@ impl Setup {
             hooks: Vec::new(),
             storage: None,
             storage_wait: true,
+            engine: "cline",
         }
     }
 }
@@ -369,7 +373,10 @@ struct Live {
 }
 
 fn start(s: Setup) -> Live {
-    let p0 = spawn_engine(s.prompts);
+    let p0 = spawn_engine(
+        s.prompts,
+        agentd::engine::config::acp_model_value(s.engine, MODEL),
+    );
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (tx, rx) = mpsc::channel::<Instruct>(16);
     let rec = EventRecorder::new("run1", "direct");
@@ -404,7 +411,7 @@ fn start(s: Setup) -> Live {
     }
     let plan = PromptPlan {
         cwd: TOP.into(),
-        engine: "cline".into(),
+        engine: s.engine.into(),
         model: MODEL.into(),
         prompt: PROMPT.into(),
         nudge: None,
@@ -425,7 +432,7 @@ fn start(s: Setup) -> Live {
         sources: Arc::new(Source),
         context: ContextDir::create(&dir).unwrap(),
         task: PROMPT.to_string(),
-        engine_label: "Cline".to_string(),
+        engine_label: agentd::engine::direct::engine_label(s.engine).to_string(),
         routes: Vec::new(),
         rec: rec.clone(),
         audit: None,
@@ -853,6 +860,71 @@ async fn a_full_disk_asks_with_a_message_or_the_end_and_names_itself() {
         .collect();
     assert_eq!(closed.len(), 1);
     assert_eq!(closed[0]["how"], "finish");
+}
+
+/// A run of another engine whose session disk is full is asked about the engine that ran, in the question of the card and
+/// at the end of the notice.
+#[tokio::test(start_paused = true)]
+async fn b885_a_full_disk_asks_a_run_of_another_engine_about_that_engine() {
+    let disk = Scripted::new(vec![ample(), full()]);
+    // The engine's own text names the disk, so the stop does not hang on how an engine's bare error is classed.
+    let mut s = Setup::new(
+        vec![
+            vec![Step::ErrorWith(
+                -32603,
+                "Internal error: No space left on device",
+                Value::Null,
+            )],
+            end_turn("never"),
+        ],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(check(&disk)),
+    );
+    s.failover = Some(three_routes());
+    s.policy = policy(1800);
+    s.engine = "opencode";
+    let mut live = start(s);
+    let q = live.needs_input(1).await;
+    assert_eq!(q["reason"], "disk_full");
+    let question = q["question"].as_str().unwrap().to_string();
+    assert_eq!(
+        question,
+        "Send a message with `ham say` that asks OpenCode to delete build output or temporary files (OpenCode may not be able to answer while the disk is full), or end the run with `ham finish` and keep what exists."
+    );
+    let id = q["requestId"].as_str().unwrap().to_string();
+    live.answer(&id, InstructAction::Finish, None).await;
+    let (_end, events, _received) = live.finish().await;
+    let notes = notices(&events, "disk_full");
+    assert_eq!(notes.len(), 1, "{events:?}");
+    let detail = notes[0]["detail"].as_str().unwrap();
+    assert!(detail.ends_with(&question), "{detail}");
+    assert!(!detail.contains("Cline"), "{detail}");
+}
+
+/// The title of a question names the engine that ran. The client shows the title as the head line of the question's card and
+/// in the line of `ham watch`.
+#[tokio::test(start_paused = true)]
+async fn b885_the_title_of_a_question_names_the_engine_that_ran() {
+    for (engine, name) in [("opencode", "OpenCode"), ("cline", "Cline")] {
+        // The engine ends its turn with no message: a question whose title names the engine.
+        let mut s = Setup::new(
+            vec![vec![Step::Finish("end_turn")]],
+            RetryPolicy::new(3, Duration::from_secs(1)),
+        );
+        s.policy = policy(1800);
+        s.engine = engine;
+        let mut live = start(s);
+        let q = live.needs_input(1).await;
+        assert_eq!(q["reason"], "no_message", "{engine}");
+        assert_eq!(q["title"], format!("{name} sent an empty message"));
+        let text = q["text"].as_str().unwrap();
+        assert!(
+            text.starts_with(&format!("Needs your input: {name} sent an empty message")),
+            "{text}"
+        );
+        let id = q["requestId"].as_str().unwrap().to_string();
+        live.answer(&id, InstructAction::Finish, None).await;
+        live.finish().await;
+    }
 }
 
 #[tokio::test(start_paused = true)]

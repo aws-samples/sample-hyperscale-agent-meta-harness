@@ -681,12 +681,11 @@ async fn dispatch(inv: Invocation, api: &CliApi, cfg: &Config, dir: PathBuf, chu
                         "with several backends, name the run to watch, or the backend with --backend <alias>",
                     );
                 }
-                None => match api.list_runs().await {
-                    // The newest of the user's runs: a probe run is not one.
-                    Ok(runs) => match runs.into_iter().find(|r| !r.is_probe()) {
-                        Some(r) => r.run_id,
-                        None => return fail("no runs to watch"),
-                    },
+                // The newest of the user's runs: a probe run is not one. The read stops at the first page that holds such a
+                // run.
+                None => match api.newest_run(|r| !r.is_probe()).await {
+                    Ok(Some(r)) => r.run_id,
+                    Ok(None) => return fail("no runs to watch"),
                     Err(e) => return fail(e),
                 },
             };

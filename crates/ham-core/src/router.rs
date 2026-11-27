@@ -745,6 +745,42 @@ pub fn continue_preview_text(inv: &Invocation, known: Option<&TargetArg>) -> Opt
     ))
 }
 
+/// The preview text of `ham cancel` (not the discard), `ham finish` and `ham new-session`, or `None` for another command. `engine`
+/// gives the display name of the engine a run is on; a run it does not know reads "the engine".
+pub fn run_preview_text(
+    inv: &Invocation,
+    engine: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let named = |run_id: &str| engine(run_id).unwrap_or_else(|| "the engine".to_string());
+    match &inv.command {
+        Command::Cancel { discard: true, .. } => None,
+        Command::Cancel { run_id, .. } => Some(format!(
+            "Cancel run {}: {} is asked to stop and the work so far is kept.",
+            clip(run_id, 40),
+            named(run_id)
+        )),
+        Command::Finish { run_id, .. } => Some(format!(
+            "Finish run {} with what exists. This answers the question {} asked.",
+            clip(run_id, 40),
+            named(run_id)
+        )),
+        Command::NewSession { run_id, text, .. } => Some(format!(
+            "Start a fresh {} on the files of run {}{}.",
+            engine(run_id).map_or_else(
+                || "session of the engine".to_string(),
+                |name| format!("{name} session")
+            ),
+            clip(run_id, 40),
+            if text.is_some() {
+                " with your message"
+            } else {
+                ""
+            }
+        )),
+        _ => None,
+    }
+}
+
 fn preview_of(inv: &Invocation) -> Preview {
     let plain = |text: String| Preview {
         text,
@@ -759,23 +795,12 @@ fn preview_of(inv: &Invocation) -> Preview {
             "Discard run {}: the run is stopped now and delivers nothing. The copies it saved stay.",
             clip(run_id, 40)
         )),
-        Command::Cancel { run_id, .. } => plain(format!(
-            "Cancel run {}: Cline is asked to stop and the work so far is kept.",
-            clip(run_id, 40)
-        )),
-        Command::Finish { run_id, .. } => plain(format!(
-            "Finish run {} with what exists. This answers the question Cline asked.",
-            clip(run_id, 40)
-        )),
-        Command::NewSession { run_id, text, .. } => plain(format!(
-            "Start a fresh Cline session on the files of run {}{}.",
-            clip(run_id, 40),
-            if text.is_some() {
-                " with your message"
-            } else {
-                ""
-            }
-        )),
+        // The router has no run at hand, so these three name the default engine; the screen that holds the run puts its engine's name
+        // in. The discard above is matched first.
+        Command::Cancel { .. } | Command::Finish { .. } | Command::NewSession { .. } => {
+            let default = crate::engines::default_engine().name;
+            plain(run_preview_text(inv, &|_| Some(default.to_string())).unwrap_or_default())
+        }
         Command::TryModel {
             run_id,
             model,

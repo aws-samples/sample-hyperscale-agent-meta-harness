@@ -695,22 +695,58 @@ impl<P: ControlPlane> Api<P> {
             .await
     }
 
+    /// The pages of the caller's runs, newest first, one after the other, until `enough` accepts the page just read or the list ends: the
+    /// runs of every page read, in order. This is the one page loop of the plain list: [`Api::list_runs`] never has enough, and a caller
+    /// that needs less of the list stops it. A page that fails fails the read: the pages read so far are never the result.
+    async fn runs_until(
+        &self,
+        enough: impl Fn(&[RunSummary]) -> bool + Send,
+    ) -> Result<Vec<RunSummary>, ApiError> {
+        let mut out = Vec::new();
+        let mut next: Option<String> = None;
+        loop {
+            let page = self.runs_page(next.as_deref()).await?;
+            let stop = enough(&page.runs);
+            out.extend(page.runs);
+            match page.next_token {
+                Some(t) if !stop && next.as_deref() != Some(t.as_str()) => next = Some(t),
+                _ => return Ok(out),
+            }
+        }
+    }
+
     /// Every page of the caller's runs, newest first.
     pub async fn list_runs(&self) -> Result<Vec<RunSummary>, ApiError> {
         if let Some(aliases) = self.multi_aliases() {
             let (rows, _) = self.multi_rows(aliases, true, false).await?;
             return Ok(rows.into_iter().map(|r| r.summary).collect());
         }
-        let mut out = Vec::new();
-        let mut next: Option<String> = None;
-        loop {
-            let page = self.runs_page(next.as_deref()).await?;
-            out.extend(page.runs);
-            match page.next_token {
-                Some(t) if next.as_deref() != Some(t.as_str()) => next = Some(t),
-                _ => return Ok(out),
-            }
+        self.runs_until(|_| false).await
+    }
+
+    /// The newest of the caller's runs that `want` accepts, `None` when the list holds none. The list
+    /// comes newest first, so the read stops at the first page that holds such a run and asks for a later page only while every run read
+    /// so far was refused. With several backends the merged list is read whole, as [`Api::list_runs`] reads it.
+    pub async fn newest_run(
+        &self,
+        want: impl Fn(&RunSummary) -> bool + Send + Sync,
+    ) -> Result<Option<RunSummary>, ApiError> {
+        let runs = if self.multi_aliases().is_some() {
+            self.list_runs().await?
+        } else {
+            self.runs_until(|page| page.iter().any(&want)).await?
+        };
+        Ok(runs.into_iter().find(want))
+    }
+
+    /// One answer of the run list and no more: the newest page is asked for and its runs are not kept. For a caller that needs what
+    /// every answer of the backend carries and not the runs: `ham update` reads the backend's version from the header of the answer. With
+    /// several backends every backend is read, as [`Api::list_runs`] reads them.
+    pub async fn runs_answer(&self) -> Result<(), ApiError> {
+        if self.multi_aliases().is_some() {
+            return self.list_runs().await.map(|_| ());
         }
+        self.runs_until(|_| true).await.map(|_| ())
     }
 
     /// Every page of the caller's runs as rows, newest first: the summaries with what the run index adds.

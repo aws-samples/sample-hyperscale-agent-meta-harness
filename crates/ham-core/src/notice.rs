@@ -340,10 +340,11 @@ fn permission(v: &Value) -> String {
     format!("Permission for {title} was {verdict}.")
 }
 
-fn needs_input(v: &Value) -> String {
+/// The notice of a question. Its words name the engine of the run, as the question's card does.
+fn needs_input(v: &Value, engine: &crate::engines::Engine) -> String {
     match serde_json::from_value::<NeedsInputPayload>(v.clone()) {
         Ok(p) => {
-            let r = InputRequest::of(&p, None);
+            let r = InputRequest::of_for(&p, None, Some(engine.id));
             if r.blocking {
                 format!("The run needs you: {}", r.title)
             } else {
@@ -502,7 +503,7 @@ fn progress_notice(v: &Value, engine: &crate::engines::Engine) -> Option<(Notice
         harness_protocol::direct::PROGRESS_REPORT => {
             (NoticeKind::Notify, crate::report_progress::notice_line(v))
         }
-        "needs-input" => (NoticeKind::NeedsInput, needs_input(v)),
+        "needs-input" => (NoticeKind::NeedsInput, needs_input(v, engine)),
         "input-received" => (
             NoticeKind::InputReceived,
             own_text(v, "Your message reached the engine."),

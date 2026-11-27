@@ -32,6 +32,15 @@ filter = 'binary(=b883_first_process) & test(=b883_cost_a_turn_behind_process_1_
 threads-required = 'num-test-threads'
 priority = 100
 
+# The test of the uploads of a cost turn looks at six turns of the cost test's scenario and fails when their uploads wait for an acknowledgement: the
+# turn times of the cost test above then sit on levels and say nothing about the first-process role. Whether a worker that leaves Nagle's algorithm on
+# waits in a turn differs from machine to machine and with what else the machine does. So the test gets every test thread of the run, as the cost test
+# does: its turns then meet what the turns of the cost test meet on the same machine.
+[[profile.default.overrides]]
+filter = 'binary(=b883_first_process) & test(=b965_the_uploads_of_a_cost_turn_do_not_wait_for_the_acknowledgement_of_their_head)'
+threads-required = 'num-test-threads'
+priority = 100
+
 # Four tests with a time bound of their own failed a first pass of a full run on a loaded build host and passed alone: the draw of 5,000 agents of the client (0.505 s against its 0.5 s bound) and
 # three copy tests of the worker, which wait for a copy that git processes make (a copy not seen within its 7 s, one notice more than expected, 18.66 s against 16 s). Their bounds stay as they
 # are. Each gets every test thread of the run, as the stress test above does: it starts when no other test of the run works and no other test starts until it has ended, so the other tests of the

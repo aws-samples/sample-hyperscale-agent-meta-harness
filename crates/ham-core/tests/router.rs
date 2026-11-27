@@ -1361,3 +1361,41 @@ fn doctor_with_a_catalog_age_limit_runs_at_once_and_a_bad_limit_is_refused() {
         "{reason}"
     );
 }
+
+/// The previews of cancel, finish and new-session take the name of the run's engine from the caller. A run the caller does not
+/// know reads "the engine", and a command that is none of the three has no such preview.
+#[test]
+fn b885_the_run_previews_take_the_engine_name_or_say_the_engine() {
+    const R: &str = "01K6A0000000000000000000R2";
+    let text = |words: &[&str], engine: &dyn Fn(&str) -> Option<String>| {
+        let argv: Vec<String> = words.iter().map(ToString::to_string).collect();
+        ham_core::router::run_preview_text(&ham_core::command::parse(&argv).unwrap(), engine)
+    };
+    let unknown = |_: &str| None;
+    let opencode = |_: &str| Some("OpenCode".to_string());
+    assert_eq!(
+        text(&["cancel", R], &unknown),
+        Some(format!(
+            "Cancel run {R}: the engine is asked to stop and the work so far is kept."
+        ))
+    );
+    assert_eq!(
+        text(&["finish", R], &unknown),
+        Some(format!(
+            "Finish run {R} with what exists. This answers the question the engine asked."
+        ))
+    );
+    assert_eq!(
+        text(&["new-session", R], &unknown),
+        Some(format!(
+            "Start a fresh session of the engine on the files of run {R}."
+        ))
+    );
+    assert_eq!(
+        text(&["new-session", R], &opencode),
+        Some(format!(
+            "Start a fresh OpenCode session on the files of run {R}."
+        ))
+    );
+    assert_eq!(text(&["runs"], &opencode), None);
+}

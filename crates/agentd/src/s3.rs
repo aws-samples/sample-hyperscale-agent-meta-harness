@@ -146,6 +146,44 @@ pub fn s3_error(op: &str, uri: &str, status: u16, body: &[u8]) -> String {
     }
 }
 
+/// Whether an answer of the storage service to a read may be another one a moment later: a 5xx, a 429, and the error codes
+/// with which the service says that it throttles or that the request timed out, whatever status carries them. Every other answer
+/// (the object is not there, the access is refused, a request the service will not take) stays what it is however often it is asked.
+pub fn temporary_answer(status: u16, body: &[u8]) -> bool {
+    if status >= 500 || status == 429 {
+        return true;
+    }
+    let text = String::from_utf8_lossy(body);
+    matches!(
+        xml_field(&text, "Code"),
+        Some(
+            "SlowDown"
+                | "RequestTimeout"
+                | "Throttling"
+                | "ThrottlingException"
+                | "RequestLimitExceeded"
+                | "TooManyRequestsException"
+        )
+    )
+}
+
+/// A read that gave the object ([`S3Objects::get_to_file_retrying`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetDone {
+    /// The `x-amz-version-id` of the answer that gave the object, when it carried one.
+    pub version_id: Option<String>,
+    /// How many GETs were made, the one that gave the object included.
+    pub tries: u32,
+}
+
+/// How one GET ended that did not give the object.
+struct GetFailed {
+    /// The sentence of the failure, as [`S3Objects::get_to_file`] gives it.
+    error: String,
+    /// The same request may be answered otherwise a moment later.
+    temporary: bool,
+}
+
 #[derive(Debug)]
 pub struct S3Objects {
     http: SignedHttp,
@@ -234,7 +272,24 @@ impl S3Objects {
         creds: &ProcessCredentials,
         dest: &Path,
     ) -> Result<Option<String>, String> {
-        let url = object_url(uri, &self.region, self.endpoint.as_deref())?;
+        self.get_once(uri, creds, dest)
+            .await
+            .map_err(|failed| failed.error)
+    }
+
+    /// One GET of `uri` into `dest`: the version of the object that was read, or the sentence of the failure and whether the same
+    /// request may be answered otherwise a moment later ([`GetFailed`]).
+    async fn get_once(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        dest: &Path,
+    ) -> Result<Option<String>, GetFailed> {
+        let url =
+            object_url(uri, &self.region, self.endpoint.as_deref()).map_err(|error| GetFailed {
+                error,
+                temporary: false,
+            })?;
         let resp = self
             .http
             .get_to_file(
@@ -251,14 +306,57 @@ impl S3Objects {
                 self.limits(),
             )
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| GetFailed {
+                // A request that did not get its whole answer (the connection was refused or broke, nothing moved for the
+                // no-progress limit, the file of the download could not be written) may get it at the next try; a URL or a
+                // signature that could not be made stays what it is.
+                temporary: matches!(e, HttpError::Transport(_)),
+                error: e.to_string(),
+            })?;
         if resp.status != 200 {
-            return Err(s3_error("GET", uri, resp.status, &resp.body));
+            return Err(GetFailed {
+                error: s3_error("GET", uri, resp.status, &resp.body),
+                temporary: temporary_answer(resp.status, &resp.body),
+            });
         }
         Ok(resp
             .header("x-amz-version-id")
             .filter(|v| !v.is_empty())
             .map(str::to_string))
+    }
+
+    /// [`Self::get_to_file_with_version`] that asks again, as the stores do ([`Self::put_file_retrying`]): `retries` further
+    /// GETs with a pause that doubles, when the failure may be another answer a moment later ([`temporary_answer`], a request that
+    /// did not get its whole answer). A failure that stays what it is however often it is asked (the object is not there, the
+    /// access is refused) ends the read at once with the sentence of one GET. When every GET failed, the sentence of the last one
+    /// says how often the read was tried. A download that fails leaves no file, so each GET starts `dest` anew.
+    pub async fn get_to_file_retrying(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        dest: &Path,
+        retries: u32,
+        pause: Duration,
+    ) -> Result<GetDone, String> {
+        let mut wait = pause;
+        let mut tries: u32 = 0;
+        loop {
+            tries += 1;
+            match self.get_once(uri, creds, dest).await {
+                Ok(version_id) => return Ok(GetDone { version_id, tries }),
+                Err(failed) if !failed.temporary || retries == 0 => return Err(failed.error),
+                Err(failed) if tries > retries => {
+                    return Err(format!(
+                        "{} (the read was tried {tries} times)",
+                        failed.error
+                    ));
+                }
+                Err(_) => {
+                    tokio::time::sleep(wait).await;
+                    wait *= 2;
+                }
+            }
+        }
     }
 
     /// The first bytes of the object at `uri`, at most `max_bytes` of them: one GET with `range: bytes=0-<max_bytes - 1>`

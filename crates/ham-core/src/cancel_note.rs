@@ -178,8 +178,9 @@ impl CancelNote {
     }
 
     /// The sentence that names the command of the newest saved copy of the work: a cancel removes no copy (root invariant 9). The
-    /// record of the cancel does not say whether the run has saved a copy (a run saves one only after a file changed), so the
-    /// sentence says "if the run saved one": the command of a run without a copy answers that none is saved yet.
+    /// record of the cancel does not say whether the run has saved a copy (a run saves one only after a file changed or the engine
+    /// made a commit), so the sentence says "if the run saved one": the command of a run without a copy answers that none is saved
+    /// yet.
     pub fn copy_line(run_id: &str) -> String {
         format!(
             "ham pull {} --snapshot downloads the newest saved copy of the work at any time, if the run saved one.",

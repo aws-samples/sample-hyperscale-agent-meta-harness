@@ -1,7 +1,8 @@
 //! The first row of the Runs screen is drawn after ONE list call: the event loop lays the newest page of a whole read while the second
 //! page is still unanswered (`ham::tui::load_runs` sends `Msg::RunsNewest`, then `Msg::RunsOlder`). The order is held by a plane that
-//! keeps its second answer until the test has seen the first row; no time is asserted (the 10 s below are a guard that ends a failing
-//! run with the frames it saw).
+//! keeps its second answer until the test has seen the first row; no time is asserted (the 10 s of `GUARD` end a failing run with
+//! what it saw: the frames, the plane's calls, or the messages of a whole read that stands still). The read hands its newest page over before it asks for the second page, so the frame of the first row
+//! may be kept before that call has reached the plane: the test reads the plane's answers at once and waits for the call behind the row.
 #![allow(clippy::unwrap_used)]
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -21,6 +22,8 @@ use std::time::{Duration, Instant};
 
 const ARN: &str = "arn:aws:sts::111122223333:assumed-role/Admin/tester";
 const LOADING: &str = " runs \u{b7} loading older runs ";
+/// The guard of this file: it ends a wait that a failing run would never leave. No time is asserted.
+const GUARD: Duration = Duration::from_secs(10);
 
 fn id(n: usize) -> String {
     format!("01M5A0000000000000{n:08}")
@@ -158,8 +161,20 @@ async fn frame(frames: &Arc<Mutex<Vec<String>>>, wanted: impl Fn(&str) -> bool) 
         if let Some(f) = frames.lock().unwrap().iter().find(|f| wanted(f)) {
             return Some(f.clone());
         }
-        if guard.elapsed() > Duration::from_secs(10) {
+        if guard.elapsed() > GUARD {
             return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The list calls the plane has had once there are `n` of them, looked for until the guard of 10 s ends the wait.
+async fn calls_of(plane: &Paged, n: usize) -> Vec<String> {
+    let guard = Instant::now();
+    loop {
+        let had = plane.calls.lock().unwrap().clone();
+        if had.len() >= n || guard.elapsed() > GUARD {
+            return had;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -202,10 +217,13 @@ async fn b961_the_first_row_is_drawn_while_the_second_list_call_is_still_unanswe
     let seen = Arc::clone(&frames);
     let held = Arc::clone(&plane);
     let driver = async move {
-        // The first row, while the plane holds the answer to the second list call.
+        // The first row, while the plane holds the answer to the second list call. The answers the plane had given are read at once
+        // (their count only grows). The second call may reach the plane after the frame was kept: it is waited for, and the plane
+        // must still hold its answer then.
         let row = frame(&seen, |f| f.contains(&id(0)) && f.contains(LOADING)).await;
         let answered_then = held.answered.load(Ordering::SeqCst);
-        let calls_then = held.calls.lock().unwrap().clone();
+        let calls_behind = calls_of(&held, 2).await;
+        let answered_behind = held.answered.load(Ordering::SeqCst);
         held.closed.store(false, Ordering::SeqCst);
         let whole = frame(&seen, |f| f.contains(" run 1 of 250 ")).await;
         tx.send(Event::Key(KeyEvent::new(
@@ -213,23 +231,28 @@ async fn b961_the_first_row_is_drawn_while_the_second_list_call_is_still_unanswe
             KeyModifiers::NONE,
         )))
         .unwrap();
-        (row, answered_then, calls_then, whole)
+        (row, answered_then, calls_behind, answered_behind, whole)
     };
-    let (ended, (row, answered_then, calls_then, whole)) = tokio::join!(the_loop, driver);
+    let (ended, (row, answered_then, calls_behind, answered_behind, whole)) =
+        tokio::join!(the_loop, driver);
     ended.unwrap();
     let last = frames.lock().unwrap().last().cloned().unwrap_or_default();
     assert!(
         row.is_some(),
-        "no frame showed the newest run while the second list call was unanswered; the last frame:\n{last}"
+        "no frame showed the newest run while the second list call was unanswered (the plane's list calls: {calls_behind:?}); the last frame:\n{last}"
     );
     assert_eq!(
         answered_then, 1,
         "one list call was answered when the first row was drawn"
     );
     assert_eq!(
-        calls_then,
+        calls_behind,
         ["/v1/runs", "/v1/runs?nextToken=p1"],
-        "the second call was out and held when the first row was drawn"
+        "the read asks for its second page behind the first row (the guard of 10 s ends the wait for that call)"
+    );
+    assert_eq!(
+        answered_behind, 1,
+        "and the plane holds that call: still one answer when it has arrived"
     );
     let whole =
         whole.unwrap_or_else(|| panic!("no frame showed the whole list; the last frame:\n{last}"));
@@ -276,7 +299,8 @@ impl ControlPlane for Scripted {
     }
 }
 
-/// The messages one whole read sends for these replies.
+/// The messages one whole read sends for these replies. The guard ends a read that stands still (one that never asks for its next
+/// page), and the test fails with the messages that read had sent.
 async fn messages(replies: Vec<(u16, Value)>) -> Vec<Msg> {
     let plane = Arc::new(Scripted::default());
     *plane.replies.lock().unwrap() = replies.into_iter().collect();
@@ -285,7 +309,12 @@ async fn messages(replies: Vec<(u16, Value)>) -> Vec<Msg> {
         base: Duration::from_millis(1),
     });
     let mut sent: Vec<Msg> = Vec::new();
-    load_runs(&api, &mut |m| sent.push(m)).await;
+    let ended = tokio::time::timeout(GUARD, load_runs(&api, &mut |m| sent.push(m))).await;
+    assert!(
+        ended.is_ok(),
+        "the whole read did not end within the guard of {} s; the messages it had sent: {sent:?}",
+        GUARD.as_secs()
+    );
     sent
 }
 

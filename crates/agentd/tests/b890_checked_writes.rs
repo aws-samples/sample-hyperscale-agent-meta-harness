@@ -282,7 +282,11 @@ async fn b890_a_write_of_the_git_settings_that_the_storage_refuses_once_does_not
         let state = GitState::snapshot(&wt).unwrap();
         let storage = Refusing::files(at, 1);
         let log = MemoryLog::new();
+        // The session's clock, stopped: the bound and the "0 s" of the last line count the pause, not this machine's time for
+        // a write.
+        tokio::time::pause();
         let put = put_back(&state, &wt, storage.clone(), QUICK, &sink(&log), None).await;
+        tokio::time::resume();
         let label = label_after(&put);
         assert_eq!(
             label,
@@ -360,9 +364,11 @@ async fn b890_the_attributes_file_is_a_checked_write_too() {
     );
     let log = MemoryLog::new();
     let storage = Refusing::after(1, At::Sync, 2);
-    put_back(&state, &wt, storage.clone(), QUICK, &sink(&log), None)
-        .await
-        .unwrap();
+    // The session's clock, stopped: the bound counts the two pauses, not this machine's time for three writes.
+    tokio::time::pause();
+    let put = put_back(&state, &wt, storage.clone(), QUICK, &sink(&log), None).await;
+    tokio::time::resume();
+    put.unwrap();
     assert_eq!(
         std::fs::read_to_string(&attributes).unwrap(),
         "*.bin -diff\n"
@@ -617,11 +623,24 @@ async fn b890_an_error_that_is_not_errno_28_is_not_repeated() {
             every: Duration::from_millis(5),
             for_at_most: Duration::from_millis(20),
         };
+        // The session's clock, stopped: the pauses pass at once and are counted, and the time a try takes on this machine is
+        // not part of them. The bound counts from the first try, so on a running clock a first try that outlasts it is the only
+        // one (a write that reaches the rename has synced a real file, which took longer than 20 ms on a busy disk).
+        tokio::time::pause();
+        let began = tokio::time::Instant::now();
         let put = put_back(&state, &wt, storage.clone(), quick, &sink(&log), None).await;
+        let waited = began.elapsed();
+        tokio::time::resume();
         let Err(NotPutBack::Refused { tries, last, .. }) = &put else {
             panic!("{step}: {put:?}")
         };
-        assert!(*tries >= 2, "{step}: {tries}");
+        // A try at 0, 5, 10, 15 and 20 ms: every point of the grid up to the bound, and none after it. The timer wakes on whole
+        // milliseconds of its own, so the pauses can end a millisecond late on that clock.
+        assert_eq!(*tries, 5, "{step}: {tries} tries in {waited:?}");
+        assert!(
+            waited >= Duration::from_millis(20) && waited < Duration::from_millis(22),
+            "{step}: {waited:?}"
+        );
         assert_eq!(
             last,
             &format!("{step}: No space left on device (os error 28)")
@@ -858,9 +877,11 @@ async fn b890_the_watch_of_the_storage_is_told_what_the_write_of_the_git_setting
 
     // Refused three times, then taken: one notice, and the stretch is closed.
     let storage = Refusing::files(At::Sync, 3);
-    put_back(&state, &wt, storage, QUICK, &sink(&log), Some(&watch))
-        .await
-        .unwrap();
+    // The session's clock, stopped: the bound and the "0 s" of the last line count the three pauses, not this machine's time.
+    tokio::time::pause();
+    let put = put_back(&state, &wt, storage, QUICK, &sink(&log), Some(&watch)).await;
+    tokio::time::resume();
+    put.unwrap();
     let notices = storage_notices(&rec);
     assert_eq!(notices.len(), 1, "{notices:?}");
     let n = &notices[0];
@@ -902,9 +923,10 @@ async fn b890_the_watch_of_the_storage_is_told_what_the_write_of_the_git_setting
 
     // A later refusal of the same session is the short notice of its second stretch.
     let storage = Refusing::files(At::Close, 1);
-    put_back(&state, &wt, storage, QUICK, &sink(&log), Some(&watch))
-        .await
-        .unwrap();
+    tokio::time::pause();
+    let put = put_back(&state, &wt, storage, QUICK, &sink(&log), Some(&watch)).await;
+    tokio::time::resume();
+    put.unwrap();
     let notices = storage_notices(&rec);
     assert_eq!(notices.len(), 1, "{notices:?}");
     assert_eq!(notices[0]["storage"]["stretch"], 2);
@@ -983,7 +1005,9 @@ async fn b890_the_copy_of_the_end_is_saved_before_the_watch_of_the_storage_is_to
     let storage = Refusing::files(At::Sync, 2);
     // What the watch had said when the caller's work was called: its notices, and its lines in the log.
     let said_at_call = std::sync::Mutex::new(Vec::new());
-    git_settings::put_back(
+    // The session's clock, stopped: the bound counts the two pauses, not this machine's time.
+    tokio::time::pause();
+    let put = git_settings::put_back(
         &state,
         &wt,
         storage,
@@ -1002,8 +1026,9 @@ async fn b890_the_copy_of_the_end_is_saved_before_the_watch_of_the_storage_is_to
                 .push((storage_notices(&rec).len(), lines));
         },
     )
-    .await
-    .unwrap();
+    .await;
+    tokio::time::resume();
+    put.unwrap();
     assert_eq!(*said_at_call.lock().unwrap(), vec![(0, 0)]);
     // The watch is told right after: the one notice of the stretch is there, and its line.
     let notices = storage_notices(&rec);

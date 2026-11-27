@@ -23,7 +23,11 @@
 //!   their first burst and a second burst keeps the rule of the second look. Ruling 43 of the lead: a keep at once that did not
 //!   end as kept is tried once and not again until a keep is kept; a request to end ends the wait that a keep runs through;
 //!   and the keep at once also follows a tool call's look that left the timer, on the tool call's own line, while the rule
-//!   of the second look follows no look of a tool call, as before.
+//!   of the second look follows no look of a tool call, as before;
+//! - a commit that changes no file, an amended message and a rebase to the
+//!   same tree are in a stored copy at the next look, the timer's and a tool call's, also when the timer fires inside a command
+//!   that goes on running; a session that is killed after that look keeps the commit, the look that a request to end asks for
+//!   stores it, and a copy of a moved head that the bucket refused is stored by the look that tries again.
 //!
 //! The worker's log line of a look is read here too: one line per look that stored a copy or failed, with what started the look,
 //! the times of its steps, and what came of the store and of the keep; and the line of the copy of the end, `by=final`.
@@ -4618,4 +4622,586 @@ async fn b936_a_form_held_in_its_indexing_never_moves_the_start_of_a_look() {
         HeldLook::SecondOfTheTimerWithTheFormHeld,
     )
     .await;
+}
+
+// ----: a commit that changes no file is stored by the next look --------------------------------------------------------------
+//
+// The engine's `.git` is no part of the tree a look compares, so a commit of files that a copy already holds, an amended message
+// and a rebase to the same tree stored nothing until a file changed again or the turn ended, and a session that was ended in
+// between kept the files and lost the commit. The tests below run whole turns: the engine moves its head without changing a file,
+// and the next look (the timer's, a tool call's, the one a request to end asks for) stores a copy that holds the new head. What a
+// test waits for has two minutes; what it asserts is which commit a stored copy holds and what started its look.
+
+/// Another committer date than the fixtures', one hour later: a commit made again with it has another id.
+const B904_LATER_DATE: &str = "@1767229200 +0000";
+
+/// Git in `dir` as the engine runs it, with `date` as the committer date of a commit it makes.
+fn b904_git(dir: &Path, date: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_AUTHOR_DATE", common::FIXTURE_DATE)
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_DATE", date)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The files the four tool calls of the stand-in engine write, with their text. Written before the engine speaks, a tool
+/// call that ends changes no file.
+fn b904_edits() -> Vec<(String, String)> {
+    let path = common::repo_root()
+        .join("fixtures/engines/fake-acp/transcripts/direct/four_edits/turn-1.jsonl");
+    let mut edits = Vec::new();
+    for line in std::fs::read_to_string(path).unwrap().lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(content) = v
+            .pointer("/message/params/update/content")
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        for c in content {
+            if c["type"] == "diff" {
+                let p = c["path"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("{workspace}/")
+                    .to_string();
+                edits.push((p, c["newText"].as_str().unwrap().to_string()));
+            }
+        }
+    }
+    assert_eq!(edits.len(), 4, "the four edits of the scenario");
+    edits
+}
+
+/// What the engine does to its head without changing a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeadMove {
+    /// It commits files that a stored copy already holds.
+    Commit,
+    /// It amends the message of its last commit, which a stored copy holds.
+    Amend,
+    /// It rebases its two commits, which a stored copy holds, to the same tree: other commits, the same files.
+    Rebase,
+}
+
+/// What a head move left: the engine's new head, the subject of its newest commit, the commit a stored copy held before
+/// when the move replaced one, and how many copies were stored right before the move.
+struct Moved {
+    head: String,
+    subject: String,
+    replaced: Option<String>,
+    stored: usize,
+}
+
+impl Run {
+    /// Starts a turn in which a tool call that ends changes no file ([`b904_edits`]).
+    async fn b904_start(label: &str, every_ms: u64, more: Vec<(&'static str, String)>) -> Self {
+        let run = Self::start(label, every_ms, more).await;
+        for (path, text) in b904_edits() {
+            let dest = run.d.worktree().join(&path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::write(dest, text).unwrap();
+        }
+        run
+    }
+
+    /// A checkout of the stored copy `index`, as a reader makes it.
+    fn b904_checkout(&self, index: usize) -> PathBuf {
+        let n = self.checkouts.fetch_add(1, Ordering::SeqCst);
+        checkout_of_copy_bytes(
+            &self.d.aws,
+            &self.dir,
+            &self.bundles()[index],
+            &format!("b904-checkout-{n}"),
+        )
+    }
+
+    /// Whether the stored copy `index` holds the commit `sha` in the history of its `snapshot` branch.
+    fn b904_holds(&self, index: usize, sha: &str) -> bool {
+        let wt = self.b904_checkout(index);
+        std::process::Command::new("git")
+            .current_dir(&wt)
+            .args(["merge-base", "--is-ancestor", sha, "snapshot"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// The subjects of the commits of the stored copy `index`, newest first.
+    fn b904_subjects(&self, index: usize) -> Vec<String> {
+        let wt = self.b904_checkout(index);
+        git(&wt, &["log", "--format=%s", "snapshot"])
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Waits, at most `limit`, for a stored copy from index `from` on that holds the commit `sha`; the answer is the
+    /// index of that copy. Each copy is checked out once.
+    async fn b904_copy_with(&self, from: usize, sha: &str, limit: Duration) -> Option<usize> {
+        let mut next = from;
+        let mut found = None;
+        wait_for(limit, || {
+            // A copy is stored once its record is: its bundle is in the bucket before that.
+            let stored = self.stored();
+            while next < stored {
+                if self.b904_holds(next, sha) {
+                    found = Some(next);
+                    return true;
+                }
+                next += 1;
+            }
+            false
+        })
+        .await;
+        found
+    }
+
+    /// A look comes about, the timer's when `by_tool` is not set (the test waits) and a tool call's when it is (the engine
+    /// ends its next tool call, which changes no file).
+    async fn b904_look(&self, by_tool: bool) {
+        if by_tool {
+            self.tool_call_ends().await;
+        }
+    }
+
+    /// Brings the turn to the gap of `what`: the engine's work is in a stored copy, then the engine moves its head and
+    /// changes no file. The look that stores the work is the timer's or a tool call's (`by_tool`).
+    async fn b904_to_the_gap(&self, what: HeadMove, by_tool: bool) -> Moved {
+        let wt = self.d.worktree();
+        let base = git(&wt, &["rev-parse", "HEAD"]);
+        let date = common::FIXTURE_DATE;
+        let commit = |subject: &str| {
+            b904_git(&wt, date, &["add", "-A"]);
+            b904_git(&wt, date, &["commit", "-q", "-m", subject]);
+            git(&wt, &["rev-parse", "HEAD"])
+        };
+        // How many copies are stored before the head moves: a look that comes right after the move stores a later one.
+        let stored;
+        let (subject, replaced) = match what {
+            HeadMove::Commit => {
+                self.write("work.txt", "the work of a commit that changes no file\n");
+                self.b904_look(by_tool).await;
+                assert!(
+                    self.wait_copy(
+                        0,
+                        "work.txt",
+                        "the work of a commit that changes no file\n",
+                        LONG
+                    )
+                    .await
+                    .is_some(),
+                    "a stored copy holds the work; log:\n{}",
+                    self.log()
+                );
+                stored = self.stored();
+                commit("b904: the engine commits saved files");
+                ("b904: the engine commits saved files", None)
+            }
+            HeadMove::Amend => {
+                self.write("work.txt", "the work of an amended commit\n");
+                let first = commit("b904: first message");
+                self.b904_look(by_tool).await;
+                assert!(
+                    self.b904_copy_with(0, &first, LONG).await.is_some(),
+                    "a stored copy holds the commit with the first message; log:\n{}",
+                    self.log()
+                );
+                stored = self.stored();
+                b904_git(
+                    &wt,
+                    B904_LATER_DATE,
+                    &["commit", "-q", "--amend", "-m", "b904: second message"],
+                );
+                ("b904: second message", Some(first))
+            }
+            HeadMove::Rebase => {
+                self.write("one.txt", "file one of a rebase\n");
+                commit("b904: commit one");
+                self.write("two.txt", "file two of a rebase\n");
+                let second = commit("b904: commit two");
+                self.b904_look(by_tool).await;
+                assert!(
+                    self.b904_copy_with(0, &second, LONG).await.is_some(),
+                    "a stored copy holds both commits; log:\n{}",
+                    self.log()
+                );
+                stored = self.stored();
+                let tree = git(&wt, &["rev-parse", "HEAD^{tree}"]);
+                b904_git(
+                    &wt,
+                    B904_LATER_DATE,
+                    &["rebase", "-q", "--force-rebase", &base],
+                );
+                assert_eq!(
+                    git(&wt, &["rev-parse", "HEAD^{tree}"]),
+                    tree,
+                    "TRIGGER PRESENT is not shown: the rebase changed the tree"
+                );
+                ("b904: commit two", Some(second))
+            }
+        };
+        let head = git(&wt, &["rev-parse", "HEAD"]);
+        assert_ne!(
+            Some(&head),
+            replaced.as_ref(),
+            "TRIGGER PRESENT is not shown: the engine's head did not move"
+        );
+        assert_ne!(head, base);
+        assert!(
+            git(&wt, &["status", "--porcelain"]).is_empty(),
+            "TRIGGER PRESENT is not shown: the work tree holds a change that is not committed"
+        );
+        Moved {
+            head,
+            subject: subject.to_string(),
+            replaced,
+            stored,
+        }
+    }
+
+    /// The stored copy `index` holds what `moved` left: the engine's new head and its message, the engine's files, and no
+    /// commit that the move replaced.
+    fn b904_holds_the_move(&self, index: usize, moved: &Moved) {
+        let wt = self.d.worktree();
+        let copy = self.b904_checkout(index);
+        assert_eq!(
+            git(&copy, &["rev-parse", "snapshot^"]),
+            moved.head,
+            "the copy stands on the engine's new head"
+        );
+        assert_eq!(
+            git(&copy, &["rev-parse", "snapshot^{tree}"]),
+            git(&wt, &["rev-parse", "HEAD^{tree}"]),
+            "the copy holds the engine's files"
+        );
+        assert!(git(&copy, &["status", "--porcelain"]).is_empty());
+        assert_eq!(
+            git(&copy, &["log", "-1", "--format=%s", "snapshot^"]),
+            moved.subject,
+            "the copy holds the message of the engine's newest commit"
+        );
+        if let Some(replaced) = &moved.replaced {
+            assert!(
+                !self.b904_holds(index, replaced),
+                "the copy holds the history as the engine left it, without the commit the engine replaced"
+            );
+        }
+    }
+}
+
+/// After a head move that changes no file, the next look stores a copy that holds the engine's new head: the look of the
+/// timer (`by_tool` not set: a timer of three seconds and no tool call that ends) or the look a tool call asks for (a timer of
+/// ten minutes). The turn then ends, and the copy of the end holds the head too.
+async fn b904_the_next_look_stores_the_head(label: &str, what: HeadMove, by_tool: bool) {
+    let every = if by_tool { NO_TICK_MS } else { DUE_EVERY_MS };
+    let run = Run::b904_start(label, every, Vec::new()).await;
+    let moved = run.b904_to_the_gap(what, by_tool).await;
+    // The next look: nothing but the engine's head has changed.
+    run.b904_look(by_tool).await;
+    let found = run.b904_copy_with(moved.stored, &moved.head, LONG).await;
+    let Some(index) = found else {
+        panic!(
+            "TRIGGER PRESENT: {what:?}: no stored copy holds the engine's new head {} two minutes after the look that followed \
+             it ({} copies are stored, {} when the head moved): the commit is in no copy until a file changes or the turn \
+             ends; log:\n{}",
+            moved.head,
+            run.stored(),
+            moved.stored,
+            run.log()
+        )
+    };
+    let line = run.line_when_stored(index).await;
+    let by = if by_tool { "tool" } else { "timer" };
+    assert_eq!(
+        (field(&line, "by"), field(&line, "engine")),
+        (Some(by), Some("moved")),
+        "the look that stored the head: {line}"
+    );
+    assert_ne!(
+        run.records()[index]["final"],
+        true,
+        "the copy of a look, not the copy of the end"
+    );
+    run.b904_holds_the_move(index, &moved);
+    if what == HeadMove::Commit && !by_tool {
+        // The head is where that copy found it: the looks of two more ticks store nothing.
+        let stored = run.stored();
+        let calls = git_calls(&run.dir).len();
+        tokio::time::sleep(Duration::from_millis(DUE_EVERY_MS * 2)).await;
+        let after = git_calls(&run.dir).split_off(calls);
+        println!(
+            "B904-QUIET looks={} head_reads={} bundles={}",
+            after.iter().filter(|c| c.contains("write-tree")).count(),
+            after
+                .iter()
+                .filter(|c| c.trim_end().ends_with("rev-parse HEAD"))
+                .count(),
+            after.iter().filter(|c| c.contains("bundle create")).count()
+        );
+        assert_eq!(
+            run.stored(),
+            stored,
+            "TRIGGER PRESENT: a look stored a copy while neither a file nor the engine's head changed; log:\n{}",
+            run.log()
+        );
+    }
+    // The engine ends its turn: the copy of the end holds the head as well.
+    std::fs::write(&run.steps, "1000000\n").unwrap();
+    assert!(
+        wait_for(LONG, || run
+            .records()
+            .last()
+            .is_some_and(|r| r["final"] == true))
+        .await,
+        "the copy of the end is stored; log:\n{}",
+        run.log()
+    );
+    assert!(run.b904_holds(run.stored() - 1, &moved.head));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_commit_of_saved_files_is_stored_by_the_look_of_the_timer() {
+    b904_the_next_look_stores_the_head("b904-commit-timer", HeadMove::Commit, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_commit_of_saved_files_is_stored_by_the_look_of_a_tool_call() {
+    b904_the_next_look_stores_the_head("b904-commit-tool", HeadMove::Commit, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_an_amended_message_is_stored_by_the_look_of_the_timer() {
+    b904_the_next_look_stores_the_head("b904-amend-timer", HeadMove::Amend, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_an_amended_message_is_stored_by_the_look_of_a_tool_call() {
+    b904_the_next_look_stores_the_head("b904-amend-tool", HeadMove::Amend, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_rebase_to_the_same_tree_is_stored_by_the_look_of_the_timer() {
+    b904_the_next_look_stores_the_head("b904-rebase-timer", HeadMove::Rebase, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_rebase_to_the_same_tree_is_stored_by_the_look_of_a_tool_call() {
+    b904_the_next_look_stores_the_head("b904-rebase-tool", HeadMove::Rebase, true).await;
+}
+
+/// The engine commits inside a command that goes on running: a tool call has started and does not end, so no tool call
+/// wakes the copy task. The look of the timer stores the commit while the command still runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_commit_inside_a_command_that_goes_on_running_is_stored_by_the_timer() {
+    let run = Run::b904_start("b904-running", DUE_EVERY_MS, Vec::new()).await;
+    // The engine starts a tool call (one message of its reply) and does not end it. The worker records a call that starts.
+    let started = |run: &Run| run.d.events_of(EventType::ToolSummary).len();
+    let (before, ended) = (started(&run), run.calls_ended());
+    let said = run.said.fetch_add(1, Ordering::SeqCst) + 1;
+    std::fs::write(&run.steps, format!("{said}\n")).unwrap();
+    assert!(
+        wait_for(LONG, || started(&run) > before).await,
+        "TRIGGER PRESENT is not shown: the engine started no tool call; log:\n{}",
+        run.log()
+    );
+    let moved = run.b904_to_the_gap(HeadMove::Commit, false).await;
+    let found = run.b904_copy_with(moved.stored, &moved.head, LONG).await;
+    let Some(index) = found else {
+        panic!(
+            "TRIGGER PRESENT: no stored copy holds the commit the engine made inside a command that goes on running, two \
+             minutes after it: the commit is in no copy until a file changes or the command ends; log:\n{}",
+            run.log()
+        )
+    };
+    let line = run.line_when_stored(index).await;
+    assert_eq!(
+        (field(&line, "by"), field(&line, "engine")),
+        (Some("timer"), Some("moved")),
+        "the look that stored the head: {line}"
+    );
+    run.b904_holds_the_move(index, &moved);
+    assert_eq!(
+        run.calls_ended(),
+        ended,
+        "TRIGGER PRESENT is not shown: the command ended before the copy was stored"
+    );
+}
+
+/// The session is ended from outside in what was the gap. With KILL the worker does nothing more, and the newest stored
+/// copy is the one the look after the commit stored: it holds the commit and its message. With TERM no look came after the
+/// commit: the look that the request to end asks for stores it.
+async fn b904_ended_from_outside(label: &str, signal: &str) {
+    let budget = ("AGENTD_DIRECT_STOP_COPY_BUDGET_MS", "120000".to_string());
+    let mut run = Run::b904_start(label, NO_TICK_MS, vec![budget]).await;
+    let moved = run.b904_to_the_gap(HeadMove::Commit, true).await;
+    if signal == "KILL" {
+        // The tool call that made the commit ends: its look is the last thing the worker does before it is killed.
+        run.tool_call_ends().await;
+        run.b904_copy_with(moved.stored, &moved.head, LONG).await;
+    }
+    run.d.process.as_ref().unwrap().signal(signal);
+    let exit = exit_of(&mut run, LONG).await;
+    assert!(exit.is_some(), "the worker ended after {signal}");
+    let newest = run.stored() - 1;
+    assert!(
+        run.b904_holds(newest, &moved.head),
+        "TRIGGER PRESENT: the session was ended by {signal} after a commit that changed no file, and the newest stored copy \
+         ({} stored, {} when the commit was made) does not hold that commit: its files are kept, the commit and its message \
+         are lost; log:\n{}",
+        run.stored(),
+        moved.stored,
+        run.log()
+    );
+    run.b904_holds_the_move(newest, &moved);
+    assert!(
+        run.b904_subjects(newest).contains(&moved.subject),
+        "the newest stored copy holds the commit's message"
+    );
+    if signal == "TERM" {
+        let line = run.line_of(newest);
+        assert_eq!(
+            (field(&line, "by"), field(&line, "engine")),
+            (Some("stop"), Some("moved")),
+            "the look that the request to end asked for stored the head: {line}"
+        );
+        assert!(
+            run.log()
+                .contains("direct turn session ending: a copy of the work was stored"),
+            "log:\n{}",
+            run.log()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_session_that_is_killed_after_a_commit_keeps_the_commit() {
+    b904_ended_from_outside("b904-kill", "KILL").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_the_look_that_a_request_to_end_asks_for_stores_the_commit() {
+    b904_ended_from_outside("b904-term", "TERM").await;
+}
+
+/// The bucket refuses the copy of a head that moved, at every try of its look. The copy task forgets a copy that was not
+/// stored, so the tick that tries again does not skip the head: its look stores a copy that holds the commit.
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_a_refused_copy_of_a_moved_head_is_stored_by_the_look_that_tries_again() {
+    let run = Run::b904_start("b904-refused", NO_TICK_MS, Vec::new()).await;
+    let moved = run.b904_to_the_gap(HeadMove::Commit, true).await;
+    let key = keys::snapshot_bundle_key(RUN);
+    let attempts = run.d.aws.put_attempts(&key);
+    run.d.aws.fail_puts("snapshot.bundle", 4);
+    run.tool_call_ends().await;
+    assert!(
+        wait_for(LONG, || run.d.aws.put_attempts(&key) >= attempts + 4).await,
+        "TRIGGER PRESENT: the look after a commit that changed no file sent no copy to the bucket ({} tries, {} before): the \
+         commit is in no copy; log:\n{}",
+        run.d.aws.put_attempts(&key),
+        attempts,
+        run.log()
+    );
+    let found = run.b904_copy_with(moved.stored, &moved.head, LONG).await;
+    let Some(index) = found else {
+        panic!(
+            "TRIGGER PRESENT: the copy of a moved head was refused, and no later look stored a copy that holds the head; \
+             log:\n{}",
+            run.log()
+        )
+    };
+    run.b904_holds_the_move(index, &moved);
+    println!("B904-REFUSED {}", run.line_when_stored(index).await);
+}
+
+/// The end of a tool call starts no git call for the engine's
+/// head. The copy task reads the head, once a look, after that look has hashed the tree; the collector that sees a tool call end
+/// only wakes the task. A tool call's end that ran `git rev-parse HEAD` itself passed every test, so a whole turn holds it: a
+/// timer of ten minutes, three tool calls that end, each followed by the look it asked for, and the stand-in's log of every git
+/// process the worker started. Every read of the engine's head after the first tool call ended follows the `write-tree` of its
+/// own look, with no other read of the head and no `add -A` of another look between the two. No time is asserted.
+#[tokio::test(flavor = "multi_thread")]
+async fn b904_the_end_of_a_tool_call_starts_no_read_of_the_engines_head() {
+    /// The reads of the engine's head among `calls`.
+    fn reads(calls: &[String]) -> usize {
+        calls
+            .iter()
+            .filter(|c| c.trim_end().ends_with("rev-parse HEAD"))
+            .count()
+    }
+    /// The looks among `calls`: a look hashes the tree once.
+    fn looks(calls: &[String]) -> usize {
+        calls
+            .iter()
+            .filter(|c| b860_kept_support::command_of(c) == "write-tree")
+            .count()
+    }
+    const ENDS: usize = 3;
+    let run = Run::b904_start("b904-tool-end-reads-no-head", NO_TICK_MS, Vec::new()).await;
+    // What the worker started before the first tool call ended is not judged; only the place of a look in flight is taken from it.
+    let first = git_calls(&run.dir).len();
+    for n in 0..ENDS {
+        let before = git_calls(&run.dir);
+        run.tool_call_ends().await;
+        assert!(
+            wait_for(LONG, || {
+                let now = git_calls(&run.dir);
+                looks(&now) > looks(&before) && reads(&now) > reads(&before)
+            })
+            .await,
+            "TRIGGER PRESENT is not shown: the end of tool call {n} was followed by no look that read the engine's head; log:\n{}",
+            run.log()
+        );
+    }
+    let calls = git_calls(&run.dir);
+    // The copy task starts `add -A`, `write-tree` and the read of the head in this order, once a look. So a read of the head is a
+    // look's own when the last of these three that was started before it is a `write-tree`.
+    let mut last = "";
+    let mut in_a_look = 0;
+    let mut outside = Vec::new();
+    for (i, call) in calls.iter().enumerate() {
+        let command = b860_kept_support::command_of(call);
+        if call.trim_end().ends_with("rev-parse HEAD") {
+            if i >= first {
+                if last == "write-tree" {
+                    in_a_look += 1;
+                } else {
+                    outside.push(format!("call {i} `{call}` after `{last}`"));
+                }
+            }
+            last = "rev-parse";
+        } else if command == "add" || command == "write-tree" {
+            last = command;
+        }
+    }
+    let since = calls[first..].join("\n");
+    assert!(
+        in_a_look >= ENDS,
+        "TRIGGER PRESENT is not shown: {in_a_look} looks read the engine's head after {ENDS} tool calls ended; git calls since the \
+         first tool call:\n{since}"
+    );
+    assert!(
+        outside.is_empty(),
+        "TRIGGER PRESENT: a read of the engine's head was started outside a look after a tool call ended: {outside:?}. The end of \
+         a tool call wakes the copy task and starts no git call itself; git calls since the first tool call:\n{since}"
+    );
+    println!(
+        "B904-TOOL-END looks={} head_reads={} outside={}",
+        looks(&calls[first..]),
+        reads(&calls[first..]),
+        outside.len()
+    );
 }

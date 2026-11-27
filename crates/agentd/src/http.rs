@@ -482,6 +482,25 @@ async fn read_answer(resp: http::Response<Incoming>) -> Result<HttpResponse, Htt
     Ok(answer)
 }
 
+/// The connector of every HTTP client the worker builds: the one `HttpsConnectorBuilder::build` makes, with no-delay set on every
+/// connection. A streamed PUT ([`SignedHttp::put_file`]) leaves as two writes: the head, and the body once the first piece
+/// of the file is read. With Nagle's algorithm on, the kernel holds the second write back until the first is acknowledged, and the
+/// receiving side may hold that acknowledgement back for its delayed-acknowledgement time; two uploads at the end of a turn waited
+/// that way. No setting changes this: it is not a behaviour a user chooses.
+pub fn connector() -> HttpsConnector<HttpConnector> {
+    let mut http = HttpConnector::new();
+    http.enforce_http(false);
+    http.set_nodelay(true);
+    // An explicit provider: in workspace builds another crate enables rustls' aws-lc-rs too, and
+    // with two providers compiled in rustls cannot choose a process default.
+    hyper_rustls::HttpsConnectorBuilder::new()
+        .with_provider_and_webpki_roots(Arc::new(rustls::crypto::ring::default_provider()))
+        .unwrap_or_else(|e| panic!("ring TLS provider rejected its own defaults: {e}"))
+        .https_or_http()
+        .enable_http1()
+        .wrap_connector(http)
+}
+
 pub struct SignedHttp {
     client: Client<HttpsConnector<HttpConnector>, BoxBody<Bytes, std::io::Error>>,
     /// How long [`send`](Self::send) waits for a whole answer; [`REQUEST_TIMEOUT`] unless a test shortens it.
@@ -502,21 +521,8 @@ impl Default for SignedHttp {
 
 impl SignedHttp {
     pub fn new() -> Self {
-        // The connector `HttpsConnectorBuilder::build` makes.
-        let mut http = HttpConnector::new();
-        http.enforce_http(false);
-        // An explicit provider: in workspace builds another crate enables rustls' aws-lc-rs too, and
-        // with two providers compiled in rustls cannot choose a process default.
-        let https = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_provider_and_webpki_roots(std::sync::Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .unwrap_or_else(|e| panic!("ring TLS provider rejected its own defaults: {e}"))
-            .https_or_http()
-            .enable_http1()
-            .wrap_connector(http);
         Self {
-            client: Client::builder(TokioExecutor::new()).build(https),
+            client: Client::builder(TokioExecutor::new()).build(connector()),
             timeout: REQUEST_TIMEOUT,
         }
     }

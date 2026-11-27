@@ -44,6 +44,13 @@ fn needs_input(n: u32, extra: Value) -> Value {
     progress(n, v)
 }
 
+/// The harness event that names the engine the run's session started on.
+fn session_started(n: u32, engine: &str) -> Value {
+    json!({"schemaVersion": 1, "eventId": id(n), "runId": RUN, "seq": n, "ts": "2026-10-15T13:41:00Z",
+           "type": "session.started", "authority": "harness",
+           "payload": {"kind": "inline", "value": {"agentId": "direct", "engine": engine, "modelId": "us.anthropic.claude-opus-5-5"}}})
+}
+
 fn ack(n: u32, request: u32, kind: &str, extra: Value) -> Value {
     let mut v = json!({"turn": 1, "kind": kind, "text": "t", "requestId": id(request)});
     for (k, x) in extra.as_object().cloned().unwrap_or_default() {
@@ -462,6 +469,35 @@ async fn a_bad_message_is_refused_locally() {
         );
     }
     assert!(plane.posts().is_empty());
+}
+
+/// `ham say` refuses an empty or too long message in the words of the engine the run is on, and nothing is sent. For a Cline run
+/// the words are the ones of before.
+#[tokio::test]
+async fn b885_a_bad_message_is_refused_in_the_words_of_the_runs_engine() {
+    for (engine, name) in [("cline", "Cline"), ("opencode", "OpenCode")] {
+        let plane = Script::with(vec![session_started(1, engine), needs_input(10, json!({}))]);
+        let e = answer(&api(&plane), RUN, &Want::Say("  ".into()), &opts())
+            .await
+            .unwrap_err();
+        assert!(matches!(e, AnswerError::Refused(_)), "{engine}: {e}");
+        assert!(
+            e.to_string()
+                .contains(&format!("the message is empty; write some text for {name}")),
+            "{engine}: {e}"
+        );
+        let e = answer(&api(&plane), RUN, &Want::Say("x".repeat(262_145)), &opts())
+            .await
+            .unwrap_err();
+        assert!(matches!(e, AnswerError::Refused(_)), "{engine}: {e}");
+        assert!(
+            e.to_string().contains(&format!(
+                "the message is 262,145 bytes; {name} takes at most 262,144 bytes (256 KiB)"
+            )),
+            "{engine}: {e}"
+        );
+        assert!(plane.posts().is_empty(), "{engine}");
+    }
 }
 
 #[tokio::test]

@@ -46,6 +46,11 @@ impl Shared {
 }
 
 async fn new_run(fake: &Fake, prompt: &str) -> String {
+    new_run_on(fake, prompt, "cline").await
+}
+
+/// [`new_run`] for a run whose session started on `engine`.
+async fn new_run_on(fake: &Fake, prompt: &str, engine: &str) -> String {
     let req = serde_json::from_value::<harness_protocol::api::v1::StartDirectRunRequest>(
         json!({"prompt": prompt, "target": {"mode": "s3-only"}, "model": MODEL}),
     )
@@ -59,7 +64,7 @@ async fn new_run(fake: &Fake, prompt: &str) -> String {
     fake.mem.harness(
         &run,
         EventType::SessionStarted,
-        json!({"agentId": "direct", "engine": "cline", "modelId": MODEL}),
+        json!({"agentId": "direct", "engine": engine, "modelId": MODEL}),
     );
     run
 }
@@ -98,6 +103,28 @@ async fn finish(fake: &Fake, run: &str, h: tokio::task::JoinHandle<()>) {
         .await
         .expect("the watch ends on run.completed")
         .unwrap();
+}
+
+/// The head of a question's card names the engine of the run, as the lines under it do.
+#[tokio::test]
+async fn b885_the_head_of_a_question_names_the_engine_of_the_run() {
+    let fake = Fake::start().await;
+    let run = new_run_on(&fake, "watch asks on another engine", "opencode").await;
+    let (out, h) = spawn_watch(&fake, &run, false);
+    until(&out, "agents 1").await;
+    // The question as the worker of a run on that engine writes it: its title names the engine.
+    fake.mem.needs_input_with(&run, "engine_stop", |p| {
+        p.title = "OpenCode stopped its own prompt".into();
+        p.text = "Needs your input: OpenCode stopped its own prompt (ham say, ham new-session or ham finish)".into();
+    });
+    until(&out, "needs you: OpenCode stopped its own prompt").await;
+    let text = out.text();
+    assert!(
+        text.contains("OpenCode needs you: OpenCode stopped its own prompt"),
+        "{text}"
+    );
+    assert!(!text.contains("Cline"), "{text}");
+    finish(&fake, &run, h).await;
 }
 
 #[tokio::test]

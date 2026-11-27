@@ -1052,10 +1052,17 @@ async fn start_and_prompt(
     let creds = app.creds.current().await.map_err(|e| e.to_string())?;
     let s3_objects = S3Objects::new(req.region.clone(), cfg.s3_endpoint.clone());
     let request_file = agent_data.join("input/request.json");
-    s3_objects
-        .get_to_file(&req.request.uri, &creds, &request_file)
-        .await
-        .map_err(|e| format!("request.json: {e}"))?;
+    // An answer of the storage service that may be another one a moment later is asked for again ([`start_read`]).
+    start_read(
+        app,
+        &s3_objects,
+        "request.json",
+        &req.request.uri,
+        &creds,
+        &request_file,
+    )
+    .await
+    .map_err(|e| format!("request.json: {e}"))?;
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&request_file, std::fs::Permissions::from_mode(0o600));
@@ -1124,10 +1131,16 @@ async fn start_and_prompt(
         .await?;
     let bundle_file = agent_data.join("input.bundle");
     // The answer of this download names the version of the object that was read, when the bucket keeps versions.
-    let restored_version = s3_objects
-        .get_to_file_with_version(&repo_uri, &creds, &bundle_file)
-        .await
-        .map_err(|e| format!("worktree: {e}"))?;
+    let restored_version = start_read(
+        app,
+        &s3_objects,
+        "the bundle to restore",
+        &repo_uri,
+        &creds,
+        &bundle_file,
+    )
+    .await
+    .map_err(|e| format!("worktree: {e}"))?;
     // A copy of the work may hold what the run changed and need what the bundle the run started from holds; its header says
     // so. The base is then fetched too and the restore takes it first. A restore object that names no commit it needs is restored
     // as before, with no read of the base.
@@ -1157,12 +1170,18 @@ async fn start_and_prompt(
                         .to_string(),
                 );
             };
-            s3_objects
-                .get_to_file(base_uri, &creds, &base_file)
-                .await
-                .map_err(|e| {
-                    format!("worktree: the copy to restore needs the run's base bundle: {e}")
-                })?;
+            start_read(
+                app,
+                &s3_objects,
+                "the run's base bundle",
+                base_uri,
+                &creds,
+                &base_file,
+            )
+            .await
+            .map_err(|e| {
+                format!("worktree: the copy to restore needs the run's base bundle: {e}")
+            })?;
             base_for_restore = Some(&base_file);
         }
     }
@@ -1225,13 +1244,19 @@ async fn start_and_prompt(
         .unwrap_or(0);
     // The session's two disks: measured at each prompt boundary and, fresh, after a -32603. Both settings at 0 switch
     // the measurement off.
+    // The run's own two folders lose a write bit for group or others that the worker's umask left them, so the test write
+    // below does not depend on that umask.
+    for dir in disk::run_write_dirs(&agent_data, &cfg.workspace_root, run) {
+        disk::keep_run_dir_own(&dir);
+    }
     let disk_check = (cfg.direct.disk_low_mb > 0 || cfg.direct.workspace_limit_mb > 0).then(|| {
         disk::DiskCheck::new(
-            // The test write goes to the run's own folder, the checkout's parent on the managed storage and the
-            // engine's state folder, besides the two roots.
+            // The test write goes to the run's own folder on each of the two disks, besides the two roots: folders
+            // the worker makes and does not hand to the engine's user.
             Arc::new(
                 disk::HostDisk::new(cfg.data_root.clone(), cfg.workspace_root.clone())
-                    .with_write_dirs([agent_data.clone(), wt.root.clone(), data_dir.clone()]),
+                    .with_write_dirs(disk::run_write_dirs(&agent_data, &cfg.workspace_root, run))
+                    .with_log(app.log.clone()),
             ),
             disk::Limits {
                 root_low_mb: cfg.direct.disk_low_mb,
@@ -3515,7 +3540,8 @@ impl Copies {
         );
     }
 
-    /// One look of the copy task: a copy when the tree changed since the last one. Every part of it ends within `bound`: the wait
+    /// One look of the copy task: a copy when the tree changed since the last one, or when the engine's head is another commit
+    /// than the one the session's last copy stands on. Every part of it ends within `bound`: the wait
     /// for the private repository, the git work and the file calls on the work tree at the time `bound.git` names, storing the copy
     /// within `snapshot::store_limit`, and all of it at the time `bound.stop` names once a process that ends after the copy was asked to
     /// end. A part that is given up is a failed look: counted, logged, and said to the run ([`Copies::look_failed`]).
@@ -4257,6 +4283,36 @@ fn start_snapshots(
             }
         }
     })))
+}
+
+/// GETs `uri` into `dest` on the way to a run's start, with the bounds of the uploads ([`S3Objects::get_to_file_retrying`]): an
+/// answer of the storage service that may be another one a moment later is asked for again [`UPLOAD_RETRIES`] times with the upload
+/// pause, which doubles; an object that is not there and a refused access end the read at once. `what` names the object in the log
+/// line of a read that needed more than one GET. Returns the version of the object that was read, when the answer named one.
+async fn start_read(
+    app: &App,
+    s3_objects: &S3Objects,
+    what: &str,
+    uri: &str,
+    creds: &harness_protocol::api::internal::ProcessCredentials,
+    dest: &Path,
+) -> Result<Option<String>, String> {
+    let done = s3_objects
+        .get_to_file_retrying(
+            uri,
+            creds,
+            dest,
+            UPLOAD_RETRIES,
+            app.cfg.direct.upload_retry_pause,
+        )
+        .await?;
+    if done.tries > 1 {
+        app.log.line(&format!(
+            "direct turn start read: {what} was read at try {}",
+            done.tries
+        ));
+    }
+    Ok(done.version_id)
 }
 
 /// PUTs `file` to `uri` create-only (`If-None-Match: *`, [`S3Objects::put_file_new_retrying`]), trying again [`UPLOAD_RETRIES`] times

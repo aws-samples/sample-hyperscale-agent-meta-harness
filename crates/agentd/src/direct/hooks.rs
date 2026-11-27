@@ -40,7 +40,9 @@
 //!   priority among prompts; [`TurnVote::Done`] changes nothing. The order is in [`Hooks::standard`] and in `AGENTS.md`.
 //! - A module that votes [`TurnVote::Wait`] says the engine is still working by itself. The modules asked after it at that turn end read
 //!   `TurnEnd.engine_working`: a prompt one of them votes replaces the wait and goes to a busy engine, which takes it behind the
-//!   round it is working on and answers the request at once.
+//!   round it is working on and answers the request at once. The driver hears of that wait beside the prompt:
+//!   when the user's cancel comes up while the modules are asked, the prompt is dropped and the
+//!   run is still held as for the wait, so the engine is told to cancel and the stop is the user's.
 //! - Event ordering is by call: a module sees the events of a run in the order the driver raised them.
 
 use crate::BoxFuture;
@@ -1069,15 +1071,22 @@ impl Hooks {
 
     /// The vote of a turn end ([`DirectHook::on_turn_end`]).
     pub async fn turn_end(&self, end: &TurnEnd<'_>) -> TurnVote {
+        self.vote(false, end).await.0
+    }
+
+    /// [`Hooks::turn_end`] with what the poll heard about the engine: true when a module voted in this poll that the engine
+    /// still works by itself (a [`TurnVote::Wait`]), also when the prompt of another module replaced that wait in the vote.
+    pub async fn turn_end_heard(&self, end: &TurnEnd<'_>) -> (TurnVote, bool) {
         self.vote(false, end).await
     }
 
     /// The vote of the seal ([`DirectHook::on_seal`]).
     pub async fn seal(&self, end: &TurnEnd<'_>) -> TurnVote {
-        self.vote(true, end).await
+        self.vote(true, end).await.0
     }
 
-    async fn vote(&self, seal: bool, end: &TurnEnd<'_>) -> TurnVote {
+    /// The vote of a poll, and whether a module voted in it that the engine still works by itself.
+    async fn vote(&self, seal: bool, end: &TurnEnd<'_>) -> (TurnVote, bool) {
         let i = &self.inner;
         let what = if seal { "on_seal" } else { "on_turn_end" };
         let mut best = TurnVote::Done;
@@ -1100,7 +1109,7 @@ impl Hooks {
                 .await;
             match asked {
                 Ok(TurnVote::Done) => {}
-                Ok(stop @ TurnVote::Stop { .. }) => return stop,
+                Ok(stop @ TurnVote::Stop { .. }) => return (stop, working),
                 Ok(prompt @ TurnVote::Prompt(_)) => best = prompt,
                 // A wait gives way to a prompt, whichever module voted first; of two waits the shorter holds. At the seal it is no opinion.
                 Ok(TurnVote::Wait { until }) if !seal => {
@@ -1118,12 +1127,13 @@ impl Hooks {
                 Err(why) => i.disable(slot, &why),
             }
         }
-        match best {
+        let best = match best {
             TurnVote::Wait { until } => TurnVote::Wait {
                 until: until.max(MIN_WAIT),
             },
             other => other,
-        }
+        };
+        (best, working)
     }
 
     /// Tells every module the engine is gone.

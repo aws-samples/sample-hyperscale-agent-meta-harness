@@ -1595,7 +1595,19 @@ pub struct Snapshotter {
     base: String,
     last_tree: String,
     /// The engine's `HEAD` as the last periodic copy read it: the parent of a final copy that may read nothing in the engine's repository.
+    /// The commit the session started on until a copy has read another, so the copy of the end of a session that restored a
+    /// copy and made none stands on that copy and holds the commits of the sessions before it.
     last_parent: Option<String>,
+    /// The engine's `HEAD` that the next look compares with ([`Self::snapshot_kept`]): that of the last copy this session
+    /// made on a head, and the head the session started on while it has made none. A copy that could not be stored is forgotten
+    /// ([`Self::forget_last`]) and the look after it copies whatever it finds, so this is the head of the last stored copy. It
+    /// belongs to the session, never to the process: a session that restored a copy starts on that copy's commit and makes no
+    /// copy until a file or the head changes. `None`: the session started on a head that names no commit.
+    copy_head: Option<String>,
+    /// What [`Self::copy_head`] was before the last copy of a look was made, until the next copy is made. A copy that
+    /// could not be stored puts it back ([`Self::forget_last`]): a head whose copy was never stored is still another head than
+    /// the one the session compares with, also when the look after it had to copy the files without it.
+    head_before_copy: Option<Option<String>>,
     count: u32,
     /// What the last clean-up ([`ScratchRepo::tidy`]) could not do, for the caller's log ([`Self::take_tidy_error`]).
     tidy_error: Option<String>,
@@ -1716,16 +1728,32 @@ impl Snapshotter {
             .map_err(ws)?;
         // The tree the session starts on is the tree of the commit the repository stands at: the base in a first session, the
         // commit an earlier session saved in a later one. That work is saved already, so the session makes no copy until a file changes.
-        let start_tree = git_with_env(repo, &["rev-parse", "HEAD^{tree}"], &[])
+        // The commit it stands at is read with its tree, in the one git call that read the tree before. It is the head the
+        // session's looks compare the engine's head with until the session has made a copy (a commit that changes no file moves
+        // the head, and is copied), and the head a copy of the end that is given none stands on until a look has copied another.
+        // A repository whose head names no commit, or whose commit cannot be read, gives neither: the tree is the base's then.
+        let stands_at = git_with_env(repo, &["rev-parse", "HEAD", "HEAD^{tree}"], &[])
             .await
-            .unwrap_or(base_tree);
+            .ok();
+        let ids: Vec<&str> = stands_at
+            .as_deref()
+            .map(|out| out.lines().map(str::trim).collect())
+            .unwrap_or_default();
+        let (start_head, start_tree) = match ids.as_slice() {
+            [head, tree] if object_id(head).is_ok() && object_id(tree).is_ok() => {
+                (Some((*head).to_string()), (*tree).to_string())
+            }
+            _ => (None, base_tree),
+        };
         let mut made = Self {
             scratch,
             git_dir,
             repo: repo.to_path_buf(),
             base: base.to_string(),
             last_tree: start_tree,
-            last_parent: None,
+            last_parent: start_head.clone(),
+            copy_head: start_head,
+            head_before_copy: None,
             count: 0,
             tidy_error: None,
             tidy_due: false,
@@ -1837,9 +1865,14 @@ impl Snapshotter {
     }
 
     /// The copy just made could not be stored: the next look copies the tree again, whether it changed or not, so a tree whose
-    /// upload failed is not left without a copy until its next change.
+    /// upload failed is not left without a copy until its next change. Nor is the engine's head that copy was made on: the
+    /// look after it reads the head and stands its copy on it, and the head the session compares with is again the one it compared
+    /// with before the copy that was not stored ([`Self::copy_head`]), so that head stays another head until a copy of it is stored.
     pub fn forget_last(&mut self) {
         self.last_tree.clear();
+        if let Some(before) = self.head_before_copy.take() {
+            self.copy_head = before;
+        }
     }
 
     /// Removes the lock files a killed git left ([`STALE_LOCKS`]). The copy task is aborted when the engine stops and its git children are
@@ -1906,6 +1939,15 @@ impl Snapshotter {
     /// The engine's `HEAD`, while `.git` is the repository's own directory ([`git_dir_problem`]) and this repository can read that commit.
     /// `None` when the engine removed or replaced `.git`: agentd then runs no git in the engine's repository.
     async fn engine_head(&self) -> Option<String> {
+        let head = self.engine_head_named().await?;
+        self.scratch.has_commit(&head).await.then_some(head)
+    }
+
+    /// What the engine's `HEAD` names, while `.git` is the repository's own directory: the one file call that asks so and
+    /// one `git rev-parse` in the engine's repository ([`Self::engine_head_id`]). Whether this repository can read that commit is
+    /// not asked: a look at an unchanged tree whose head stands where the last copy found it starts no second git call for the
+    /// head. `None` when the engine removed or replaced `.git`, when the head names no commit yet and when it cannot be read.
+    async fn engine_head_named(&self) -> Option<String> {
         let (repo, is_own) = (self.repo.clone(), self.scratch.git_dir_reader.0.clone());
         let own = self
             .scratch
@@ -1915,8 +1957,7 @@ impl Snapshotter {
         if !own {
             return None;
         }
-        let head = self.engine_head_id().await?;
-        self.scratch.has_commit(&head).await.then_some(head)
+        self.engine_head_id().await
     }
 
     /// What the engine's `HEAD` names: one `git rev-parse` in the engine's repository and no file call of agentd. The caller has
@@ -2123,6 +2164,8 @@ impl Snapshotter {
             base: base.to_string(),
             last_tree: String::new(),
             last_parent: None,
+            copy_head: None,
+            head_before_copy: None,
             count: 0,
             tidy_error: None,
             tidy_due: false,
@@ -2388,7 +2431,7 @@ impl Snapshotter {
     /// The copy of the session's end, made when the engine and everything it started have stopped. With `head` (the session's
     /// final head, once the end commit is made) the `snapshot` ref names that commit itself: the copy is the head a delivery is planned
     /// from. Without one (the end commit failed, or agentd may run no git in the checkout) the copy is the tree as it is, on the last
-    /// head a periodic copy read (the base when there was none): no git call reads the engine's repository for it. When that head cannot
+    /// head a periodic copy read: no git call reads the engine's repository for it. When that head cannot
     /// be read any more (the engine removed or replaced `.git`) the copy holds the whole tree and has no parent ([`Self::commit_copy`]).
     /// A copy is made whether or not the tree changed, so the newest record always says what the end state is.
     ///
@@ -2448,6 +2491,8 @@ impl Snapshotter {
         let (bundle, bundle_bytes, _) = self.write_bundle(self.form).await?;
         self.steps.bundle = at.elapsed();
         self.last_tree = tree;
+        // The copy of the end is no copy of a look: nothing is put back for it.
+        self.head_before_copy = None;
         self.count = n;
         Ok(SnapshotMade {
             commit,
@@ -2461,8 +2506,9 @@ impl Snapshotter {
         })
     }
 
-    /// Takes a snapshot of the tree as it is now; `None` when it equals the last one. Its parent is the engine's HEAD
-    /// ([`Self::engine_head`]); without one, the last head a copy read (the base when there was none), as for the copy of the end; a parent
+    /// Takes a snapshot of the tree as it is now; `None` when it equals the last one and the engine's HEAD is the commit the
+    /// session compares with. Its parent is the engine's HEAD
+    /// ([`Self::engine_head`]); without one, the last head a copy read, as for the copy of the end; a parent
     /// this repository cannot read makes the copy hold the whole tree ([`Self::commit_copy`]).
     ///
     /// It starts with [`Self::tidy_if_due`] when the look before it hashed a changed tree, also when a later step of that look failed,
@@ -2515,13 +2561,34 @@ impl Snapshotter {
         let at = Instant::now();
         let tree = self.current_tree().await?;
         self.steps.tree = at.elapsed();
-        if tree == self.last_tree {
+        // A commit that changes no file is work of the run, and the engine's `.git` is no part of the tree. So the engine's
+        // head is read before the trees are compared, with the one git call a copy makes for it anyway, and a look whose tree is
+        // the last copy's goes on to a copy when the head is another commit than the one the session compares with
+        // ([`Self::copy_head`]): a commit of files that a copy holds, an amended message, a rebase to the same tree, a reset. A
+        // head that names no commit yet or that cannot be read is no other commit: such a look stores nothing for the head,
+        // fails nothing, and leaves what the next look compares with. The read is part of the look's git work.
+        let at = Instant::now();
+        let named = self.engine_head_named().await;
+        self.steps.head += at.elapsed();
+        let same_tree = tree == self.last_tree;
+        let moved = named
+            .as_ref()
+            .is_some_and(|id| self.copy_head.as_ref() != Some(id));
+        if same_tree && !moved {
             return Ok(None);
         }
         let gd: &Path = &self.git_dir;
         let at = Instant::now();
-        let head = self.engine_head().await;
+        let head = match named {
+            Some(id) if self.scratch.has_commit(&id).await => Some(id),
+            _ => None,
+        };
         self.steps.head += at.elapsed();
+        // A head this repository cannot read is nothing a copy can stand on, so with the tree as the last copy has it
+        // there is nothing to store.
+        if same_tree && head.is_none() {
+            return Ok(None);
+        }
         if self.keep.look_packs.is_some() {
             self.keep.look_head.clone_from(&head);
         }
@@ -2549,7 +2616,11 @@ impl Snapshotter {
         self.keep.look_read_kept = self.keep.use_kept;
         self.steps.engine = self.keep.note_head(head.as_deref(), bundle_bytes, written);
         self.last_tree = tree;
+        // The head this copy stands on is what the next look compares the engine's head with, once the copy is stored:
+        // the head the session compared with until now is kept for a copy that is not ([`Self::forget_last`]).
+        self.head_before_copy = Some(self.copy_head.clone());
         if head.is_some() {
+            self.copy_head.clone_from(&head);
             self.last_parent = head;
         }
         self.count = n;

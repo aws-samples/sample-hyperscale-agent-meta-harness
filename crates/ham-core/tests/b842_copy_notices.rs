@@ -306,8 +306,9 @@ fn b842_b823_a_stored_copy_ends_what_the_view_keeps_of_the_notices_about_copies(
 }
 
 /// What a session said about its copies ends with the session. A session that was lost says nothing any more, and the session that
-/// follows it stores no copy until a file changes, so no stored copy ends the notices of the lost one: the service's word that the
-/// session was lost does. A surface that starts reading the run later is told only what the session in progress says.
+/// follows it stores no copy until a file changes or the engine makes a commit, so no stored copy ends the notices of the lost
+/// one: the service's word that the session was lost does. A surface that starts reading the run later is told only what the
+/// session in progress says.
 #[test]
 fn b842_b823_the_notices_about_copies_of_a_lost_session_are_not_kept_for_the_session_that_follows()
 {

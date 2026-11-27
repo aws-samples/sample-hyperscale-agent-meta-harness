@@ -338,6 +338,15 @@ that sees this (the `goal` module) votes `Wait { until }` at `on_turn_end` inste
   `b853_b857_a_cancel_in_the_round_a_message_arrived_in_ends_the_run_as_the_users_stop` and
   `b854_b857_a_request_to_end_in_the_round_a_message_arrived_in_is_told_to_the_service_and_the_engine_is_kept` in
   `crates/agentd/tests/b857_now_in_follow_up_rounds.rs`.
+- A prompt that comes back while the user's cancel came up, from a poll in which a module voted `Wait`, is dropped, and the run is held as for
+  that wait. `Hooks::turn_end_heard` returns the vote and whether a module said in the poll that the engine still works by itself
+  (a `Wait`, also one that a prompt replaced in the vote); `driver::consult` then answers a `Wait` of `MIN_WAIT`. The case: the cancel lands at
+  the first ask of the first stop, the goal module says that the engine works, and the message module votes the user's message as the next
+  prompt. The hold writes `session/cancel` to the engine once and the run ends as the user's stop (`stopped_by_user`); the prompt is not sent.
+  Before, nothing told the engine, and the run ended with the outcome of the last answered prompt (`reported_done` in the test). A prompt
+  that comes back after the deadline alone is dropped as before. Test:
+  `b882_a_cancel_at_the_first_ask_of_the_first_stop_ends_the_run_as_the_users_stop_and_is_written_once` in
+  `crates/agentd/tests/b857_now_in_follow_up_rounds.rs`.
 - A module that waits keeps its own bound: the hold has no cap of its own beyond the deadline and the silence limit. Tests: `crates/agentd/tests/direct_hold.rs`, `crates/agentd/tests/direct_hooks_unit.rs`.
 
 ### The research module

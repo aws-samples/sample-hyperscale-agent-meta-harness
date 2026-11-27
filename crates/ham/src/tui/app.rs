@@ -56,7 +56,7 @@ use ham_core::command::{
     Command, DirectArgs, EngineAction, EngineCommand, Invocation, TargetArg, parse,
 };
 use ham_core::history::{HistoryRing, Recall, ReverseSearch};
-use ham_core::input::{InputRequest, check_text};
+use ham_core::input::{InputRequest, check_text_for};
 use ham_core::meters::{Link, elapsed_s};
 use ham_core::models::{ModelError, ModelPrefs, ModelSource, Models, builtin, resolve};
 use ham_core::paste::{PasteStore, Pasted};
@@ -526,10 +526,52 @@ const PASTE_IGNORED_BROWSING: &str = "paste ignored: press i or Enter to type, t
 /// The notice of a paste on a screen with no text box.
 const PASTE_IGNORED: &str = "paste ignored: this screen has no text box";
 
-/// `R` on the Runs screen while the list held is a part: while older runs are being loaded, and for every other part.
-/// `App::runs_notes_follow_list` takes each away when it no longer holds, so the two are known by their text.
-const R_STILL_LOADING: &str = "older runs are still loading: press R again in a moment";
-const R_NOT_EVERY: &str = "not every run is loaded: press r, then R";
+/// The two sentences of a key that needs the whole list while the list held is a part: `R` on the Runs screen and `d` in the
+/// tag explorer. It chooses between them for the key and holds the rule of the one on the note line, which is known by its text.
+struct PartNote {
+    /// While older runs are being loaded.
+    still_loading: &'static str,
+    /// Over every other part of the list: it names `r`, the key that loads every run.
+    names_r: &'static str,
+}
+
+impl PartNote {
+    /// The sentence for the state of the older runs: the one place that chooses between the two.
+    fn now(&self, loading: bool) -> &'static str {
+        if loading {
+            self.still_loading
+        } else {
+            self.names_r
+        }
+    }
+
+    /// A sentence about a list that is not whole never stays once that is no longer so, and its advice follows the older runs.
+    /// `named_r`: the key was pressed while no older runs were being loaded, so its sentence named `r`. The sentence goes
+    /// when the list is whole. While older runs are being loaded it is the still-loading sentence: one that named `r` becomes it,
+    /// because `r` has been pressed. When their read has failed, a sentence that named `r` names it again, and one that the key set
+    /// while they were loading goes: the note line then shows the failed read's words. A note of another kind is left as it is.
+    fn follow(&self, note: &mut Option<String>, named_r: bool, whole: bool, loading: bool) {
+        let ours = note
+            .as_deref()
+            .is_some_and(|n| n == self.still_loading || n == self.names_r);
+        if !ours {
+            return;
+        }
+        // Gone with the whole list, and gone with a failed read when the key set it while the older runs were loading.
+        let gone = whole || (!loading && !named_r);
+        *note = if gone {
+            None
+        } else {
+            Some(self.now(loading).to_string())
+        };
+    }
+}
+
+/// `R` on the Runs screen while the list held is a part.
+const R_PART: PartNote = PartNote {
+    still_loading: "older runs are still loading: press R again in a moment",
+    names_r: "not every run is loaded: press r, then R",
+};
 
 /// Pasted text made safe to insert: every line break becomes `\n`, escape sequences and control characters (the paste's own
 /// `ESC [ 201 ~` end mark included) are removed, tabs become four spaces.
@@ -889,6 +931,9 @@ pub struct App {
     declared: Vec<(String, bool)>,
     /// A line for the Runs screen's status row, such as the paste it ignored; the next key clears it.
     pub(crate) runs_notice: Option<String>,
+    /// `R` was last refused while no older runs were being loaded, so its sentence named `r` (`PartNote::follow` reads it while one of
+    /// `R`'s two sentences is the notice).
+    runs_named_r: bool,
     /// The whole text of a Runs notice that its row cannot hold: the panel above the note row shows it while `runs_notice` is still
     /// its `row`, so a later notice or the next key takes it away.
     pub(crate) runs_detail: Option<RunsDetail>,
@@ -1096,6 +1141,7 @@ impl App {
             backend_pick: None,
             declared: Vec::new(),
             runs_notice: None,
+            runs_named_r: false,
             runs_detail: None,
             resume_ask: None,
             resume_skipped: Vec::new(),
@@ -2447,19 +2493,12 @@ impl App {
         }
     }
 
-    /// A sentence about a list that is not whole never stays once that is no longer so. Called by every message that can change
-    /// the claim of the whole list or the state of the older runs. `R`'s sentence that older runs are loading goes when they no longer
-    /// are (the list is whole, or their read failed: the note line then shows that read's words); its sentence that names `r` goes when
-    /// the list is whole. The tag explorer's two sentences go by the same rule. A note of another kind stays until the next key.
+    /// A sentence about a list that is not whole follows the list. Called by every
+    /// message that can change the claim of the whole list or the state of the older runs. The tag explorer's two sentences go by the
+    /// same rule. A note of another kind stays until the next key.
     fn runs_notes_follow_list(&mut self) {
-        let stale = match self.runs_notice.as_deref() {
-            Some(R_STILL_LOADING) => !self.runs_older_loading(),
-            Some(R_NOT_EVERY) => self.runs_whole(),
-            _ => false,
-        };
-        if stale {
-            self.runs_notice = None;
-        }
+        let (whole, loading) = (self.runs_whole(), self.runs_older_loading());
+        R_PART.follow(&mut self.runs_notice, self.runs_named_r, whole, loading);
         self.tags_note_follows_list();
     }
 
@@ -2644,14 +2683,9 @@ impl App {
     fn resume_all_ask(&mut self) -> Vec<Effect> {
         // `R` starts runs, so it plans from the whole list only: while the list held is a part it asks nothing and says why.
         if !self.runs_whole() {
-            self.runs_notice = Some(
-                if self.runs_older_loading() {
-                    R_STILL_LOADING
-                } else {
-                    R_NOT_EVERY
-                }
-                .to_string(),
-            );
+            let loading = self.runs_older_loading();
+            self.runs_named_r = !loading;
+            self.runs_notice = Some(R_PART.now(loading).to_string());
             return vec![];
         }
         let plan = ham_core::resume::plan(&self.runs);
@@ -3013,6 +3047,11 @@ impl App {
             return vec![];
         };
         let outcome = prepare_argv(&["cancel".to_string(), run.clone()], false);
+        // The preview names the engine the run is on, as the typed `/cancel` does.
+        let engined = commands::name_run_engine(&outcome, &|id| {
+            self.known_engine(id).map(|e| e.name.to_string())
+        });
+        let outcome = engined.unwrap_or(outcome);
         let gesture = Gesture {
             key: 'c',
             line: format!("{ASK_CANCEL}{run}"),
@@ -3591,6 +3630,11 @@ impl App {
         // A typed follow-up names the target the screen already knows for its run; the line itself is untouched.
         let named = commands::name_continue_target(outcome, &|id| self.known_target(id));
         let outcome = named.as_ref().unwrap_or(outcome);
+        // A cancel, a finish and a fresh session name the engine the run is on.
+        let engined = commands::name_run_engine(outcome, &|id| {
+            self.known_engine(id).map(|e| e.name.to_string())
+        });
+        let outcome = engined.as_ref().unwrap_or(outcome);
         let RouteOutcome::Command {
             argv,
             invocation,
@@ -3622,6 +3666,14 @@ impl App {
                     .find(|r| r.run_id == id)
                     .map(|r| r.target.clone())
             })
+    }
+
+    /// The engine of run `id` when the screen holds the run's events: the run on screen. A row of the run list carries no engine.
+    pub(super) fn known_engine(&self, id: &str) -> Option<&'static ham_core::engines::Engine> {
+        if self.focused_run() != Some(id) {
+            return None;
+        }
+        self.cached.as_ref().map(ham_core::engines::of_view)
     }
 
     /// Runs a command that is allowed to run: `watch` opens the run on this screen (the runner refuses it), the rest become
@@ -4205,7 +4257,8 @@ impl App {
         let Some(q) = self.prelude(InstructAction::ContinueWithPrompt) else {
             return vec![];
         };
-        if let Err(why) = check_text(line) {
+        // The refusal names the engine the run is on.
+        if let Err(why) = check_text_for(Some(self.run_engine().id), line) {
             self.say(&why);
             return vec![];
         }
@@ -5460,10 +5513,13 @@ fn sent_notice(engine: &str, action: Option<InstructAction>) -> String {
     format!("{what} was sent to the run; waiting for {engine} to take it.")
 }
 
-/// The notice that keeps the end of a question on the dashboard after its card is gone.
-fn outcome_words(how: &str) -> Option<&'static str> {
-    Some(match how {
-        "answered:continue_with_prompt" => "answered: message sent to Cline",
+/// The notice that keeps the end of a question on the dashboard after its card is gone. `engine` is the display name of the run's
+/// engine.
+fn outcome_words(how: &str, engine: &str) -> Option<String> {
+    let words = match how {
+        "answered:continue_with_prompt" => {
+            return Some(format!("answered: message sent to {engine}"));
+        }
         "answered:new_session_with_prompt" => "answered: fresh session",
         "answered:try_model" => "answered: other model",
         "finish" | "answered:finish" => "answered: finish",
@@ -5476,7 +5532,8 @@ fn outcome_words(how: &str) -> Option<&'static str> {
             "its session was lost: a new session asks again when it needs your answer"
         }
         _ => return None,
-    })
+    };
+    Some(words.to_string())
 }
 
 /// The answer keys and the typing screen.
@@ -5502,7 +5559,14 @@ impl App {
             Some(&s.request_id) == open.as_ref() && self.clock.saturating_sub(s.at) < ACK_WAIT
         });
         if waiting {
-            self.notice = Some("Your answer is on its way: wait for Cline to take it.".into());
+            // The notice names the engine of the run.
+            let engine = self.question().map_or_else(
+                || ham_core::engines::default_engine().name.to_string(),
+                |q| q.engine.clone(),
+            );
+            self.notice = Some(format!(
+                "Your answer is on its way: wait for {engine} to take it."
+            ));
         }
         waiting
     }
@@ -5717,6 +5781,8 @@ impl App {
     fn send_reply(&mut self) -> Vec<Effect> {
         let open = self.question().map(|q| q.request_id.clone());
         let run_id = self.focused_run().unwrap_or_default().to_string();
+        // The refusal of a text names the engine the run is on.
+        let engine = self.run_engine().id;
         let Some(r) = self.reply.as_mut() else {
             return vec![];
         };
@@ -5728,10 +5794,10 @@ impl App {
             return vec![];
         }
         let text = r.text.trim().to_string();
-        // The server's rule for a text, checked before anything is sent (ham_core::input::check_text): a message needs some text of at most
+        // The server's rule for a text, checked before anything is sent (ham_core::input::check_text_for): a message needs some text of at most
         // 262,144 bytes; the text of a fresh session or a model switch is optional but has the same limit.
         if (r.action == InstructAction::ContinueWithPrompt || !text.is_empty())
-            && let Err(why) = check_text(&text)
+            && let Err(why) = check_text_for(Some(engine), &text)
         {
             r.error = Some(why);
             return vec![];
@@ -5857,17 +5923,23 @@ impl App {
                 .find(|h| h.request_id == prev)
                 .map(|h| h.how.clone())
         });
-        if let Some(words) = how.as_deref().and_then(outcome_words) {
-            self.notice = Some(words.to_string());
+        // The words name the engine of the run.
+        let engine = self
+            .cached
+            .as_ref()
+            .map_or_else(
+                ham_core::engines::default_engine,
+                ham_core::engines::of_view,
+            )
+            .name;
+        let words = how.as_deref().and_then(|h| outcome_words(h, engine));
+        if let Some(words) = &words {
+            self.notice = Some(words.clone());
         }
+        let ended = words.unwrap_or_else(|| "it ended".to_string());
         // A half-written answer stays in the box; the box says that the question it was for has closed.
         if self.screen == Screen::Dashboard && self.chat_box().is_some_and(|b| !b.is_empty()) {
-            self.closed_banner = Some(
-                how.as_deref()
-                    .and_then(outcome_words)
-                    .unwrap_or("it ended")
-                    .to_string(),
-            );
+            self.closed_banner = Some(ended.clone());
         }
         if self.screen == Screen::Models {
             self.screen = Screen::Dashboard;
@@ -5876,12 +5948,7 @@ impl App {
             && r.request_id == prev
         {
             if self.screen == Screen::Reply {
-                r.closed = Some(
-                    how.as_deref()
-                        .and_then(outcome_words)
-                        .unwrap_or("it ended")
-                        .to_string(),
-                );
+                r.closed = Some(ended);
                 r.sending = false;
             } else {
                 self.reply = None;

@@ -14,16 +14,32 @@ pub const NEW_SESSION_OPENING: &str = "You are continuing a task in this work tr
 pub const LAST_MESSAGE_TITLE: &str = "Cline's last message";
 
 /// What the person can do when the session disk is full, as the question of the card and the end of the notice. It names the
-/// engine, so it lives here. It says that the engine may not be able to answer while the disk is full.
-pub fn disk_full_question() -> &'static str {
-    "Send a message with `ham say` that asks Cline to delete build output or temporary files (Cline may not be able to answer while the disk is full), or end the run with `ham finish` and keep what exists."
+/// engine that ran, so it lives here.
+/// It says that the engine may not be able to answer while the disk is full.
+pub fn disk_full_question(engine: &str) -> String {
+    let name = named(engine);
+    format!(
+        "Send a message with `ham say` that asks {name} to delete build output or temporary files ({name} may not be able to answer while the disk is full), or end the run with `ham finish` and keep what exists."
+    )
 }
 
 /// What the person can do when the engine failed on every route while every route answered a test request, as the question of
-/// the card and the end of the notice. It names the engine, so it lives here. The engine may not be
-/// able to answer while the machine is in that state.
-pub fn engine_fault_question() -> &'static str {
-    "Send a message with `ham say` (Cline may not be able to answer), or end the run with `ham finish` and keep what exists."
+/// the card and the end of the notice. It names the engine that ran,
+/// so it lives here. The engine may not be able to answer while the machine is in that state.
+pub fn engine_fault_question(engine: &str) -> String {
+    format!(
+        "Send a message with `ham say` ({} may not be able to answer), or end the run with `ham finish` and keep what exists.",
+        named(engine)
+    )
+}
+
+/// The engine that ran, inside a sentence: its display name, or "the engine" when the caller gave no name.
+fn named(engine: &str) -> String {
+    if engine.trim().is_empty() {
+        "the engine".to_string()
+    } else {
+        display(engine)
+    }
 }
 
 /// What the person can do when a prompt failed while the session's storage refused writes and its files left room, as the question
@@ -60,6 +76,23 @@ pub fn reason_title(reason: NeedsInputReason) -> &'static str {
         R::ProviderOutage => "Every model route is down",
     }
 }
+
+/// [`reason_title`] for a run of `engine` (its profile name), with the display name of that engine: the client shows the title
+/// of the event as the head line of the question's card. For the default engine it is the same text. A caller that names no engine
+/// gets "the engine" in the name's place, as both disk questions say it.
+pub fn reason_title_for(reason: NeedsInputReason, engine: &str) -> String {
+    let title = reason_title(reason);
+    if engine.trim().is_empty() {
+        return match title.strip_prefix("Cline") {
+            Some(rest) => format!("The engine{rest}"),
+            None => title.replace("The Cline process", "The engine's process"),
+        };
+    }
+    title.replace("Cline", &display(engine))
+}
+
+/// The profile name of the default engine, for a caller that builds a text with no run at hand and wants the words of [`reason_title`].
+pub const DEFAULT_ENGINE: &str = "cline";
 
 /// One or two plain sentences saying what the stop was (the same words as the card in the client).
 pub fn reason_explain(reason: NeedsInputReason) -> &'static str {

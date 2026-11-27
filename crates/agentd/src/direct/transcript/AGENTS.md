@@ -21,7 +21,7 @@
 ## Local Contracts
 
 - `runs/<run>/agents/direct/turns/1/transcript/{seq:012}.ndjson.gz` is the object key shape. `harness_protocol::direct::s3::transcript_prefix` builds the transcript prefix. `transcript_chunk_key` builds the chunk key. Each object is written once with `If-None-Match: *`. Answer 412 means the key is taken. Never overwrite that object.
-- `s3store.rs`, the S3 implementation, provides the module's own SigV4 client. It uses crate `aws-sigv4`. S3 is the only store. agentd has no AWS SDK.
+- `s3store.rs`, the S3 implementation, provides the module's own SigV4 client. It uses crate `aws-sigv4`. S3 is the only store. agentd has no AWS SDK. Its connections come from the worker's one connector (`crate::http::connector`), so no-delay is set on them.
 
 - `{v, seq, incarnation, firstRec, lastRec, createdAt, engine, protocol}` is the header. Each object is a gzip stream. Line 1 contains that header. The last object of a clean end adds `closed: true`. Each following line contains a record shaped `{n, t, dir, kind, data}`. `ham_core::transcript`, the transcript reader, defines the matching shapes through `decode_chunk`. The version is 1. The header's `seq` equals the key's number. `incarnation`, the writer's instance identifier, is a ULID made once per writer. `createdAt` and `t` use UTC timestamps. Labels contain at most 32 characters. Record numbers `n` increase within the header's range.
 - Each object holds at most 1 MiB compressed. Its body holds at most 1 MiB before compression. The writer cuts a batch at 900 KiB. Each object holds at most 10,000 records. The reader inflates at most 4 MiB.

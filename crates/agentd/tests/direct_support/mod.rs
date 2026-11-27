@@ -77,6 +77,19 @@ pub enum PutFailure {
     Hang,
 }
 
+/// How a fake S3 GET that is made to fail ends (`FakeAws::fail_gets_as`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GetFailure {
+    /// A 500 answer with S3's `InternalError` document.
+    Status500,
+    /// A 503 answer with S3's `SlowDown` document: the service throttles.
+    SlowDown,
+    /// The head of the answer says 200 and the connection breaks while the body is being sent (the client sees a transport error).
+    ResetBody,
+    /// A 403 answer with S3's `AccessDenied` document, for a key that is there.
+    Denied,
+}
+
 /// One scheduled failure of the fake S3: the next `left` PUTs whose bucket/key contains `substring` (and, for `only_unconditional`, carry no
 /// `If-None-Match`) end as `how`. With `after_store` the body is stored first, so the object is committed and only the answer is lost (the
 /// case a real S3 produces when a connection drops after the commit); `overwrite_after_store` then replaces that object with other bytes,
@@ -168,8 +181,8 @@ pub struct AwsState {
     get_delays: Mutex<Vec<(String, Duration)>>,
     /// Every GET of an object that arrived, in order: `bucket/key` and the `range` header it carried, if any.
     gets: Mutex<Vec<(String, Option<String>)>>,
-    /// `(substring of bucket/key, left)`: the next `left` GETs whose key contains the substring answer 500.
-    get_failures: Mutex<Vec<(String, u32)>>,
+    /// `(substring of bucket/key, left, how)`: the next `left` GETs whose key contains the substring fail as `how` says.
+    get_failures: Mutex<Vec<(String, u32, GetFailure)>>,
     /// `(substring of bucket/key, pause)`: a PUT whose key contains the substring is answered after the pause.
     put_delays: Mutex<Vec<(String, Duration)>>,
     /// `(substring of bucket/key, pause, left)`: the next `left` PUTs whose key contains the substring are answered after the pause.
@@ -210,6 +223,16 @@ pub struct AwsState {
     /// Every PUT the store answered 200 on a connection that it keeps open, in order: its `bucket/key`, and whether the
     /// client has since closed that connection (`FakeAws::put_answers`).
     put_answers: Mutex<Vec<(String, Arc<std::sync::atomic::AtomicBool>)>>,
+    /// Every request as its bytes came in on a connection of a fake that holds its acknowledgements back
+    /// (`FakeAws::start_holding_acks`), in the order in which each was whole (`FakeAws::arrivals`).
+    arrivals: Mutex<Vec<Arrival>>,
+    /// How many heads of requests such a fake has read, and the notice of each one (`FakeAws::head_seen`).
+    heads: std::sync::atomic::AtomicUsize,
+    head_notice: tokio::sync::Notify,
+    /// How often such a fake could not ask the kernel to hold an acknowledgement back, and how many of its connections
+    /// carried a request it could not cut out of the bytes (`FakeAws::stand_in_faults`).
+    ack_faults: std::sync::atomic::AtomicUsize,
+    uncut: std::sync::atomic::AtomicUsize,
 }
 
 /// Picks the event a control rule waits for.
@@ -333,6 +356,261 @@ impl axum::extract::connect_info::Connected<Accepted<'_>> for Connection {
             closed: Arc::default(),
         }))
     }
+}
+
+// ---- a fake that holds its acknowledgements back ----------------------------------------------------------------------------
+
+/// One request as its bytes came in on a connection of a fake that holds its acknowledgements back
+/// ([`FakeAws::start_holding_acks`]).
+#[derive(Debug, Clone)]
+pub struct Arrival {
+    pub method: String,
+    /// The path of the request line.
+    pub path: String,
+    /// The request's place on its connection, from 0. The kernel acknowledges the first segments of a new connection at once, so only
+    /// a request on a kept connection (1 or more) can show a wait for an acknowledgement.
+    pub nth: usize,
+    /// The bytes of the body the head names (`content-length`).
+    pub body: usize,
+    /// How many bytes of the body came in the read that ended the head. 0: the head came alone.
+    pub with_head: usize,
+    /// From the read that ended the head to the read that brought the first byte of the body.
+    pub body_began_after: Duration,
+    /// From the read that ended the head to the read that brought the last byte of the body.
+    pub body_whole_after: Duration,
+}
+
+/// The bytes of one connection, cut into requests as they come in. It reads HTTP/1.1 requests whose body has a `content-length`, which
+/// is what the worker's clients and the tests send; a connection with any other request is counted as not cut
+/// ([`FakeAws::stand_in_faults`]) and no request of it is noted after that.
+struct Cut {
+    state: Shared,
+    /// The bytes of a head that is not whole yet.
+    head: Vec<u8>,
+    nth: usize,
+    /// The request whose body is coming in: what is known of it, the bytes of its body so far, and when its head was whole.
+    open: Option<(Arrival, usize, Instant)>,
+    lost: bool,
+}
+
+impl Cut {
+    fn new(state: Shared) -> Self {
+        Self {
+            state,
+            head: Vec::new(),
+            nth: 0,
+            open: None,
+            lost: false,
+        }
+    }
+
+    fn note(&self, arrival: Arrival) {
+        self.state.arrivals.lock().unwrap().push(arrival);
+    }
+
+    /// The bytes of one read, read at `now`.
+    fn read(&mut self, mut bytes: &[u8], now: Instant) {
+        use std::sync::atomic::Ordering::SeqCst;
+        while !bytes.is_empty() && !self.lost {
+            if let Some((mut arrival, got, head_at)) = self.open.take() {
+                let take = (arrival.body - got).min(bytes.len());
+                if got == 0 {
+                    arrival.body_began_after = now.saturating_duration_since(head_at);
+                }
+                bytes = &bytes[take..];
+                if got + take == arrival.body {
+                    arrival.body_whole_after = now.saturating_duration_since(head_at);
+                    self.note(arrival);
+                } else {
+                    self.open = Some((arrival, got + take, head_at));
+                }
+                continue;
+            }
+            let from = self.head.len().saturating_sub(3);
+            self.head.extend_from_slice(bytes);
+            let Some(at) = self.head[from..].windows(4).position(|w| w == b"\r\n\r\n") else {
+                return;
+            };
+            let end = from + at + 4;
+            let after = self.head.len() - end;
+            bytes = &bytes[bytes.len() - after..];
+            let head = String::from_utf8_lossy(&self.head[..end]).into_owned();
+            self.head.clear();
+            let mut line = head.lines().next().unwrap_or_default().split(' ');
+            let method = line.next().unwrap_or_default().to_string();
+            let path = line.next().unwrap_or_default().to_string();
+            let field = |name: &str| {
+                head.lines().skip(1).find_map(|l| {
+                    let (n, v) = l.split_once(':')?;
+                    n.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+                })
+            };
+            let body = match (field("content-length"), field("transfer-encoding")) {
+                (Some(n), None) => n.parse::<usize>().ok(),
+                (None, None) => Some(0),
+                _ => None,
+            };
+            let Some(body) = body else {
+                self.lost = true;
+                self.state.uncut.fetch_add(1, SeqCst);
+                return;
+            };
+            let arrival = Arrival {
+                method,
+                path,
+                nth: self.nth,
+                body,
+                with_head: after.min(body),
+                body_began_after: Duration::ZERO,
+                body_whole_after: Duration::ZERO,
+            };
+            self.nth += 1;
+            self.state.heads.fetch_add(1, SeqCst);
+            self.state.head_notice.notify_waiters();
+            if body == 0 {
+                self.note(arrival);
+            } else {
+                self.open = Some((arrival, 0, now));
+            }
+        }
+    }
+}
+
+/// A connection of a fake that holds its acknowledgements back. It asks the kernel to do so (`TCP_QUICKACK` off) when the
+/// connection is accepted, after every read and before every write, as a peer does that has just answered a request: the kernel takes
+/// the setting back by itself, and without it the kernel's own state decides from request to request whether the acknowledgement of a
+/// head waits. Every byte it reads goes through [`Cut`].
+struct AckHeld {
+    stream: tokio::net::TcpStream,
+    cut: Cut,
+}
+
+impl AckHeld {
+    fn hold(&self) {
+        if rustix::net::sockopt::set_tcp_quickack(&self.stream, false).is_err() {
+            self.cut
+                .state
+                .ack_faults
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+impl tokio::io::AsyncRead for AckHeld {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let this = &mut *self;
+        let read = std::pin::Pin::new(&mut this.stream).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &read {
+            this.cut.read(&buf.filled()[before..], Instant::now());
+            this.hold();
+        }
+        read
+    }
+}
+
+impl tokio::io::AsyncWrite for AckHeld {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.hold();
+        std::pin::Pin::new(&mut self.stream).poll_write(cx, data)
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        data: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.hold();
+        std::pin::Pin::new(&mut self.stream).poll_write_vectored(cx, data)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+/// The listener of a fake that holds its acknowledgements back.
+struct AckHolding {
+    listener: tokio::net::TcpListener,
+    state: Shared,
+}
+
+impl axum::serve::Listener for AckHolding {
+    type Io = AckHeld;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.listener.accept().await {
+                Ok((stream, addr)) => {
+                    let io = AckHeld {
+                        stream,
+                        cut: Cut::new(self.state.clone()),
+                    };
+                    io.hold();
+                    return (io, addr);
+                }
+                // As `axum::serve` does for its own listener: an accept that failed is tried again after a moment.
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.listener.local_addr()
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, AckHolding>>
+    for Connection
+{
+    fn connect_info(_: axum::serve::IncomingStream<'_, AckHolding>) -> Self {
+        Self(Arc::new(ConnectionOpen {
+            closed: Arc::default(),
+        }))
+    }
+}
+
+/// Lets the calling thread run on one processor only, the one it runs on now, and gives back the processors it had. A process
+/// takes the processors of the thread that starts it, so a program that is started between this call and the call that sets the
+/// thread's processors back runs on that one processor, with everything it starts ([`Opts::one_processor`]).
+fn on_one_processor() -> rustix::thread::CpuSet {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_getcpu, sched_setaffinity};
+    let all = sched_getaffinity(None).unwrap();
+    let here = sched_getcpu();
+    let one_of = if all.is_set(here) {
+        here
+    } else {
+        (0..CpuSet::MAX_CPU)
+            .find(|cpu| all.is_set(*cpu))
+            .expect("a processor this thread may run on")
+    };
+    let mut one = CpuSet::new();
+    one.set(one_of);
+    sched_setaffinity(None, &one).unwrap();
+    all
 }
 
 /// `t<k>-` for a key in the folder of session `k` of a run (`.../turns/<k>/...`) when `k` is 2 or more, else nothing.
@@ -706,15 +984,32 @@ async fn s3_get(
         .lock()
         .unwrap()
         .iter_mut()
-        .find(|(sub, left)| *left > 0 && full.contains(sub.as_str()))
-        .map(|(_, left)| *left -= 1)
-        .is_some();
-    if failing {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>",
-        )
-            .into_response();
+        .find(|(sub, left, _)| *left > 0 && full.contains(sub.as_str()))
+        .map(|(_, left, how)| {
+            *left -= 1;
+            *how
+        });
+    if let Some(how) = failing {
+        return match how {
+            GetFailure::Status500 => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>",
+            )
+                .into_response(),
+            GetFailure::SlowDown => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "<Error><Code>SlowDown</Code><Message>Please reduce your request rate.</Message></Error>",
+            )
+                .into_response(),
+            GetFailure::ResetBody => {
+                (StatusCode::OK, axum::body::Body::new(ResetBody)).into_response()
+            }
+            GetFailure::Denied => (
+                StatusCode::FORBIDDEN,
+                "<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>",
+            )
+                .into_response(),
+        };
     }
     let pause = s
         .get_delays
@@ -971,16 +1266,21 @@ async fn api_creds(State(s): State<Shared>) -> axum::response::Response {
 }
 
 impl FakeAws {
-    pub async fn start() -> Self {
-        let state: Shared = Arc::default();
-        let app = Router::new()
+    /// The routes of the fake, for either listener.
+    fn routes(state: &Shared) -> Router {
+        Router::new()
             .route("/internal/events", post(api_events))
             .route("/internal/heartbeat", post(api_heartbeat))
             .route("/internal/turn-complete", post(api_complete))
             .route("/internal/creds", post(api_creds))
             .route("/{bucket}/{*key}", get(s3_get).put(s3_put).head(s3_head))
             .route("/{bucket}", get(s3_list))
-            .with_state(state.clone());
+            .with_state(state.clone())
+    }
+
+    pub async fn start() -> Self {
+        let state: Shared = Arc::default();
+        let app = Self::routes(&state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         // Every request carries the connection it came on, so the store can tell when a client has closed one.
@@ -990,6 +1290,58 @@ impl FakeAws {
             base: format!("http://{addr}"),
             state,
         }
+    }
+
+    /// The same fake behind a listener that holds its acknowledgements back ([`AckHeld`]) and notes how the bytes of every
+    /// request came in ([`FakeAws::arrivals`]). A client that leaves Nagle's algorithm on and sends a request as two writes on a
+    /// kept connection waits here for the acknowledgement of the first; a client with no-delay does not. A test that judges by it
+    /// shows both with clients of its own in the same run.
+    pub async fn start_holding_acks() -> Self {
+        let state: Shared = Arc::default();
+        let app = Self::routes(&state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = app.into_make_service_with_connect_info::<Connection>();
+        let listener = AckHolding {
+            listener,
+            state: state.clone(),
+        };
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Self {
+            base: format!("http://{addr}"),
+            state,
+        }
+    }
+
+    /// Every request a fake that holds its acknowledgements back has read whole, in that order.
+    pub fn arrivals(&self) -> Vec<Arrival> {
+        self.state.arrivals.lock().unwrap().clone()
+    }
+
+    /// How many heads of requests such a fake has read.
+    pub fn heads_seen(&self) -> usize {
+        self.state.heads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits until such a fake has read more than `before` heads of requests.
+    pub async fn head_seen(&self, before: usize) {
+        loop {
+            let notice = self.state.head_notice.notified();
+            if self.heads_seen() > before {
+                return;
+            }
+            notice.await;
+        }
+    }
+
+    /// What such a fake could not do: the calls that asked the kernel to hold an acknowledgement back and failed, and the
+    /// connections with a request it could not cut out of the bytes. A test that judges by [`FakeAws::arrivals`] holds both at 0.
+    pub fn stand_in_faults(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (
+            self.state.ack_faults.load(SeqCst),
+            self.state.uncut.load(SeqCst),
+        )
     }
 
     /// Puts an object as a foreign writer would: it carries no SHA-256 checksum.
@@ -1116,11 +1468,16 @@ impl FakeAws {
 
     /// The next `times` GETs whose `bucket/key` contains `substring` answer 500.
     pub fn fail_gets(&self, substring: &str, times: u32) {
+        self.fail_gets_as(substring, times, GetFailure::Status500);
+    }
+
+    /// The next `times` GETs whose `bucket/key` contains `substring` fail as `how` says.
+    pub fn fail_gets_as(&self, substring: &str, times: u32, how: GetFailure) {
         self.state
             .get_failures
             .lock()
             .unwrap()
-            .push((substring.to_string(), times));
+            .push((substring.to_string(), times, how));
     }
 
     /// Every HEAD answers `status` with no body from now on (403: the role may not list the bucket, so S3 hides a missing key).
@@ -1514,6 +1871,13 @@ pub struct Opts {
     /// `StartDirectRunRequest.target` as the JSON of the request member. `None`
     /// is the zip target, `{"mode": "s3-only"}`, as in every test before.
     pub target: Option<serde_json::Value>,
+    /// The fake AWS of the rig holds its acknowledgements back and notes how the bytes of every request came in
+    /// ([`FakeAws::start_holding_acks`]). `false` is the fake of every test before.
+    pub holds_acks: bool,
+    /// The real `agentd serve` process runs on one processor of this machine, with everything it starts. Whether a streamed
+    /// PUT of the worker leaves as one write or as two is a race between the thread that reads the file and the connection that
+    /// writes the head; on one processor it falls otherwise than on all of them, and how differs from machine to machine.
+    pub one_processor: bool,
 }
 
 impl Default for Opts {
@@ -1551,6 +1915,8 @@ impl Default for Opts {
             repo_moved: Vec::new(),
             delivery_note: Some(false),
             target: None,
+            holds_acks: false,
+            one_processor: false,
         }
     }
 }
@@ -1978,7 +2344,11 @@ impl Direct {
 
     async fn start_mode(opts: Opts, as_process: bool) -> Self {
         let dir = scratch("direct");
-        let aws = FakeAws::start().await;
+        let aws = if opts.holds_acks {
+            FakeAws::start_holding_acks().await
+        } else {
+            FakeAws::start().await
+        };
         let bin = wrapper(&dir, &opts);
         let profiles = dir.join("profiles");
         std::fs::create_dir_all(&profiles).unwrap();
@@ -2133,7 +2503,12 @@ impl Direct {
                 with_coverage_profile(&mut command);
             }
             let began = Instant::now();
+            // A process takes the processors of the thread that starts it.
+            let all = opts.one_processor.then(on_one_processor);
             let child = command.spawn().unwrap();
+            if let Some(all) = all {
+                rustix::thread::sched_setaffinity(None, &all).unwrap();
+            }
             let in_namespace = opts.first_process.then(|| child_of(child.id()));
             process = Some(Process {
                 child,

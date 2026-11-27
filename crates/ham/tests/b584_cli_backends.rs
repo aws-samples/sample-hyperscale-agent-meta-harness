@@ -7,6 +7,7 @@
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -121,9 +122,27 @@ async fn closed_port() -> String {
     format!("http://127.0.0.1:{port}/direct")
 }
 
+/// The counter in the names of this process's home folders.
+static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
+
+/// A new home folder for one call, with `config` as its config file. The name holds the process id and a counter, so two tests that
+/// share one process never write their config into one folder (two tests call `world`, each with the ports of its own stand-ins).
+/// `create_dir` refuses a folder that exists, so one that an earlier process with this process id left behind is passed over.
 fn home(label: &str, config: &str) -> PathBuf {
     let base = std::env::var_os("TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    let dir = base.join(format!("ham-b584-cli-{label}-{}", std::process::id()));
+    let dir = loop {
+        let n = NEXT_HOME.fetch_add(1, Ordering::SeqCst);
+        let dir = base.join(format!("ham-b584-cli-{label}-{}-{n}", std::process::id()));
+        let made = std::fs::create_dir(&dir);
+        if made
+            .as_ref()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists)
+        {
+            continue;
+        }
+        made.unwrap();
+        break dir;
+    };
     let cfg = dir.join(".config/ham");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::write(cfg.join("config.toml"), config).unwrap();

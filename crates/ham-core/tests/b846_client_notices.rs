@@ -402,8 +402,9 @@ fn b846_a_request_to_end_while_a_question_is_open_says_whose_question_it_is() {
         v.end_request_note().as_deref(),
         Some(
             "The session was asked to end at 2026-11-14 07:05 UTC. No copy of the work had been saved before that request: a run \
-             saves a copy only after its files change. The open question was asked by that session: once it has ended, no answer \
-             reaches it. When the run has time left, a new session starts and asks again when it needs your answer."
+             saves a copy only after a file changed or the engine made a commit. The open question was asked by that session: \
+             once it has ended, no answer reaches it. When the run has time left, a new session starts and asks again when it \
+             needs your answer."
         )
     );
     assert_eq!(v.session_gap_at(Some(T0 + 310)), Some(SessionGap::Ending));
