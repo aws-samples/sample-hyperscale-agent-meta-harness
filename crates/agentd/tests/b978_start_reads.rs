@@ -95,6 +95,10 @@ async fn one_temporary_answer(key_part: &str, key: &str, named: &str, how: GetFa
 }
 
 /// Every answer to the read of `key_part` is a 500: the start ends after `reads()` GETs and their waits, and the sentence says so.
+/// The waits are held where the worker makes them: each GET arrives at the stand-in no sooner after the one before it than the
+/// pause between the two (the pause, twice it, four times it), so a worker that passes no pause to the read fails here. The
+/// time of the whole start holds that only by chance: with no pause at all a start took 61 and 67 ms when this was written,
+/// a few milliseconds under the waits of 70 ms, and a start that is a little slower passes.
 async fn only_temporary_answers(key_part: &str, key: &str, starts_with: &str) {
     let d = Direct::start(Opts::default()).await;
     d.aws.fail_gets(key_part, u32::MAX);
@@ -116,6 +120,19 @@ async fn only_temporary_answers(key_part: &str, key: &str, starts_with: &str) {
         "{key_part}: the reads waited {:?} between them, {took:?} passed",
         waits()
     );
+    let arrivals = d.aws.get_arrivals_of(key);
+    assert_eq!(arrivals.len(), reads(), "{key_part}: {arrivals:?}");
+    let mut wait = PAUSE;
+    for (n, (earlier, later)) in arrivals.iter().zip(arrivals.iter().skip(1)).enumerate() {
+        let gap = later.duration_since(*earlier);
+        assert!(
+            gap >= wait,
+            "{key_part}: GET {} arrived {gap:?} after GET {}, and the pause between the two is {wait:?}",
+            n + 2,
+            n + 1
+        );
+        wait *= 2;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

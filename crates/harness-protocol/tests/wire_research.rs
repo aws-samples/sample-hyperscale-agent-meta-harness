@@ -48,7 +48,7 @@ fn item_ref() -> Value {
 
 #[test]
 fn the_protocol_is_at_its_research_version() {
-    assert_eq!(PROTOCOL_VERSION, "1.64.0");
+    assert_eq!(PROTOCOL_VERSION, "1.65.0");
 }
 
 #[test]

@@ -1602,7 +1602,8 @@ fn line_with_backend(line: &str, alias: Option<String>) -> String {
     }
 }
 
-/// The JSON of one run of `ham runs --json`: the summary as it always was, plus `name` and `nameSource` when the row has a name and `tags` when
+/// The JSON of one run of `ham runs --json`: the summary as the service wrote it,
+/// plus `name` and `nameSource` when the row has a name and `tags` when
 /// the row has the member. No other member of the index row (`title`, `model`, `lastActivity`,
 /// `outcome`) is added. The `phase` is written as the line writes it: `delivered` for a
 /// `complete` run whose stored phase is `delivering`, every other pair as stored. `ham runs`, `ham watch --json` and this JSON agree.

@@ -33,6 +33,10 @@
 //! and the folders of a run that get
 //! it are the run's own on both disks ([`run_write_dirs`]). Any other folder gets no test write and says nothing about the disk.
 //!
+//! The measurement reads its numbers first (the walk, then the free space) and makes the test writes after them. When the
+//! limit comes while only the test writes have not answered, the reading keeps the numbers and says that the test writes were not
+//! judged (`writable` is `None`), so a storage whose numbers say full is seen as full at that measurement.
+//!
 //! The session's storage can refuse writes with "no space left on device" while its files are far below its limit. A stop whose
 //! numbers show room therefore does not call the disk full ([`DiskFull::no_space_with_room`]): it says that the engine reported no space,
 //! or that the worker's own write to the storage was refused (`crate::direct::storage_watch`), with the size of the files. The stop
@@ -82,7 +86,8 @@ pub struct Reading {
     pub workspace_partial: bool,
     /// A test write (a 4 KiB file created, synced and removed) in each folder of the worker's own that the measurement was given:
     /// `Some(true)` when every folder that was tried took it, `Some(false)` when one refused it (a read-only or full disk that `statvfs`
-    /// still shows room on), `None` when no folder was tried.
+    /// still shows room on), `None` when no folder was tried and when the
+    /// test writes had not answered at the limit of the measurement: the writes were not judged.
     pub writable: Option<bool>,
 }
 
@@ -700,7 +705,9 @@ impl Default for WalkBudget {
 /// How long one measurement of [`HostDisk`], and the folders' part of its report, may take: the walk's own budget
 /// ([`WalkBudget`], 5 s) and as long again for the read of the free space and the test writes. A measurement that has not answered by
 /// then is given up: its reading says that nothing was measured, which is never read as full, and the run goes on as after a
-/// measurement that failed. While that measurement is still out, the next one answers at once in the same way and starts no second
+/// measurement that failed. When the numbers were read by then and only the test writes have not answered, the reading keeps
+/// the numbers and says that the test writes were not judged; numbers that say full are read as full. While a measurement that was
+/// given up is still out, the next one answers at once that nothing was measured and starts no second
 /// read. It is no setting; `crates/agentd/AGENTS.md` ("Session disks", part h) states it for maintainers.
 pub const MEASURE_LIMIT: Duration = Duration::from_secs(10);
 
@@ -750,7 +757,8 @@ impl HostDisk {
     }
 
     /// The log of the worker. A measurement that is given up at [`MEASURE_LIMIT`] writes one line there, so that a maintainer can read
-    /// that the disk was not measured; the measurements that answer at once while that read is still out write none.
+    /// that the disk was not measured, or that its numbers were read and its test writes were not judged; the measurements
+    /// that answer at once while that read is still out write none.
     #[must_use]
     pub fn with_log(mut self, log: Arc<dyn LogSink>) -> Self {
         self.log = Some(log);
@@ -783,22 +791,52 @@ impl DiskProbe for HostDisk {
                 return Reading::default();
             }
             let ended = ReadOut(out);
-            // The walk reads many directory entries and the test write waits for the disk: not on an async worker.
-            let read = tokio::task::spawn_blocking(move || {
-                let _ended = ended;
-                read(&root, &workspace, budget, &write_dirs)
+            let given_up = |what: &str| {
+                if let Some(log) = &log {
+                    log.line(&format!(
+                        "direct turn disk {what} within {} s",
+                        MEASURE_LIMIT.as_secs()
+                    ));
+                }
+            };
+            // A file system that does not answer does not hold the caller longer than the limit. One limit for the whole
+            // measurement, counted from here.
+            let limit = tokio::time::sleep(MEASURE_LIMIT);
+            tokio::pin!(limit);
+            // The walk reads many directory entries and the test write waits for the disk: not on an async worker. The
+            // numbers are one piece of that work and the test writes the next, so numbers that were read are in hand when the
+            // test writes do not answer. The read is out until the last piece has ended, or was given up before it began.
+            let numbers = tokio::task::spawn_blocking(move || {
+                let numbers = read_numbers(&root, &workspace, budget);
+                (numbers, ended)
             });
-            // A file system that does not answer does not hold the caller longer than the limit. Nothing was measured then.
-            match tokio::time::timeout(MEASURE_LIMIT, read).await {
-                Ok(done) => done.unwrap_or_default(),
-                Err(_) => {
-                    if let Some(log) = &log {
-                        log.line(&format!(
-                            "direct turn disk not measured: the measurement gave no answer within {} s",
-                            MEASURE_LIMIT.as_secs()
-                        ));
-                    }
-                    Reading::default()
+            let (numbers, ended) = tokio::select! {
+                biased;
+                done = numbers => match done {
+                    Ok(read) => read,
+                    Err(_) => return Reading::default(),
+                },
+                // Nothing was measured.
+                () = &mut limit => {
+                    given_up("not measured: the measurement gave no answer");
+                    return Reading::default();
+                }
+            };
+            let writes = tokio::task::spawn_blocking(move || {
+                let _ended = ended;
+                writable(&write_dirs)
+            });
+            tokio::select! {
+                biased;
+                done = writes => Reading {
+                    writable: done.unwrap_or(None),
+                    ..numbers
+                },
+                // The numbers were read and stay; the test writes were not judged, which the reading says as it says
+                // that no folder was tried.
+                () = &mut limit => {
+                    given_up("test writes not judged: the numbers were read and the test writes gave no answer");
+                    numbers
                 }
             }
         })
@@ -837,7 +875,9 @@ impl DiskProbe for HostDisk {
     }
 }
 
-fn read(root: &Path, workspace: &Path, budget: WalkBudget, write_dirs: &[PathBuf]) -> Reading {
+/// The numbers of a measurement: the walk of the workspace folder, then the free space of the root volume. No test write is made
+/// here, and the reading says so (`writable` is `None`) until [`writable`] has answered.
+fn read_numbers(root: &Path, workspace: &Path, budget: WalkBudget) -> Reading {
     let (workspace_used_mb, workspace_partial) = match used_bytes(workspace, budget) {
         Some((bytes, complete)) => (Some(whole_mib(bytes)), !complete),
         None => (None, false),
@@ -846,7 +886,7 @@ fn read(root: &Path, workspace: &Path, budget: WalkBudget, write_dirs: &[PathBuf
         root_free_mb: free_mb(root),
         workspace_used_mb,
         workspace_partial,
-        writable: writable(write_dirs),
+        writable: None,
     }
 }
 

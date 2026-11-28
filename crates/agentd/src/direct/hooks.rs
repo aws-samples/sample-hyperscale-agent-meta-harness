@@ -42,7 +42,8 @@
 //!   `TurnEnd.engine_working`: a prompt one of them votes replaces the wait and goes to a busy engine, which takes it behind the
 //!   round it is working on and answers the request at once. The driver hears of that wait beside the prompt:
 //!   when the user's cancel comes up while the modules are asked, the prompt is dropped and the
-//!   run is still held as for the wait, so the engine is told to cancel and the stop is the user's.
+//!   run is still held as for the wait, so the engine is told to cancel and the stop is the user's. The run's deadline that comes
+//!   up in such a poll is treated the same way: the prompt is dropped, the engine is told, and the stop is the time limit's.
 //! - Event ordering is by call: a module sees the events of a run in the order the driver raised them.
 
 use crate::BoxFuture;

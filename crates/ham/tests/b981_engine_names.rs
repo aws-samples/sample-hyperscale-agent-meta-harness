@@ -12,7 +12,7 @@ use ham::tui::ext::{Done, Job};
 use ham::tui::keys::Mode;
 use ham::tui::{App, DirectSettings, Effect, Msg, Screen};
 use ham_core::head::{Changes, DeliveredHead};
-use harness_protocol::api::v1::StartRunResponse;
+use harness_protocol::api::v1::{RunDetail, RunSummary, StartRunResponse};
 use harness_protocol::envelope::{Authority, Envelope, EventType, Payload, SCHEMA_VERSION};
 use harness_protocol::goal::GoalStatus;
 use serde_json::{Value, json};
@@ -316,8 +316,8 @@ fn b981_a_run_this_screen_started_is_named_by_its_engine_before_its_sessions_fir
     assert_named(&mut app, "Cline", "nothing chosen");
 }
 
-/// What the session says of its engine wins over what the screen remembered, and a run this screen did not start reads as in release
-/// 5.34 until its session names its engine (the run's record carries no engine).
+/// What the session says of its engine wins over what the screen remembered, and a run this screen did not start and holds no answer
+/// about reads as in release 5.34 until its session names its engine.
 #[test]
 fn b981_the_sessions_word_wins_and_a_run_not_started_here_reads_as_before() {
     let mut app = composer_on(None);
@@ -364,7 +364,7 @@ fn b981_a_follow_up_and_a_retry_started_here_are_named_by_the_engine_of_their_so
 // ---- a run that is not on screen ------------------------------------------------------------------------------------------------------
 
 /// The preview for a run that is not on screen names its engine when this screen started that run; for a run it neither shows nor
-/// started it says "the engine", as in release 5.34.
+/// started, and holds no row of, it says "the engine", as in release 5.34.
 #[test]
 fn b981_a_preview_for_a_run_started_here_names_its_engine_when_another_run_is_on_screen() {
     let mut app = composer_on(None);
@@ -394,4 +394,287 @@ fn b981_a_preview_for_a_run_started_here_names_its_engine_when_another_run_is_on
         )),
         "{text}"
     );
+}
+
+// ---- the engine in the service's answer about a run (protocol 1.65.0) ------------------------------------------------------------------
+
+/// A row of the run list as the service writes it: `engine` only for a run that is not on the default engine.
+fn row_json(id: &str, status: &str, engine: Option<&str>) -> Value {
+    let mut v = json!({"runId": id, "status": status, "phase": "green", "target": {"mode": "s3-only"},
+        "createdAt": T0, "ownerPrincipalArn": "arn:aws:sts::111122223333:assumed-role/Admin/tester"});
+    if let Some(engine) = engine {
+        v["engine"] = json!(engine);
+    }
+    v
+}
+
+fn row(id: &str, status: &str, engine: Option<&str>) -> RunSummary {
+    serde_json::from_value(row_json(id, status, engine)).unwrap()
+}
+
+/// The service's answer about the one run.
+fn answer_about(id: &str, status: &str, engine: Option<&str>) -> Msg {
+    let detail: RunDetail = serde_json::from_value(json!({
+        "summary": row_json(id, status, engine), "tokensUsed": 0, "costUsd": 0.0, "links": {}
+    }))
+    .unwrap();
+    Msg::Detail(Ok(detail))
+}
+
+/// What the service can say of a run's engine, and the name the screen must then read before the run's session has said a word: the
+/// member for a run on OpenCode; no member for a run on Cline and from a service that predates the member; an engine this build does
+/// not know. The last two read the words of release 5.34.
+const ANSWERS: [(Option<&str>, &str); 3] = [
+    (Some("opencode"), "OpenCode"),
+    (None, "Cline"),
+    (Some("an-engine-of-later"), "Cline"),
+];
+
+/// Run `RUN` opened from the run list with Enter; no event of its session has arrived.
+fn opened_from_the_list(engine: Option<&str>) -> App {
+    let mut app = App::new_direct("n".into(), None, DirectSettings::default());
+    app.update(Msg::Runs(Ok(vec![row(RUN, "active", engine)])));
+    assert_eq!(app.screen(), Screen::Runs);
+    key_press(&mut app, KeyCode::Enter);
+    assert_eq!(app.focused_run(), Some(RUN));
+    app
+}
+
+/// The words on screen after `line` is typed into the box of the run on screen and sent: the preview of a command; nothing runs.
+fn previewed(app: &mut App, line: &str) -> String {
+    let mut clock = Clock::new();
+    if app.mode() != Mode::Typing {
+        press(app, &mut clock, KeyCode::Char('i'), 400);
+    }
+    assert_eq!(app.mode(), Mode::Typing, "{line}");
+    let effects = send(app, &mut clock, line);
+    assert!(effects.is_empty(), "{line}: {effects:?}");
+    flat(&screen(app, 160, 40))
+}
+
+/// The previews of cancel and finish for run `id`, each on a screen that `open` makes, name `named`; `None` is a run the screen knows
+/// no engine of, which reads "the engine". For the run on screen (`id` is `RUN`) the preview of a fresh session is read too: in the
+/// message box `/new-session` always addresses the run on screen.
+fn assert_previews(open: &dyn Fn() -> App, id: &str, named: Option<&str>, why: &str) {
+    let who = named.unwrap_or("the engine");
+    let text = previewed(&mut open(), &format!("/cancel {id}"));
+    assert!(
+        text.contains(&format!(
+            "Cancel run {id}: {who} is asked to stop and the work so far is kept."
+        )),
+        "{why}: {text}"
+    );
+    let text = previewed(&mut open(), &format!("/finish {id}"));
+    assert!(
+        text.contains(&format!(
+            "Finish run {id} with what exists. This answers the question {who} asked."
+        )),
+        "{why}: {text}"
+    );
+    if id != RUN {
+        return;
+    }
+    let session = named.map_or_else(
+        || "session of the engine".to_string(),
+        |name| format!("{name} session"),
+    );
+    let text = previewed(&mut open(), "/new-session");
+    assert!(
+        text.contains(&format!(
+            "Start a fresh {session} on the files of run {RUN}."
+        )),
+        "{why}: {text}"
+    );
+}
+
+/// A run opened from the run list is named by the engine its row names, in the reply box and in the previews of cancel, finish and a
+/// fresh session, before an event of its session has arrived. A run on Cline, and a row of a service that predates the member, read
+/// the words of release 5.34.
+#[test]
+fn b981_a_run_opened_from_the_list_is_named_by_the_engine_of_its_row_before_its_sessions_first_event()
+ {
+    for (engine, name) in ANSWERS {
+        let why = format!("{engine:?}");
+        let mut app = opened_from_the_list(engine);
+        assert_named(&mut app, name, &why);
+        assert_previews(&|| opened_from_the_list(engine), RUN, Some(name), &why);
+    }
+}
+
+/// A run opened by `ham watch`, with no run list at hand, reads its engine from the service's answer about the run. Before that
+/// answer the screen knows nothing of a run it did not start and reads the default engine's name, as in release 5.34.
+#[test]
+fn b981_a_run_opened_by_watch_is_named_by_the_engine_of_the_answer_about_it() {
+    for (engine, name) in ANSWERS {
+        let why = format!("{engine:?}");
+        let watched = || {
+            let mut app = App::new_direct("n".into(), None, DirectSettings::default());
+            app.open_run(RUN);
+            app
+        };
+        let mut app = watched();
+        assert_named(&mut app, "Cline", &format!("{why}, before the answer"));
+        let answered = || {
+            let mut app = watched();
+            app.update(answer_about(RUN, "active", engine));
+            app
+        };
+        let mut app = answered();
+        assert_named(&mut app, name, &why);
+        assert_previews(&answered, RUN, Some(name), &why);
+    }
+}
+
+/// The session's own word wins over the answer, and what this app remembered of a run it started stays while the answer names no
+/// engine (a service that predates the member).
+#[test]
+fn b981_the_sessions_word_wins_over_the_answer_and_the_memory_of_a_start_stays_without_one() {
+    // The row says OpenCode and the session says Cline: the session is the one that runs.
+    let mut app = opened_from_the_list(Some("opencode"));
+    feed(&mut app, base_events());
+    assert_named(&mut app, "Cline", "the session named Cline");
+    // Started here on OpenCode, and the answer about the run carries no member: the app's own memory of the start stays.
+    let mut app = composer_on(None);
+    choose_opencode(&mut app);
+    started(&mut app, RUN);
+    app.update(answer_about(RUN, "active", None));
+    assert_named(
+        &mut app,
+        "OpenCode",
+        "started here, an answer without the member",
+    );
+    // Started here on OpenCode and the answer names it: one name.
+    let mut app = composer_on(None);
+    choose_opencode(&mut app);
+    started(&mut app, RUN);
+    app.update(answer_about(RUN, "active", Some("opencode")));
+    assert_named(
+        &mut app,
+        "OpenCode",
+        "started here, the answer names the engine",
+    );
+}
+
+/// A preview for a run that is not on screen names the engine its row names. A row without the member (a run on Cline, a service
+/// that predates the member) and a run the screen holds no row of say "the engine", the words of release 5.34.
+#[test]
+fn b981_a_preview_for_a_run_that_is_not_on_screen_names_the_engine_of_its_row() {
+    let open = || {
+        let mut app = App::new_direct("n".into(), None, DirectSettings::default());
+        app.update(Msg::Runs(Ok(vec![
+            row(RUN, "active", None),
+            row(OTHER, "active", Some("opencode")),
+            row(NEW, "active", None),
+        ])));
+        app.open_run(RUN);
+        feed(&mut app, base_events());
+        app
+    };
+    assert_previews(&open, OTHER, Some("OpenCode"), "a row that names OpenCode");
+    assert_previews(&open, NEW, None, "a row without the member");
+    assert_previews(&|| ready(base_events()), OTHER, None, "no row of the run");
+}
+
+/// The answer about the run on screen names its engine for that run alone: a preview for ANOTHER run, whose row names no engine, does
+/// not take that name, and the run on screen is still named by its own answer.
+#[test]
+fn b981_a_preview_for_another_run_does_not_take_the_engine_of_the_run_on_screen() {
+    let open = || {
+        let mut app = App::new_direct("n".into(), None, DirectSettings::default());
+        app.update(Msg::Runs(Ok(vec![
+            row(RUN, "active", Some("opencode")),
+            row(NEW, "active", None),
+        ])));
+        app.open_run(RUN);
+        app.update(answer_about(RUN, "active", Some("opencode")));
+        app
+    };
+    assert_previews(
+        &open,
+        NEW,
+        None,
+        "the answer about the run on screen names OpenCode; the other run's row names none",
+    );
+    assert_previews(&open, RUN, Some("OpenCode"), "the run on screen");
+}
+
+/// The retry confirmation of a blocked run that this app did not start and that never had a session names the engine of the answer
+/// about the run: the retry starts that run's request again, and the new run opens under the same name. Without the member the
+/// words are those of release 5.34.
+#[test]
+fn b981_the_retry_confirmation_of_a_blocked_run_not_started_here_names_the_engine_of_the_answer() {
+    for (engine, name) in ANSWERS {
+        let mut events = vec![base_events().remove(0)];
+        events.extend([
+            harness_event(
+                20,
+                EventType::GoalBlocked,
+                json!({"reason": "the run machine failed"}),
+            ),
+            harness_event(
+                21,
+                EventType::GoalStatus,
+                json!({"status": "blocked", "phase": "delivering"}),
+            ),
+            harness_event(
+                22,
+                EventType::RunCompleted,
+                json!({"status": "blocked", "outcome": "delivery_failed", "label": "Not delivered"}),
+            ),
+        ]);
+        let mut app = ready(events);
+        app.update(answer_about(RUN, "blocked", engine));
+        let mut clock = Clock::new();
+        let effects = send(&mut app, &mut clock, "try it again");
+        assert!(effects.is_empty(), "{engine:?}: {effects:?}");
+        let text = flat(&screen(&app, 160, 50));
+        assert!(
+            text.contains(&format!(
+                "The new {name} receives the request only, not this run's history."
+            )),
+            "{engine:?}: {text}"
+        );
+        if name != "Cline" {
+            assert!(!text.contains("The new Cline"), "{engine:?}: {text}");
+        }
+        app.update(Msg::Ext(Done::RetryStarted {
+            run_id: RUN.into(),
+            result: Ok(NEW.into()),
+        }));
+        assert_eq!(app.focused_run(), Some(NEW), "{engine:?}");
+        let text = flat(&screen(&app, 120, 30));
+        assert!(
+            text.contains(&format!("Message to {name}")),
+            "{engine:?} the new run of the retry: {text}"
+        );
+    }
+}
+
+/// What a row of the run list shows does not change with the member: the Runs screen and the line of `ham runs` read the same with
+/// it and without it. `ham runs --json` carries the member as the service wrote it, and a row without it prints as before.
+#[test]
+fn b981_a_row_of_the_run_list_shows_the_same_with_and_without_the_member() {
+    let shown = |engine: Option<&str>| {
+        let mut app = App::new_direct("n".into(), None, DirectSettings::default());
+        app.update(Msg::Runs(Ok(vec![
+            row(RUN, "active", engine),
+            row(OTHER, "complete", None),
+        ])));
+        screen(&app, 140, 30)
+    };
+    assert_eq!(shown(Some("opencode")), shown(None));
+    assert_eq!(
+        ham::cli::runs_line(&row(RUN, "active", Some("opencode"))),
+        ham::cli::runs_line(&row(RUN, "active", None))
+    );
+    let printed = |engine: Option<&str>| {
+        let row: ham_core::run_index::RunRow =
+            serde_json::from_value(row_json(RUN, "active", engine)).unwrap();
+        ham::cli::run_json(&row)
+    };
+    assert_eq!(
+        printed(Some("opencode")),
+        row_json(RUN, "active", Some("opencode"))
+    );
+    assert_eq!(printed(None), row_json(RUN, "active", None));
 }

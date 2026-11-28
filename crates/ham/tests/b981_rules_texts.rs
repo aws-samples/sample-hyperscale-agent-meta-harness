@@ -163,5 +163,48 @@ fn b981_a_start_refuses_a_rules_file_named_agents_md_in_the_words_of_the_engine_
             ),
             "{engine:?}"
         );
+        // `--rules <folder>` on the line: the folder named there holds the file, and the default rules folder does not exist.
+        let named = support::scratch("b981-start-named");
+        std::fs::create_dir_all(&named).unwrap();
+        std::fs::write(named.join("AGENTS.md"), "# my rules\n").unwrap();
+        let config = support::scratch("b981-start-bare").display().to_string();
+        let env = move |k: &str| (k == "XDG_CONFIG_HOME").then(|| config.clone());
+        let with_folder = ham_core::command::DirectArgs {
+            rules: Some(named.display().to_string()),
+            ..args
+        };
+        let refusal = match ham::rules_cmd::direct_inputs_for(&env, &with_folder) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{engine:?} --rules: the rules were read"),
+        };
+        assert_eq!(
+            refusal,
+            format!(
+                "rule \"AGENTS.md\" cannot be called AGENTS.md: {name} would load it as a repository instruction file; rename it"
+            ),
+            "{engine:?} --rules"
+        );
+    }
+}
+
+/// `ham rules edit` reads the whole rules folder again after the editor closes: a folder that already holds AGENTS.md is refused then,
+/// in the words of the engine the settings select, with the line that says how to go on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn b981_the_check_after_the_editor_names_the_engine_the_settings_select() {
+    for (engine, name) in SETTINGS {
+        let h = home_on("b981-after-editor", engine).await;
+        let o = ham(&h, &["rules", "init", "--pack", "none"]).await;
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o.stderr));
+        let rules = h.config.join("ham").join("rules");
+        std::fs::write(rules.join("AGENTS.md"), "# my rules\n").unwrap();
+        // The editor is `true`: it closes at once and changes nothing. No name is on the line, so the default rules file is edited
+        // and the refusal of a reserved name before the editor does not answer.
+        let o = ham_env(&h, &["rules", "edit"], &[("EDITOR", "true")]).await;
+        assert_ne!(o.status.code(), Some(0), "{engine:?}: {}", text(&o.stdout));
+        let said = text(&o.stderr);
+        let want = format!(
+            "rule \"AGENTS.md\" cannot be called AGENTS.md: {name} would load it as a repository instruction file; rename it\nham: fix it with: ham rules edit"
+        );
+        assert!(said.contains(&want), "{engine:?}: {said}");
     }
 }

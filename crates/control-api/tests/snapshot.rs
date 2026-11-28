@@ -124,12 +124,12 @@ async fn no_snapshot_yet_is_a_404_that_says_when_one_comes() {
     let (status, body, _) = post(&w, ME, &path(), &[], "").await;
     assert_eq!(status, 404, "{body}");
     assert_eq!(body["code"], "no-snapshot");
-    // A run that works is told when to ask again: once it has changed a file.
+    // A run that works is told when to ask again: once it has changed a file or made a commit.
     assert!(
         body["message"]
             .as_str()
             .unwrap()
-            .contains("ask again when the run has changed a file"),
+            .contains("ask again when the run has changed a file or made a commit"),
         "{body}"
     );
     // The record without its bundle is no snapshot either. A bundle that was just written and has no record yet is a pair that is

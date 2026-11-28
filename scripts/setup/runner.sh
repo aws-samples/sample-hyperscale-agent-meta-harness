@@ -1005,7 +1005,8 @@ rn_lock_verify() {
   rn_lock_held_exit "another setup took it while this run prepared its build, so this run starts no build"
 }
 
-# rn_lease_record: the lock now names the build.
+# rn_lease_record: the lock now names the build. The handler of the lock ends here: from the record until rn_follow sets its own, a signal ends the run by
+# itself and rn_lock_on_exit leaves the lock to the build.
 rn_lease_record() {
   trap - INT TERM
   [ "$RN_LOCK_HELD" = 1 ] && [ "$RN_LOCK_LEGACY" != 1 ] || return 0
@@ -1171,7 +1172,7 @@ rn_lock_interrupted() {
     detail "The build may have started. The deploy lock stays, so the next run finds that build and attaches to it instead of starting a second one."
   else
     rn_lease_release quiet
-    detail "No build was started. The stage is unchanged."
+    detail "No build of the stage was started. The stage is unchanged."
     rn_release_said
   fi
   detail "$(rn_runner_now_text)"
@@ -1481,7 +1482,9 @@ rn_start() {
     rn_lock_verify
     [ "$RN_LOCK_HELD" != 1 ] || trap rn_lock_interrupted INT TERM
   fi
-  RN_STARTING=1
+  # RN_STARTING: the build of the lock may have started, so a run that ends now leaves its lock to it. The build that prints the bootstrap template takes
+  # no lease and carries no token of the lock, so no later run could find it: a run that is stopped while it starts that build gives its lock back.
+  [ -n "$nolease" ] || RN_STARTING=1
   # shellcheck disable=SC2086
   if ! aws_run codebuild start-build --project-name "$RN_PROJECT" "${source_args[@]}" --environment-variables-override $over --query build.id --output text; then
     RN_STARTING=0
@@ -1711,6 +1714,9 @@ rn_follow() {
     fi
     setup_sleep
   done
+  # No handler is set again here, also not the lock's after the build that prints the bootstrap template. From here to the start of the build of the
+  # stage the run ends by the signal itself, and rn_lock_on_exit gives the lock back and says so. A handler was tried and measured: bash 5.2 can run a pending
+  # handler inside the parse of a command substitution, its text then does not parse and the flow is cut at the top level (1 to 2.5 of 100 signals here).
   trap - INT TERM
   return 0
 }

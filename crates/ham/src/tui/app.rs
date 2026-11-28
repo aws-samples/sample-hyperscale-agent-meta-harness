@@ -282,15 +282,17 @@ pub enum Effect {
 }
 
 /// Where the read of the older runs of a whole read stands. It only picks words (the table's border, the notices of `R` and `d`, the
-/// tag explorer's title); what `R` and `d` may do is decided by whether the list held is whole ([`App::runs_whole`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// tag explorer's title, the sentence that says why the older runs are not loaded); what `R` and `d` may do is decided by whether the
+/// list held is whole ([`App::runs_whole`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Older {
     /// No read of older runs is out and none failed, or a read that is the whole list was laid since.
     No,
     /// The newest page of a whole read was laid and its older runs are being read.
     Loading,
-    /// The read of the older runs failed over a list that is not whole.
-    Failed,
+    /// The read of the older runs failed over a list that is not whole, with the read's own words. The reason lives in this state and
+    /// nowhere else: no answer of another read takes it away, and it is on the screen for as long as it is held.
+    Failed(String),
 }
 
 #[derive(Clone, Debug)]
@@ -820,8 +822,6 @@ pub struct App {
     runs_inflight: bool,
     /// Where the read of the older runs stands ([`Older`]).
     runs_older: Older,
-    /// The error held in `runs_error` was set by a failed read of the older runs over a list that was not whole: the note words it so.
-    pub(crate) runs_error_older: bool,
     /// The Runs table's window onto the shown list (`runs_view.rs`): the first row it drew and the rows it had, as positions in the list the
     /// filter shows. A draw sets them (it takes `&self`, hence the cells); the page keys read them.
     runs_first: std::cell::Cell<usize>,
@@ -1088,7 +1088,6 @@ impl App {
             runs_ticks: 0,
             runs_inflight: false,
             runs_older: Older::No,
-            runs_error_older: false,
             runs_first: std::cell::Cell::new(0),
             runs_window: std::cell::Cell::new(0),
             hits: RefCell::new(HitMap::new()),
@@ -1921,7 +1920,7 @@ impl App {
     /// so the smoke of the band and the smoke of the picture move in step; the terminal's size is not known here, and a terminal too small for
     /// the band or the picture draws no smoke, which costs nothing. Without the band a tick counts while the mascot's picture is in the empty
     /// table of the Runs screen and moves, else the count goes back to 0. The picture is there when the service has answered with no runs and
-    /// no error, the Runs screen is up, and `ui.mascot` has not hidden it. This adds no timer and no redraw: the loop redraws on every tick
+    /// no error, the older runs are neither being loaded nor failed to load, the Runs screen is up, and `ui.mascot` has not hidden it. This adds no timer and no redraw: the loop redraws on every tick
     /// already.
     fn mascot_tick(&mut self) {
         let picture = self.screen == Screen::Runs
@@ -1929,7 +1928,8 @@ impl App {
             && self.runs_answered
             && self.runs.is_empty()
             && self.runs_error.is_none()
-            && !self.runs_older_loading();
+            && !self.runs_older_loading()
+            && !self.runs_older_failed();
         let showing = self.mascot_motion && (self.head.band || picture);
         self.mascot_ticks = if showing {
             self.mascot_ticks.wrapping_add(1)
@@ -2479,7 +2479,22 @@ impl App {
 
     /// The read of the older runs failed and the list held is still a part.
     pub(crate) fn runs_older_failed(&self) -> bool {
-        !self.runs_whole() && self.runs_older == Older::Failed
+        self.runs_older_reason().is_some()
+    }
+
+    /// The words of the read of the older runs that failed, while the list held is still a part.
+    fn runs_older_reason(&self) -> Option<&str> {
+        match &self.runs_older {
+            Older::Failed(reason) if !self.runs_whole() => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// The sentence that says why the older runs are not loaded: on the Runs screen's note line and in the tag explorer for
+    /// as long as they are not, so from the read that failed until a read of the older runs begins or the list is whole.
+    pub(crate) fn runs_older_words(&self) -> Option<String> {
+        self.runs_older_reason()
+            .map(|reason| format!("could not load the older runs: {}", sanitize_line(reason)))
     }
 
     /// A read that is itself the whole list (every page, or a newest page without a next token) ends the state of the older runs.
@@ -3671,12 +3686,14 @@ impl App {
             })
     }
 
-    /// The engine of run `id` as far as the screen knows it. The run on screen: the engine its session named, before that the engine this
-    /// app started it on, else the default engine (`run_engine`). Any other run: the engine this app started it on, when it did; a row of the
-    /// run list carries no engine, so every other run is `None`.
+    /// The engine of run `id` as far as the screen knows it. The run on screen: the engine its session named, before that the engine the
+    /// service's answer names or this app started it on, else the default engine (`run_engine`). Any other run: the engine its row of the
+    /// run list names (`answered_engine`), else the engine this app started it on; a run with neither is `None`.
     pub(super) fn known_engine(&self, id: &str) -> Option<&'static ham_core::engines::Engine> {
         if self.focused_run() != Some(id) {
-            return self.engine_started_on(id);
+            return self
+                .answered_engine(id)
+                .or_else(|| self.engine_started_on(id));
         }
         self.cached.as_ref().map(|_| self.run_engine())
     }
@@ -4771,7 +4788,6 @@ impl App {
             Msg::Runs(Ok(runs)) => {
                 // A probe run is not the user's; `ham runs --probes` lists it.
                 self.runs_error = None;
-                self.runs_error_older = false;
                 self.runs_older = Older::No;
                 self.tags_note_full_read();
                 self.set_runs(runs);
@@ -4780,7 +4796,6 @@ impl App {
             }
             Msg::Runs(Err(e)) => {
                 self.runs_error = Some(e);
-                self.runs_error_older = false;
                 vec![]
             }
             Msg::RunsRead(Ok(read)) => {
@@ -4788,7 +4803,6 @@ impl App {
                 // flight together.
                 self.runs_inflight = false;
                 self.runs_error = None;
-                self.runs_error_older = false;
                 self.tags_note_read(&read);
                 self.runs_older_ends_with(&read);
                 let merged = read.apply(&self.runs);
@@ -4801,7 +4815,6 @@ impl App {
                 self.tags_unpin(&mut index);
                 self.runs_inflight = false;
                 self.runs_error = None;
-                self.runs_error_older = false;
                 self.tags_note_read(&read);
                 self.runs_older_ends_with(&read);
                 // A read of every page is the whole list: it replaces what was known. A read of the newest page lays over it.
@@ -4823,7 +4836,6 @@ impl App {
             Msg::RunsIndexed(Err(e)) => {
                 self.runs_inflight = false;
                 self.runs_error = Some(e);
-                self.runs_error_older = false;
                 vec![]
             }
             Msg::RunsNewest(IndexedRead { read, mut index }) => {
@@ -4831,7 +4843,6 @@ impl App {
                 // page was read stays on top (`lay_read`). The flag of the timer's read is the timer's: this message leaves it alone.
                 self.tags_unpin(&mut index);
                 self.runs_error = None;
-                self.runs_error_older = false;
                 self.tags_note_read(&read);
                 for e in index {
                     self.run_index.insert(e.run_id.clone(), e);
@@ -4855,7 +4866,6 @@ impl App {
                 };
                 self.tags_unpin(&mut index);
                 self.runs_error = None;
-                self.runs_error_older = false;
                 self.tags_note_read(&read);
                 let merged = ham_core::runfilter::lay_read(&self.runs, read);
                 // The read is the whole list: the run index forgets what it knew, but for the rows that stay on top of it.
@@ -4896,15 +4906,14 @@ impl App {
                 self.alert_effects()
             }
             Msg::RunsOlder(Err(e)) => {
-                // A later page failed: the list stays. Over a part of the list the border and the note say that the older runs are missing;
-                // over a whole list (the read was a refresh) the words are those of every failed read.
-                self.runs_error = Some(e);
+                // A later page failed: the list stays. Over a part of the list the border and the note say that the older runs are missing,
+                // and the reason is held with that state: the answer of another read says nothing about the older runs and
+                // leaves it. Over a whole list (the read was a refresh) the words are those of every failed read.
                 if self.runs_whole() {
                     self.runs_older = Older::No;
-                    self.runs_error_older = false;
+                    self.runs_error = Some(e);
                 } else {
-                    self.runs_older = Older::Failed;
-                    self.runs_error_older = true;
+                    self.runs_older = Older::Failed(e);
                 }
                 self.runs_notes_follow_list();
                 vec![]
@@ -4917,7 +4926,6 @@ impl App {
                 // A failed read keeps the held list and frees the timer for the next interval.
                 self.runs_inflight = false;
                 self.runs_error = Some(e);
-                self.runs_error_older = false;
                 vec![]
             }
             Msg::Started(Ok(r)) => {

@@ -542,8 +542,13 @@ where
     // The prompt a module sent after its interrupt, until its answer is seen.
     let mut resend: Option<Resend> = None;
     // With: the driver held the run at the stop before this one, because a module said that the engine worked by itself
-    // (the goal loop's follow-up rounds), and the prompt that ended that stop went out to the working engine.
+    // (the goal loop's follow-up rounds).
     let mut worked_alone = false;
+    // And that stop ended with a prompt the modules voted at its turn end, which went out to the working engine, so the
+    // engine may still be working by itself at this one. A held stop that the modules ended with no such prompt may be followed by a
+    // prompt to an engine whose own work is over: a stage the machine starts (a person's answer), the review round, or a prompt of
+    // the modules' last question.
+    let mut prompted_alone = false;
     let raw = loop {
         let limits = WatchLimits::new(
             deadline.saturating_duration_since(Instant::now()),
@@ -701,22 +706,39 @@ where
                 )
                 .await;
                 let Some(TurnVote::Wait { until }) = voted else {
-                    // With: the user's cancel was up before the modules could be asked about an answered prompt, and the
-                    // engine was working by itself when the driver last looked (it held the run at this stop, or at the stop before,
-                    // whose prompt went out to the working engine and was answered at once). No prompt is open, so nothing has told
-                    // the engine and nothing has made the stop the user's: the run ends for the cancel as a hold ends for it.
-                    if voted.is_none()
-                        && (held || worked_alone)
-                        && matches!(&raw.watched, Watched::Done(Ok(done)) if done.stop_reason != "cancelled")
-                        && plan.cancel.as_ref().is_some_and(|c| *c.borrow())
-                    {
-                        // The cancel may have been written to the prompt itself, which the working engine answered at once all the
-                        // same (it queued the prompt behind its round): it is not written a second time.
-                        if !raw.cancel_sent {
+                    // With: no vote came back about an answered prompt because the user's cancel was up (before the
+                    // modules could be asked, or when their vote came back), and the engine was working by itself when the driver
+                    // last looked (it held the run at this stop, or at the stop before). No prompt is open, so nothing has made
+                    // the stop the user's: the run ends for the cancel as a hold ends for it.
+                    // The run's deadline where has the cancel, at a stop where the engine may still work by itself
+                    // (the driver held the run at this stop, or the stop before was held and ended with a prompt the modules
+                    // voted at its turn end). The question found no time left (the deadline passed after the hold's last clock
+                    // read), or its vote came back after the deadline and was dropped: the run ends for the deadline as a hold
+                    // ends for it. The rule of both is `NoWait::end`. The clock is read before the cancel, as a hold reads them.
+                    let deadline_passed = deadline <= Instant::now();
+                    let stop = NoWait {
+                        no_vote: voted.is_none(),
+                        worked_alone: held || worked_alone,
+                        still_alone: held || prompted_alone,
+                        answered: matches!(&raw.watched, Watched::Done(Ok(done)) if done.stop_reason != "cancelled"),
+                        cancel_up: plan.cancel.as_ref().is_some_and(|c| *c.borrow()),
+                        cancel_sent: raw.cancel_sent,
+                        deadline_passed,
+                    };
+                    if let Some(end) = stop.end() {
+                        if end.write_cancel {
                             write_cancel(client, inner.session_id.as_deref()).await;
-                            activity.cancel_written();
                         }
-                        raw.watched = Watched::Done(Err(AcpError::CancelIgnored));
+                        raw.watched = match end.stop {
+                            OwnStop::User => {
+                                // Marked as sent, as a hold marks the user's cancel it wrote.
+                                if end.write_cancel {
+                                    activity.cancel_written();
+                                }
+                                Watched::Done(Err(AcpError::CancelIgnored))
+                            }
+                            OwnStop::TimeLimit => Watched::TimedOut,
+                        };
                         raw.cancel_sent = activity.cancel_sent();
                         raw.message = collector.final_message();
                     }
@@ -745,6 +767,7 @@ where
                 }
             };
             worked_alone = held;
+            prompted_alone = held && matches!(vote, Some(TurnVote::Prompt(_)));
             if held {
                 // The tree changed while the engine worked.
                 files = match &machine {
@@ -975,6 +998,92 @@ where
     }
 }
 
+/// What the driver knows at a stop when the question of the turn end brought no `Wait`: the facts its own end of the run is decided
+/// from ([`NoWait::end`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoWait {
+    /// No vote came back at all: the modules were not asked (among the reasons of `consult`: the user's cancel was up, or no time
+    /// was left), or their vote came back after the user's cancel or the deadline and was dropped.
+    pub no_vote: bool,
+    /// The engine was working by itself when the driver last looked: the driver held the run at this stop, or at the stop before.
+    pub worked_alone: bool,
+    /// As far as the driver knows the engine still works by itself: the driver held the run at this stop, or it held the run at the
+    /// stop before and that stop ended with a prompt the modules voted at its turn end, which went out to the working engine. Not
+    /// so after a held stop that the modules ended with no such prompt, until the driver holds the run again: the prompt of this
+    /// stop is then a stage the machine started (a person's answer), the review round, or a prompt of the modules' last question.
+    /// It implies `worked_alone`.
+    pub still_alone: bool,
+    /// The engine answered the prompt of this stop, and not as `cancelled`: a prompt that a module's interrupt ended is not this
+    /// case, so the cancel a module wrote is never followed by a second one here.
+    pub answered: bool,
+    /// The user's cancel is up.
+    pub cancel_up: bool,
+    /// `session/cancel` was already written to the prompt of this stop.
+    pub cancel_sent: bool,
+    /// The run's deadline has passed.
+    pub deadline_passed: bool,
+}
+
+/// Why the driver ends a run itself at a stop where no prompt is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnStop {
+    /// The user's cancel: the run reads as the user's stop, as when a hold ends for it.
+    User,
+    /// The run's deadline: the run reads as a prompt that reached the time limit, as when a hold ends for it.
+    TimeLimit,
+}
+
+/// The end the driver makes itself at such a stop, as a hold makes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnEnd {
+    pub stop: OwnStop,
+    /// `session/cancel` is written to the engine first. `false` only when it was written to the prompt of this stop already: it is
+    /// never written a second time for one end.
+    pub write_cancel: bool,
+}
+
+impl NoWait {
+    /// The driver's own end of the run at this stop, or `None` when the vote stands as it came back.
+    ///
+    /// No vote came back about an answered prompt, and the engine was working by itself when the driver last looked. No prompt is
+    /// open, so nothing has made the stop the user's or the time limit's: the driver ends the run as a hold ends it.
+    ///
+    /// The user's cancel comes first. The cancel may have been written to the prompt itself, which the working
+    /// engine answered at once all the same (it queued the prompt behind its round): it is not written a second time.
+    ///
+    /// The deadline: it passed between the last clock read of a hold and the clock read of the question that followed, so
+    /// no module was asked; or it passed while the modules were asked, and their vote was dropped. Before, the run then kept the
+    /// outcome of the last answered prompt and nothing told the engine. `cancel_sent` is set for the user's cancel alone
+    /// (`Activity::cancel_written`), and that cancel never goes down again: a cancel that was written means `cancel_up`, which
+    /// comes first here. So on the deadline's path nothing was written to the engine for this stop before.
+    ///
+    /// A prompt that is answered just before the deadline at a stop the driver did not hold, after a stop it did not hold either,
+    /// is not this case (`worked_alone` is false): the engine ended its turn in time, and the run keeps that outcome.
+    ///
+    /// The deadline ends the run only while the engine may still work by itself (`still_alone`). At the stop after a hold that a
+    /// module's prompt ended, the driver cannot tell: the engine may have queued the prompt behind its round and answered at once,
+    /// or it may have answered after a turn of its own. Both end here, for the deadline as for the cancel: the modules, who could
+    /// tell, cannot be asked any more. A stop after a held stop that the modules ended with no prompt at its turn end (the review
+    /// round of a run whose own work the modules called over, a stage the machine started, a prompt of the modules' last question)
+    /// is not such a stop: its prompt was answered in time, and the run keeps that outcome at the deadline. The user's cancel
+    /// ends the run there as it did (`worked_alone`).
+    pub fn end(&self) -> Option<OwnEnd> {
+        if !(self.no_vote && self.worked_alone && self.answered) {
+            return None;
+        }
+        if self.cancel_up {
+            return Some(OwnEnd {
+                stop: OwnStop::User,
+                write_cancel: !self.cancel_sent,
+            });
+        }
+        (self.deadline_passed && self.still_alone).then_some(OwnEnd {
+            stop: OwnStop::TimeLimit,
+            write_cancel: true,
+        })
+    }
+}
+
 /// How a hold ([`TurnVote::Wait`]) ended.
 enum Hold {
     /// The time asked for passed; the modules are asked again.
@@ -1069,8 +1178,12 @@ where
 /// Puts the end of a stage to the modules: the vote of the turn end (`seal` false) or the seal. `None` when the stage is not one a module
 /// may continue: nothing was asked of the model, the prompt was not answered, the user's cancel is up or no time is left. A vote that comes back
 /// after the user's cancel or the deadline is dropped, except a `Wait` of the turn end: the caller's hold then ends the run for that cancel or
-/// deadline. A prompt that comes back after the user's cancel from a poll in which a module said that the engine still works by itself is
-/// dropped too, and the run is held as for that module's wait.
+/// deadline. A prompt that comes back after the user's cancel or the deadline from a poll in which a module said that the engine still
+/// works by itself is dropped too, and the run is held as for that module's wait. When
+/// no vote comes back at a stop where the engine was working by itself when the driver last looked, the caller ends the run for the
+/// cancel or the deadline itself: for the user's cancel always, for the deadline only
+/// where the engine may still work by itself (`still_alone`: the driver held the run at this stop, or the held stop before ended
+/// with a module's prompt).
 #[allow(clippy::too_many_arguments)]
 async fn consult(
     hooks: &Hooks,
@@ -1122,11 +1235,13 @@ async fn consult(
         // dropped as every vote after the cancel is. What the poll heard about the engine is kept as the wait it was: the same hold
         // writes the cancel to the engine once and ends the run as the user's stop. Dropped whole, nothing told the engine, and the
         // run ended with the outcome of the last answered prompt.
+        // The same poll with the run's deadline where has the cancel. The prompt is dropped, and what the poll heard
+        // about the engine is kept in the same way: the hold ends the run for the deadline at once, as it ends a `Wait` alone
+        // (the cancel is written to the engine, and the stop is the time limit's). Dropped whole, an engine that was still
+        // working when the time ran out left the run the outcome of its last answered prompt.
         return match vote {
             wait @ TurnVote::Wait { .. } if !seal => Some(wait),
-            TurnVote::Prompt(_) if working && cancelled() => {
-                Some(TurnVote::Wait { until: MIN_WAIT })
-            }
+            TurnVote::Prompt(_) if working => Some(TurnVote::Wait { until: MIN_WAIT }),
             _ => None,
         };
     }

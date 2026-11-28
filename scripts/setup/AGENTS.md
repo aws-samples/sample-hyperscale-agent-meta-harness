@@ -234,7 +234,12 @@ Held by `scripts/tests/test_setup_contract.py`, which runs the real files of eac
   (`RN_LOCK_BUSY`), and it never calls exit. A run that stops following its build (`rn_stopped_following`) reads the lock once more: when the build's deploy has
   finished it says that the stage starts runs again, else that the build keeps the stage closed by itself (`renew_caller_lock` of `scripts/lib/deploy.py`) and
   that the stage starts runs again when the deploy of the build has finished; the build that prints the bootstrap template is no build of the lock, so that
-  lock goes back. A read that fails after the build (`rn_read_failed`) says whether the lock that stays closes the stage, and a write of `deploys=no` that fails after the
+  lock goes back. `RN_STARTING` is set only for a start that takes the lease: the build that prints the bootstrap template carries no token of the lock, so a run
+  that is stopped while it starts that build gives its lock back. From the end of that build to the start of the build of the stage, and from the record of the
+  started build to the first look of `rn_follow`, setup has no handler for INT and TERM: the signal ends it, and `rn_lock_on_exit` gives the lock back or leaves
+  it to the build. A handler in those two places was built and measured and taken back: bash 5.2 can run a pending handler inside the parse of a
+  command substitution, the handler's text then does not parse and the flow is cut at the top level (1 to 2.5 of 100 signals there), and it can drop a signal
+  that comes while it collects a command substitution with or without a handler. A read that fails after the build (`rn_read_failed`) says whether the lock that stays closes the stage, and a write of `deploys=no` that fails after the
   build succeeded is a warning (`rn_lock_open`).
 - The state of the stage decides what a run does (`pf_stage`): `none`; `partial` (no control stack, or a stack that rolled back on its first create, `ROLLBACK_COMPLETE`, which holds
   nothing: the CDK deploy deletes it and makes it again (its `isCreationFailure` handling), and the plan says so; or every stack complete but no deploy record, `STAGE_UNFINISHED=1`: the

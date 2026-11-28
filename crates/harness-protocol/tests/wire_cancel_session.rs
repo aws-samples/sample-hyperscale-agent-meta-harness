@@ -39,7 +39,7 @@ fn summary_1_62() -> Value {
 
 #[test]
 fn b853_wire_cancel_and_session_members() {
-    assert_eq!(PROTOCOL_VERSION, "1.64.0");
+    assert_eq!(PROTOCOL_VERSION, "1.65.0");
 
     // The Run item: absent reads as no cancel and is left out again; present round-trips under the name `cancelRequestedAt`.
     let old: RunItem = serde_json::from_value(run_item_1_62()).unwrap();

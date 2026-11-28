@@ -1280,3 +1280,94 @@ fn the_member_of_the_request_is_checked_again_and_the_words_never_hold_the_value
     bad.sha256 = Some("0".repeat(64));
     assert!(check_member(Some(&bad)).unwrap_err().contains("sha256"));
 }
+
+// ---- the review round's stop after a stop the driver held ---------------------------------------------------------------
+
+/// A module that says once that the engine works by itself and then that it has no opinion. At its third turn end, which is the review
+/// round's, it stays until the run's deadline has passed before it answers.
+struct HeldThenLate {
+    turn_ends: AtomicU32,
+    /// What was left of the run's time when the third turn end was asked.
+    left_at_third: Mutex<Option<Duration>>,
+}
+
+impl HeldThenLate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            turn_ends: AtomicU32::new(0),
+            left_at_third: Mutex::new(None),
+        })
+    }
+}
+
+impl DirectHook for HeldThenLate {
+    fn name(&self) -> &'static str {
+        "held-then-late"
+    }
+    fn on_turn_end<'a>(&'a self, end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
+        let n = self.turn_ends.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move {
+            match n {
+                1 => TurnVote::Wait {
+                    until: Duration::from_secs(1),
+                },
+                3 => {
+                    *self.left_at_third.lock().unwrap() = Some(end.time_left);
+                    tokio::time::sleep(end.time_left + Duration::from_secs(1)).await;
+                    TurnVote::Done
+                }
+                _ => TurnVote::Done,
+            }
+        })
+    }
+}
+
+/// The driver ends a run for the deadline itself only while the engine may still work by itself. Here the driver held the run,
+/// the modules then called the engine's own work over, and the run got its review round: a prompt of the driver's, which the engine
+/// answers in time. At the round's stop the modules' answer comes back after the run's deadline, so no vote comes back and the driver
+/// did hold the run at the stop before. The run keeps the round's outcome and nothing is written to the engine. Ended as the time
+/// limit, a finished run would read as stopped, and a session that is not the run's last would hand it over.
+#[tokio::test(start_paused = true)]
+async fn b902_the_review_round_after_a_held_stop_keeps_its_outcome_when_no_vote_comes_back_past_the_deadline()
+ {
+    let late = HeldThenLate::new();
+    let mut s = Setup::new(vec![
+        end_turn("Added percent_change."),
+        end_turn("Reviewed it; nothing else to fix."),
+    ]);
+    s.timeout_s = 60;
+    s.guard = Duration::from_secs(10);
+    s.hooks = vec![late.clone()];
+    let r = run(s).await;
+    // TRIGGER PRESENT: the round ran after the held stop; its stop's question was asked with time left and came back after the deadline.
+    assert_eq!(prompts_sent(&r.received).len(), 2);
+    assert_eq!(late.turn_ends.load(Ordering::SeqCst), 3);
+    let left = late
+        .left_at_third
+        .lock()
+        .unwrap()
+        .expect("the round's stop was not put to the module");
+    assert!(
+        !left.is_zero() && left < Duration::from_secs(60),
+        "{left:?}"
+    );
+    let rec = r.end.review.as_ref().expect("a record");
+    assert_eq!(rec.status, REVIEW_RAN);
+    assert_eq!(
+        label(&r.end, 3),
+        DirectOutcome::ReportedDone,
+        "the round's prompt was answered in time: the run is not one that reached its time limit"
+    );
+    assert_eq!(r.end.raw.message, "Reviewed it; nothing else to fix.");
+    let cancels = r
+        .received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m["method"] == "session/cancel")
+        .count();
+    assert_eq!(
+        cancels, 0,
+        "nothing is written to an engine that ended its turn"
+    );
+}

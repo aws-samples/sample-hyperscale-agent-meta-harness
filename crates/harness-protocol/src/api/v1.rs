@@ -279,6 +279,12 @@ pub struct RunSummary {
     /// silent. Absent otherwise and from a service that predates the member. The client compares nothing with its own clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_silent_since: Option<String>,
+    /// Protocol 1.65.0: the engine the run is on, as the Run item stores it (`engine`). Left out for a run on the default engine, so
+    /// the summary of such a run is the one every earlier client read. Absent therefore means the default engine: a run on it, a run that
+    /// was stored before the Run item named an engine, or the answer of a service that predates the member. `RunDetail` carries it in its
+    /// `summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<crate::common::Engine>,
 }
 
 /// The one-line form of an open question in the run list.

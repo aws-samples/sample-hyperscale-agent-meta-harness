@@ -1369,15 +1369,15 @@ impl App {
         vec![]
     }
 
-    /// The job the second Enter starts: a finished repository run is followed on its own repository, so the new run opens a pull
-    /// there; an `s3-only` run, or one whose summary has not arrived (the confirmation then said s3-only), is followed by a zip alone. The target
-    /// is read from the same summary as the confirmation's words, so the run that starts is the one that was confirmed.
     /// The engine a follow-up of the run on screen starts on: the engine that run was on. The start (`follow_up_job`) and the words
     /// of the confirmation both read it here, so they name one engine.
     fn follow_up_engine(&self) -> &'static ham_core::engines::Engine {
         self.run_engine()
     }
 
+    /// The job the second Enter starts: a finished repository run is followed on its own repository, so the new run opens a pull
+    /// there; an `s3-only` run, or one whose summary has not arrived (the confirmation then said s3-only), is followed by a zip alone. The target
+    /// is read from the same summary as the confirmation's words, so the run that starts is the one that was confirmed.
     fn follow_up_job(&self, run_id: String, text: String) -> Job {
         let head = self.send.head.clone();
         let repo = self.detail.as_ref().and_then(|d| match &d.summary.target {

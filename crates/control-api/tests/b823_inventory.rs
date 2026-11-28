@@ -136,7 +136,7 @@ async fn b823_a_run_without_a_copy_is_a_404_that_states_only_the_fact() {
         if status == "active" {
             assert_eq!(
                 message,
-                "no copy of this run's work is saved yet; ask again when the run has changed a file"
+                "no copy of this run's work is saved yet; ask again when the run has changed a file or made a commit"
             );
         } else {
             assert_eq!(message, "no copy of this run's work was saved", "{status}");

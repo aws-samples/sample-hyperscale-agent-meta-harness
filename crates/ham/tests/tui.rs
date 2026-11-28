@@ -91,6 +91,7 @@ fn snapshot_sizes(app: &App, name: &str) {
 fn summary(id: &str, status: GoalStatus, phase: GoalPhase, target: RunTarget) -> RunSummary {
     RunSummary {
         session_silent_since: None,
+        engine: None,
         cancel_requested_at: None,
         needs_input: None,
         run_id: id.into(),

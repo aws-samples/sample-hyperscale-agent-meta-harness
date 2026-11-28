@@ -378,3 +378,25 @@ async fn b961_ham_runs_prints_nothing_when_a_later_page_fails() {
         assert_eq!(plane.calls.lock().unwrap().len(), 6, "{extra:?}");
     }
 }
+
+// ---- the engine of a run in the service's answer -------------------------------------------------------------------------------
+
+/// A service that names the engine of a run that is not on the default engine: the line of `ham runs` is the one it prints for a run
+/// without the member, and `--json` carries the member as the service wrote it, for that run only.
+#[tokio::test]
+async fn b981_ham_runs_prints_the_same_line_for_a_run_that_names_its_engine_and_json_carries_the_member()
+ {
+    let page =
+        || vec![json!({"runs": [run(R1, json!({"engine": "opencode"})), run(R2, json!({}))]})];
+    let (text, _) = ham_runs(page(), &[]).await;
+    assert_eq!(text.code, 0);
+    assert_eq!(text.out, format!("{R1}  {TODAY}\n{R2}  {TODAY}\n"));
+    let (json_out, _) = ham_runs(page(), &["--json"]).await;
+    let v: Value = serde_json::from_str(json_out.out.trim()).unwrap();
+    assert_eq!(v["runs"][0]["engine"], json!("opencode"), "{v}");
+    assert!(v["runs"][1].get("engine").is_none(), "{v}");
+    // A run without the member prints what it printed before the member existed.
+    let (before, _) = ham_runs(vec![json!({"runs": [run(R2, json!({}))]})], &["--json"]).await;
+    let w: Value = serde_json::from_str(before.out.trim()).unwrap();
+    assert_eq!(v["runs"][1], w["runs"][0]);
+}

@@ -12,12 +12,16 @@ within the last 30 minutes closes the stage. So a lock that setup leaves behind 
 - A run that stops following its build says what the stage does with new runs meanwhile: the build renews the lock by itself while it deploys
   (scripts/lib/deploy.py, tested in test_setup_deploy_settings.py), and afterwards the stage opens when setup runs again or 30 minutes after the last write.
 - One failed read of the lock does not end a wait for active runs.
+- The lock goes back, or stays with its build, at three more places between the lock and setup's first look at the build of the stage: while the build
+  that prints the CDK bootstrap template is started (the lock goes back), between that build and the build of the stage (the signal ends setup, the lock goes
+  back) and while the started build is recorded (the signal ends setup, the lock stays with the build). The tests hold setup at each place (HELD_PROGRAM).
 
 The tests run `setup.sh` from a stand-in checkout against the stand-in AWS CLI (setup_fake_aws.py). Nothing here calls AWS.
 """
 
 from __future__ import annotations
 
+import shutil
 import signal
 import subprocess  # nosec B404: the stand-in AWS CLI of the test is started with an argument list, never a shell
 import sys
@@ -36,6 +40,34 @@ SIGN_IN_GONE = [{"match": "--profile work", "exit": 254, "stderr": EXPIRED.forma
 RELEASED = "The deploy lock of the stage is released."
 # bash cannot handle a signal that was ignored when it started, and a test runner that was started detached ignores SIGHUP: the program is started with the default again
 HUP_DEFAULT = "import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_DFL); os.execv(sys.argv[1], sys.argv[1:])"
+TOOLKIT = "CDKToolkit"
+# what setup says while it waits for a stack that someone else is still changing (rn_prepare_stack)
+SETTLING = "(it is being changed); waiting for it to settle"
+# A stand-in for a program setup starts (`sleep`, the pause between two looks; `mv`, which puts the receipt in place; `aws`, the stand-in AWS CLI itself).
+# Until it is armed it is the real program. Armed (the file {armed} exists, the call log of the stand-in AWS CLI holds {word}, or its own arguments hold {own}),
+# and only the first time, it takes the default answer to SIGINT, then says that it waits, and holds setup where it is until a signal ends it (after {hold}
+# seconds it is the real program after all). So the one signal of a test finds setup at a known place, waiting for a program that the signal ends. Where the
+# signal finds setup otherwise is a matter of the machine's speed, and bash 5.2 itself can drop a signal that comes while it starts or collects a command
+# substitution, with or without a handler.
+HELD_PROGRAM = """#!{python} -I
+import os
+import signal
+import sys
+import time
+
+REAL = {real!r}
+CALLS = {calls!r}
+armed = (os.path.exists({armed!r}) or bool(CALLS and os.path.exists(CALLS) and {word!r} in open(CALLS, encoding="utf-8").read())
+         or bool({own!r} and {own!r} in sys.argv[1:]))
+if armed:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    try:
+        os.close(os.open({waiting!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        time.sleep({hold!r})
+    except FileExistsError:
+        pass
+os.execv(REAL, [REAL] + sys.argv[1:])
+"""
 
 
 class LeftBase(WaitBase):
@@ -280,18 +312,120 @@ class GivenBackOnExitCase(LeftBase):
     def test_b804_admit_ctrl_c_during_the_build_of_the_bootstrap_template_gives_the_lock_back(self) -> None:
         # a first setup in an account without a CDK bootstrap: the lock is taken, the runner installed, and a first build prints the bootstrap template.
         # That build takes no lock and can be repeated, so a run that stops following it has no build of its lock: the lock goes back.
-        self.set_scenario(bootstrap_present=False, build={"hang": True})
+        # The scenario holds the build that prints the template (`template_build`; `build` is the build of the stage). With `build` that build ended by
+        # itself a pause after the first look, and a signal that a slow host sent later found setup past it, between the two builds. The signal is sent while
+        # setup waits for the pause between two looks at that build.
+        armed, waiting = self.held_program("sleep")
+        self.set_scenario(bootstrap_present=False, template_build={"hang": True})
         proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc, starts=1)
         lock = self.lock_now()
         self.assertIsNotNone(lock, "TRIGGER PRESENT: the lock is held while the template build runs")
         self.assertEqual(lock_lines(lock)["build"], "", "TRIGGER PRESENT: and it records no build")
+        armed.touch()
+        proc.wait_ready(waiting.exists, 120.0, "setup.sh to wait for the pause between two looks at the build that prints the template")
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
+        self.assertEqual([b["status"] for b in self.builds().values()], ["IN_PROGRESS"],
+                         "TRIGGER PRESENT: Ctrl-C came while the build that prints the template ran, and no other build was started")
         self.assertEqual(done.returncode, 6, done.output)
         self.assertIn("Stopped following the build", flat)
         self.assertIsNone(self.lock_now(), "the lock is given back")
         self.assertIn(RELEASED, flat)
+
+    # ----: three more places between the lock and the first look at the build of the stage ----
+    def held_program(self, name: str, *, word: str = "", own: str = "") -> tuple:
+        """Puts the stand-in for the program `name` first on the PATH of setup (HELD_PROGRAM). It is armed by the file this returns first, by `word` in the call
+        log of the stand-in AWS CLI, or by `own` among its own arguments. The second file is the one it writes when it waits. For `aws` the real program is the
+        stand-in AWS CLI of the test, under another name."""
+        if name == "aws":
+            real = str((self.stub / "aws").rename(self.stub / "aws-of-the-test"))
+        else:
+            real = shutil.which(name)
+        self.assertTrue(real, f"the test needs the real {name}")
+        armed, waiting = (self.tmp / f"{name}-{mark}" for mark in ("armed", "waiting"))
+        self.write_stub(name, HELD_PROGRAM.format(python=sys.executable, real=real, armed=str(armed), calls=str(self.state / "calls.jsonl") if word else "", word=word,
+                                                  own=own, waiting=str(waiting), hold=limit(120)))
+        return armed, waiting
+
+    def test_b984_ctrl_c_while_the_template_build_is_started_gives_the_lock_back(self) -> None:
+        # The build that prints the template takes no lease and carries no token of the lock. A run that was stopped while it started that build kept its lock
+        # for "the build that may have started", which no later run can find by the lock: the stage then started no runs until the lock was 30 minutes old.
+        _armed, waiting = self.held_program("aws", own="start-build")
+        self.set_scenario(bootstrap_present=False)
+        proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
+        proc.wait_ready(waiting.exists, 120.0, "setup.sh to start the build that prints the template")
+        lock = self.lock_now()
+        self.assertIsNotNone(lock, "TRIGGER PRESENT: the lock is held while the template build is started")
+        self.assertEqual(lock_lines(lock)["build"], "", "TRIGGER PRESENT: and it records no build")
+        done = proc.interrupt(signal.SIGINT)
+        flat = " ".join(done.output.split())
+        self.assertEqual(self.count_calls("codebuild", "start-build"), 0, "TRIGGER PRESENT: Ctrl-C came while the call that starts the template build was under way")
+        self.assertEqual(done.returncode, 6, done.output)
+        self.assertIn("Stopped before the build was recorded (you stopped it).", flat)
+        self.assertIn("No build of the stage was started. The stage is unchanged.", flat)
+        self.assertNotIn("may have started", flat)
+        self.assertIsNone(self.lock_now(), "the lock is given back")
+        self.assertIn(RELEASED, flat)
+
+    def between_the_two_builds(self):
+        """A first setup in an account whose CDKToolkit stack someone else is still creating, up to the pause between two of its looks at that stack: the build
+        that prints the bootstrap template has ended, the lock is held and records no build, and the build of the stage has not been started."""
+        armed, waiting = self.held_program("sleep")
+        self.set_scenario(bootstrap_present=False, stacks={TOOLKIT: {"status": "CREATE_IN_PROGRESS", "outputs": {}, "polls_left": 10 ** 6, "then": "CREATE_COMPLETE"}})
+        proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
+        proc.wait_ready(lambda: SETTLING in " ".join(proc.text().split()), 120.0, "setup.sh to wait for the CDKToolkit stack after the build that prints the template")
+        self.assertIn("action=bootstrap-template", proc.text(), "TRIGGER PRESENT: the build that prints the template has ended")
+        lock = self.lock_now()
+        self.assertIsNotNone(lock, "TRIGGER PRESENT: the lock is held between the two builds")
+        self.assertEqual(lock_lines(lock)["build"], "", "TRIGGER PRESENT: and it records no build")
+        self.assertEqual(len(self.builds()), 1, "TRIGGER PRESENT: the build of the stage has not been started")
+        armed.touch()
+        proc.wait_ready(waiting.exists, 120.0, "setup.sh to wait for the pause between two looks at the CDKToolkit stack")
+        return proc
+
+    def assert_the_signal_ended_setup_and_the_lock_went_back(self, done, sig: int) -> None:
+        # setup has no handler of its own between the two builds (scripts/setup/AGENTS.md says why): the signal ends it, and its exit handler gives the lock back
+        flat = " ".join(done.output.split())
+        self.assertEqual(done.returncode, -sig, done.output)
+        self.assertIsNone(self.lock_now(), "the lock is given back")
+        self.assertIn(RELEASED, flat)
+        self.assertEqual(len(self.builds()), 1, "the build of the stage was never started")
+
+    def test_b984_ctrl_c_between_the_template_build_and_the_build_of_the_stage_gives_the_lock_back(self) -> None:
+        self.assert_the_signal_ended_setup_and_the_lock_went_back(self.between_the_two_builds().interrupt(signal.SIGINT), signal.SIGINT)
+
+    def test_b984_sigterm_between_the_template_build_and_the_build_of_the_stage_gives_the_lock_back(self) -> None:
+        self.assert_the_signal_ended_setup_and_the_lock_went_back(self.between_the_two_builds().interrupt(signal.SIGTERM), signal.SIGTERM)
+
+    def recording_the_started_build(self):
+        """A first setup up to the moment it puts its receipt in place after the build of the stage was started: the lock names the build, and setup has not
+        looked at the build yet. The stand-in for `mv` holds it there."""
+        _armed, waiting = self.held_program("mv", word='"start-build"')
+        self.set_scenario(build={"hang": True})
+        proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
+        proc.wait_ready(waiting.exists, 120.0, "setup.sh to put its receipt in place after it started the build of the stage")
+        self.assertEqual(self.count_calls("codebuild", "start-build"), 1, "TRIGGER PRESENT: the build of the stage was started")
+        self.assertEqual(lock_lines(self.lock_now() or "").get("build"), next(iter(self.builds()), None), "TRIGGER PRESENT: the lock names it already")
+        self.assertEqual(self.count_calls("codebuild", "batch-get-builds"), 0, "TRIGGER PRESENT: and setup does not follow it yet")
+        self.assertNotIn("Build started", proc.text(), "TRIGGER PRESENT: nor has it said so")
+        return proc
+
+    def assert_the_signal_ended_setup_and_the_lock_stays_with_the_build(self, done, sig: int) -> None:
+        self.assertEqual(done.returncode, -sig, done.output)
+        builds = self.builds()
+        self.assertEqual([b["status"] for b in builds.values()], ["IN_PROGRESS"], "the one build runs on")
+        self.assertEqual(lock_lines(self.lock_now() or "").get("build"), next(iter(builds)), "the lock stays and names the build, so the next run attaches to it")
+        self.assertNotIn("is released", " ".join(done.output.split()), "nothing says that the lock is released")
+        self.assertEqual(self.count_calls("codebuild", "stop-build"), 0, "the build is never cancelled")
+        self.assertEqual(self.count_calls("codebuild", "batch-get-builds"), 0, "TRIGGER PRESENT: the run was stopped before its first look at the build")
+        self.assertNotIn("Build started", done.output, "TRIGGER PRESENT: and before it said that the build had started")
+
+    def test_b984_ctrl_c_while_the_started_build_is_recorded_leaves_the_lock_to_the_build(self) -> None:
+        self.assert_the_signal_ended_setup_and_the_lock_stays_with_the_build(self.recording_the_started_build().interrupt(signal.SIGINT), signal.SIGINT)
+
+    def test_b984_sigterm_while_the_started_build_is_recorded_leaves_the_lock_to_the_build(self) -> None:
+        self.assert_the_signal_ended_setup_and_the_lock_stays_with_the_build(self.recording_the_started_build().interrupt(signal.SIGTERM), signal.SIGTERM)
 
 
 class AfterTheBuildCase(LeftBase):

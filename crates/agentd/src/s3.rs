@@ -146,9 +146,14 @@ pub fn s3_error(op: &str, uri: &str, status: u16, body: &[u8]) -> String {
     }
 }
 
-/// Whether an answer of the storage service to a read may be another one a moment later: a 5xx, a 429, and the error codes
-/// with which the service says that it throttles or that the request timed out, whatever status carries them. Every other answer
-/// (the object is not there, the access is refused, a request the service will not take) stays what it is however often it is asked.
+/// Whether an answer of the storage service to a read may be another one a moment later: a 5xx, a 429, and the two error
+/// codes with which the service says, whatever status carries them, that it throttles (`SlowDown`) or that the request timed out
+/// (`RequestTimeout`). Those are the codes of that kind in the service's own list: the page "Error responses" of the Amazon S3
+/// documentation, section "List of error codes". Its page "Amazon S3 error best practices" says to retry an `InternalError`
+/// and names `SlowDown` for a request rate that is too high. The throttle codes of other services, which that list does not
+/// name (`Throttling`, `ThrottlingException`, `RequestLimitExceeded`, `TooManyRequestsException`), are not kept: under a 5xx or
+/// a 429 the status says it already. Every other answer (the object is not there, the access is refused, a request the service
+/// will not take) stays what it is however often it is asked.
 pub fn temporary_answer(status: u16, body: &[u8]) -> bool {
     if status >= 500 || status == 429 {
         return true;
@@ -156,14 +161,7 @@ pub fn temporary_answer(status: u16, body: &[u8]) -> bool {
     let text = String::from_utf8_lossy(body);
     matches!(
         xml_field(&text, "Code"),
-        Some(
-            "SlowDown"
-                | "RequestTimeout"
-                | "Throttling"
-                | "ThrottlingException"
-                | "RequestLimitExceeded"
-                | "TooManyRequestsException"
-        )
+        Some("SlowDown" | "RequestTimeout")
     )
 }
 

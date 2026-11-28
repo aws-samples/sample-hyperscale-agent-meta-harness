@@ -383,7 +383,9 @@ struct NoBrake;
 const NO_BRAKE_ASKS_AGAIN_ABOVE: std::time::Duration = std::time::Duration::from_millis(2_500);
 
 /// How far past the time limit the last hold of `NoBrake` reaches. A driver that did not end that hold at the limit would end it this long
-/// after the limit; the next question would find no time left, and the run would keep the outcome of the last answered prompt.
+/// after the limit; the next question would find no time left, and the driver would end the run as its time limit there, so the
+/// outcome alone does not show such a driver. `b902_a_hold_that_outlasts_the_time_left_ends_at_the_deadline_and_not_at_its_own_end` in
+/// `direct_hold.rs` shows it on a stopped clock.
 const NO_BRAKE_PAST_THE_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl DirectHook for NoBrake {
@@ -416,8 +418,9 @@ impl DirectHook for NoBrake {
     /// limit comes up inside that hold, and a hold ends at the limit as a prompt does (`driver::hold` returns `Watched::TimedOut`; the
     /// outcome is `stopped_timeout`). So a hold of this module ends near the limit only on a machine that stood still for more than two
     /// seconds at one question. A hold that ends just before the limit leaves the next question no time; the driver then asks no module
-    /// (`driver::consult`) and the run keeps the outcome of the last answered prompt. With holds of 50 ms up to the limit this test met
-    /// that end by chance of the clock. It is the driver's matter and not what this baseline shows.
+    /// (`driver::consult`) and ends the run as its time limit itself. Before that repair the run kept the outcome
+    /// of the last answered prompt there, and with holds of 50 ms up to the limit this test met that end by chance of the clock.
+    /// `ShortHolds` below holds that way again; this baseline keeps its one long hold.
     fn on_turn_end<'a>(&'a self, end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
         let left = end.time_left;
         Box::pin(async move {
@@ -445,6 +448,58 @@ async fn trigger_present_without_the_brakes_the_blocked_scenario_never_ends_on_i
         d.summary().outcome,
         DirectOutcome::StoppedTimeout,
         "{}",
+        d.engine_trace()
+    );
+    assert!(count_ev(&d, "end") > 15, "{}", count_ev(&d, "end"));
+}
+
+/// `NoBrake` with the holds of the goal module: it asks to be asked again after 50 ms at every question, up to the run's time limit. So
+/// the limit comes up inside a hold, while the modules are asked, or between the end of a hold and the next question.
+struct ShortHolds(NoBrake);
+
+impl DirectHook for ShortHolds {
+    fn name(&self) -> &'static str {
+        "short-holds"
+    }
+
+    fn on_startup<'a, 'b: 'a>(
+        &'a self,
+        ctx: &'a mut StartupCtx<'b>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        self.0.on_startup(ctx)
+    }
+
+    fn on_turn_end<'a>(&'a self, _end: &'a TurnEnd<'a>) -> BoxFuture<'a, TurnVote> {
+        Box::pin(async {
+            TurnVote::Wait {
+                until: std::time::Duration::from_millis(50),
+            }
+        })
+    }
+}
+
+/// A run that is held 50 ms at a time ends as its time limit wherever the limit falls, and the engine is told once. Before, a
+/// limit that fell between the end of a hold and the next question's clock read left the run the outcome of its first prompt
+/// (`reported_done`) and nothing told the engine; this test met that by chance of the clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn b902_holds_of_50_ms_up_to_the_time_limit_end_the_run_as_its_time_limit() {
+    let d = Direct::start(Opts {
+        scenario: "goal_blocked_twice",
+        timeout_s: 5,
+        ..Opts::default()
+    })
+    .await;
+    let _ = run_with_modules(&d, vec![Arc::new(ShortHolds(NoBrake))]).await;
+    assert_eq!(
+        d.summary().outcome,
+        DirectOutcome::StoppedTimeout,
+        "{}",
+        d.engine_trace()
+    );
+    assert_eq!(
+        cancels_written(&d),
+        1,
+        "the engine is told once that the run is over: {}",
         d.engine_trace()
     );
     assert!(count_ev(&d, "end") > 15, "{}", count_ev(&d, "end"));

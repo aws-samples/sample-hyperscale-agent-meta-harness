@@ -222,7 +222,7 @@
     "usage": null,
     "versions": {
       "agentd": "0.1.0",
-      "protocol": "1.64.0"
+      "protocol": "1.65.0"
     }
   },
   "wire": [

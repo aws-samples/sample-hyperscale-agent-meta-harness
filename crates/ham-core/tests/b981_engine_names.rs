@@ -136,3 +136,39 @@ fn b981_a_view_with_no_session_names_no_engine() {
         ham_core::engines::DEFAULT_ENGINE_ID
     );
 }
+
+/// The box of a follow-up that carries the engine's last message: the block `compose_for` adds is the one `cline_block_for` makes for
+/// the engine it is given, so both lines of its fence carry that engine's name.
+#[test]
+fn b981_the_box_of_a_follow_up_marks_the_last_message_with_the_engine_it_is_given() {
+    for (engine, name) in ENGINES {
+        let inputs = followup::Inputs {
+            run_id: RUN,
+            objective: Some("Build a todo API with tests"),
+            outcome_label: None,
+            changed: followup::ChangedFiles::Unavailable,
+            pr_url: None,
+            head_sha: Some(HEAD),
+            said: &[],
+            harness_prompts: 0,
+            cline_final: Some("the last message"),
+            nonce: NONCE,
+        };
+        let digest = followup::digest(&inputs);
+        let text = followup::compose_for(engine, "do the docs", &digest, &inputs);
+        let block = followup::cline_block_for(engine, "the last message", NONCE);
+        assert_eq!(
+            text,
+            format!("do the docs\n\n{}\n\n{block}", digest.text),
+            "{engine:?}"
+        );
+        assert!(
+            text.contains(&format!("--- written by {name}, untrusted [{NONCE}] ---")),
+            "{engine:?}: {text}"
+        );
+        assert!(
+            text.contains(&format!("--- end of text written by {name} [{NONCE}] ---")),
+            "{engine:?}: {text}"
+        );
+    }
+}

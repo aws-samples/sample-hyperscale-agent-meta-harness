@@ -5133,14 +5133,34 @@ async fn b904_a_refused_copy_of_a_moved_head_is_stored_by_the_look_that_tries_ag
 /// timer of ten minutes, three tool calls that end, each followed by the look it asked for, and the stand-in's log of every git
 /// process the worker started. Every read of the engine's head after the first tool call ended follows the `write-tree` of its
 /// own look, with no other read of the head and no `add -A` of another look between the two. No time is asserted.
+///
+/// A read of the head is every git call that has the word `rev-parse` and, after it, a word that names the head: `HEAD`
+/// or `@` (git's short name of `HEAD`), alone or followed by `^`, `~`, `@`, `:` or `{`. Whatever options stand beside that
+/// word, and whatever option of git itself stands before `rev-parse` (`--no-pager rev-parse HEAD`), the call is a read, for
+/// the look's own read and for a read outside a look alike. A tool call's end that ran `rev-parse --verify HEAD` or
+/// `rev-parse HEAD HEAD^{tree}` passed a match of the one spelling `rev-parse HEAD`; one that ran `--no-pager rev-parse HEAD`,
+/// `rev-parse HEAD:` or `rev-parse @` passed a match that asked for `rev-parse` as the call's command and for `HEAD` alone
+/// or before `^`, `~` or `@`. One read of the head is made outside a look by design, and this rule would name it: the keep
+/// at once reads the head once more after a look that stored a copy and left the timer (`Snapshotter::keep_at_once`). No
+/// look of this test leaves its timer of ten minutes, so that read is not made here.
 #[tokio::test(flavor = "multi_thread")]
 async fn b904_the_end_of_a_tool_call_starts_no_read_of_the_engines_head() {
+    /// Whether the logged git call `call` reads a head: one of its words is `rev-parse` and a later word names the head.
+    fn reads_head(call: &str) -> bool {
+        // A word names the head when it is `HEAD` or `@`, alone or followed by one of `^`, `~`, `@`, `:` and `{`.
+        let names_head = |w: &str| {
+            w.strip_prefix("HEAD")
+                .or_else(|| w.strip_prefix('@'))
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['^', '~', '@', ':', '{']))
+        };
+        call.split_whitespace()
+            .skip_while(|w| *w != "rev-parse")
+            .skip(1)
+            .any(names_head)
+    }
     /// The reads of the engine's head among `calls`.
     fn reads(calls: &[String]) -> usize {
-        calls
-            .iter()
-            .filter(|c| c.trim_end().ends_with("rev-parse HEAD"))
-            .count()
+        calls.iter().filter(|c| reads_head(c)).count()
     }
     /// The looks among `calls`: a look hashes the tree once.
     fn looks(calls: &[String]) -> usize {
@@ -5174,7 +5194,7 @@ async fn b904_the_end_of_a_tool_call_starts_no_read_of_the_engines_head() {
     let mut outside = Vec::new();
     for (i, call) in calls.iter().enumerate() {
         let command = b860_kept_support::command_of(call);
-        if call.trim_end().ends_with("rev-parse HEAD") {
+        if reads_head(call) {
             if i >= first {
                 if last == "write-tree" {
                     in_a_look += 1;

@@ -421,22 +421,33 @@ fn b961_a_failed_read_of_the_older_runs_keeps_the_newest_page_and_says_so() {
         app.update(failed);
         let text = self::text(&app);
         assert!(text.contains("cannot list runs: reset"), "{name}: {text}");
+        // The older runs are still not loaded and the screen still says why; the other read's reason is not theirs.
         assert!(
-            !text.contains("could not load the older runs"),
+            text.contains("could not load the older runs: timeout")
+                && !text.contains("could not load the older runs: reset"),
             "{name}: {text}"
         );
         assert!(top(&text).starts_with(NOT_LOADED), "{name}: {text}");
     }
-    // A timer read that succeeds clears the error's words and leaves the border: the older runs are still missing.
+    // A timer read that succeeds leaves the border and the reason: the older runs are still missing, and its answer says
+    // nothing about them.
     app.update(timer(rows(0, 100)));
     let text = self::text(&app);
-    assert!(!text.contains("could not load the older runs"), "{text}");
+    assert!(
+        text.contains("could not load the older runs: timeout"),
+        "{text}"
+    );
+    assert!(!text.contains("cannot list runs"), "{text}");
     assert!(top(&text).starts_with(NOT_LOADED), "{text}");
-    // A timer read that fails afterwards speaks for itself.
+    // A timer read that fails afterwards speaks for itself, beside the reason of the older runs.
     app.update(Msg::RunsIndexed(Err("reset".into())));
     let text = self::text(&app);
     assert!(text.contains("cannot list runs: reset"), "{text}");
-    assert!(!text.contains("could not load the older runs"), "{text}");
+    assert!(
+        text.contains("could not load the older runs: timeout")
+            && !text.contains("could not load the older runs: reset"),
+        "{text}"
+    );
     assert!(top(&text).starts_with(NOT_LOADED), "{text}");
     // `r` reads again; a read that ends whole restores the border and the counts.
     assert_eq!(ch(&mut app, 'r'), vec![Effect::LoadRuns]);
@@ -456,7 +467,8 @@ fn b961_a_failed_read_of_the_older_runs_keeps_the_newest_page_and_says_so() {
         "{text}"
     );
 
-    // On a first screen with the mouse hint the note shows the hint; the border still carries the state.
+    // On a first screen with the mouse hint the note shows the hint with the reason behind it; the border still carries
+    // the state.
     let mut app = self::app();
     app.set_mouse(
         MouseState {
@@ -469,7 +481,10 @@ fn b961_a_failed_read_of_the_older_runs_keeps_the_newest_page_and_says_so() {
     app.update(older_failed("timeout"));
     let text = self::text(&app);
     assert!(text.contains(HINT), "{text}");
-    assert!(!text.contains("could not load the older runs"), "{text}");
+    assert!(
+        text.contains("could not load the older runs: timeout"),
+        "{text}"
+    );
     assert!(top(&text).starts_with(NOT_LOADED), "{text}");
 
     // A list that was whole before keeps its rows, its border and the words of before.

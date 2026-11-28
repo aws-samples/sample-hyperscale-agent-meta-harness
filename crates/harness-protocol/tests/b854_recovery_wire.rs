@@ -78,13 +78,13 @@ fn parse_recover(v: Value) -> RecoveryInvocationRequest {
 }
 
 #[test]
-fn b854_the_protocol_is_1_64_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.64.0");
+fn b854_the_protocol_is_1_65_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.65.0");
     let docs: std::collections::BTreeMap<&str, Value> = harness_protocol::export::all_schemas()
         .into_iter()
         .collect();
-    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.64.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.64.0");
+    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.65.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.65.0");
 }
 
 #[test]

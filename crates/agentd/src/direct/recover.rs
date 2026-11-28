@@ -9,8 +9,10 @@
 //! In this mode agentd does one thing. It starts no engine, installs no session credentials, opens no credential socket and no package
 //! proxy, calls no internal API, and writes nothing under the storage's root. The copy is made in a private repository on the machine's
 //! own disk (`<data_root>/<run>/recover/<attempt>/`), with the engine's objects as an alternate and the tree as the work tree
-//! (`Snapshotter::for_read_back`). The request's credentials are used for the one PUT and at most two GETs,
+//! (`Snapshotter::for_read_back`). The request's credentials are used for the one PUT and at most two reads,
 //! and never reach a log line.
+//! Each of the two reads is asked again when the storage service's answer may be another one a moment later:
+//! one such answer no longer leaves the comparison unknown.
 //! One thing does move on the storage: git renews the time stamp of an object file of the engine's store when the copy uses that
 //! object again through the alternate, as it does for every copy of a working session. No file, no content and no name changes.
 //!
@@ -18,6 +20,7 @@
 //! is in the bucket. When it ends after, the answer names the stored copy and says that the comparison is unknown: a copy that is
 //! stored stays stored, and a comparison that fails never takes it back.
 
+use crate::direct::UPLOAD_RETRIES;
 use crate::direct::classify::scrub_detail;
 use crate::direct::marker;
 use crate::direct::snapshot::{GiveUp, Snapshotter};
@@ -190,6 +193,7 @@ pub async fn handle_until(
 /// no commit it needs is not tried again, and a base that cannot be read or fetched leaves `first` the reason, with what the base
 /// said.
 async fn fetch_after_the_base(
+    app: &App,
     objects: &S3Objects,
     req: &RecoveryInvocationRequest,
     dir: &Path,
@@ -204,14 +208,53 @@ async fn fetch_after_the_base(
     };
     let base_uri = keys::uri(bucket, &keys::repo_bundle_key(&req.run_id));
     let base = dir.join("base.bundle");
-    objects
-        .get_to_file(&base_uri, &req.credentials, &base)
-        .await
-        .map_err(|e| format!("{first}; the bundle the run started from could not be read: {e}"))?;
+    // Asked again after an answer that may be another one a moment later.
+    comparison_read(
+        app,
+        objects,
+        req,
+        "the bundle the run started from",
+        &base_uri,
+        &base,
+    )
+    .await
+    .map_err(|e| format!("{first}; the bundle the run started from could not be read: {e}"))?;
     snapshotter.fetch_base(&base).await.map_err(|e| {
         format!("{first}; the bundle the run started from could not be fetched: {e}")
     })?;
     snapshotter.fetch_copy(copy).await
+}
+
+/// One of the two GETs of the comparison (the saved copy `what` names, or the bundle the run started from), with the bounds
+/// of the start reads ([`S3Objects::get_to_file_retrying`]): an answer of the storage service that may be another one a
+/// moment later is asked for again [`UPLOAD_RETRIES`] times with the upload pause, which doubles; an object that is not there and
+/// a refused access end the read at once with the sentence of one GET. A read that needed more than one GET says so in the log.
+/// The read stays inside the one limit of the whole read (the request's `budgetS`): when that ends first, the answer names the
+/// copy that is stored already and says that the comparison is unknown, as it does for a read that failed.
+async fn comparison_read(
+    app: &App,
+    objects: &S3Objects,
+    req: &RecoveryInvocationRequest,
+    what: &str,
+    uri: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    let done = objects
+        .get_to_file_retrying(
+            uri,
+            &req.credentials,
+            dest,
+            UPLOAD_RETRIES,
+            app.cfg.direct.upload_retry_pause,
+        )
+        .await?;
+    if done.tries > 1 {
+        app.log.line(&format!(
+            "direct recover session {}: {what} was read at try {}",
+            req.session, done.tries
+        ));
+    }
+    Ok(())
 }
 
 /// A file call off the runtime's threads: a storage that stops answering, or a large file, holds one thread and never the read, so the
@@ -361,11 +404,14 @@ async fn read(
     let baseline = match &req.baseline.object {
         Some(uri) => {
             let file = dir.join("baseline.bundle");
-            match objects.get_to_file(uri, &req.credentials, &file).await {
+            // One temporary answer to this read left the comparison unknown, and the service starts no session from a copy
+            // whose comparison is unknown. It is asked again, with the bounds of the start reads.
+            match comparison_read(app, &objects, req, "the saved copy", uri, &file).await {
                 Ok(()) => match snapshotter.fetch_copy(&file).await {
                     Ok(commit) => Ok(commit),
                     Err(first) => {
-                        fetch_after_the_base(&objects, req, &dir, &file, &snapshotter, first).await
+                        fetch_after_the_base(app, &objects, req, &dir, &file, &snapshotter, first)
+                            .await
                     }
                 },
                 Err(e) => Err(e),

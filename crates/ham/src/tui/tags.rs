@@ -50,6 +50,8 @@ const GAP: usize = 1;
 const COUNT_MIN: usize = 5;
 /// From this screen width the table has the LAST column.
 const LAST_FROM: u16 = 100;
+/// The most rows the explorer gives the sentence that says why the older runs are not loaded, as the Runs note gives a failed read.
+const WHY_ROWS: usize = 4;
 /// `d` while the list held is a part: its two sentences, which `tags_note_follows_list` keeps true.
 const D_PART: PartNote = PartNote {
     still_loading: "remove needs every run loaded: they are still loading",
@@ -794,13 +796,31 @@ impl App {
         if area.width == 0 || area.height < 4 {
             return;
         }
-        let [title, body, note, help] = Layout::vertical([
+        // Why the older runs are not loaded: on rows of its own between the box and the note line for as long as they are not,
+        // wrapped to the width, so the note line and the key line stay the explorer's own. A sentence that needs more rows ends in an
+        // ellipsis.
+        let width = usize::from(area.width);
+        let mut why = self.runs_older_words().map_or_else(Vec::new, |text| {
+            crate::tui::commands::wrap_text(&text, width)
+        });
+        if why.len() > WHY_ROWS {
+            why.truncate(WHY_ROWS);
+            if let Some(last) = why.last_mut() {
+                *last = format!("{}\u{2026}", clip(last, width.saturating_sub(1)));
+            }
+        }
+        let [title, body, why_at, note, help] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
+            Constraint::Length(u16::try_from(why.len()).unwrap_or(0)),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(area);
+        if !why.is_empty() {
+            let rows: Vec<Line<'static>> = why.into_iter().map(Line::from).collect();
+            f.render_widget(Paragraph::new(rows), why_at);
+        }
         f.render_widget(
             Paragraph::new(Line::from("ham \u{b7} Tags"))
                 .style(Style::default().add_modifier(Modifier::BOLD)),

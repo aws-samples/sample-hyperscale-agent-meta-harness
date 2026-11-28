@@ -44,14 +44,38 @@ impl App {
         self.started_on.by_run.get(id).copied()
     }
 
-    /// The engine of the run on screen as far as the screen knows it: the one its session named, else the one this app started the run
-    /// on. `None` when neither is known: a run that was started elsewhere and has no event of its session yet (the run's record carries
-    /// no engine), and a session that named none.
+    /// The engine the service's answer names for run `id`: the summary of the run on screen, else the run's row
+    /// of the run list. The service names an engine only for a run that is not on the default engine, so `None` is a run on the default
+    /// engine, a service that predates the member, a run the app holds no answer about, or an engine this build does not know. The answer
+    /// is read where it stands: nothing is kept for it.
+    pub(crate) fn answered_engine(&self, id: &str) -> Option<&'static engines::Engine> {
+        let named = self
+            .detail
+            .as_ref()
+            .filter(|d| d.summary.run_id == id)
+            .and_then(|d| d.summary.engine)
+            .or_else(|| {
+                self.runs
+                    .iter()
+                    .find(|r| r.run_id == id)
+                    .and_then(|r| r.engine)
+            })?;
+        engines::find(named.as_str())
+    }
+
+    /// The engine of the run on screen as far as the screen knows it: the one its session named, else the one the service's answer about
+    /// the run names ([`App::answered_engine`]), else the one this app started the run on. `None` when none of them is known: a run that
+    /// was started elsewhere, has no event of its session yet and whose answer names no engine (a run on the default engine, or a
+    /// service that predates the member), and a session that named none.
     pub(crate) fn focused_engine(&self) -> Option<&'static engines::Engine> {
         self.cached
             .as_ref()
             .and_then(engines::named_in)
-            .or_else(|| self.focused_run().and_then(|id| self.engine_started_on(id)))
+            .or_else(|| {
+                let id = self.focused_run()?;
+                self.answered_engine(id)
+                    .or_else(|| self.engine_started_on(id))
+            })
     }
 
     /// The capability record of the focused run again, after new events.
@@ -99,7 +123,8 @@ impl App {
         out
     }
 
-    /// The engine the focused run is on: read from its `session.started` event; before that event, the engine this app started the run on
+    /// The engine the focused run is on: read from its `session.started` event; before that event, the engine the service's answer about
+    /// the run names, else the engine this app started the run on
     /// ([`App::focused_engine`]); else the default engine, which is what a session that names no engine runs. With no run open it is the engine a new run would start on:
     /// the session's choice, else `default_engine` of the file, else the default engine.
     pub(crate) fn run_engine(&self) -> &'static engines::Engine {

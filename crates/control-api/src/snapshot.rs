@@ -65,9 +65,9 @@ use harness_protocol::direct::{MAX_SLICES, s3};
 use harness_protocol::goal::GoalStatus;
 use harness_protocol::store::RunItem;
 
-/// What a run that works is told while it has no copy.
-pub const NO_COPY_YET: &str =
-    "no copy of this run's work is saved yet; ask again when the run has changed a file";
+/// What a run that works is told while it has no copy. The worker saves a copy when a file changed or when the
+/// engine made a commit, so the sentence names both.
+pub const NO_COPY_YET: &str = "no copy of this run's work is saved yet; ask again when the run has changed a file or made a commit";
 /// What a run that ended is told when it has no copy.
 pub const NO_COPY: &str = "no copy of this run's work was saved";
 

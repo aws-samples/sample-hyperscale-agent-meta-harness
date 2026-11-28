@@ -14,14 +14,14 @@ use harness_protocol::direct::{
 };
 
 #[test]
-fn b823_look_the_protocol_is_1_64_0() {
-    assert_eq!(PROTOCOL_VERSION, "1.64.0");
+fn b823_look_the_protocol_is_1_65_0() {
+    assert_eq!(PROTOCOL_VERSION, "1.65.0");
     let docs: std::collections::BTreeMap<&str, serde_json::Value> =
         harness_protocol::export::all_schemas()
             .into_iter()
             .collect();
-    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.64.0");
-    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.64.0");
+    assert_eq!(docs["openapi-v1.json"]["info"]["version"], "1.65.0");
+    assert_eq!(docs["openapi-internal.json"]["info"]["version"], "1.65.0");
 }
 
 #[test]

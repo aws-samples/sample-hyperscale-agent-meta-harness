@@ -6,6 +6,25 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.36] - 2026-11-27
+
+### Added
+
+- `ham runs --json` carries `engine` for a run that is not on Cline.
+
+### Changed
+
+- The message for a working run that has no saved copy yet says to ask again when the run has changed a file or made a commit. The help of `run.copy_every_seconds` and `run.copy_every_minutes` says the same of the copy after a tool call.
+
+### Fixed
+
+- A run on OpenCode that you open from the Runs list or with `ham watch` is named by its engine before its session starts: in the message box, in the previews of cancel, finish and a new session, and in the retry confirmation of a blocked run. Before, these said Cline or "the engine".
+- A run that reaches its time limit while the engine still works by itself, also just as a message of yours is taken up, ends as stopped by its time limit; the engine is told to stop, and a run of several sessions goes on in its next session. Before, it could rarely show the outcome of the last answered prompt and end there.
+- After a session is stopped from outside, a temporary storage error while its files are compared with the last saved copy no longer makes the run go on without the newest files. The read is tried again up to three times.
+- `./setup.sh` gives the deploy lock back when you stop it with Ctrl-C while it starts the build that prints the CDK bootstrap template, and no longer says that a build may have started.
+- The Runs screen and the tag explorer keep showing why the older runs could not be loaded until they load, also behind the note that tells you to press `r`.
+- The Runs screen no longer says `no runs yet` or shows the mascot's picture while the older runs could not be loaded.
+
 ## [5.35] - 2026-11-27
 
 ### Fixed

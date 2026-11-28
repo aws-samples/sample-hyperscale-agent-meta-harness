@@ -304,40 +304,36 @@ impl App {
         }
     }
 
-    /// The words of the Runs note for a failed read: `cannot list runs: <error>`. `None` while a notice or the mouse hint holds the note, or
-    /// when no read has failed.
+    /// The words of the Runs note for a failed read: `cannot list runs: <error>` for the last read of the list, `could not load the older
+    /// runs: <error>` for as long as the older runs are not loaded, and a banner for each backend that did not answer. A notice
+    /// or the mouse hint holds the note in front of them; the sentence of the older runs follows it on the same line. `None` when the
+    /// note has nothing to say about a failed read.
     fn runs_error_text(&self) -> Option<String> {
-        // The words follow the message that set the error: a failed read of the older runs over a part of the list says so.
-        let error = self.runs_error.as_ref().map(|e| {
-            if self.runs_error_older {
-                format!("could not load the older runs: {}", s(e))
-            } else {
-                format!("cannot list runs: {}", s(e))
-            }
-        });
+        let older = self.runs_older_words();
+        let error = self
+            .runs_error
+            .as_ref()
+            .map(|e| format!("cannot list runs: {}", s(e)));
         // One banner for each backend that did not answer; a client with one backend has none.
         let banners: Vec<String> = self.backend_banners().iter().map(|b| s(b)).collect();
-        let banners_empty = banners.is_empty();
-        let text = match (error, banners.is_empty()) {
-            (Some(e), true) => e,
-            (Some(e), false) => format!("{e} · {}", banners.join(" · ")),
-            (None, false) => banners.join(" · "),
-            (None, true) => return None,
-        };
         // A backend that did not answer outranks the first-screen mouse hint; a notice outranks both.
-        let hint_hides = self.mouse_hint.is_some() && banners_empty;
-        (self.runs_notice.is_none() && !hint_hides).then_some(text)
+        let hint = self.mouse_hint.as_deref().filter(|_| banners.is_empty());
+        if let Some(first) = self.runs_notice.as_deref().or(hint) {
+            // Why the older runs are not loaded is never hidden: it stands behind the note that tells the user to press `r`.
+            return older.map(|o| format!("{} · {o}", s(first)));
+        }
+        let said: Vec<String> = error.into_iter().chain(older).chain(banners).collect();
+        (!said.is_empty()).then(|| said.join(" · "))
     }
 
     fn draw_runs(&self, f: &mut Frame, split: &Split) {
         // A notice or an error that does not fit one row wraps onto up to `RUNS_ERROR_ROWS`, so the words that say what to do show on a narrow
         // terminal too. The usual note, and a notice or an error that fits, stay one row.
         let width = usize::from(split.area.width);
-        let long_text = self
-            .runs_notice
-            .as_deref()
-            .map(s)
-            .or_else(|| self.runs_error_text());
+        let failed_text = self.runs_error_text();
+        let long_text = failed_text
+            .clone()
+            .or_else(|| self.runs_notice.as_deref().map(s));
         let error_rows: Vec<Line<'static>> = match long_text {
             Some(text) if cols(&text) > width => {
                 clipped(wrap(&text, width), RUNS_ERROR_ROWS, width)
@@ -494,6 +490,7 @@ impl App {
             .block(frame);
         f.render_widget(table, body);
         // The empty table shows the ham mascot once the service has answered that there is no run (`mascot.rs`), unless `ui.mascot` is off.
+        // While the older runs are being loaded or could not be loaded that is not known: the picture waits as `no runs yet` does.
         super::mascot::draw_runs_empty(
             f,
             body,
@@ -501,7 +498,8 @@ impl App {
                 && self.runs_answered
                 && self.runs.is_empty()
                 && self.runs_error.is_none()
-                && !self.runs_older_loading(),
+                && !self.runs_older_loading()
+                && !self.runs_older_failed(),
             self.head.look,
             self.mascot_frame(),
         );
@@ -543,7 +541,9 @@ impl App {
             .map_or_else(String::new, |c| {
                 format!(" · {}", ham_core::retry::link_note(c))
             });
-        let note = match (&self.runs_error, self.runs.is_empty()) {
+        let note = match (failed_text, self.runs.is_empty()) {
+            // The words of a failed read, with the notice or the mouse hint in front of them when one holds the note.
+            (Some(text), _) => text,
             _ if self.runs_notice.is_some() => {
                 self.runs_notice.as_deref().map(s).unwrap_or_default()
             }
@@ -551,8 +551,6 @@ impl App {
             _ if self.mouse_hint.is_some() && self.backend_banners().is_empty() => {
                 self.mouse_hint.as_deref().map(s).unwrap_or_default()
             }
-            (Some(_), _) => self.runs_error_text().unwrap_or_default(),
-            _ if !self.backend_banners().is_empty() => self.runs_error_text().unwrap_or_default(),
             // Said only once the service has answered, and not while older runs are being loaded: the newest page can hold no run of
             // the person.
             (None, true) if self.runs_answered && !self.runs_older_loading() => {

@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "harness-protocol"
-version = "1.64.0"
+version = "1.65.0"
 dependencies = [
  "insta",
  "proptest",

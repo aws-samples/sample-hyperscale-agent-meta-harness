@@ -138,8 +138,9 @@ pub fn card_line(c: &SavedCopy, engine: &Engine, over: bool, run_id: &str) -> St
 /// notices about copies when a copy is stored, so a copy it holds beside such a notice is older than the notice.
 ///
 /// `copies_failed` says that the run had said before the request that a copy was late, could not be saved or cannot be saved in
-/// this session (`RunView::copies_failed_before_end_request`). A run without a copy then has file changes that no copy holds, and
-/// the sentence does not explain the missing copy by unchanged files.
+/// this session (`RunView::copies_failed_before_end_request`). A run without a copy then has work that no copy holds, so the
+/// sentence that a run saves a copy only after a file changed or the engine made a commit would explain the missing copy
+/// wrongly, and the note leaves that sentence out.
 pub fn before_end_request(copy: Option<&SavedCopy>, run_id: &str, copies_failed: bool) -> String {
     match copy {
         Some(c) => format!(

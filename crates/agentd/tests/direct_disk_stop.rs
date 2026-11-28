@@ -9,6 +9,8 @@
 //! the end), that the same error with room behaves exactly as before, and that the early notice comes once per crossing.
 #![allow(clippy::unwrap_used)]
 
+#[cfg(target_os = "linux")]
+mod b979_support;
 mod common;
 
 use agentd::BoxFuture;
@@ -615,6 +617,84 @@ async fn a_32603_with_the_disk_full_stops_at_once_no_second_prompt_and_no_route_
         );
     }
     // Measured twice: at the prompt boundary and, fresh, after the error.
+    assert_eq!(disk.calls(), 2);
+}
+
+/// The reading of a measurement whose numbers were read and whose test writes gave no answer within the limit. When its
+/// numbers say full the run stops on them, as on any reading that says full: one prompt, no route switch, the disk named with the
+/// numbers. The reading is a real one, made on a runtime and a thread of its own (`b979_support`): a workspace folder of 3 MiB
+/// under a stop mark of 2 MiB.
+#[cfg(target_os = "linux")]
+#[tokio::test(start_paused = true)]
+async fn b979_a_run_stops_on_numbers_that_say_full_though_the_test_writes_gave_no_answer() {
+    use std::os::unix::fs::PermissionsExt;
+    let held = std::thread::spawn(|| {
+        let (root, ws) = (
+            common::scratch("b979-stop-root"),
+            common::scratch("b979-stop-ws"),
+        );
+        for d in [&root, &ws] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(ws.join("work.bin"), vec![7u8; 3 << 20]).unwrap();
+        b979_support::measure_with_the_test_writes_held(&agentd::direct::disk::HostDisk::new(
+            &root, &ws,
+        ))
+    })
+    .join()
+    .unwrap();
+    // TRIGGER PRESENT: the test writes were held to the limit, and the reading holds the numbers without them.
+    assert!(
+        held.with_the_writes_held.is_none() && held.before_the_limit.is_none(),
+        "the test writes were not held to the limit: the test proves nothing: {held:?}"
+    );
+    let kept = held.at_the_limit.expect("a measurement ends at its limit");
+    assert_eq!(
+        (kept.workspace_used_mb, kept.writable),
+        (Some(3), None),
+        "{kept:?}"
+    );
+    // The boundary of the first prompt reads room; the measurement after the engine's error is the one whose test writes gave
+    // no answer.
+    let disk = Scripted::new(vec![
+        Reading {
+            workspace_used_mb: Some(1),
+            ..kept
+        },
+        kept,
+    ]);
+    let limits = Limits {
+        root_low_mb: 0,
+        workspace_limit_mb: 2,
+    };
+    let mut s = Setup::new(
+        vec![internal_error(), end_turn("never sent")],
+        RetryPolicy::new(3, Duration::from_secs(1)).with_disk(DiskCheck::new(disk.clone(), limits)),
+    );
+    s.failover = Some(three_routes());
+    let (end, events, received) = start(s).finish().await;
+    assert_eq!(count(&received, "session/prompt"), 1);
+    assert_eq!(count(&received, "session/set_config_option"), 0);
+    let cause = end.disk_full.as_ref().expect("the stop names the disk");
+    assert_eq!(cause.workspace_used_mb, Some(3));
+    assert!(
+        cause.workspace_short && !cause.root_short && !cause.unwritable,
+        "{cause:?}"
+    );
+    let named = with_disk(classify(&end.raw), end.disk_full.as_ref());
+    assert_eq!(named.outcome, DirectOutcome::StoppedOther);
+    assert_eq!(named.turn_outcome, TurnOutcome::Failed);
+    let label = DirectOutcome::StoppedOther.label_for(named.detail.as_deref());
+    assert!(
+        label.starts_with(
+            "Cline stopped: the harness ended the run (the session disk is full, workspace 3 MiB against a stop mark of 2 MiB, root "
+        ),
+        "{label}"
+    );
+    let notes = notices(&events, "disk_full");
+    assert_eq!(notes.len(), 1, "{events:?}");
+    let detail = notes[0]["detail"].as_str().unwrap();
+    assert!(detail.starts_with("The session disk is full"), "{detail}");
     assert_eq!(disk.calls(), 2);
 }
 

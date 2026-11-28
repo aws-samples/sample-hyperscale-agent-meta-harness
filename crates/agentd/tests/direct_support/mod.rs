@@ -181,6 +181,8 @@ pub struct AwsState {
     get_delays: Mutex<Vec<(String, Duration)>>,
     /// Every GET of an object that arrived, in order: `bucket/key` and the `range` header it carried, if any.
     gets: Mutex<Vec<(String, Option<String>)>>,
+    /// When each of those GETs arrived, in the same order: `bucket/key` and the moment.
+    get_arrivals: Mutex<Vec<(String, Instant)>>,
     /// `(substring of bucket/key, left, how)`: the next `left` GETs whose key contains the substring fail as `how` says.
     get_failures: Mutex<Vec<(String, u32, GetFailure)>>,
     /// `(substring of bucket/key, pause)`: a PUT whose key contains the substring is answered after the pause.
@@ -978,6 +980,10 @@ async fn s3_get(
         .get("range")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    s.get_arrivals
+        .lock()
+        .unwrap()
+        .push((full.clone(), Instant::now()));
     s.gets.lock().unwrap().push((full.clone(), range.clone()));
     let failing = s
         .get_failures
@@ -1454,6 +1460,19 @@ impl FakeAws {
             .iter()
             .filter(|(k, _)| *k == full)
             .map(|(_, range)| range.clone())
+            .collect()
+    }
+
+    /// When the GETs of `key` arrived, in order ([`Self::gets_of`] has one entry for each).
+    pub fn get_arrivals_of(&self, key: &str) -> Vec<Instant> {
+        let full = format!("{BUCKET}/{key}");
+        self.state
+            .get_arrivals
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k == full)
+            .map(|(_, at)| *at)
             .collect()
     }
 

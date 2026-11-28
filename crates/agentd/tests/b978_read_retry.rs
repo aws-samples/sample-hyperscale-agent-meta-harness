@@ -192,7 +192,10 @@ async fn b978_a_store_that_answers_no_connection_is_asked_again_and_the_sentence
 #[test]
 fn b978_which_answers_may_be_another_one_a_moment_later() {
     let doc = |code: &str| format!("<Error><Code>{code}</Code><Message>m</Message></Error>");
-    let rows: [(u16, &str, bool); 13] = [
+    // The two codes the function keeps, each under a status that says nothing by itself (a 400). The four throttle codes of
+    // other services, which the section "List of error codes" of the storage service's page "Error responses" does not list,
+    // stay what they are under a 400; under a 429 or a 5xx the status alone says that the answer may be another one.
+    let rows: [(u16, &str, bool); 19] = [
         (500, "InternalError", true),
         (502, "", true),
         (503, "SlowDown", true),
@@ -200,7 +203,13 @@ fn b978_which_answers_may_be_another_one_a_moment_later() {
         (504, "", true),
         (429, "", true),
         (400, "RequestTimeout", true),
-        (400, "Throttling", true),
+        (400, "SlowDown", true),
+        (400, "Throttling", false),
+        (400, "ThrottlingException", false),
+        (400, "RequestLimitExceeded", false),
+        (400, "TooManyRequestsException", false),
+        (429, "TooManyRequestsException", true),
+        (503, "Throttling", true),
         (404, "NoSuchKey", false),
         (403, "AccessDenied", false),
         (400, "InvalidRequest", false),

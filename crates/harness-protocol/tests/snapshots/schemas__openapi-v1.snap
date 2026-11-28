@@ -1923,6 +1923,17 @@ expression: value
           "createdAt": {
             "type": "string"
           },
+          "engine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Engine"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Protocol 1.65.0: the engine the run is on, as the Run item stores it (`engine`). Left out for a run on the default engine, so\nthe summary of such a run is the one every earlier client read. Absent therefore means the default engine: a run on it, a run that\nwas stored before the Run item named an engine, or the answer of a service that predates the member. `RunDetail` carries it in its\n`summary`."
+          },
           "kind": {
             "anyOf": [
               {
@@ -2557,7 +2568,7 @@ expression: value
   },
   "info": {
     "title": "Hyperscale Agent Meta Harness public API",
-    "version": "1.64.0"
+    "version": "1.65.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

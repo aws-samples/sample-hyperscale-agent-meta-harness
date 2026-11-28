@@ -331,7 +331,7 @@ async fn b823_a_run_without_a_copy_says_so_in_words_for_its_status() {
     assert_eq!(code, 1);
     assert!(
         err.contains(
-            "no copy of this run's work is saved yet; ask again when the run has changed a file"
+            "no copy of this run's work is saved yet; ask again when the run has changed a file or made a commit"
         ),
         "{err}"
     );

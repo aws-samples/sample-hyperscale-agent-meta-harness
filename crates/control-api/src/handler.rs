@@ -999,6 +999,10 @@ pub fn run_summary(run: RunItem) -> RunSummary {
         status_reason: run.status_reason,
         resume_mode: run.resume_mode,
         session: run.slice,
+        // The engine the run is on, left out for the default engine, so the answer about such a run is the one it always was.
+        engine: run
+            .engine
+            .filter(|e| *e != harness_protocol::common::Engine::DEFAULT),
     }
 }
 
