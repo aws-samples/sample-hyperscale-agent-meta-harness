@@ -90,3 +90,15 @@ success-output = 'immediate'
 [[profile.default.overrides]]
 filter = 'binary(=b923_tree_question) & (test(=b923_a_look_late_at_600_ms_asks_its_tree_at_400_ms_and_is_given_up_at_5400_ms) | test(=b923_a_look_that_was_not_asked_to_end_asks_its_tree_at_1500_ms_before_its_late_limit_of_3000_ms) | test(=b923_the_look_after_a_first_look_of_200_ms_that_a_request_to_end_overtook_is_late_at_600_ms) | test(=b923_the_look_after_a_look_of_100_ms_that_a_request_to_end_overtook_is_late_at_400_ms) | test(=b923_a_look_late_at_400_ms_with_a_question_every_400_ms_is_said_late_at_400_ms_and_given_up_at_5400_ms) | test(=b923_ticks_while_a_look_stores_its_copy_ask_the_tree_nothing_and_the_copy_is_stored) | test(=b923_the_look_after_a_look_that_a_request_to_end_overtook_asks_its_tree_at_400_ms_and_is_given_up_at_5400_ms) | test(=b923_the_look_after_a_look_that_a_request_to_end_overtook_and_its_git_limit_gave_up_is_late_at_600_ms) | test(=b923_a_look_late_at_8700_ms_with_a_git_limit_of_8500_ms_asks_its_tree_at_3000_ms_and_is_given_up_at_8000_ms) | test(=b923_twelve_looks_in_a_row_late_at_400_ms_with_a_question_every_400_ms_are_each_said_late_before_their_question) | test(=b923_a_look_that_ends_at_its_late_limit_and_a_tick_of_5000_ms_is_not_said_late_and_does_not_ask_its_tree) | test(=b923_a_look_that_ends_at_a_tick_of_5000_ms_before_its_late_limit_of_6000_ms_does_not_ask_its_tree) | test(=b923_a_request_to_end_that_comes_with_a_tick_while_a_question_waits_is_taken_up_when_the_question_ends))'
 success-output = 'immediate'
+
+# Nothing but a time limit of the product ends the worker test below: its module asks to be asked again for ever, so the run of its
+# scenario ends only at its time limit of 5 s. A worker whose driver no longer ends a run at that limit is still caught by the worker
+# itself: its guard ends the run 60 s past the limit, and the test fails on the run's outcome after about 65 s. Only when that guard
+# stops nothing either does the test never end, and nextest ends no test by itself: it only says that a test is slow. This row makes
+# nextest end the test: after three periods of 60 s it stops the test's process and counts the test as failed, by name (`TIMEOUT`).
+# The 180 s are far above the test's own length and well above the 65 s after which the worker's guard ends such a run, so the test's
+# own failure, which names the outcome, comes first. The period is nextest's own, so the test is said slow when any other test would
+# be.
+[[profile.default.overrides]]
+filter = 'binary(=direct_goal) & test(=trigger_present_without_the_brakes_the_blocked_scenario_never_ends_on_its_own)'
+slow-timeout = { period = "60s", terminate-after = 3 }

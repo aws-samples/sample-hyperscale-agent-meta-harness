@@ -184,8 +184,10 @@ class NoLeftoversCase(FullBase):
 
     def follow_and_signal(self, sig: signal.Signals) -> None:
         self.set_scenario(build={"hang": True})
+        held = self.held_program("sleep")
         proc = self.popen(*self.ARGS, TMPDIR=str(self.scratch), HAMH_SETUP_POLL_SECONDS="1")
         self.follow_started(proc)
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(sig)
         self.assertNotEqual(done.returncode, 0, done.output)
         self.assert_clean(f"setup ended with {sig.name}")

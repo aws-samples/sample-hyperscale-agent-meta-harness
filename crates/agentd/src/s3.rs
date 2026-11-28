@@ -174,12 +174,13 @@ pub struct GetDone {
     pub tries: u32,
 }
 
-/// How one GET ended that did not give the object.
-struct GetFailed {
+/// How one GET ended that did not give the object ([`S3Objects::get_to_file_told`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetFailed {
     /// The sentence of the failure, as [`S3Objects::get_to_file`] gives it.
-    error: String,
+    pub error: String,
     /// The same request may be answered otherwise a moment later.
-    temporary: bool,
+    pub temporary: bool,
 }
 
 #[derive(Debug)]
@@ -273,6 +274,18 @@ impl S3Objects {
         self.get_once(uri, creds, dest)
             .await
             .map_err(|failed| failed.error)
+    }
+
+    /// [`Self::get_to_file`] that says, with the sentence of a failure, whether the same request may be answered otherwise
+    /// a moment later ([`GetFailed`]): for a caller that asks again within a bound of its own, where the bounds of
+    /// [`Self::get_to_file_retrying`] do not fit.
+    pub async fn get_to_file_told(
+        &self,
+        uri: &str,
+        creds: &ProcessCredentials,
+        dest: &Path,
+    ) -> Result<(), GetFailed> {
+        self.get_once(uri, creds, dest).await.map(|_| ())
     }
 
     /// One GET of `uri` into `dest`: the version of the object that was read, or the sentence of the failure and whether the same

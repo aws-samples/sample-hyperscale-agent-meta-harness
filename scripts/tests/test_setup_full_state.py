@@ -103,8 +103,10 @@ class InterruptionCase(StateBase):
 
     def test_ctrl_c_while_following_the_build_leaves_it_running_and_exits_6(self) -> None:
         self.set_scenario(build={"hang": True})
+        held = self.held_program("sleep")
         proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
         self.follow_started(proc)
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         self.assertEqual(done.returncode, 6, done.output)
         self.assertIn("keeps running", done.output)

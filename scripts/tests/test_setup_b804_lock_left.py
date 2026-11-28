@@ -14,18 +14,19 @@ within the last 30 minutes closes the stage. So a lock that setup leaves behind 
 - One failed read of the lock does not end a wait for active runs.
 - The lock goes back, or stays with its build, at three more places between the lock and setup's first look at the build of the stage: while the build
   that prints the CDK bootstrap template is started (the lock goes back), between that build and the build of the stage (the signal ends setup, the lock goes
-  back) and while the started build is recorded (the signal ends setup, the lock stays with the build). The tests hold setup at each place (HELD_PROGRAM).
+  back) and while the started build is recorded (the signal ends setup, the lock stays with the build). The tests hold setup at each place (HELD_PROGRAM of setup_full_support.py).
 
 The tests run `setup.sh` from a stand-in checkout against the stand-in AWS CLI (setup_fake_aws.py). Nothing here calls AWS.
 """
 
 from __future__ import annotations
 
-import shutil
+import ast
 import signal
 import subprocess  # nosec B404: the stand-in AWS CLI of the test is started with an argument list, never a shell
 import sys
 import unittest
+from pathlib import Path
 
 import setup_waits
 from setup_waits import GroupProcess, limit
@@ -43,31 +44,6 @@ HUP_DEFAULT = "import os, signal, sys; signal.signal(signal.SIGHUP, signal.SIG_D
 TOOLKIT = "CDKToolkit"
 # what setup says while it waits for a stack that someone else is still changing (rn_prepare_stack)
 SETTLING = "(it is being changed); waiting for it to settle"
-# A stand-in for a program setup starts (`sleep`, the pause between two looks; `mv`, which puts the receipt in place; `aws`, the stand-in AWS CLI itself).
-# Until it is armed it is the real program. Armed (the file {armed} exists, the call log of the stand-in AWS CLI holds {word}, or its own arguments hold {own}),
-# and only the first time, it takes the default answer to SIGINT, then says that it waits, and holds setup where it is until a signal ends it (after {hold}
-# seconds it is the real program after all). So the one signal of a test finds setup at a known place, waiting for a program that the signal ends. Where the
-# signal finds setup otherwise is a matter of the machine's speed, and bash 5.2 itself can drop a signal that comes while it starts or collects a command
-# substitution, with or without a handler.
-HELD_PROGRAM = """#!{python} -I
-import os
-import signal
-import sys
-import time
-
-REAL = {real!r}
-CALLS = {calls!r}
-armed = (os.path.exists({armed!r}) or bool(CALLS and os.path.exists(CALLS) and {word!r} in open(CALLS, encoding="utf-8").read())
-         or bool({own!r} and {own!r} in sys.argv[1:]))
-if armed:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    try:
-        os.close(os.open({waiting!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        time.sleep({hold!r})
-    except FileExistsError:
-        pass
-os.execv(REAL, [REAL] + sys.argv[1:])
-"""
 
 
 class LeftBase(WaitBase):
@@ -129,8 +105,11 @@ class ReleaseSaysWhatHappenedCase(LeftBase):
         self.deployed()
         self.commit_more()
         self.set_scenario(executions={MACHINE: RUNS})
+        held = self.held_program("sleep")
         proc = self.popen(*self.WAIT, HAMH_SETUP_RUN_POLL_SECONDS="1")
         proc.wait_ready(lambda: "Waiting for 2 active run(s)" in proc.text(), 120.0, "setup.sh to wait for the active runs")
+        # setup is held in its pause before the sign-in runs out: no look of setup meets the fault before the signal comes
+        self.hold_in_the_pause(proc, held, "the active runs")
         self.set_scenario(faults=SIGN_IN_GONE)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
@@ -298,10 +277,12 @@ class GivenBackOnExitCase(LeftBase):
         self.deployed()
         self.commit_more()
         self.set_scenario(executions={MACHINE: RUNS})
+        held = self.held_program("sleep")
         proc = GroupProcess([sys.executable, "-c", HUP_DEFAULT, BASH, str(self.repo / "setup.sh"), *self.WAIT], env=self.env(HAMH_SETUP_RUN_POLL_SECONDS="1"),
                             cwd=str(self.tmp), case=self, name="setup.sh")
         proc.wait_ready(lambda: "Waiting for 2 active run(s)" in proc.text(), 120.0, "setup.sh to wait for the active runs")
         self.assertIsNotNone(self.lock_now(), "TRIGGER PRESENT: the lock is held while setup waits")
+        self.hold_in_the_pause(proc, held, "the active runs")
         done = proc.interrupt(signal.SIGHUP)
         self.assertEqual(done.returncode, 4, done.output)
         self.assertIsNone(self.lock_now(), "the lock is given back")
@@ -315,6 +296,8 @@ class GivenBackOnExitCase(LeftBase):
         # The scenario holds the build that prints the template (`template_build`; `build` is the build of the stage). With `build` that build ended by
         # itself a pause after the first look, and a signal that a slow host sent later found setup past it, between the two builds. The signal is sent while
         # setup waits for the pause between two looks at that build.
+        # So the signal is sent only while setup waits in that pause (held_program). What a Ctrl-C does that comes during a look at that build is not held by
+        # this test: bash itself can drop a signal there, with or without a handler.
         armed, waiting = self.held_program("sleep")
         self.set_scenario(bootstrap_present=False, template_build={"hang": True})
         proc = self.popen(*self.ARGS, HAMH_SETUP_POLL_SECONDS="1")
@@ -334,20 +317,6 @@ class GivenBackOnExitCase(LeftBase):
         self.assertIn(RELEASED, flat)
 
     # ----: three more places between the lock and the first look at the build of the stage ----
-    def held_program(self, name: str, *, word: str = "", own: str = "") -> tuple:
-        """Puts the stand-in for the program `name` first on the PATH of setup (HELD_PROGRAM). It is armed by the file this returns first, by `word` in the call
-        log of the stand-in AWS CLI, or by `own` among its own arguments. The second file is the one it writes when it waits. For `aws` the real program is the
-        stand-in AWS CLI of the test, under another name."""
-        if name == "aws":
-            real = str((self.stub / "aws").rename(self.stub / "aws-of-the-test"))
-        else:
-            real = shutil.which(name)
-        self.assertTrue(real, f"the test needs the real {name}")
-        armed, waiting = (self.tmp / f"{name}-{mark}" for mark in ("armed", "waiting"))
-        self.write_stub(name, HELD_PROGRAM.format(python=sys.executable, real=real, armed=str(armed), calls=str(self.state / "calls.jsonl") if word else "", word=word,
-                                                  own=own, waiting=str(waiting), hold=limit(120)))
-        return armed, waiting
-
     def test_b984_ctrl_c_while_the_template_build_is_started_gives_the_lock_back(self) -> None:
         # The build that prints the template takes no lease and carries no token of the lock. A run that was stopped while it started that build kept its lock
         # for "the build that may have started", which no later run can find by the lock: the stage then started no runs until the lock was 30 minutes old.
@@ -468,8 +437,10 @@ class AfterTheBuildCase(LeftBase):
         self.deployed()
         self.commit_more()
         self.set_scenario(build={"hang": True})
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
+        self.hold_in_the_pause(proc, held)
         self.assertEqual(proc.interrupt(signal.SIGINT).returncode, 6)
         build = lock_lines(self.lock_now())["build"]
         # the build ends well while nobody follows it
@@ -503,8 +474,10 @@ class StoppedFollowingCase(LeftBase):
         self.deployed()
         self.commit_more()
         self.set_scenario(build={"hang": True})
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
         self.assertEqual(done.returncode, 6, done.output)
@@ -537,13 +510,111 @@ class StoppedFollowingCase(LeftBase):
         # the stage already runs the commit: the lock says deploys=no from the start, and the stage keeps starting runs
         self.same_commit_stage()
         self.set_scenario(build={"hang": True})
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
         self.assertEqual(done.returncode, 6, done.output)
         self.assertEqual(lock_lines(self.lock_now() or "").get("deploys"), "no")
         self.assertNotIn("starts no new runs", flat)
+
+
+class SignalHoldCase(LeftBase):
+    """The second part: every test that sends a signal to setup holds it in a pause first, and the stand-in that holds it starts through /bin/sh."""
+
+    # The tests of the first part that hold setup at a place of their own. Each makes the stand-in (held_program) and waits, itself or in the helper of this
+    # file that it calls, for the file the stand-in writes when it waits: in the pause between two looks at the build that prints the template, in the call
+    # that starts that build, in the pause between two looks at the CDKToolkit stack (two tests) and in the `mv` of the receipt (two tests).
+    WAITS_FOR_THE_STAND_IN_ITSELF = (
+        "test_b804_admit_ctrl_c_during_the_build_of_the_bootstrap_template_gives_the_lock_back",
+        "test_b984_ctrl_c_while_the_template_build_is_started_gives_the_lock_back",
+        "test_b984_ctrl_c_between_the_template_build_and_the_build_of_the_stage_gives_the_lock_back",
+        "test_b984_sigterm_between_the_template_build_and_the_build_of_the_stage_gives_the_lock_back",
+        "test_b984_ctrl_c_while_the_started_build_is_recorded_leaves_the_lock_to_the_build",
+        "test_b984_sigterm_while_the_started_build_is_recorded_leaves_the_lock_to_the_build",
+    )
+    # The calls of the setup tests that signal a process by another call than GroupProcess.interrupt (OTHER_CALLS) and are not aimed at a setup whose answer
+    # to the signal a test holds: file, function and call, each with what it is aimed at. Today no setup test sends its signal to setup that way.
+    OTHER_CALLS = frozenset({"send_signal", "kill", "killpg", "terminate"})
+    NOT_AIMED_AT_SETUP = {
+        ("test_setup_b804_lock_left.py", "test_b984_the_stand_in_that_holds_setup_starts_through_bin_sh_and_ends_by_the_signal", "send_signal"):
+            "the stand-in itself, started alone: no setup runs in that test",
+        ("test_setup_b804_lock_left.py", "test_b984_the_stand_in_that_holds_setup_starts_through_bin_sh_and_ends_by_the_signal", "kill"):
+            "the clean-up of that stand-in",
+        ("test_setup_wizard.py", "finish", "kill"): "the clean-up of a setup that did not end within its wait: the test fails right after it",
+        ("test_setup_wizard.py", "kill", "kill"): "that clean-up itself: SIGKILL, which no program handles",
+    }
+
+    def test_b984_the_stand_in_that_holds_setup_starts_through_bin_sh_and_ends_by_the_signal(self) -> None:
+        armed, waiting = self.held_program("sleep")
+        stub = self.stub / "sleep"
+        self.assertEqual(stub.read_text(encoding="utf-8").splitlines()[0], "#!/bin/sh", "it starts through /bin/sh like every other stand-in of the setup tests")
+        quick = subprocess.run([str(stub), "0"], capture_output=True, text=True, timeout=limit(30), check=False)  # nosec B603: an argument list, never a shell
+        self.assertEqual((quick.returncode, quick.stderr), (0, ""), "not armed, it is the real program")
+        self.assertFalse(waiting.exists(), "and says nothing")
+        armed.touch()
+        held = subprocess.Popen([str(stub), "0"], stdin=subprocess.DEVNULL)  # nosec B603: an argument list, never a shell
+        try:
+            setup_waits.wait_for(waiting.exists, 30.0, "the armed stand-in to say that it waits")
+            self.assertIsNone(held.poll(), "TRIGGER PRESENT: armed, it holds where the real program would have ended at once")
+            held.send_signal(signal.SIGINT)
+            self.assertEqual(held.wait(timeout=limit(30)), -signal.SIGINT, "the signal ends it")
+        finally:
+            if held.poll() is None:
+                held.kill()
+                held.wait()
+        again = subprocess.run([str(stub), "0"], capture_output=True, text=True, timeout=limit(30), check=False)  # nosec B603: an argument list, never a shell
+        self.assertEqual((again.returncode, again.stderr), (0, ""), "it holds only the first time")
+
+    def test_b984_every_test_that_sends_a_signal_to_setup_holds_it_in_a_pause_first(self) -> None:
+        # bash can drop a signal that reaches it while it collects a command substitution, with or without a handler, and setup runs command substitutions
+        # right after each look of its loops. A test that sends its one signal there can see setup go on ("setup.sh to end after SIGINT did not happen").
+        # So every function of the setup tests that sends a signal waits first until setup waits in the stand-in (hold_in_the_pause), or calls a helper of its
+        # file that does. Making the stand-in alone (held_program) is half a hold: the signal is then sent where it was sent without one. The tests of the
+        # first part that WAITS_FOR_THE_STAND_IN_ITSELF names make the stand-in and wait for its file themselves, and this test holds them to that.
+        # A signal that is sent by another call than interrupt (OTHER_CALLS) counts as well, unless NOT_AIMED_AT_SETUP names the call with what it is aimed at.
+        def calls(function: ast.AST) -> set:
+            called = (c.func for c in ast.walk(function) if isinstance(c, ast.Call))
+            return {f.attr if isinstance(f, ast.Attribute) else f.id for f in called if isinstance(f, (ast.Attribute, ast.Name))}
+
+        def waits_for_the_stand_in(function: ast.AST) -> bool:
+            # proc.wait_ready(waiting.exists, ...): `waiting` is the file the stand-in writes when it waits, the second one that held_program returns
+            for c in ast.walk(function):
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "wait_ready" and c.args:
+                    first = c.args[0]
+                    if isinstance(first, ast.Attribute) and first.attr == "exists" and isinstance(first.value, ast.Name) and first.value.id == "waiting":
+                        return True
+            return False
+
+        places, missing, named, met = 0, [], set(), set()
+        for path in sorted(Path(__file__).resolve().parent.glob("test_setup_*.py")):
+            functions = [n for n in ast.walk(ast.parse(path.read_text(encoding="utf-8"))) if isinstance(n, ast.FunctionDef)]
+            holders = {f.name for f in functions if "hold_in_the_pause" in calls(f)}
+            for function in functions:
+                made = calls(function)
+                other = sorted(call for call in made & self.OTHER_CALLS if (path.name, function.name, call) not in self.NOT_AIMED_AT_SETUP)
+                met |= {(path.name, function.name, call) for call in made & self.OTHER_CALLS} & set(self.NOT_AIMED_AT_SETUP)
+                if "interrupt" in made:
+                    places += 1
+                elif not other:
+                    continue
+                if made & ({"hold_in_the_pause"} | holders):
+                    continue
+                if path.name == Path(__file__).name and function.name in self.WAITS_FOR_THE_STAND_IN_ITSELF and not other:
+                    named.add(function.name)
+                    own = [function] + [f for f in functions if f.name in made]
+                    if any("held_program" in calls(f) for f in own) and any(waits_for_the_stand_in(f) for f in own):
+                        continue
+                missing.append(f"{path.name}: {function.name}" + (f" (it calls {', '.join(other)})" if other else ""))
+        self.assertGreaterEqual(places, 17, "TRIGGER PRESENT: the scan found the functions that send a signal to setup")
+        self.assertEqual(sorted(set(self.WAITS_FOR_THE_STAND_IN_ITSELF) - named), [],
+                         "TRIGGER PRESENT: every named test of the first part is there and sends its signal without hold_in_the_pause")
+        self.assertEqual(sorted(set(self.NOT_AIMED_AT_SETUP) - met), [], "TRIGGER PRESENT: every call that NOT_AIMED_AT_SETUP names is still made")
+        self.assertEqual(missing, [], "these send a signal to setup without waiting first until setup waits in the pause (FullBase.hold_in_the_pause after "
+                                      "held_program; the stand-in alone is half a hold). A call of OTHER_CALLS that is not aimed at setup is named in "
+                                      "NOT_AIMED_AT_SETUP with what it is aimed at")
 
 
 if __name__ == "__main__":

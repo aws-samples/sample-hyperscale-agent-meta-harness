@@ -55,7 +55,9 @@
 //! session is told how many were cut. A record that is absent, or that does not read as this document, is no earlier message: nothing
 //! fails, and a session started by an agentd that wrote no record leaves none. A session that could not read the earlier sessions'
 //! record marks its own `incomplete`; a later session then looks further back, and the new session is told that older messages may be
-//! missing, also when the record holds no message to show ([`UNREAD_LINE`]).
+//! missing, also when the record holds no message to show ([`UNREAD_LINE`]). When the read of one of those records fails
+//! with an answer that may be another one a moment later, the session asks for that one record again after its look, within a bound
+//! of its own inside the limit of the whole read ([`Again::of_look`], [`fetch_newest_again`]).
 //!
 //! No invocation member carries the record: a worker image that predates it parses the invocation it always parsed.
 
@@ -94,6 +96,16 @@ const HEAD_BYTES: usize = 4 * 1024;
 pub const LOOK_BACK: u32 = 8;
 /// The longest the read of the earlier record may hold the start of a session.
 const FETCH_LIMIT: Duration = Duration::from_secs(20);
+/// How many further GETs a session's look gives the first record whose read failed with an answer that may be another one
+/// a moment later ([`Again`]). Only that one record is asked for again, and only after the look has read every record it reads.
+pub const RECORD_AGAIN_TRIES: u32 = 2;
+/// The pause before the first of those GETs; the pause before the second is twice as long (3 s together).
+pub const RECORD_AGAIN_PAUSE: Duration = Duration::from_secs(1);
+/// The further GETs end this long before [`FETCH_LIMIT`], the limit that watches the whole read, whatever they have come
+/// to: what the look read is then put together and handed over inside that limit. So the further GETs take only time the look
+/// has left over, and they cannot make the limit drop what the look read.
+pub const RECORD_AGAIN_ENDS: Duration = Duration::from_secs(1);
+const _: () = assert!(RECORD_AGAIN_ENDS.as_millis() < FETCH_LIMIT.as_millis());
 /// The longest one write of the record to the bucket may take. The close waits for the write in flight ([`flush_bound`]).
 const STORE_LIMIT: Duration = Duration::from_secs(8);
 const SCHEMA_VERSION: u32 = 1;
@@ -692,40 +704,196 @@ pub async fn fetch_newest(
     turn: u32,
     scratch: &Path,
 ) -> Earlier {
+    fetch_newest_again(s3, creds, bucket, run_id, turn, scratch, None)
+        .await
+        .0
+}
+
+/// How a look asks again for the first record whose read failed with an answer that may be another one a moment later
+/// ([`fetch_newest_again`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Again {
+    /// How many further GETs that one record gets.
+    pub tries: u32,
+    /// The pause before the first further GET; the pause before each next one is twice the one before.
+    pub pause: Duration,
+    /// When the further GETs end at the latest, whatever they have come to.
+    pub by: tokio::time::Instant,
+}
+
+impl Again {
+    /// The further GETs of a session's look whose read ends at `look_ends` ([`FETCH_LIMIT`] after it began): [`RECORD_AGAIN_TRIES`]
+    /// of them, [`RECORD_AGAIN_PAUSE`] and twice that apart, all ended [`RECORD_AGAIN_ENDS`] before `look_ends`.
+    pub fn of_look(look_ends: tokio::time::Instant) -> Self {
+        Self {
+            tries: RECORD_AGAIN_TRIES,
+            pause: RECORD_AGAIN_PAUSE,
+            by: look_ends
+                .checked_sub(RECORD_AGAIN_ENDS)
+                .unwrap_or(look_ends),
+        }
+    }
+}
+
+/// What the further GETs of a look came to ([`fetch_newest_again`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AskedAgain {
+    /// The turn whose record was asked for again.
+    pub turn: u32,
+    /// How many GETs that record got, the look's own included.
+    pub gets: u32,
+    /// A further GET settled the record: it gave the record, or it said that the turn left none.
+    pub read: bool,
+}
+
+/// One record of an earlier turn, as one GET found it.
+enum Record {
+    /// The turn left no record, or one with no message.
+    None,
+    /// A record that may exist and was not read. `for_now`: the same GET may be answered otherwise a moment later.
+    Unread {
+        for_now: bool,
+    },
+    /// A record that says of itself that older messages may be missing.
+    Incomplete(Earlier),
+    Complete(Earlier),
+}
+
+/// One GET of the record of turn `k`.
+async fn read_record(
+    s3: &S3Objects,
+    creds: &ProcessCredentials,
+    bucket: &str,
+    run_id: &str,
+    k: u32,
+    scratch: &Path,
+) -> Record {
+    let uri = keys::uri(bucket, &key(run_id, k));
+    let dest = scratch.join(format!("user-messages-of-turn-{k}.json"));
+    match s3.get_to_file_told(&uri, creds, &dest).await {
+        Ok(()) => {}
+        Err(failed) if says_absent(&failed.error) => return Record::None,
+        Err(failed) => {
+            return Record::Unread {
+                for_now: failed.temporary,
+            };
+        }
+    }
+    // The object was fetched: a file that cannot be read now, or bytes that are not the document, are a record that exists and was
+    // not read. The document with no message is a turn that left none.
+    let Some(read) = std::fs::read(&dest)
+        .ok()
+        .and_then(|bytes| Earlier::try_parse(&bytes))
+    else {
+        return Record::Unread { for_now: false };
+    };
+    if read.is_empty() {
+        Record::None
+    } else if read.incomplete {
+        Record::Incomplete(read)
+    } else {
+        Record::Complete(read)
+    }
+}
+
+/// [`fetch_newest`], and with `again` the first record whose read failed with an answer that may be another one a moment
+/// later (a 5xx, a throttle, no whole answer: [`crate::s3::GetFailed::temporary`]) is asked for again. Before every record
+/// had one GET, and after one such answer the first prompt of the session lacked the messages of that record.
+///
+/// The look runs first as it always did: one GET for each record, newest first, to the first complete one. The further GETs come
+/// after it, with what the look read in hand: [`Again::tries`] of them for that one record, after [`Again::pause`] and after twice
+/// that, and none of it after [`Again::by`]. When that time ends first, or every further GET fails, the look's result stands: the
+/// records it read are kept and the result is marked incomplete, as before. So a look that fits the limit of its read without the
+/// further GETs fits it with them, with at least the same result. (Asked at the place of the failing GET, the pauses would stand in
+/// front of the older records, and a look that ran into the limit of its read would lose what it had read.) A second record that
+/// fails gets its one GET.
+///
+/// A further GET that settles the record puts it where the look would have had it: a complete record is the one the look stops
+/// at, so what the look read of the turns before it is left out; an incomplete one joins the incomplete records at its turn; a
+/// turn that left none is not marked any more. The result is then the result of a look in which that read did not fail.
+pub async fn fetch_newest_again(
+    s3: &S3Objects,
+    creds: &ProcessCredentials,
+    bucket: &str,
+    run_id: &str,
+    turn: u32,
+    scratch: &Path,
+    again: Option<&Again>,
+) -> (Earlier, Option<AskedAgain>) {
     let first = turn.saturating_sub(LOOK_BACK).max(1);
     // Incomplete records of newer turns, each with its turn, newest first, until a complete one is found.
     let mut newer: Vec<(u32, Earlier)> = Vec::new();
-    let mut unread = false;
+    // The turns whose record may exist and was not read.
+    let mut unread: Vec<u32> = Vec::new();
     let mut base: Option<Earlier> = None;
+    // The first turn whose read failed with an answer that may be another one a moment later.
+    let mut for_now: Option<u32> = None;
     for k in (first..turn).rev() {
-        let uri = keys::uri(bucket, &key(run_id, k));
-        let dest = scratch.join(format!("user-messages-of-turn-{k}.json"));
-        match s3.get_to_file(&uri, creds, &dest).await {
-            Ok(()) => {}
-            Err(e) if says_absent(&e) => continue,
-            Err(_) => {
-                unread = true;
-                continue;
+        match read_record(s3, creds, bucket, run_id, k, scratch).await {
+            Record::None => {}
+            Record::Unread { for_now: may_pass } => {
+                unread.push(k);
+                if may_pass && for_now.is_none() {
+                    for_now = Some(k);
+                }
+            }
+            Record::Incomplete(read) => newer.push((k, read)),
+            Record::Complete(read) => {
+                base = Some(read);
+                break;
             }
         }
-        // The object was fetched: a file that cannot be read now, or bytes that are not the document, are a record that exists and was
-        // not read. The document with no message is a turn that left none.
-        let Some(read) = std::fs::read(&dest)
-            .ok()
-            .and_then(|bytes| Earlier::try_parse(&bytes))
-        else {
-            unread = true;
-            continue;
+    }
+    let mut asked: Option<AskedAgain> = None;
+    if let (Some(k), Some(again)) = (for_now, again) {
+        // Counted outside the further GETs: they can be left at their end, and the count is told either way.
+        let gets = std::sync::atomic::AtomicU32::new(1);
+        let further = async {
+            let mut pause = again.pause;
+            for _ in 0..again.tries {
+                tokio::time::sleep(pause).await;
+                pause *= 2;
+                gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match read_record(s3, creds, bucket, run_id, k, scratch).await {
+                    Record::Unread { for_now: true } => {}
+                    settled => return Some(settled),
+                }
+            }
+            None
         };
-        if read.is_empty() {
-            continue;
-        }
-        if read.incomplete {
-            newer.push((k, read));
-            continue;
-        }
-        base = Some(read);
-        break;
+        let settled = tokio::time::timeout_at(again.by, further)
+            .await
+            .ok()
+            .flatten();
+        let read = match settled {
+            Some(Record::None) => {
+                unread.retain(|t| *t != k);
+                true
+            }
+            Some(Record::Incomplete(r)) => {
+                unread.retain(|t| *t != k);
+                let at = newer
+                    .iter()
+                    .position(|(t, _)| *t < k)
+                    .unwrap_or(newer.len());
+                newer.insert(at, (k, r));
+                true
+            }
+            // The look stops at a complete record: what it read of the turns before this one is left out.
+            Some(Record::Complete(r)) => {
+                unread.retain(|t| *t > k);
+                newer.retain(|(t, _)| *t > k);
+                base = Some(r);
+                true
+            }
+            // Still not read: the bytes are not the document, the bucket now refuses, or the time of the further GETs ended.
+            Some(Record::Unread { .. }) | None => false,
+        };
+        asked = Some(AskedAgain {
+            turn: k,
+            gets: gets.load(std::sync::atomic::Ordering::SeqCst),
+            read,
+        });
     }
     let complete = base.is_some();
     let marked = !newer.is_empty();
@@ -763,9 +931,9 @@ pub async fn fetch_newest(
         out.schema_version = SCHEMA_VERSION;
     }
     out.fit();
-    out.incomplete = unread || (!complete && marked);
+    out.incomplete = !unread.is_empty() || (!complete && marked);
     // Nothing read from the bucket has the standing of a message this agentd delivered.
-    out.as_inherited()
+    (out.as_inherited(), asked)
 }
 
 /// Whether a failed read of the bucket says that no such object exists: 404, or the bucket's own refusal (403 `AccessDenied`, or a 403
@@ -890,7 +1058,8 @@ impl Log {
     /// starts from that answer. When the control plane says that it has no such route, or gives no answer within the bound, the session
     /// reads the newest record the turns before it left in the run's bucket, which the first prompt quotes as data, and the record says
     /// why ([`Fallback`]). With no `store`, or with [`Source::Record`], nobody is asked and the record is read. Nothing here fails the
-    /// run or holds its start longer than the two bounds (the question, then [`FETCH_LIMIT`] for the record); every outcome has its log
+    /// run or holds its start longer than the two bounds (the question, then [`FETCH_LIMIT`] for the record, the further GETs of one
+    /// record included: [`Again::of_look`]); every outcome has its log
     /// line, and no line holds a message's text.
     pub async fn for_session(
         env: &HookEnv,
@@ -937,16 +1106,40 @@ impl Log {
         }
         if env.turn > 1 && !answered && !env.bucket.is_empty() {
             let fallback = earlier.fallback;
+            // The first record that fails for a moment is asked for again after the look, inside the limit of this read.
+            let again = Again::of_look(tokio::time::Instant::now() + FETCH_LIMIT);
             let read = async {
                 let creds = env.creds.current().await.map_err(|e| e.to_string())?;
-                Ok::<Earlier, String>(
-                    fetch_newest(&s3, &creds, &env.bucket, &env.run_id, env.turn, &scratch).await,
+                Ok::<(Earlier, Option<AskedAgain>), String>(
+                    fetch_newest_again(
+                        &s3,
+                        &creds,
+                        &env.bucket,
+                        &env.run_id,
+                        env.turn,
+                        &scratch,
+                        Some(&again),
+                    )
+                    .await,
                 )
             };
             match tokio::time::timeout(FETCH_LIMIT, read).await {
-                Ok(Ok(found)) => {
+                Ok(Ok((found, asked))) => {
                     earlier = found;
                     earlier.fallback = fallback;
+                    if let Some(a) = asked {
+                        env.log.line(&if a.read {
+                            format!(
+                                "direct turn earlier messages: the read of the record of session {} was answered at try {}",
+                                a.turn, a.gets
+                            )
+                        } else {
+                            format!(
+                                "direct turn earlier messages: the read of the record of session {} was asked {} time(s) and not answered",
+                                a.turn, a.gets
+                            )
+                        });
+                    }
                 }
                 Ok(Err(e)) => {
                     // What this session records says so: a later session then looks further back for what this one could not read.

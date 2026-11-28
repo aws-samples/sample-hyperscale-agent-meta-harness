@@ -5,7 +5,8 @@
 - a git checkout of the repository's own `setup.sh` and `scripts/setup/` (plus stand-in templates), because the full path archives `HEAD` and
   reads its helper files from the folder it runs from;
 - the stand-in AWS CLI of setup_fake_aws.py first on PATH, a scenario file the tests rewrite between runs and a log of every call;
-- a PATH that also holds the few extra system tools the full path uses (date, sleep).
+- a PATH that also holds the few extra system tools the full path uses (date, sleep);
+- a stand-in that holds setup in a pause until the one signal of a test has come.
 
 Nothing here is a test. Standard library only.
 """
@@ -15,8 +16,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess  # nosec B404: tests start git and the scripts under test with argument lists, never a shell
+import sys
 from pathlib import Path
 
 import setup_fake_aws
@@ -68,6 +71,35 @@ def golden_accounts(region: str = "us-east-1", account: str | None = None, opera
         assert marker in text
         text = text.replace(marker, marker + f'      "operator": {{"kind": "{operator[0]}", "name": "{operator[1]}"}},\n', 1)
     return text.replace("{account}", account or setup_fake_aws.ACCOUNT).encode()
+
+# A stand-in for a program setup starts (`sleep`, the pause between two looks; `mv`, which puts the receipt in place; `aws`, the stand-in AWS CLI itself).
+# Until it is armed it is the real program. Armed (the file {armed} exists, the call log of the stand-in AWS CLI holds {word}, or its own arguments hold {own}),
+# and only the first time, it takes the default answer to SIGINT, then says that it waits, and holds setup where it is until a signal ends it (after {hold}
+# seconds it is the real program after all). So the one signal of a test finds setup at a known place, waiting for a program that the signal ends. Where the
+# signal finds setup otherwise is a matter of the machine's speed, and bash 5.2 itself can drop a signal that comes while it starts or collects a command
+# substitution, with or without a handler: setup runs command substitutions right after each look of its loops, so a test that sends its one signal there can
+# see setup go on. Every test that sends a signal to setup holds it this way first (test_setup_b804_lock_left.py, SignalHoldCase, pins that).
+HELD_PROGRAM = """import os
+import signal
+import sys
+import time
+
+REAL = {real!r}
+CALLS = {calls!r}
+armed = (os.path.exists({armed!r}) or bool(CALLS and os.path.exists(CALLS) and {word!r} in open(CALLS, encoding="utf-8").read())
+         or bool({own!r} and {own!r} in sys.argv[1:]))
+if armed:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    try:
+        os.close(os.open({waiting!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        time.sleep({hold!r})
+    except FileExistsError:
+        pass
+os.execv(REAL, [REAL] + sys.argv[1:])
+"""
+# The stand-in starts through /bin/sh like every other stand-in of these tests: a first line that names the interpreter's own path cannot start for a path with
+# a blank, or for a long one under an older kernel.
+HELD_STUB = "#!/bin/sh\nexec {python} -I {program} \"$@\"\n"
 
 
 class FullBase(SetupBase):
@@ -173,6 +205,32 @@ class FullBase(SetupBase):
                 return False
 
         return proc.wait_ready(looked, seconds, "setup.sh to look at the build it started (its first codebuild batch-get-builds call)")
+
+    # ----: holding setup where the one signal of a test finds it --------------------------------
+    def held_program(self, name: str, *, word: str = "", own: str = "") -> tuple:
+        """Puts the stand-in for the program `name` first on the PATH of setup (HELD_PROGRAM). It is armed by the file this returns first, by `word` in the call
+        log of the stand-in AWS CLI, or by `own` among its own arguments. The second file is the one it writes when it waits. For `aws` the real program is the
+        stand-in AWS CLI of the test, under another name."""
+        if name == "aws":
+            real = str((self.stub / "aws").rename(self.stub / "aws-of-the-test"))
+        else:
+            real = shutil.which(name)
+        self.assertTrue(real, f"the test needs the real {name}")
+        armed, waiting = (self.tmp / f"{name}-{mark}" for mark in ("armed", "waiting"))
+        program = self.tmp / f"{name}-held.py"
+        program.write_text(HELD_PROGRAM.format(real=real, armed=str(armed), calls=str(self.state / "calls.jsonl") if word else "", word=word, own=own,
+                                               waiting=str(waiting), hold=limit(120)), encoding="utf-8")
+        self.write_stub(name, HELD_STUB.format(python=shlex.quote(sys.executable), program=shlex.quote(str(program))))
+        return armed, waiting
+
+    def hold_in_the_pause(self, proc: GroupProcess, held: tuple, at: str = "the build") -> None:
+        """Arms the stand-in for `sleep` (`held = self.held_program("sleep")`, made before setup starts) and waits until setup waits in it: the pause between two
+        looks. The one signal of the test is sent then, when no look of setup and so no command substitution of bash is under way. The stand-in holds the first
+        `sleep` that setup starts after it is armed: a test that arms it while setup waits for a delete (a stack, the versioned runtime endpoints) would hold the
+        nap of the ticker there (setup_ticker_start of scripts/setup/lib.sh, setup's one `sleep` in the background, which runs only during those waits)."""
+        armed, waiting = held
+        armed.touch()
+        proc.wait_ready(waiting.exists, 120.0, f"setup.sh to wait in the pause between two looks at {at}")
 
     def world(self) -> dict:
         p = self.state / "world.json"

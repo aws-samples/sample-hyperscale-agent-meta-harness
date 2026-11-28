@@ -837,3 +837,124 @@ fn the_brake_inside_a_round_has_its_settings_and_their_bounds() {
     assert_eq!(s.round_min_calls, 10);
     assert_eq!(s.look_every, Duration::from_secs(60));
 }
+
+// ---- the read-only look at the rounds log --------------------------------------------------------------------------------
+
+const START_1: &str = r#"{"ev":"start","n":1,"t":1}"#;
+const END_1: &str =
+    r#"{"ev":"end","n":1,"t":2,"status":"completed","iterations":2,"text":"First answer."}"#;
+const START_2: &str = r#"{"ev":"start","n":2,"t":3}"#;
+const END_2: &str =
+    r#"{"ev":"end","n":2,"t":4,"status":"completed","iterations":1,"text":"Second round."}"#;
+const START_3: &str = r#"{"ev":"start","n":3,"t":5}"#;
+
+/// A rounds log with these lines, in a scratch directory of its own.
+fn rounds_log(lines: &[&str]) -> std::path::PathBuf {
+    let path = scratch("b988-rounds").join("rounds.jsonl");
+    for line in lines {
+        append(&path, &format!("{line}\n"));
+    }
+    path
+}
+
+#[test]
+fn b988_a_start_of_a_later_run_with_no_end_after_it_is_an_open_round() {
+    use agentd::direct::goal::rounds::follow_up_open;
+    assert!(follow_up_open(&rounds_log(&[START_1, END_1, START_2])));
+    assert!(follow_up_open(&rounds_log(&[
+        START_1, END_1, START_2, END_2, START_3
+    ])));
+    // A line that is no round line changes nothing.
+    assert!(follow_up_open(&rounds_log(&[
+        START_1,
+        END_1,
+        START_2,
+        "not a round line"
+    ])));
+}
+
+#[test]
+fn b988_a_round_that_ended_or_has_not_started_is_not_open() {
+    use agentd::direct::goal::rounds::follow_up_open;
+    // The follow-up is queued and has not started; it started and ended; the log is empty.
+    assert!(!follow_up_open(&rounds_log(&[START_1, END_1])));
+    assert!(!follow_up_open(&rounds_log(&[
+        START_1, END_1, START_2, END_2
+    ])));
+    let empty = scratch("b988-rounds").join("rounds.jsonl");
+    std::fs::write(&empty, "").unwrap();
+    assert!(!follow_up_open(&empty));
+}
+
+#[test]
+fn b988_the_first_run_of_an_engine_is_no_round_of_its_own() {
+    use agentd::direct::goal::rounds::follow_up_open;
+    // The run a prompt started: its end line may reach the file after the prompt's answer was read.
+    assert!(!follow_up_open(&rounds_log(&[START_1])));
+    // A fresh engine counts its runs from 1 again, in the same file: its first run is no round of its own either.
+    let path = rounds_log(&[START_1, END_1, START_2, END_2, START_1]);
+    assert!(!follow_up_open(&path));
+    append(&path, &format!("{END_1}\n{START_2}\n"));
+    assert!(follow_up_open(&path));
+}
+
+#[test]
+fn b988_a_log_that_is_missing_linked_damaged_or_half_written_says_nothing() {
+    use agentd::direct::goal::rounds::follow_up_open;
+    let d = scratch("b988-rounds");
+    assert!(!follow_up_open(&d.join("no-such-file.jsonl")));
+    assert!(!follow_up_open(&d), "a directory is no log");
+    let path = rounds_log(&[START_1, END_1, START_2]);
+    assert!(follow_up_open(&path));
+    let link = d.join("link.jsonl");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(!follow_up_open(&link), "a file reached through a link");
+    // The end line of the open round is being written: the log's last word is not there yet.
+    append(&path, r#"{"ev":"end","n":2,"#);
+    assert!(!follow_up_open(&path), "a line whose end is not written");
+    // A start line that is being written is no start yet.
+    let half = rounds_log(&[START_1, END_1]);
+    append(&half, r#"{"ev":"start","n":2"#);
+    assert!(!follow_up_open(&half));
+}
+
+#[test]
+fn b988_the_look_moves_no_other_reader_and_writes_nothing() {
+    use agentd::direct::goal::rounds::follow_up_open;
+    let path = rounds_log(&[START_1, END_1]);
+    let mut r = RoundsReader::new(path.clone());
+    assert_eq!(r.poll().lines.len(), 2);
+    let at = r.offset();
+    append(&path, &format!("{START_2}\n"));
+    let before = std::fs::read(&path).unwrap();
+    assert!(follow_up_open(&path));
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the look writes nothing"
+    );
+    assert_eq!(r.offset(), at, "the other reader's place did not move");
+    assert_eq!(
+        r.poll().lines,
+        vec![RoundLine::Start { n: 2 }],
+        "the other reader still finds the new line"
+    );
+}
+
+#[test]
+fn b988_a_log_too_long_to_read_to_its_end_says_nothing() {
+    use agentd::direct::goal::rounds::{OPEN_READS, POLL_BYTES, follow_up_open};
+    let path = scratch("b988-rounds").join("rounds.jsonl");
+    // More than the look reads: start and end lines of earlier rounds, then an open round at the very end.
+    let pair = format!("{START_2}\n{END_2}\n");
+    let pairs = OPEN_READS * POLL_BYTES / pair.len() + 2;
+    let mut text = String::with_capacity(pairs * pair.len() + 64);
+    for _ in 0..pairs {
+        text.push_str(&pair);
+    }
+    text.push_str(START_3);
+    text.push('\n');
+    assert!(text.len() > OPEN_READS * POLL_BYTES);
+    std::fs::write(&path, &text).unwrap();
+    assert!(!follow_up_open(&path));
+}

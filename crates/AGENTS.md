@@ -47,6 +47,16 @@ Owned by the root contract. Each crate's `AGENTS.md` owns its local rules.
   cost turn, `b965_the_uploads_of_a_cost_turn_do_not_wait_for_the_acknowledgement_of_their_head` of the same file, has such a row too: it fails when
   the uploads of the cost scenario's turns wait for an acknowledgement, and whether they wait differs with what else the machine does, so its turns
   must meet what the turns of the cost test meet.
+- A test that nothing but a time limit of the product ends gets a row in `.config/nextest.toml` with a time limit of the runner.
+  `trigger_present_without_the_brakes_the_blocked_scenario_never_ends_on_its_own` of `agentd/tests/direct_goal.rs` has such a row: its module asks to be
+  asked again for ever, so its run ends only at its time limit of 5 s, and the test took 5.1 to 5.2 s in full runs of the workspace's tests. A worker
+  whose driver no longer ends a run at its limit is still caught by the worker's own guard (`SETUP_GUARD` of `agentd/src/direct/mod.rs`): the guard ends
+  the run 60 s past the limit, and the test fails on the run's outcome after about 65 s. Only when that guard stops nothing either does the test never
+  end, and nextest ends no test by itself: it only says that a test is slow. With the row nextest stops the test's process after 180 s and counts the
+  test as failed by name (`TIMEOUT`, which a run of the tests reports as a failed test). The 180 s are well above the 65 s, so the test's own failure,
+  which names the outcome, comes first. The limit is the test's own: no profile sets one, because that would be a limit of every test of a run, and the
+  test's body and its assertions stay as they are. Add one only for a test that a run against a product broken that way showed never to end. The note
+  stands here for the reason the note on the rows of timed tests does.
 - A test makes its folder with `create_dir` and passes over a name that exists; it never takes an existing folder with `create_dir_all`. A name built
   from the process id is new among the processes that run now, not over time: the kernel hands an id out again, nextest starts one process for each
   test, and the tests leave their folders in the scratch directory, so a later run can be handed a folder that holds another test's files and fail on

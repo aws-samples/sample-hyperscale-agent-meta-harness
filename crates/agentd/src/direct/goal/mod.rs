@@ -1665,6 +1665,13 @@ impl DirectHook for GoalHook {
         Box::pin(std::future::ready(()))
     }
 
+    fn round_open(&self) -> bool {
+        // Answered from the observer's rounds log alone, with a reader of its own. Nothing of the loop's supervision is read
+        // or changed and no vote is cast. The loop the harness drives has no such log: its rounds are prompts.
+        let path = lock(&self.reader).as_ref().map(|r| r.path().to_path_buf());
+        path.is_some_and(|p| rounds::follow_up_open(&p))
+    }
+
     fn usage_outside_prompts(&self) -> Option<Usage> {
         // The engine is gone: read what it wrote last, a bounded number of reads, then add up.
         let mut found = Vec::new();

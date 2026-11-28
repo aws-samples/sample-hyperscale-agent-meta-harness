@@ -708,20 +708,36 @@ where
                 let Some(TurnVote::Wait { until }) = voted else {
                     // With: no vote came back about an answered prompt because the user's cancel was up (before the
                     // modules could be asked, or when their vote came back), and the engine was working by itself when the driver
-                    // last looked (it held the run at this stop, or at the stop before). No prompt is open, so nothing has made
-                    // the stop the user's: the run ends for the cancel as a hold ends for it.
+                    // last looked.
+                    // No prompt is open, so nothing has made the stop the user's: the run ends for the
+                    // cancel as a hold ends for it.
                     // The run's deadline where has the cancel, at a stop where the engine may still work by itself
                     // (the driver held the run at this stop, or the stop before was held and ended with a prompt the modules
                     // voted at its turn end). The question found no time left (the deadline passed after the hold's last clock
                     // read), or its vote came back after the deadline and was dropped: the run ends for the deadline as a hold
                     // ends for it. The rule of both is `NoWait::end`. The clock is read before the cancel, as a hold reads them.
                     let deadline_passed = deadline <= Instant::now();
+                    let cancel_up = plan.cancel.as_ref().is_some_and(|c| *c.borrow());
+                    let answered = matches!(&raw.watched, Watched::Done(Ok(done)) if done.stop_reason != "cancelled");
+                    // The user's cancel is up at the first stop of the run, about a prompt the engine answered by itself
+                    // and no cancel was written to. The driver has held the run at no stop yet, so it has heard nothing of
+                    // the engine's own work, and no vote came back. A module that watches the engine's own rounds says,
+                    // without changing anything, whether one is open now ([`Hooks::round_open`]). If one is, the engine is
+                    // at work by itself, and the run ends for the cancel as it does after a hold. If none is, the engine
+                    // ended its turn and is not seen at work: the run keeps the outcome of the answered prompt, as before.
+                    let round_open = stops == 1
+                        && voted.is_none()
+                        && cancel_up
+                        && answered
+                        && !raw.cancel_sent
+                        && !(held || worked_alone)
+                        && hooks.round_open();
                     let stop = NoWait {
                         no_vote: voted.is_none(),
-                        worked_alone: held || worked_alone,
+                        worked_alone: held || worked_alone || round_open,
                         still_alone: held || prompted_alone,
-                        answered: matches!(&raw.watched, Watched::Done(Ok(done)) if done.stop_reason != "cancelled"),
-                        cancel_up: plan.cancel.as_ref().is_some_and(|c| *c.borrow()),
+                        answered,
+                        cancel_up,
                         cancel_sent: raw.cancel_sent,
                         deadline_passed,
                     };
@@ -1006,6 +1022,7 @@ pub struct NoWait {
     /// was left), or their vote came back after the user's cancel or the deadline and was dropped.
     pub no_vote: bool,
     /// The engine was working by itself when the driver last looked: the driver held the run at this stop, or at the stop before.
+    /// Or, at the first stop of a run with the user's cancel up, a module sees a round of the engine's own open now.
     pub worked_alone: bool,
     /// As far as the driver knows the engine still works by itself: the driver held the run at this stop, or it held the run at the
     /// stop before and that stop ended with a prompt the modules voted at its turn end, which went out to the working engine. Not
@@ -1183,7 +1200,8 @@ where
 /// no vote comes back at a stop where the engine was working by itself when the driver last looked, the caller ends the run for the
 /// cancel or the deadline itself: for the user's cancel always, for the deadline only
 /// where the engine may still work by itself (`still_alone`: the driver held the run at this stop, or the held stop before ended
-/// with a module's prompt).
+/// with a module's prompt). At the first stop of a run the driver has looked at no time yet: with the user's cancel up, the caller
+/// asks the modules whether a round of the engine's own is open now, and no vote is asked for.
 #[allow(clippy::too_many_arguments)]
 async fn consult(
     hooks: &Hooks,

@@ -2,13 +2,19 @@
 //! arrive with the invocation; inside [`REFRESH_WINDOW_S`] of expiry they are re-minted through
 //! `/internal/creds` with the rotating nonce. A failed refresh fails closed.
 //!
+//! A refresh that failed is of one of two kinds. One that got no whole answer, or was answered with a 5xx or a 429, may be
+//! another answer a moment later ([`CredError::RefreshFailedForNow`]); every other one stays what it is however often it is asked
+//! ([`CredError::RefreshFailed`]: a refusal, an answer that is no refresh). The store keeps the credentials and the nonce it had
+//! after either, so the next ask sends the same request again; whether it is asked again is the caller's. A nonce the service
+//! replaced before its answer was lost makes that next ask a refusal.
+//!
 //! Every secret the store comes to hold (the secret key, the session token and the nonce of the
 //! install and of every refresh) is added at that moment to the run's [`SecretSet`] when one is
 //! watched ([`CredStore::watch_secrets`]), so the redaction of the engine's words knows a value
 //! before the engine can print it.
 
 use crate::BoxFuture;
-use crate::http::{SignedHttp, SignedRequest};
+use crate::http::{HttpError, SignedHttp, SignedRequest};
 use crate::secrets::SecretSet;
 use crate::time::{Clock, parse_rfc3339};
 use harness_protocol::api::internal::{CredsRequest, CredsResponse, ProcessCredentials};
@@ -28,6 +34,27 @@ pub struct RefreshContext {
     pub region: String,
 }
 
+/// A refresh that gave no credentials ([`Refresher::refresh_told`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefreshFailure {
+    /// The sentence of the failure.
+    pub sentence: String,
+    /// The same ask may be answered otherwise a moment later: the refresh got no whole answer, or the answer was a 5xx or a 429.
+    /// It does not say that the service still holds the nonce of the ask: an answer that was lost, or a 5xx after the service had
+    /// replaced the nonce, is followed by a refusal.
+    pub temporary: bool,
+}
+
+impl From<String> for RefreshFailure {
+    /// A failure whose kind nobody said stays what it is.
+    fn from(sentence: String) -> Self {
+        Self {
+            sentence,
+            temporary: false,
+        }
+    }
+}
+
 pub trait Refresher: Send + Sync {
     fn refresh<'a>(
         &'a self,
@@ -35,6 +62,21 @@ pub trait Refresher: Send + Sync {
         current: &'a ProcessCredentials,
         req: CredsRequest,
     ) -> BoxFuture<'a, Result<CredsResponse, String>>;
+
+    /// [`Self::refresh`] that says the kind of a failure ([`RefreshFailure`]); the store asks through it. A refresher
+    /// that says no kind fails with failures that stay what they are.
+    fn refresh_told<'a>(
+        &'a self,
+        ctx: &'a RefreshContext,
+        current: &'a ProcessCredentials,
+        req: CredsRequest,
+    ) -> BoxFuture<'a, Result<CredsResponse, RefreshFailure>> {
+        Box::pin(async move {
+            self.refresh(ctx, current, req)
+                .await
+                .map_err(RefreshFailure::from)
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -45,6 +87,17 @@ pub enum CredError {
     BadExpiration,
     #[error("credential refresh failed: {0}")]
     RefreshFailed(String),
+    /// A refresh that failed and may be another answer a moment later ([`RefreshFailure::temporary`]). It reads as
+    /// [`CredError::RefreshFailed`] does.
+    #[error("credential refresh failed: {0}")]
+    RefreshFailedForNow(String),
+}
+
+impl CredError {
+    /// Whether the same ask may be answered otherwise a moment later ([`CredError::RefreshFailedForNow`]).
+    pub fn temporary(&self) -> bool {
+        matches!(self, Self::RefreshFailedForNow(_))
+    }
 }
 
 struct Held {
@@ -135,9 +188,16 @@ impl CredStore {
         };
         let resp = self
             .refresher
-            .refresh(&held.ctx, &held.creds, req)
+            .refresh_told(&held.ctx, &held.creds, req)
             .await
-            .map_err(|e| CredError::RefreshFailed(e.chars().take(200).collect()))?;
+            .map_err(|e| {
+                let said: String = e.sentence.chars().take(200).collect();
+                if e.temporary {
+                    CredError::RefreshFailedForNow(said)
+                } else {
+                    CredError::RefreshFailed(said)
+                }
+            })?;
         if parse_rfc3339(&resp.credentials.expiration).is_none() {
             return Err(CredError::BadExpiration);
         }
@@ -169,11 +229,28 @@ impl Refresher for HttpRefresher {
         req: CredsRequest,
     ) -> BoxFuture<'a, Result<CredsResponse, String>> {
         Box::pin(async move {
+            self.refresh_told(ctx, current, req)
+                .await
+                .map_err(|e| e.sentence)
+        })
+    }
+
+    /// The kinds of this refresher's failures. A request that did not get its whole answer (the connection was refused or
+    /// broke, the answer did not come inside the request's limit) and an answer 5xx or 429 may be another answer a moment later.
+    /// Every other answer stays what it is: a refusal (403), a nonce or a session the service has moved on from (409), any
+    /// other 4xx, and an answer 200 that is no refresh; so does a URL or a signature that could not be made.
+    fn refresh_told<'a>(
+        &'a self,
+        ctx: &'a RefreshContext,
+        current: &'a ProcessCredentials,
+        req: CredsRequest,
+    ) -> BoxFuture<'a, Result<CredsResponse, RefreshFailure>> {
+        Box::pin(async move {
             let url = format!(
                 "{}/internal/creds",
                 ctx.internal_api_url.trim_end_matches('/')
             );
-            let body = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
+            let body = serde_json::to_vec(&req).map_err(|e| RefreshFailure::from(e.to_string()))?;
             let resp = self
                 .http
                 .send(SignedRequest {
@@ -186,16 +263,22 @@ impl Refresher for HttpRefresher {
                     body,
                 })
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| RefreshFailure {
+                    temporary: matches!(e, HttpError::Transport(_)),
+                    sentence: e.to_string(),
+                })?;
             if resp.status != 200 {
-                return Err(format!("creds refresh returned {}", resp.status));
+                return Err(RefreshFailure {
+                    sentence: format!("creds refresh returned {}", resp.status),
+                    temporary: resp.status >= 500 || resp.status == 429,
+                });
             }
             serde_json::from_slice::<CredsResponse>(&resp.body).map_err(|e| {
-                format!(
+                RefreshFailure::from(format!(
                     "creds refresh response is not a CredsResponse (line {}, column {})",
                     e.line(),
                     e.column()
-                )
+                ))
             })
         })
     }

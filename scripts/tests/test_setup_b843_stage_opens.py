@@ -104,9 +104,11 @@ class RunnerRouteCase(LeftBase):
 
     def test_b843_a_run_that_stops_following_after_the_deploy_says_that_the_stage_starts_runs_again(self) -> None:
         self.update_stage(opens_lock=True, hang=True)
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
         proc.wait_ready(lambda: bool(self.last_build().get("lock_opened")), 120.0, "the build to finish its deploy phase")
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
         self.assertEqual(done.returncode, 6, done.output)
@@ -120,8 +122,10 @@ class RunnerRouteCase(LeftBase):
     def test_b843_a_run_that_stops_following_while_the_build_deploys_says_when_the_stage_opens(self) -> None:
         # the stand-in build writes no line here (the default): the lock closes the stage when the run stops, as during the deploy of a real build
         self.update_stage(hang=True)
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
         self.assertEqual(done.returncode, 6, done.output)

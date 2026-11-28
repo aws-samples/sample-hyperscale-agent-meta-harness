@@ -31,6 +31,8 @@ enum Step {
     Update(Value),
     Sleep(u64),
     Finish,
+    /// The engine waits for `session/cancel` and then answers the prompt with this stop reason.
+    AtCancel(&'static str),
     /// The engine's output ends (the process died).
     Close,
     /// Nothing more, ever.
@@ -100,6 +102,16 @@ fn engine(prompts: Vec<Vec<Step>>) -> (Client, Received) {
                                 .write_all(frame(reply(json!({"stopReason": "end_turn"}))).as_bytes())
                                 .await
                                 .unwrap(),
+                            Step::AtCancel(reason) => {
+                                while let Some(next) = rx.recv().await {
+                                    if next["method"] == "session/cancel" {
+                                        break;
+                                    }
+                                }
+                                out.write_all(frame(reply(json!({"stopReason": reason}))).as_bytes())
+                                    .await
+                                    .unwrap();
+                            }
                             Step::Close => return,
                             Step::Silent => std::future::pending::<()>().await,
                         }
@@ -1033,6 +1045,287 @@ async fn b980_a_prompt_after_the_deadline_from_a_poll_with_no_wait_is_dropped_an
     assert!(late.done.load(Ordering::SeqCst), "the poll was not made");
     assert!(!late.engine_working.load(Ordering::SeqCst));
     assert_eq!(count(&run.received, "session/prompt"), 1);
+    assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
+    assert_eq!(count(&run.received, "session/cancel"), 0);
+}
+
+// ---- the user's cancel is up before the modules are asked ------------------------------------------------------------------
+
+/// Delivers the user's cancel when the answer of prompt `no` has been read: before the modules are asked at that stop.
+struct CancelAtTheAnswer {
+    controls: Arc<TurnControls>,
+    no: u32,
+    done: AtomicBool,
+}
+
+impl CancelAtTheAnswer {
+    fn new(controls: &Arc<TurnControls>, no: u32) -> Arc<Self> {
+        Arc::new(Self {
+            controls: controls.clone(),
+            no,
+            done: AtomicBool::new(false),
+        })
+    }
+}
+
+impl DirectHook for CancelAtTheAnswer {
+    fn name(&self) -> &'static str {
+        "cancel-at-the-answer"
+    }
+
+    fn on_event(&self, e: &Event<'_>) {
+        if let Event::PromptReplied(r) = e
+            && r.no == self.no
+            && !self.done.swap(true, Ordering::SeqCst)
+        {
+            self.controls.deliver(&[PendingControl::Cancel]);
+        }
+    }
+}
+
+/// A module that watches the engine's own rounds: it answers the driver's question about an open round and counts the questions.
+struct Rounds {
+    open: bool,
+    questions: AtomicU32,
+    events: Mutex<Vec<String>>,
+}
+
+impl Rounds {
+    fn new(open: bool) -> Arc<Self> {
+        Arc::new(Self {
+            open,
+            questions: AtomicU32::new(0),
+            events: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn questions(&self) -> u32 {
+        self.questions.load(Ordering::SeqCst)
+    }
+}
+
+impl DirectHook for Rounds {
+    fn name(&self) -> &'static str {
+        "rounds"
+    }
+
+    fn on_event(&self, e: &Event<'_>) {
+        self.events.lock().unwrap().push(e.name().to_string());
+    }
+
+    fn round_open(&self) -> bool {
+        self.questions.fetch_add(1, Ordering::SeqCst);
+        self.open
+    }
+}
+
+/// The user's cancel is up when the answer of the first prompt has been read, before the modules are asked at the first stop,
+/// and a round of the engine's own loop is open. The driver has held the run at no stop yet. It asks for no vote once the cancel
+/// is up; it asks whether a round is open, and ends the run for the cancel as it does after a hold: the cancel is written to the
+/// engine once and the stop is the user's. Before, nothing was asked, nothing told the engine, and the run ended with the outcome
+/// of the answered prompt.
+#[tokio::test(start_paused = true)]
+async fn b988_a_cancel_before_the_first_ask_is_the_users_stop_when_a_round_of_the_engine_is_open() {
+    let goal = Holder::new("goal", "NEVER");
+    let rounds = Rounds::new(true);
+    let (controls, _) = TurnControls::new();
+    let at = CancelAtTheAnswer::new(&controls, 1);
+    let t0 = tokio::time::Instant::now();
+    let run = drive(
+        vec![goes_on_by_itself()],
+        plan(10_000, 900, Some(controls.subscribe())),
+        vec![at.clone(), goal.clone(), rounds.clone()],
+        Some(controls),
+    )
+    .await;
+    // TRIGGER PRESENT: the cancel was delivered at the answer of the first prompt, and the engine got no second prompt.
+    assert!(
+        at.done.load(Ordering::SeqCst),
+        "the cancel was not delivered at the answer: the test proves nothing"
+    );
+    assert_eq!(count(&run.received, "session/prompt"), 1);
+    assert_eq!(
+        classify(&run.end.raw).outcome,
+        DirectOutcome::StoppedByUser,
+        "the run kept the outcome of the answered prompt though a round of the engine's own was open"
+    );
+    assert!(run.end.raw.cancel_sent);
+    assert_eq!(
+        count(&run.received, "session/cancel"),
+        1,
+        "the engine is told once"
+    );
+    assert_eq!(rounds.questions(), 1, "the question is asked once");
+    assert_eq!(
+        goal.asks.lock().unwrap().len(),
+        0,
+        "no vote is asked for once the user's cancel is up"
+    );
+    // The modules are told of the cancel, so the one that watches the loop can stop it.
+    assert!(
+        rounds
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"cancel".to_string())
+    );
+    assert!(
+        t0.elapsed() < Duration::from_secs(2),
+        "{:?}: the run ends for the cancel at once",
+        t0.elapsed()
+    );
+}
+
+/// The other side: the same cancel, and no round of the engine's own is open (it ended its turn and does nothing more).
+/// A module that would keep the run open if it were asked for a vote, and one that would vote a prompt, are not asked. The run
+/// ends with the outcome of the answered prompt, as before, and nothing is written to the engine.
+#[tokio::test(start_paused = true)]
+async fn b988_a_cancel_before_the_first_ask_keeps_the_engines_outcome_when_no_round_is_open() {
+    let goal = Holder::new("goal", "NEVER");
+    let messages = Votes::new(
+        "messages",
+        vec![TurnVote::Prompt("a message of the user".into())],
+    );
+    let rounds = Rounds::new(false);
+    let (controls, _) = TurnControls::new();
+    let at = CancelAtTheAnswer::new(&controls, 1);
+    let run = drive(
+        vec![vec![chunk("first"), Step::Finish]],
+        plan(10_000, 900, Some(controls.subscribe())),
+        vec![at.clone(), goal.clone(), messages, rounds.clone()],
+        Some(controls),
+    )
+    .await;
+    assert!(
+        at.done.load(Ordering::SeqCst),
+        "the cancel was not delivered at the answer: the test proves nothing"
+    );
+    assert_eq!(
+        count(&run.received, "session/prompt"),
+        1,
+        "no prompt goes out after the user's cancel"
+    );
+    assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
+    assert!(!run.end.raw.cancel_sent);
+    assert_eq!(count(&run.received, "session/cancel"), 0);
+    assert_eq!(rounds.questions(), 1, "the question is asked once");
+    assert_eq!(
+        goal.asks.lock().unwrap().len(),
+        0,
+        "no vote is asked for once the user's cancel is up"
+    );
+}
+
+/// A prompt that the user's cancel itself ended is not such a stop. The cancel was written to the open prompt, and the engine
+/// answered it as `cancelled`. Nothing is asked, and the cancel is not written a second time.
+#[tokio::test(start_paused = true)]
+async fn b988_a_prompt_the_users_cancel_ended_is_not_asked_about_and_gets_no_second_cancel() {
+    let rounds = Rounds::new(true);
+    let (controls, _) = TurnControls::new();
+    let c = controls.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        c.deliver(&[PendingControl::Cancel]);
+    });
+    let run = drive(
+        vec![vec![
+            chunk("first"),
+            Step::AtCancel("cancelled"),
+            chunk("on my own"),
+            Step::Silent,
+        ]],
+        plan(10_000, 900, Some(controls.subscribe())),
+        vec![rounds.clone()],
+        Some(controls),
+    )
+    .await;
+    // TRIGGER PRESENT: the engine answered the open prompt as cancelled.
+    assert!(
+        matches!(&run.end.raw.watched, agentd::acp::Watched::Done(Ok(done)) if done.stop_reason == "cancelled"),
+        "the prompt was not answered as cancelled: the test proves nothing"
+    );
+    assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::StoppedByUser);
+    assert!(run.end.raw.cancel_sent);
+    assert_eq!(
+        count(&run.received, "session/cancel"),
+        1,
+        "the cancel is written once"
+    );
+    assert_eq!(
+        rounds.questions(),
+        0,
+        "nothing is asked about a prompt the user's cancel ended"
+    );
+}
+
+/// A cancel that was written to the open first prompt, which the engine answered with its own end of turn all the same,
+/// was read before the answer. That is not this case: nothing is asked, the cancel is not written a second time, and the run
+/// reads as it did before.
+#[tokio::test(start_paused = true)]
+async fn b988_a_cancel_that_was_written_to_the_first_prompt_is_not_asked_about() {
+    let rounds = Rounds::new(true);
+    let (controls, _) = TurnControls::new();
+    let c = controls.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        c.deliver(&[PendingControl::Cancel]);
+    });
+    let run = drive(
+        vec![vec![
+            chunk("first"),
+            Step::AtCancel("end_turn"),
+            chunk("on my own"),
+            Step::Silent,
+        ]],
+        plan(10_000, 900, Some(controls.subscribe())),
+        vec![rounds.clone()],
+        Some(controls),
+    )
+    .await;
+    // TRIGGER PRESENT: the cancel went to the open prompt, and the engine answered that prompt with its own end of turn.
+    assert!(run.end.raw.cancel_sent);
+    assert!(
+        matches!(&run.end.raw.watched, agentd::acp::Watched::Done(Ok(done)) if done.stop_reason == "end_turn"),
+        "the prompt was not answered with the engine's own end of turn: the test proves nothing"
+    );
+    assert_eq!(
+        count(&run.received, "session/cancel"),
+        1,
+        "the cancel is written once"
+    );
+    assert_eq!(rounds.questions(), 0, "nothing is asked");
+    // As before this item: the engine ended its turn itself, and the run reads as that answer.
+    assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
+}
+
+/// The question belongs to the first stop of a run. At a later stop the driver did not hold the run at, the answered
+/// prompt may be the round the log shows open, so nothing is asked there and the run reads as it did before.
+#[tokio::test(start_paused = true)]
+async fn b988_at_a_later_stop_nothing_is_asked_and_the_run_keeps_the_engines_outcome() {
+    let messages = Votes::new(
+        "messages",
+        vec![TurnVote::Prompt("a message of the user".into())],
+    );
+    let rounds = Rounds::new(true);
+    let (controls, _) = TurnControls::new();
+    let at = CancelAtTheAnswer::new(&controls, 2);
+    let run = drive(
+        vec![
+            vec![chunk("first"), Step::Finish],
+            vec![chunk("second"), Step::Finish],
+        ],
+        plan(10_000, 900, Some(controls.subscribe())),
+        vec![at.clone(), messages, rounds.clone()],
+        Some(controls),
+    )
+    .await;
+    // TRIGGER PRESENT: the second prompt went out, and the cancel was delivered at its answer.
+    assert_eq!(count(&run.received, "session/prompt"), 2);
+    assert!(
+        at.done.load(Ordering::SeqCst),
+        "the cancel was not delivered at the answer of the second prompt: the test proves nothing"
+    );
+    assert_eq!(rounds.questions(), 0, "nothing is asked at a later stop");
     assert_eq!(classify(&run.end.raw).outcome, DirectOutcome::ReportedDone);
     assert_eq!(count(&run.received, "session/cancel"), 0);
 }

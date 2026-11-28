@@ -16,6 +16,7 @@
 //! | [`DirectHook::on_controls`] | a batch of controls from the internal API | nothing |
 //! | [`DirectHook::on_turn_end`] | a prompt (with its retries) ended: is the run done? (also after a module's [`DriverCtl::interrupt`]) | the next prompt, the end of the run, or a hold ([`TurnVote::Wait`]) |
 //! | [`DirectHook::on_seal`] | everything else says the run is over: the one atomic last question | the next prompt |
+//! | [`DirectHook::round_open`] | the user's cancel is up before the modules are asked at the first stop of a run, about a prompt the engine answered by itself | nothing; a `true` makes the stop the user's |
 //! | [`DirectHook::usage_outside_prompts`] | the engine is reaped, before the run's usage is set | adds to the run's usage |
 //! | [`DirectHook::on_shutdown`] | the engine is gone, before the tree is committed and uploaded | nothing |
 //! | [`DirectHook::on_summary`] | `summary.json` is built, before it is checked and uploaded | the summary |
@@ -44,6 +45,11 @@
 //!   when the user's cancel comes up while the modules are asked, the prompt is dropped and the
 //!   run is still held as for the wait, so the engine is told to cancel and the stop is the user's. The run's deadline that comes
 //!   up in such a poll is treated the same way: the prompt is dropped, the engine is told, and the stop is the time limit's.
+//! - A user's cancel that is up before the modules are asked is no question for `on_turn_end`: no vote is cast once the cancel is up.
+//!   At the first stop of a run the driver has held the run at no stop yet, so it has heard nothing of the engine's own work. It
+//!   then asks [`DirectHook::round_open`], which changes nothing: a module that watches the engine's own rounds says
+//!   whether one is open now. If one is, the engine is told to cancel and the stop is the user's; if none is, the run keeps the
+//!   outcome of the answered prompt. A module that would only keep the run open (it waits to learn something) says `false`.
 //! - Event ordering is by call: a module sees the events of a run in the order the driver raised them.
 
 use crate::BoxFuture;
@@ -732,6 +738,15 @@ pub trait DirectHook: Send + Sync {
         ready(TurnVote::Done)
     }
 
+    /// Whether a round of the engine's own loop is open right now, as far as this module can see: the engine started a
+    /// round by itself, with no prompt open, and that round has not ended. The driver asks when the user's cancel is up before the
+    /// modules are asked at the first stop of a run. Read-only and synchronous: no vote is cast, nothing is claimed and nothing
+    /// of the module changes. A module that cannot tell says `false`, also one that would keep the run open for another reason.
+    /// A panic switches the module off and counts as `false`.
+    fn round_open(&self) -> bool {
+        false
+    }
+
     /// The engine is reaped and the driver sets the usage of the run: the tokens this module saw the engine spend that no answered
     /// prompt reported (a prompt that ended in an error, a round the engine started itself). The driver adds them to what the prompts
     /// reported. Synchronous; a panic switches the module off and adds nothing.
@@ -1018,6 +1033,17 @@ impl Hooks {
             }
         });
         sum.get()
+    }
+
+    /// Whether a module sees a round of the engine's own loop open right now.
+    pub fn round_open(&self) -> bool {
+        let open = std::cell::Cell::new(false);
+        self.inner.each("round_open", |h| {
+            if h.round_open() {
+                open.set(true);
+            }
+        });
+        open.get()
     }
 
     /// Shows a batch of controls to the modules.

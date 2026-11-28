@@ -6,6 +6,14 @@ The root `VERSION` file supplies the version shown on every terminal screen as `
 
 ## [Unreleased]
 
+## [5.37] - 2026-11-28
+
+### Fixed
+
+- A run whose last step met a temporary service error asks once more and then delivers its work; before, it ended without a delivery, with the work only in its saved copy.
+- A later session of a run still gets the messages you sent earlier when one read of their record fails for a moment.
+- `ham cancel` that arrives right after the engine's first answer, while the engine already works on by itself, ends the run as your stop, and the engine is told to stop. Before, the run could show the outcome of that answer.
+
 ## [5.36] - 2026-11-27
 
 ### Added

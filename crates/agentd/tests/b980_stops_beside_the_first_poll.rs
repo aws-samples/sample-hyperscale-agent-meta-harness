@@ -11,9 +11,11 @@
 //! time limit.
 //!
 //! Case 2: the user's cancel is up before the modules are asked at the first stop: the answer of the first prompt has been read,
-//! and no module has voted. The driver then asks no module, and the run ends with the outcome of the prompt the engine answered
-//! before the cancel was read. Two tests show what a user sees: an engine that ended its turn and does nothing more, and an engine
-//! that goes on by itself after its answer (the goal loop's follow-up rounds). Nothing is changed for this case.
+//! and no module has voted. The driver then asks for no vote. Two tests show what a user sees. For an engine that ended its turn
+//! and does nothing more the run ends with the outcome of the prompt the engine answered before the cancel was read; nothing is
+//! changed for it. For an engine that goes on by itself after its answer (the goal loop's follow-up rounds) this item showed the
+//! same outcome, and changed it: the driver asks whether a round of the engine's own is open, and with one open the engine
+//! is told once and the run ends as the user's stop (`b988_cancel_before_the_first_ask.rs`).
 //!
 //! The real message module and the real goal module run in the real driver against the engine simulator: for case 2 the scenario
 //! `goal_message_in_round` of `b857_now_in_follow_up_rounds.rs`, for case 1 the scenario `goal_silent_round`, whose one follow-up
@@ -391,7 +393,8 @@ async fn b980_a_cancel_after_the_answer_of_an_engine_that_ended_its_turn_keeps_t
 }
 
 /// Case 2, an engine that goes on by itself after its answer (the goal loop's follow-up rounds). The user's cancel is up when the
-/// answer has been read, and no module is asked about the stop.
+/// answer has been read, and no module is asked for a vote about the stop. Since the driver asks whether a round of the
+/// engine's own is open; the test delivers the cancel when one is.
 #[tokio::test(flavor = "multi_thread")]
 async fn b980_a_cancel_after_the_answer_of_an_engine_that_goes_on_by_itself_shows_what_a_user_sees()
 {
@@ -431,10 +434,11 @@ async fn b980_a_cancel_after_the_answer_of_an_engine_that_goes_on_by_itself_show
         "the engine did not go on by itself: the test proves nothing\n{}",
         w.log()
     );
-    // What a user sees, as it is: no module is asked once the cancel is up, so the driver has not heard that the engine goes on
-    // by itself. The run keeps the outcome of the answer the engine gave before the cancel was read, and the engine is not told.
+    // What a user sees: no module is asked for a vote once the cancel is up, and the driver hears from the goal module
+    // that a round of the engine's own is open. The stop is the user's, and the engine is told once. Until the run kept the
+    // outcome of the answer the engine gave before the cancel was read ("Cline reported done"), and the engine was not told.
     assert_eq!(at.asked.load(Ordering::SeqCst), 0, "{agentd_log:?}");
-    assert_eq!(s.outcome, DirectOutcome::ReportedDone, "{agentd_log:?}");
-    assert_eq!(s.label, "Cline reported done");
-    assert_eq!(cancels_written(&w), 0, "{}", w.log());
+    assert_eq!(s.outcome, DirectOutcome::StoppedByUser, "{agentd_log:?}");
+    assert_eq!(s.label, "Cline stopped: you stopped the run");
+    assert_eq!(cancels_written(&w), 1, "{}", w.log());
 }

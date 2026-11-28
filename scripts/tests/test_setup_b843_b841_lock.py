@@ -121,9 +121,11 @@ class BothLinesCase(StartsBase):
 
     def test_b843_b841_a_run_that_stops_following_after_the_deploy_leaves_both_lines_and_says_that_the_stage_kept_starting_runs(self) -> None:
         self.update_stage(opens_lock=True, hang=True)
+        held = self.held_program("sleep")
         proc = self.popen(*self.UPDATE, *BOTH, HAMH_SETUP_POLL_SECONDS="1")
         self.following(proc)
         proc.wait_ready(lambda: bool(self.last_build().get("lock_opened")), 120.0, "the build to finish its deploy phase")
+        self.hold_in_the_pause(proc, held)
         done = proc.interrupt(signal.SIGINT)
         flat = " ".join(done.output.split())
         self.assertEqual(done.returncode, 6, done.output)

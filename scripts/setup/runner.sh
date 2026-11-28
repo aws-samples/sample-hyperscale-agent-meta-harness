@@ -818,7 +818,10 @@ rn_lock_replace_stale() {
 # rn_lease_take: takes the deploy lock, right after the confirmation and before the runner is installed or its bucket policy rewritten. The create succeeds only when no lock
 # exists; when another setup was faster the lock is read again: a build of the same commit and inputs is attached to (RN_MODE attach or finish), a stale lock is replaced once
 # more, and anything else is exit 7 naming the holder. A lock without a build is stale only by the rules of rn_lease_check, so two setups that start at the same moment never
-# both deploy. From here until the build is recorded, Ctrl-C ends the run through rn_lock_interrupted. [route]: runner (the default) or local; the local route
+# both deploy. From here until the build is recorded, Ctrl-C ends the run through rn_lock_interrupted. Two stretches have no handler for INT and TERM:
+# inside that span, from the end of rn_follow for the build that prints the bootstrap template to the start of the build of the stage; and after it, from the
+# record of the started build until rn_follow sets its own handler (rn_lease_record). There the signal ends the run by itself (status 130 for Ctrl-C, no
+# "Stopped" line), and rn_lock_on_exit gives the lock back in the first and leaves it to the build in the second. [route]: runner (the default) or local; the local route
 # (--build-on local) takes the lock the same way, gives deploy.sh HAMH_DEPLOY_LOCK_TOKEN=$RN_LOCK_TOKEN, renews the lock while the deploy prints and releases it when the
 # deploy has ended (full_local_lock_check, full_local_flow, full_local_lock_refresh and full_local_interrupted of full.sh).
 rn_lease_take() {

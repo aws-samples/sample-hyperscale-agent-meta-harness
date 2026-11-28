@@ -140,7 +140,8 @@ impl Route for HttpRoute {
     ) -> BoxFuture<'a, Result<Value, RouteFailure>> {
         Box::pin(async move {
             let creds = self.creds.current().await.map_err(|e| match e {
-                CredError::RefreshFailed(_) => {
+                // Both kinds of a refresh that failed read here as before the store told them apart.
+                CredError::RefreshFailed(_) | CredError::RefreshFailedForNow(_) => {
                     RouteFailure::transient("the session credentials could not be refreshed")
                 }
                 _ => RouteFailure::fatal("the session credentials are not available"),

@@ -92,6 +92,38 @@ pub fn read_to_end(reader: &mut RoundsReader, max_reads: usize, mut each: impl F
     }
 }
 
+/// The most reads [`follow_up_open`] makes: a log of 16 MiB with [`POLL_BYTES`] a read.
+pub const OPEN_READS: usize = 64;
+
+/// Whether the log at `path` shows a round of the engine's own loop that is open now. Its last round line is a start
+/// line, and that start is not the first run of its engine: the observer counts the runs of one engine process from 1, the first
+/// run is the one a prompt started, so a start numbered 2 or more with no end line after it is a round the engine started by
+/// itself (or the run of a later prompt, which a caller rules out by asking only at the stop of an engine's first prompt).
+///
+/// The log is read from its start with a reader of its own: no other reader's place moves and nothing is written. The answer is
+/// `false` whenever the log does not say so beyond doubt: no file, a file reached through a link, a damaged file, a line whose end
+/// is not written yet, or a log too long to read to its end in [`OPEN_READS`] reads. The engine's user can write the file; a
+/// forged line can only make a run the user cancelled read as the user's stop, or leave it as it would read without this look.
+pub fn follow_up_open(path: &std::path::Path) -> bool {
+    let mut reader = RoundsReader::new(path.to_path_buf());
+    let mut open = false;
+    for _ in 0..OPEN_READS {
+        let before = reader.offset();
+        let polled = reader.poll();
+        if !polled.present || polled.damaged {
+            return false;
+        }
+        for line in &polled.lines {
+            open = matches!(line, RoundLine::Start { n } if *n >= 2);
+        }
+        if reader.offset() == before {
+            // The end of the file: a line that is still being written is not the log's last word yet.
+            return open && reader.partial.is_empty() && !reader.skipping;
+        }
+    }
+    false
+}
+
 /// One line of the log, or `None` for anything that is not a start or an end line.
 pub fn parse_line(line: &str) -> Option<RoundLine> {
     let v: Value = serde_json::from_str(line.trim()).ok()?;

@@ -4360,6 +4360,73 @@ async fn upload_file_receipt(
         .await
 }
 
+/// The session's credentials for the uploads of the end sequence ([`finish`]). The end sequence takes them once, before it
+/// commits; every other step of the end asks the store when it needs them (the copy of the end, the final flush, turn-complete).
+/// Before a refresh that failed at that one take left the bundle and `summary.json` without credentials, although the store
+/// answered the step after it: the run had no delivery, and the saved copy held the work.
+///
+/// An upload whose last answer was a refresh that failed and may be another answer a moment later
+/// ([`crate::creds::CredError::temporary`]) asks the store once more, at once ([`Self::for_upload`]). The commit and the copy of the
+/// end lie between the take and the first upload, and the copy of the end asks the store itself, so in most sessions the store
+/// answers from what that ask brought. A failure that stays what it is (a refusal) keeps its one ask, and an upload that has
+/// credentials asks nothing. So one end sequence asks at most three times for its uploads: the take, once more for the bundle and
+/// once more for `summary.json`.
+///
+/// No pause is added, and no ask is given up before its answer: an ask that is left after the service replaced the nonce would lose
+/// the next nonce for the rest of the session. The bound of these asks is their form: at most two further asks. Each is one call of
+/// the store, which sends at most one request to the service, and the answer to that request must begin within 120 s
+/// (`REQUEST_TIMEOUT` in `src/http.rs`). When both further asks fail slowly, their two requests put turn-complete up to 240 s later
+/// than. Like every ask, a further ask first waits for the store's lock while another ask is under way. The flusher
+/// asks the store for each of its posts, so a further ask can wait up to 120 s more behind an ask of the flusher that fails slowly
+/// too. [`finish`] stops the flusher after these asks and before turn-complete, as before, so the flusher goes on with the events
+/// and the heartbeat during them. Every limit that ends the session is wider than those 240 s: the service waits 600 s for the
+/// session's heartbeat (`HeartbeatSeconds`) and 28,500 s for the session (`TimeoutSeconds`; both in
+/// `statemachines/direct.asl.json`). The held credentials have up to 600 s left when a refresh is first asked
+/// ([`crate::creds::REFRESH_WINDOW_S`]).
+struct EndCreds<'a> {
+    app: &'a App,
+    /// What the store answered last to the end sequence.
+    last: Result<harness_protocol::api::internal::ProcessCredentials, crate::creds::CredError>,
+}
+
+/// How the log line of a further ask of the end sequence starts; what the upload is of and how the ask ended follow.
+const END_CREDS_ASKED_AGAIN: &str = "direct turn end credentials: asked again for the upload of";
+
+impl<'a> EndCreds<'a> {
+    /// The one take of the end sequence.
+    async fn take(app: &'a App) -> Self {
+        Self {
+            app,
+            last: app.creds.current().await,
+        }
+    }
+
+    /// The credentials for the upload of `what` (`the bundle`, `summary.json`), or the sentence of the refresh that failed. Asks
+    /// the store once more when the last answer may be another one a moment later, and logs how that ask ended.
+    async fn for_upload(
+        &mut self,
+        what: &str,
+    ) -> Result<harness_protocol::api::internal::ProcessCredentials, String> {
+        if self.last.as_ref().is_err_and(|e| e.temporary()) {
+            self.last = self.app.creds.current().await;
+            self.app.log.line(&match &self.last {
+                Ok(_) => format!("{END_CREDS_ASKED_AGAIN} {what}: answered"),
+                Err(e) => format!(
+                    "{END_CREDS_ASKED_AGAIN} {what}: {}",
+                    scrub_detail(&e.to_string())
+                ),
+            });
+        }
+        self.held()
+    }
+
+    /// What the end sequence holds, with nothing asked: for the write of the worker's own object over a foreign one, which
+    /// follows an upload that had credentials.
+    fn held(&self) -> Result<harness_protocol::api::internal::ProcessCredentials, String> {
+        self.last.clone().map_err(|e| e.to_string())
+    }
+}
+
 /// How the end sequence's error starts when the git settings were not put back (`git_settings::put_back`).
 const SETTINGS_NOT_BACK: &str = "restore git settings: ";
 
@@ -4527,7 +4594,8 @@ async fn finish(
     // service in `turn-complete`, which the engine cannot send, so delivery reads exactly these versions and not whatever is at the key later.
     let mut bundle_pin: Option<OutputPin> = None;
     let mut summary_pin: Option<OutputPin> = None;
-    let creds = app.creds.current().await;
+    // The one take of the end sequence; an upload asks again only after a refresh that may be answered a moment later.
+    let mut end_creds = EndCreds::take(app).await;
     let s3_objects = S3Objects::new(req.region.clone(), app.cfg.s3_endpoint.clone());
     let bucket = s3::split_uri(&req.request.uri)
         .map(|(b, _)| b.to_string())
@@ -4587,9 +4655,9 @@ async fn finish(
         match workspace::write_bundle(wt, &file).await {
             Ok(()) => {
                 let uri = s3::uri(&bucket, &s3::bundle_key_t(run, req.turn));
-                let put = match &creds {
-                    Ok(c) => upload_new(&s3_objects, &uri, c, &file, pause).await,
-                    Err(e) => Err(e.to_string()),
+                let put = match end_creds.for_upload("the bundle").await {
+                    Ok(c) => upload_new(&s3_objects, &uri, &c, &file, pause).await,
+                    Err(e) => Err(e),
                 };
                 match put {
                     Ok((PutNew::Stored, pin)) => {
@@ -4611,9 +4679,9 @@ async fn finish(
                         );
                         app.log
                             .line(&format!("direct turn upload conflict: {text}"));
-                        let replaced = match &creds {
-                            Ok(c) => upload_file_receipt(&s3_objects, &uri, c, &file, pause).await,
-                            Err(e) => Err(e.to_string()),
+                        let replaced = match end_creds.held() {
+                            Ok(c) => upload_file_receipt(&s3_objects, &uri, &c, &file, pause).await,
+                            Err(e) => Err(e),
                         };
                         match replaced {
                             Ok(pin) => {
@@ -4839,9 +4907,9 @@ async fn finish(
     match wrote {
         Ok(()) => {
             let uri = s3::uri(&bucket, &s3::summary_key_t(run, req.turn));
-            let put = match &creds {
-                Ok(c) => upload_new(&s3_objects, &uri, c, &summary_file, pause).await,
-                Err(e) => Err(e.to_string()),
+            let put = match end_creds.for_upload("summary.json").await {
+                Ok(c) => upload_new(&s3_objects, &uri, &c, &summary_file, pause).await,
+                Err(e) => Err(e),
             };
             match put {
                 Ok((PutNew::Stored, pin)) => summary_pin = pin,
@@ -4869,16 +4937,16 @@ async fn finish(
                         compose_error(&classified, &upload_error, &errors, &secrets),
                     );
                     let replaced = match (
-                        &creds,
+                        end_creds.held(),
                         std::fs::write(
                             &summary_file,
                             serde_json::to_vec_pretty(&summary).unwrap_or_default(),
                         ),
                     ) {
                         (Ok(c), Ok(())) => {
-                            upload_file_receipt(&s3_objects, &uri, c, &summary_file, pause).await
+                            upload_file_receipt(&s3_objects, &uri, &c, &summary_file, pause).await
                         }
-                        (Err(e), _) => Err(e.to_string()),
+                        (Err(e), _) => Err(e),
                         (_, Err(e)) => Err(format!("{}: {e}", summary_file.display())),
                     };
                     match replaced {

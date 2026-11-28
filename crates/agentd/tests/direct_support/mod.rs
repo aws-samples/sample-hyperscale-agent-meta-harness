@@ -208,6 +208,11 @@ pub struct AwsState {
     refresh: Mutex<Option<CredsResponse>>,
     /// How many `/internal/creds` posts arrived (a refresh of the session credentials).
     refreshes: Mutex<u32>,
+    /// What the next `/internal/creds` posts are answered with ([`AwsState::script_refreshes`]): the statuses of the posts
+    /// to come, in order (200 is a refresh), and the status of every post after them (`None`: a refresh).
+    refresh_script: Mutex<(std::collections::VecDeque<u16>, Option<u16>)>,
+    /// The status each `/internal/creds` post was answered with, in the order the posts arrived.
+    refresh_statuses: Mutex<Vec<u16>>,
     /// The completion key each `/internal/events` and `/internal/turn-complete` post carried: `(path, key)`.
     completion_keys: Mutex<Vec<(String, Option<String>)>>,
     /// Every heartbeat with `ending: true` that arrived, answered or not: the request, the completion key it carried, and how many
@@ -331,6 +336,28 @@ pub struct FakeAws {
 }
 
 type Shared = Arc<AwsState>;
+
+impl AwsState {
+    /// What the posts to `/internal/creds` are answered with from now on: the next ones with the statuses of `next`, in order,
+    /// and every post after them with `then` (`None`: a refresh). A status 200 is a refresh; any other status is an answer with no
+    /// credentials. On the state, so that a place that holds no [`FakeAws`] (the file calls a test gives the end sequence) can set it.
+    pub fn script_refreshes(&self, next: &[u16], then: Option<u16>) {
+        *self.refresh_script.lock().unwrap() = (next.iter().copied().collect(), then);
+    }
+
+    /// [`FakeAws::refresh_answers`], on the state.
+    pub fn refresh_answers(&self, credentials: ProcessCredentials, next_nonce: &str) {
+        *self.refresh.lock().unwrap() = Some(CredsResponse {
+            credentials,
+            next_nonce: next_nonce.to_string(),
+        });
+    }
+
+    /// The status each `/internal/creds` post was answered with so far, in the order the posts arrived.
+    pub fn refresh_statuses(&self) -> Vec<u16> {
+        self.refresh_statuses.lock().unwrap().clone()
+    }
+}
 
 /// One connection of a client to the fake, from the moment the fake accepts it to the end of the task that serves it. The
 /// fake keeps a connection of HTTP/1.1 open after an answer of 200 unless the request asked to close it, so that task ends when
@@ -1263,6 +1290,23 @@ async fn api_complete(
 
 async fn api_creds(State(s): State<Shared>) -> axum::response::Response {
     *s.refreshes.lock().unwrap() += 1;
+    // An answer that is no refresh, when a test asked for one: the status and the body of the service's own error answer.
+    let failed = {
+        let mut script = s.refresh_script.lock().unwrap();
+        let status = script.0.pop_front().or(script.1).unwrap_or(200);
+        (status != 200).then_some(status)
+    };
+    s.refresh_statuses
+        .lock()
+        .unwrap()
+        .push(failed.unwrap_or(200));
+    if let Some(status) = failed {
+        return (
+            StatusCode::from_u16(status).unwrap(),
+            axum::Json(serde_json::json!({"code": "stand-in", "message": "the stand-in answered no refresh"})),
+        )
+            .into_response();
+    }
     let answer = s.refresh.lock().unwrap().clone();
     axum::Json(answer.unwrap_or_else(|| CredsResponse {
         credentials: creds(&format_rfc3339(now_unix() + 3600)),
